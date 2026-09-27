@@ -4276,6 +4276,19 @@ function makeBackup(tag) {
   });
 }
 
+// 定时自动备份（默认关）。周期存在 config.backup.every_days：0 关 / 1 每天 / 7 每周。
+// 细节和规矩见 backup-auto.js
+let restoring = false;
+const autoBackup = require("./backup-auto").createAutoBackup({
+  everyDays: () => (config.backup || {}).every_days,
+  list: listBackups,
+  make: makeBackup,
+  remove: (name) => { const p = backupFile(name); if (p) fs.unlinkSync(p); },
+  busy: () => restoring,
+  audit: (msg, verdict) => security.audit("数据备份", msg, verdict),
+});
+autoBackup.start();
+
 /** 校验名字必须来自现有备份列表，杜绝路径注入 */
 function backupFile(name) {
   const hit = listBackups().find((b) => b.name === name);
@@ -4332,7 +4345,23 @@ function inspectBackup(p) {
 
 app.get("/api/backup", (req, res) => {
   if (!backupAllowed(req, res)) return;
-  res.json({ list: listBackups(), covers: BACKUP_ENTRIES, skills: userSkillEntries().length });
+  const days = require("./backup-auto").normalizeDays((config.backup || {}).every_days);
+  res.json({
+    list: listBackups(), covers: BACKUP_ENTRIES, skills: userSkillEntries().length,
+    auto: { every_days: days, keep: require("./backup-auto").KEEP, last_error: autoBackup.lastError() },
+  });
+});
+app.post("/api/backup/auto", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  const raw = (req.body || {}).every_days;
+  const days = require("./backup-auto").normalizeDays(raw);
+  if (String(raw) !== String(days)) return res.status(400).json({ error: "周期只能是 0（关）、1（每天）或 7（每周）" });
+  config.backup = { ...(config.backup || {}), every_days: days };
+  saveConfig();
+  security.audit("数据备份", days ? `自动备份已开：每 ${days} 天一份` : "自动备份已关", "放行");
+  // 刚打开、一份自动备份都还没有：现在就备一份，不用等下一个整点
+  if (days) autoBackup.tick().catch(() => {});
+  res.json({ ok: true, every_days: days });
 });
 app.post("/api/backup", async (req, res) => {
   if (!backupAllowed(req, res)) return;
@@ -4392,6 +4421,9 @@ app.post("/api/backup/restore", async (req, res) => {
   if (!backupAllowed(req, res)) return;
   const p = backupFile(String((req.body || {}).name || ""));
   if (!p) return res.status(404).json({ error: "备份不存在" });
+  // 自动备份正打着包时去解包，两边读写同一批文件，打出来的和恢复出来的都可能是半新半旧
+  if (autoBackup.isRunning()) return res.status(409).json({ error: "自动备份正在打包，等一分钟再恢复" });
+  restoring = true;
   try {
     // 恢复前先把现状自动备一份——恢复错了还能回来，这一步绝不省
     const safety = await makeBackup("before-restore");
@@ -4404,6 +4436,7 @@ app.post("/api/backup/restore", async (req, res) => {
     security.audit("数据恢复", `已从 ${path.basename(p)} 恢复（恢复前现状已存为 ${safety}）`, "放行");
     res.json({ ok: true, safety, restart_required: true, note: "已恢复到磁盘。内存里还是旧数据，重启应用后完全生效。" });
   } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { restoring = false; }
 });
 app.post("/api/backup/restart", (req, res) => {
   if (!backupAllowed(req, res)) return;

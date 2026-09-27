@@ -8931,11 +8931,32 @@ async function testBackupRoundTrip() {
     assert(denied.code === 403, `普通成员能往备份里塞东西（HTTP ${denied.code}）`);
     const deniedList = await call("GET", "/api/backup", { tok: plain });
     assert(deniedList.code === 403, "普通成员能看备份列表");
+    const deniedAuto = await call("POST", "/api/backup/auto", { body: JSON.stringify({ every_days: 1 }), type: "application/json", tok: plain });
+    assert(deniedAuto.code === 403, `普通成员能开自动备份（HTTP ${deniedAuto.code}）`);
+
+    // ⑦ 自动备份：默认关；开了当场备一份（名字带 -auto）；怪周期 400；关掉写回 config
+    const autoOf = async () => ((await call("GET", "/api/backup")).json || {}).auto || {};
+    assert((await autoOf()).every_days === 0, "自动备份默认应该是关的：" + JSON.stringify(await autoOf()));
+    const badAuto = await call("POST", "/api/backup/auto", { body: JSON.stringify({ every_days: 3 }), type: "application/json" });
+    assert(badAuto.code === 400, `周期写 3 天应该被拒（HTTP ${badAuto.code}）`);
+    const onAuto = await call("POST", "/api/backup/auto", { body: JSON.stringify({ every_days: 1 }), type: "application/json" });
+    assert(onAuto.code === 200 && onAuto.json.every_days === 1, "开自动备份失败：" + JSON.stringify(onAuto.json));
+    let autoMade = [];
+    for (let i = 0; i < 60 && !autoMade.length; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      autoMade = (await names()).filter((n) => /-auto\.tar\.gz$/.test(n));
+    }
+    assert(autoMade.length === 1, "开了自动备份，15 秒内没见到那份 -auto 的包：" + JSON.stringify(await names()));
+    assert((await autoOf()).every_days === 1, "开了之后 GET 读回来不是每天");
+    const cfgOn = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert(cfgOn.backup && cfgOn.backup.every_days === 1, "自动备份的周期没写进 config.json，重启就丢");
+    const offAuto = await call("POST", "/api/backup/auto", { body: JSON.stringify({ every_days: 0 }), type: "application/json" });
+    assert(offAuto.code === 200 && (await autoOf()).every_days === 0, "关不掉自动备份");
   } finally {
     booted.child.kill();
     fs.rmSync(home, { recursive: true, force: true });
   }
-  console.log("✅ 备份来回：打包→下载→传回新机器→恢复走得通，绝对路径/../、软链接、形状不对的包一律原地拒且不留尸体");
+  console.log("✅ 备份来回：打包→下载→传回新机器→恢复走得通，绝对路径/../、软链接、形状不对的包一律原地拒且不留尸体；自动备份默认关、开了当场备一份");
 }
 
 /**

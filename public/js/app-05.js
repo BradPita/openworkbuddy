@@ -2946,6 +2946,11 @@ function renderDataPane(pane, s) {
         <input type="file" id="bk-file" accept=".gz,.tgz,application/gzip" style="display:none">
         <span class="ok-msg" id="bk-msg"></span>
       </div>
+      <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <label for="bk-auto">自动备份</label>
+        <select id="bk-auto"><option value="0">关</option><option value="1">每天</option><option value="7">每周</option></select>
+        <span class="d" id="bk-auto-hint"></span>
+      </div>
       <div id="bk-list" style="font-size: 13px;color:var(--owb-text-2)">加载中…</div>
     </div>
     <div class="card-item">
@@ -2984,8 +2989,22 @@ function renderDataPane(pane, s) {
   // ---- 备份 ----
   const bkMsg = pane.querySelector("#bk-msg");
   const bkList = pane.querySelector("#bk-list");
+  const bkAuto = pane.querySelector("#bk-auto");
+  const bkAutoHint = pane.querySelector("#bk-auto-hint");
+  bkAuto.onchange = async () => {
+    const r = await fetch("/api/backup/auto", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ every_days: +bkAuto.value }) })
+      .then(r => r.json()).catch(() => ({ error: "网络错误" }));
+    if (r.error) setMsg(bkMsg, "circle-x", r.error, "err");
+    else setMsg(bkMsg, "circle-check", r.every_days ? "自动备份已开，先备一份" : "自动备份已关", "ok");
+    // 刚打开会马上打一份，稍等再刷，新的那份才在列表里
+    setTimeout(loadBackups, r.every_days ? 1500 : 0);
+  };
   const loadBackups = () => fetch("/api/backup").then(r => r.json()).then(d => {
     if (d.error) { bkList.textContent = d.error; return; }
+    const auto = d.auto || {};
+    bkAuto.value = String(auto.every_days || 0);
+    bkAutoHint.textContent = auto.last_error ? `上次自动备份失败：${auto.last_error}`
+      : auto.every_days ? `只留最近 ${auto.keep} 份自动的，手动的不删` : "";
     const list = d.list || [];
     bkList.innerHTML = list.length ? list.map(b => `
       <div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--owb-border)">

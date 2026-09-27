@@ -167,6 +167,7 @@ const SUITES = [
   ["motion-render", "HTML 动画出片真渲：同一页渲两次逐帧一致、像素对得上时间轴、不是 2 倍图、颜色通道没反", ELECTRON],
   ["timeline-compose", "时间轴成片：多尺寸 / 字幕 / 配乐避让 / 封面 / 叫停不留半截（没有 ffmpeg 就跳过真跑那段）"],
   ["delivery-page", "交付页：各画幅能播、标题文案能复制、缺文件直说不出页"],
+  ["backup-auto", "自动备份：默认关、到点才打、只清自己打的、恢复中不打、失败留痕"],
   ["e2e", "端到端（含 frontend.js、admin-ui.js）", ELECTRON],
 ];
 
