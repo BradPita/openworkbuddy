@@ -12521,8 +12521,10 @@ function releasePipelineDrift(src) {
   const NODE24_FLOOR = {
     "actions/checkout": 5,
     "actions/setup-node": 5,
-    "actions/upload-artifact": 5,
-    "actions/download-artifact": 5,
+    // upload@v5 / download@v5、v6 都还是 node20（download 的 v6 只是「能」跑 24，默认照旧 20），
+    // v0.10.0 发版时 Actions 页照样刷弃用警告——当初这两格记成 5 是记错了
+    "actions/upload-artifact": 6,
+    "actions/download-artifact": 7,
     "softprops/action-gh-release": 3,
   };
   for (const [name, text] of [["test.yml", tst], ["release.yml", rel]]) {
@@ -12643,6 +12645,7 @@ function testReleasePipeline() {
     ["拉窗口的套件不再拉窗口了，却也没进 CI 名单", { "test/preview-layout.js": src["test/preview-layout.js"].replace(/process\.versions\.electron/g, "x").replace(/electronBin/g, "y") }],
     ["macOS 那条跑全集的腿没了，靠屏幕的套件就谁也不跑", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/npm test/g, "node -e 0") }],
     ["action 退回跑 Node 20 的老大版本", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/checkout@v\d+/, "checkout@v4") }],
+    ["下载产物退回 download-artifact@v6（默认还跑 Node 20）", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/download-artifact@v\d+/, "download-artifact@v6") }],
     ["发版那条链的 action 退回 Node 20", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/action-gh-release@v\d+/, "action-gh-release@v2") }],
     ["CI 的 checkout 退回默认浅克隆", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
     ["发版前跑测试那趟 checkout 退回默认浅克隆", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],

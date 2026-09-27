@@ -20,7 +20,7 @@ jobs:
       fail-fast: false # 一条腿红了，另一条也要把结论跑出来
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             label: 快跑（除 e2e 外全跑）
             # 这条腿装了 ffmpeg（见下面 apt 那步），真 ffmpeg 那几段找不到就算红，不许悄悄跳过
             require_ffmpeg: "1"
