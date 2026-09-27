@@ -8782,6 +8782,80 @@ async function testCheckpoints() {
   console.log("✅ 文件检查点接线：write_file/edit_file 带 diff+检查点 / ask 档审批条上有 diff / 没改动不留底 / 退到新建之前删文件 / 撤销回退找回来");
 }
 
+/**
+ * 「新对话沿用上次手动选的模型」开着时，设置里换「主用」要真的生效。
+ *
+ * 起因是真事：输入框里挑过 B（last_picked_model=B），后来去 设置 → 模型 把主用点成 A，
+ * 点新对话——标签和真跑的还是 B。服务端只在输入框换模型时记「上次选的」，设置页的主用
+ * 不算数，旧的那次永远压着新的。输入框里点「跟随全局默认」也一样不记，下个新对话又被拽回 B。
+ */
+async function testModelPickFollows() {
+  const http = require("http");
+  const crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pick-"));
+  fs.mkdirSync(path.join(home, "data", "sessions"), { recursive: true });
+  const token = "pk" + crypto.randomBytes(12).toString("hex");
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "boss", at: Date.now() } },
+  }));
+  const row = (name) => ({ name, provider: "openai", model: name + "-id", base_url: "http://127.0.0.1:9/v1", api_key: "sk-fake" });
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    models: [row("模型A"), row("模型B"), row("模型C")],
+    active_model: "模型C", model_follow_last: true, last_picked_model: "模型B",
+  }));
+  const sid = "s_1790000000000_1";
+  fs.writeFileSync(path.join(home, "data", "sessions", sid + ".json"),
+    JSON.stringify({ history: [], transcript: [], title: "挑模型", user: "boss", model: "模型B" }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why } = await booted.wait();
+  let passed = false;
+  try {
+    assert(up, "真 server.js 没起来：" + why);
+    const call = (method, p, body) => new Promise((resolve) => {
+      const data = body == null ? null : JSON.stringify(body);
+      const headers = { Cookie: "openworkbuddy_token=" + token };
+      if (data) { headers["Content-Type"] = "application/json"; headers["Content-Length"] = Buffer.byteLength(data); }
+      const req = http.request({ host: "127.0.0.1", port, path: p, method, headers }, (res) => {
+        let buf = ""; res.on("data", (c) => (buf += c));
+        res.on("end", () => { let json = null; try { json = JSON.parse(buf); } catch {} resolve({ code: res.statusCode, json }); });
+      });
+      req.on("error", (e) => resolve({ code: 0, json: { error: e.message } }));
+      if (data) req.write(data);
+      req.end();
+    });
+    const picked = async () => ((await call("GET", "/api/settings")).json || {}).last_picked_model;
+
+    assert(await picked() === "模型B", "起点不对：上次选的应该是模型B");
+    const set = await call("POST", "/api/settings", { active_model: "模型A" });
+    assert(set.code === 200, "设主用失败：" + JSON.stringify(set.json));
+    assert(await picked() === "模型A",
+      "★设置里换了主用，「上次选的」还压着旧的★ 新对话会沿用成模型B，设置页的选择等于没用：" + await picked());
+    const onDisk = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert(onDisk.active_model === "模型A" && onDisk.last_picked_model === "模型A", "主用和「上次选的」没一起落盘，重启就回去了");
+
+    // 输入框里给这个对话换成 C → 记成上次选的；再点「跟随全局默认」→ 清空，不许留着 C
+    assert((await call("POST", `/api/session/${sid}/model`, { model: "模型C" })).code === 200, "给对话换模型失败");
+    assert(await picked() === "模型C", "输入框里换的模型没记成「上次选的」");
+    assert((await call("POST", `/api/session/${sid}/model`, { model: null })).code === 200, "「跟随全局默认」失败");
+    assert(await picked() === "", "★点了「跟随全局默认」，「上次选的」还留着模型C★ 下个新对话又被拽回去：" + await picked());
+
+    // 空白新对话点「跟随全局默认」走的是 /api/settings 这条：清空要收，乱填的名字要拒
+    await call("POST", "/api/settings", { last_picked_model: "模型B" });
+    assert(await picked() === "模型B", "管理员经 /api/settings 记「上次选的」没生效");
+    await call("POST", "/api/settings", { last_picked_model: "" });
+    assert(await picked() === "", "经 /api/settings 清不掉「上次选的」");
+    const bad = await call("POST", "/api/settings", { last_picked_model: "不存在的模型" });
+    assert(bad.code >= 400 && await picked() === "", "列表里没有的模型也收进了「上次选的」");
+    passed = true;
+  } finally {
+    booted.child.kill();
+    await dropTempHome(home, passed, booted.child);
+  }
+  console.log("✅ 挑模型：设置里换主用、输入框点「跟随全局默认」都会刷新「上次选的」，新对话不再被旧选择拽回去");
+}
+
 async function testBackupRoundTrip() {
   const { execFileSync } = require("child_process");
   // 得显式 require：不写这行拿到的是全局那个 WebCrypto，只有 getRandomValues，
@@ -9605,6 +9679,7 @@ testCanvasEdgeVersion();
   testSkillRenameKeepsAssets();
   testOutNameKeepsExt();
   await testBackupRoundTrip();
+  await testModelPickFollows();
   await testCheckpoints();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {

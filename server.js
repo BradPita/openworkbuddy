@@ -1632,6 +1632,19 @@ app.get("/api/settings", (req, res) => {
  *   平台管理员同理：他设的那份是这台机器的默认，定时任务和 IM 消息没有「当前登录的人」，只能读 config。
  * true（落 data/prefs/<账号>.json）：多人服务器上的其他人，谁也不覆盖谁。
  */
+/**
+ * 设全局默认模型（设置页点「主用」、首次向导）。
+ *
+ * 这也是一次「手动选模型」，得顺手记进 last_picked_model。不记的话，开着「新对话沿用上次
+ * 手动选的模型」时，上次在输入框里点过的那个永远压着：设置里刚把主用换成 A、点新对话，
+ * 标签和真跑的都还是之前输入框里挑的 B——设置页上的选择等于没用。
+ * 只动 config 那份：能改全局默认的就是平台管理员，他的个人偏好本来就存在 config 里。
+ */
+function setGlobalModel(name) {
+  config.active_model = name;
+  config.last_picked_model = name;
+}
+
 function ownPrefs(req) {
   return !(admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user));
 }
@@ -1749,9 +1762,14 @@ app.post("/api/settings", (req, res) => {
     }
     if (b.active_model !== undefined) {
       if (!config.models.some((m) => m.name === b.active_model)) throw new Error("active_model 不在模型列表中");
-      config.active_model = b.active_model;
+      setGlobalModel(b.active_model);
     }
     if (typeof b.model_follow_last === "boolean") config.model_follow_last = b.model_follow_last;
+    if (b.last_picked_model !== undefined) {
+      const n = String(b.last_picked_model || "").trim();
+      if (n && !(config.models || []).some((m) => m.name === n)) throw new Error(`模型「${n}」不在模型列表里`);
+      config.last_picked_model = n;
+    }
     // 内网模式。这是整台机器的网络事实，不是谁的偏好，所以走服务器级这一支（prefs.split
     // 的个人项是白名单，认不出的键一律算服务器级，非管理员改会拿到 403）。
     // 它只负责「据实相告」：把连不上的连接器标出来、GitHub 装技能当场拒掉，
@@ -2320,7 +2338,7 @@ app.post("/api/onboarding", async (req, res) => {
       }
       const row = chatModels.commitTemplate(config, plan, key);
       chatModels.normalize(config);
-      config.active_model = row.name;
+      setGlobalModel(row.name);
       if (b.workspace_dir) {
         config.workspace_dir = setWorkspaceDir(b.workspace_dir);
         ensureProjects();
@@ -2361,7 +2379,7 @@ app.post("/api/onboarding", async (req, res) => {
     // 规整一趟：认渠道、并掉重复的空壳行、再把渠道的地址和 Key 压平回模型条目。
     // 不跑这一趟，下面 createLLM 读到的还是旧的扁平字段，这一趟对话照样 401
     chatModels.normalize(config);
-    config.active_model = entry.name;
+    setGlobalModel(entry.name);
     if (b.workspace_dir) {
       config.workspace_dir = setWorkspaceDir(b.workspace_dir);
       ensureProjects();
@@ -6741,6 +6759,9 @@ app.post("/api/session/:id/model", (req, res) => {
   if (!s) return;
   if (name === null || name === undefined || name === "") {
     delete s.model;
+    // 「跟随全局默认」也是一次手动选择：不记的话下一个新对话又被「沿用上次选的」拽回旧模型
+    if (ownPrefs(req)) prefs.write(req.user, { last_picked_model: "" });
+    else if (config.last_picked_model) { config.last_picked_model = ""; saveConfig(); }
   } else {
     if (!Array.isArray(config.models) || !config.models.some((m) => m.name === name)) {
       return res.status(400).json({ error: `模型「${name}」不在模型列表里` });

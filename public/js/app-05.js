@@ -1048,6 +1048,16 @@ function paintModels(pane, s) {
  * 这张卡把它们横着摊在一起，按渠道标出处；「主渠道挂了换谁」也挪到这儿——
  * 它本来在「智能体设置」里，跟步数上限、超时排在一起，选的却是模型，找不着是应该的。
  */
+/**
+ * 助理页（以及飞书、企微这些 IM 消息——它们认管理员名下的助理模型）单独选过模型时，
+ * 它不跟「主用」走。以前这一页只字不提：主用换了，飞书里回话的还是之前在助理页挑的那个，
+ * 人只会觉得「设置没用」。所以不一样的时候在对话卡里挑明，并给一颗改回跟主用的按钮。
+ */
+function assistApart(s) {
+  const am = String(s.assist_model || "");
+  return !!am && am !== s.active_model && (s.models || []).some((m) => m.name === am);
+}
+
 function chatOverview(s, po, kindLabel) {
   const open = openCaps.has("chat");
   const active = s.models.find((m) => m.name === s.active_model);
@@ -1066,6 +1076,8 @@ function chatOverview(s, po, kindLabel) {
       </div>
       ${!open ? "" : `<div class="ch-body">
         <div class="ch-note">服务器默认对话模型。每人可在输入框右下角临时切换，不影响这里。</div>
+        ${assistApart(s) ? `<div class="ch-note mrow-bad" id="assist-apart">${ic("triangle-alert")}${po ? "助理页和飞书等消息" : "你的助理页"}用的是「${esc(s.assist_model)}」，不跟主用
+          <button class="btn-plain" id="assist-follow" type="button" style="margin-left:6px">跟主用走</button></div>` : ""}
         ${s.models.length ? s.models.map((m) => modelRow(m, s, po, true)).join("")
           : `<div class="ch-note">一个都还没有。去下面的渠道卡里加一个，或者点这儿的「添加对话模型」。</div>`}
         ${!po ? "" : `
@@ -1364,6 +1376,16 @@ function bindModels(pane, s, po) {
     paintModels(pane, s);
   }));
   // 「对话」那张卡跟下面五路共用一套折叠状态（openCaps），只是键是 "chat"
+  const follow = pane.querySelector("#assist-follow");
+  if (follow) follow.onclick = async () => {
+    const r = await fetch("/api/assist/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: null }) })
+      .then((x) => x.json()).catch((e) => ({ error: e.message }));
+    if (r && r.error) return toast(r.error, "triangle-alert");
+    if (typeof assistModel !== "undefined") assistModel = undefined;
+    await refreshSettingsCache();
+    if (settingsCache) Object.assign(s, settingsCache);
+    paintModels(pane, s);
+  };
   const chatHead = pane.querySelector(".ch-head[data-chatcap]");
   if (chatHead) chatHead.onclick = () => {
     if (openCaps.has("chat")) openCaps.delete("chat"); else openCaps.add("chat");
@@ -1537,9 +1559,18 @@ function bindModels(pane, s, po) {
   };
 
   pane.querySelectorAll("input[name=active]").forEach((r) => (r.onchange = async () => {
-    await saveSettings({ active_model: s.models[+r.dataset.i].name }, msg);
+    const name = s.models[+r.dataset.i].name;
+    const saved = await saveSettings({ active_model: name }, msg);
     if (settingsCache) Object.assign(s, settingsCache);
     paintModels(pane, s);
+    if (!saved) return;
+    // 还没发第一句的新对话，标签是按「沿用上次选的」预选出来的——主用刚换，它得跟着换，
+    // 不然关掉设置一看输入框还是旧模型，发出去跑的也是旧的
+    if (sessionId === null && !inAssistMode) { pendingModel = defaultPendingModel(); updateModelLabel(); }
+    // 开着的这个对话单独选过模型：它不跟全局默认走。说一声，别让人以为没换成
+    const own = sessionId !== null && !inAssistMode ? sessionModels.get(sessionId) : null;
+    const m2 = pane.querySelector("#models-msg");
+    if (own && own !== name && m2) m2.textContent = `已设为主用。当前对话单独选了「${own}」，没跟着换`;
   }));
 
   let editM = -1;

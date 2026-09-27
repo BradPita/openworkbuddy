@@ -5145,12 +5145,22 @@ async function setSessionModel(name) { // name: 模型名；null = 跟随全局�
     updateModelLabel();
     return;
   }
-  if (sessionId === null) { pendingModel = name || undefined; updateModelLabel(); return; }
+  if (sessionId === null) {
+    pendingModel = name || undefined;
+    // 空白新对话里点「跟随全局默认」：没有对话可挂，直接把「上次选的」清掉。
+    // 不清的话发出第一句前一切正常，下一个新对话又被沿用成旧模型
+    if (!name && settingsCache && settingsCache.last_picked_model) {
+      const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ last_picked_model: "" }) }).catch(() => null);
+      if (r && r.ok) settingsCache.last_picked_model = "";
+    }
+    updateModelLabel();
+    return;
+  }
   try {
     const r = await fetch("/api/session/" + encodeURIComponent(sessionId) + "/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
     if (r && r.error) return toast(r.error, "triangle-alert");
     if (name) sessionModels.set(sessionId, name); else sessionModels.delete(sessionId);
-    if (name && settingsCache) settingsCache.last_picked_model = name; // 服务端也记了，这里同步本地缓存
+    if (settingsCache) settingsCache.last_picked_model = name || ""; // 服务端也记了（选「跟随全局默认」记的是空），这里同步本地缓存
   } catch {}
   updateModelLabel();
 }
