@@ -66,6 +66,34 @@ function dropVectorTwins(list) {
 }
 
 /**
+ * 这一轮往聊天里附哪些文件，同时把回复里的附件标记剥掉。
+ *
+ * 以前的规矩是「回复里写到文件名就附上」，结果 agent 顺口一句「之前那两张封面图也还在，
+ * 要的话说一声」，两张上一轮已经发过的图又被原样发了一遍——提到 ≠ 要发。现在：
+ *   · 本轮新建/改过的（fresh）照发；
+ *   · 旧文件要发，得在回复里写 [[发文件: 名字]]；
+ *   · 本轮一个新文件都没有时，点到名字的旧文件照发——那就是「把上次那个发我」，
+ *     这时候不认名字，agent 说了「马上发你」却什么都没到，比多发一份更糟；
+ *   · [[不发文件]] 一个都不附。
+ * all 是工作目录里全部成果文件（outputFiles() 的结果），名字按基名比。
+ */
+const SEND_MARK = /\[\[发文件[:：]\s*([^\]\n]+?)\s*\]\]/g;
+function pickAttachments({ out, fresh = [], all = [] }) {
+  const wanted = [...String(out).matchAll(SEND_MARK)].map((m) => m[1].split("/").pop());
+  let text = String(out).replace(SEND_MARK, "").replace(/\n{3,}/g, "\n\n").trim();
+  const noAttach = text.includes("[[不发文件]]");
+  if (noAttach) text = text.replace(/\s*\[\[不发文件\]\]\s*/g, "\n").trim();
+  if (noAttach) return { out: text, files: [] };
+  const base = (f) => f.name.split("/").pop();
+  const old = fresh.length
+    ? all.filter((f) => wanted.includes(base(f)))
+    : all.filter((f) => wanted.includes(base(f)) || text.includes(base(f)));
+  const seen = new Set();
+  const files = dropVectorTwins([...fresh, ...old].filter((f) => !seen.has(f.name) && seen.add(f.name)));
+  return { out: text, files };
+}
+
+/**
  * 飞书事件既可能直接给 message，也可能包在 event.message / data.message 里。
  * 统一在这里拆，后面的去重永远拿真实 message_id，不会因为 SDK 或回调模式换了
  * 载荷形状而退化成内容指纹。
@@ -335,7 +363,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       method: "PUT",
       body: JSON.stringify({ card: { type: "card_json", data: JSON.stringify(card) }, sequence: ++seq }),
     });
-    const clean = (s) => callout.strip(String(s || "")).replace(/\s*\[\[不发文件\]\]\s*/g, "\n");
+    const clean = (s) => callout.strip(String(s || "")).replace(/\s*\[\[不发文件\]\]\s*/g, "\n").replace(SEND_MARK, "");
 
     // ---- 内部：把当前状态推给飞书 ----
     async function flush() {
@@ -657,7 +685,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         const imNote = channel === "feishu_doc"
           ? "这条消息来自飞书云文档里 @ 机器人的评论。完成后系统会把答复发回同一条评论线程；不要让用户去网页聊天窗口查看，也不要假装已经改动文档。需要修改文档时，先说明将修改的范围并按权限实际执行。"
           : sendFile
-          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。但注意分清用户要的是「文件」还是「内容」：如果用户说「发我内容/直接贴出来/别发文件」，就把全文原样写进回复正文（别摘要、别截断），并在回复最后单独一行写 [[不发文件]] —— 系统认到这个标记就不附任何文件，标记本身用户看不到。反过来，只要回复里出现了文件名，系统默认会把那个文件附上，所以「只要内容」时必须带 [[不发文件]]。用户的口语指令按最直白的意思执行，别反复追问、别解释机制。注意：如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
+          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件作为附件直接发进这个聊天，用户在手机上就能收到。用户要的是以前做好的旧文件时，在最终回复里单独一行写 [[发文件: 文件名.扩展名]]（要几个写几行），标记本身用户看不到，然后告诉用户「文件马上作为附件发给你」；只是顺口提到的旧文件（比如「之前那张图也还在」）不写这个标记，就不会发。但注意分清用户要的是「文件」还是「内容」：如果用户说「发我内容/直接贴出来/别发文件」，就把全文原样写进回复正文（别摘要、别截断），并在回复最后单独一行写 [[不发文件]] —— 系统认到这个标记就不附任何文件，标记本身用户看不到。反过来，本次新做/改过的文件默认会附上，所以「只要内容」时必须带 [[不发文件]]。用户的口语指令按最直白的意思执行，别反复追问、别解释机制。注意：如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
           : "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。产出的文件请报清楚文件名，用户回头在 OpenWorkBuddy 工作台下载。";
         // 只取 finalText 是够的：撞上限 / 超时 / 手动停止那半句，runTask 两条引擎路径都已经
         // 写进正文了（agent.js 的 runViaEngine 和内置循环各补一次）。别在这儿再按 stopped 补一遍，
@@ -710,18 +738,12 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         const fresh = turnOutputs(outputFiles, changedNames); // 只算本次任务真产出/真改过的
         // 提示条的记号是给网页画图标用的，聊天窗里得换成人话
         let out = callout.strip(finalText || "任务已执行完成。");
-        // agent 明确说「本次别发文件」（用户只要内容贴在聊天里）：吃掉标记，附件全免
+        // 附哪些文件、剥哪些标记，规矩见 pickAttachments。
+        // 能把文件直接发进聊天的通道（飞书）才真附；发不了的通道保持老样子，提示去工作台拿
         const noAttach = out.includes("[[不发文件]]");
-        if (noAttach) out = out.replace(/\s*\[\[不发文件\]\]\s*/g, "\n").trim();
-        // 能把文件直接发进聊天的通道（飞书）：本次新产出 + 回复里点名的文件都作为附件发过去；
-        // 发不了的通道保持老样子，提示去工作台拿
-        let toSend = [];
-        if (sendFile && !noAttach) {
-          const seen = new Set();
-          const mentioned = outputFiles().filter((f) => out.includes(f.name.split("/").pop()));
-          const all = [...fresh, ...mentioned].filter((f) => !seen.has(f.name) && seen.add(f.name));
-          toSend = dropVectorTwins(all).slice(0, 5);
-        }
+        const picked = pickAttachments({ out, fresh, all: sendFile && !noAttach ? outputFiles() : [] });
+        out = picked.out;
+        const toSend = sendFile ? picked.files.slice(0, 5) : [];
         if (fresh.length && !toSend.length && !noAttach) {
           out += `\n\n成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
           if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
@@ -1701,4 +1723,4 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   return { router, startFeishuWs, startQQ, startIlink };
 }
 
-module.exports = { createImRouter, unwrapFeishuInbound, feishuDedupeKeys };
+module.exports = { createImRouter, unwrapFeishuInbound, feishuDedupeKeys, _internals: { pickAttachments } };
