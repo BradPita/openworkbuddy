@@ -1086,8 +1086,10 @@ function testDocLinkGate() {
   // 白名单写窄了，闸门算出来的锚点会比真锚点少一个字：文档里 #〇两个总开关… 这种链接在 GitHub 上点得开，
   // 闸门却报死链——然后人会去把链接改成闸门认的那个，改完 GitHub 上才真的点不开了。假红比假绿更能骗人动手。
   const CJKISH = "\\u3005\\u3006\\u3007\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af\\uf900-\\ufaff";
+  // 空格是一个一个换成连字符，不合并：「商用授权 · 企业服务」删掉 · 剩两个空格，GitHub 上就是 #商用授权--企业服务。
+  // 以前这里合成一个 -，闸门就把 GitHub 上点得开的链接报成死链。
   const slugify = (h) => h.trim().replace(/[*`~]/g, "").toLowerCase()
-    .replace(new RegExp("[^\\w" + CJKISH + "\\s-]", "g"), "").trim().replace(/\s+/g, "-");
+    .replace(new RegExp("[^\\w" + CJKISH + "\\s-]", "g"), "").trim().replace(/\s/g, "-");
   // 光看盘上在不在是不够的：链到一个 .gitignore 掉的文件，本机点得开、新克隆点不开，
   // 闸门在本机全绿、到 CI 上才红——这一条真的挡掉过一次发版。没有 git 就只好退回只看盘上
   let tracked = null;
