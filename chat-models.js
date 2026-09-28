@@ -27,7 +27,7 @@
  */
 
 const {
-  PROVIDER_KINDS, CATALOG, guessKind, baseOfKind, protoOfKind,
+  PROVIDER_KINDS, CATALOG, guessKind, baseOfKind, protoOfKind, protoOfChannel, normApi,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
 } = require("./media-models");
 
@@ -226,13 +226,15 @@ function normalize(config) {
 
   for (const m of models) {
     // 老条目的协议记在自己身上，这一步之后它归渠道管；这里先归一化，好拿来认渠道
-    m.provider = m.provider === "anthropic" ? "anthropic" : "openai";
+    m.provider = normApi(m.provider);
     const ref = String(m.channel || "").trim();
     let prov = ref ? providers.find((p) => p.id === ref) : null;
     if (!prov && wantsChannel(m)) {
       // 协议是用户在模型条目上选的，认渠道时它说了算：填了中转地址的 Anthropic 协议
       // 也该归到「Anthropic 协议」那个渠道，而不是按域名猜成一个 OpenAI 兼容渠道
       const kind = m.provider === "anthropic" ? "anthropic" : guessKind(m.base_url);
+      // 条目上记的格式跟这类渠道的默认对不上（本地部署说的是 Ollama 原生 / Responses），新建渠道时带上它
+      const api = m.provider !== protoOfKind(kind) ? m.provider : "";
       const key = chanKeyOf(kind, m);
       prov = byKey.get(key);
       // 条目上带着 Key、这家的行却还空着：那就是同一个渠道的「还没填」状态，把 Key 填给它。
@@ -254,6 +256,7 @@ function normalize(config) {
           kind,
           base_url: String(m.base_url || "").trim() || baseOfKind(kind),
           api_key: String(m.api_key || "").trim(),
+          ...(api ? { api } : {}),
         };
         ids.add(prov.id);
         providers.push(prov);
@@ -266,7 +269,7 @@ function normalize(config) {
     // 地址过一遍 baseForUse：通义那家的对话在兼容层、画图在原生层，渠道只存一个地址，用时换对的那个
     m.base_url = baseForUse(prov.base_url, "chat");
     m.api_key = prov.api_key;
-    m.provider = protoOfKind(prov.kind);
+    m.provider = protoOfChannel(prov);
   }
 
   config.providers = providers;

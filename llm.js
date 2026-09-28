@@ -1,6 +1,7 @@
 "use strict";
 /**
- * LLM 适配层 — 统一 Anthropic（Claude）与 OpenAI 兼容接口（DeepSeek/Qwen/GLM/Kimi/Ollama）。
+ * LLM 适配层 — 五种通用接口格式：OpenAI Chat Completions（DeepSeek/Qwen/GLM/Kimi/vLLM…）、
+ * OpenAI Responses、Anthropic Messages、Google Gemini、Ollama 原生。
  *
  * 统一的会话历史格式（neutral history）：
  *   { role: "user", content: string }
@@ -201,6 +202,7 @@ function anthropicBase(baseUrl) {
  */
 const KEY_ENV = {
   openai: { env: "OPENAI_API_KEY", official: /(^|\.)openai\.com$/i, label: "OpenAI" },
+  gemini: { env: "GEMINI_API_KEY", official: /(^|\.)googleapis\.com$/i, label: "Google Gemini" },
   anthropic: { env: "ANTHROPIC_API_KEY", official: /(^|\.)anthropic\.com$/i, label: "Anthropic" },
 };
 const warnedEnvSkip = new Set(); // 同一个地址只唠叨一次，别把日志刷满
@@ -531,6 +533,46 @@ function outputCapField(cfg) {
   return host === "api.openai.com" || host.endsWith(".openai.azure.com") ? "max_completion_tokens" : "max_tokens";
 }
 
+/**
+ * 上游回了非 2xx：常见的几种翻成人话，其余原样带上。几种接口格式共用这一份，
+ * 同一个 401 不该因为走的是哪门话就一边说人话一边吐天书。
+ */
+function httpError(cfg, status, body) {
+  // 把判断模型（Jev）填成了对话模型：它只会在选项里挑一个，不会写字。上游回的那句
+  // "is a decisions model" 落到界面上没人看得懂，翻成「去哪儿改」
+  if (status === 400 && /is a decisions model/i.test(body)) {
+    return new Error(
+      `渠道「${cfg.name || cfg.model}」填的是判断模型（Jev）——它只会在选项里挑一个，不会写字，不能当对话模型用。` +
+        `去 设置 → 模型 把默认对话模型换成别的；判断模型在 设置 → 智能体设置 里单独配。\n原始报错：${body.slice(0, 200)}`
+    );
+  }
+  // 上下文超限是最常见的 400，原文是一坨英文 JSON，翻成用户能照着做的话
+  if (status === 400 && /context length|context_length|maximum context|too many tokens|reduce the length/i.test(body)) {
+    return new Error(
+      `这次请求超出了模型的上下文长度上限。可以在 设置 → 智能体设置 调小「上下文预算」或「单任务最大步数」，` +
+        `也可以换一个上下文更大的模型；这条任务的历史已经很长，新开一个任务接着做更稳。\n原始报错：${body.slice(0, 300)}`
+    );
+  }
+  // 欠费/余额不足：这不是抖动也不是 bug，重试一百次也没用。翻成人话并指名是哪条渠道，
+  // 免得用户以为是软件坏了（原始报错还是留在后面，方便贴给渠道客服）
+  if (status === 402 || /insufficient balance|insufficient_quota|欠费|余额不足|arrearage/i.test(body)) {
+    return new Error(
+      `渠道「${cfg.name || cfg.model}」余额不足，模型不给跑了——这不是软件出错，去这条渠道的官网充值即可；` +
+        `急着继续可以在 设置 → 模型 换一条有余额的渠道，或者在 设置 → 智能体设置 里指定「备用渠道」，以后这条挂了会自动接上。\n原始报错：${body.slice(0, 200)}`
+    );
+  }
+  // Key 不对 / 过期 / 被撤回。渠道卡上那个「测一下」按钮早就把 401 翻成人话了
+  // （server.js 的 probeModel），可真跑一趟撞上同一个码，吐的却是一坨英文 JSON。
+  // 同一件事两种说法，用户的体感是「测的时候好好的，一跑就报天书」——两边统一。
+  if (status === 401 || status === 403) {
+    return new Error(
+      `渠道「${cfg.name || cfg.model}」的 Key 上游不认（HTTP ${status}）：检查有没有复制全、是不是这家服务商的 Key、` +
+        `有没有过期或被撤回。改在 设置 → 模型 里，改完点这条渠道的「测一下」能当场验。\n原始报错：${body.slice(0, 200)}`
+    );
+  }
+  return new Error(`LLM 接口错误 ${status}: ${body.slice(0, 500)}`);
+}
+
 async function openaiChat(cfg, { system, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
   // 兜底那句 "ollama" 是给本地 Ollama 的：它不校验 Key，但 Authorization 头缺了会被某些版本拒掉
   const apiKey = headerKey(cfg, "openai") || "ollama";
@@ -570,42 +612,7 @@ async function openaiChat(cfg, { system, history, tools, toolChoice, onTextDelta
     }),
   });
 
-  if (!resp.ok) {
-    const body = await resp.text();
-    // 把判断模型（Jev）填成了对话模型：它只会在选项里挑一个，不会写字。上游回的那句
-    // "is a decisions model" 落到界面上没人看得懂，翻成「去哪儿改」
-    if (resp.status === 400 && /is a decisions model/i.test(body)) {
-      throw new Error(
-        `渠道「${cfg.name || cfg.model}」填的是判断模型（Jev）——它只会在选项里挑一个，不会写字，不能当对话模型用。` +
-          `去 设置 → 模型 把默认对话模型换成别的；判断模型在 设置 → 智能体设置 里单独配。\n原始报错：${body.slice(0, 200)}`
-      );
-    }
-    // 上下文超限是最常见的 400，原文是一坨英文 JSON，翻成用户能照着做的话
-    if (resp.status === 400 && /context length|context_length|maximum context|too many tokens|reduce the length/i.test(body)) {
-      throw new Error(
-        `这次请求超出了模型的上下文长度上限。可以在 设置 → 智能体设置 调小「上下文预算」或「单任务最大步数」，` +
-          `也可以换一个上下文更大的模型；这条任务的历史已经很长，新开一个任务接着做更稳。\n原始报错：${body.slice(0, 300)}`
-      );
-    }
-    // 欠费/余额不足：这不是抖动也不是 bug，重试一百次也没用。翻成人话并指名是哪条渠道，
-    // 免得用户以为是软件坏了（原始报错还是留在后面，方便贴给渠道客服）
-    if (resp.status === 402 || /insufficient balance|insufficient_quota|欠费|余额不足|arrearage/i.test(body)) {
-      throw new Error(
-        `渠道「${cfg.name || cfg.model}」余额不足，模型不给跑了——这不是软件出错，去这条渠道的官网充值即可；` +
-          `急着继续可以在 设置 → 模型 换一条有余额的渠道，或者在 设置 → 智能体设置 里指定「备用渠道」，以后这条挂了会自动接上。\n原始报错：${body.slice(0, 200)}`
-      );
-    }
-    // Key 不对 / 过期 / 被撤回。渠道卡上那个「测一下」按钮早就把 401 翻成人话了
-    // （server.js 的 probeModel），可真跑一趟撞上同一个码，吐的却是一坨英文 JSON。
-    // 同一件事两种说法，用户的体感是「测的时候好好的，一跑就报天书」——两边统一。
-    if (resp.status === 401 || resp.status === 403) {
-      throw new Error(
-        `渠道「${cfg.name || cfg.model}」的 Key 上游不认（HTTP ${resp.status}）：检查有没有复制全、是不是这家服务商的 Key、` +
-          `有没有过期或被撤回。改在 设置 → 模型 里，改完点这条渠道的「测一下」能当场验。\n原始报错：${body.slice(0, 200)}`
-      );
-    }
-    throw new Error(`LLM 接口错误 ${resp.status}: ${body.slice(0, 500)}`);
-  }
+  if (!resp.ok) throw httpError(cfg, resp.status, await resp.text());
 
   if (!useStream) {
     const data = await resp.json();
@@ -910,11 +917,504 @@ function contextWindowOf(channel, model) {
   return Math.min(guess, CONTEXT_WINDOW_GUESS_MAX);
 }
 
+// ---------- 另外三种通用格式：OpenAI Responses / Google Gemini / Ollama 原生 ----------
+// 对话历史还是那一份中立格式，这里只管「翻成这门话发出去、把回话翻回来」。
+// 三家的共同点：工具调用都是「模型给名字+参数 → 我们回结果」，差在字段名、谁带 id、流怎么切。
+
+/** 用户消息的内容：绝大多数是字符串；偶尔是 OpenAI 那种分段数组（文字 / 图片），统一拆成文字和图片两种 */
+function userParts(content) {
+  if (typeof content === "string") return [{ kind: "text", text: content }];
+  if (!Array.isArray(content)) return [{ kind: "text", text: String(content == null ? "" : content) }];
+  const out = [];
+  for (const c of content) {
+    if (!c) continue;
+    if (typeof c === "string") out.push({ kind: "text", text: c });
+    else if (c.type === "text" || c.type === "input_text") out.push({ kind: "text", text: String(c.text || "") });
+    else if (c.type === "image_url" || c.type === "input_image") {
+      const url = typeof c.image_url === "string" ? c.image_url : (c.image_url || {}).url || "";
+      if (url) out.push({ kind: "image", url });
+    }
+  }
+  return out.length ? out : [{ kind: "text", text: "" }];
+}
+/** data:image/png;base64,xxx → { mime, data }；不是 data URL 返回 null */
+function dataUrlParts(url) {
+  const m = /^data:([^;,]+);base64,(.*)$/s.exec(String(url || ""));
+  return m ? { mime: m[1], data: m[2] } : null;
+}
+
+/** 工具结果按 id 找回工具名：Gemini 和 Ollama 回结果时认名字，不认 id */
+function callNames(history) {
+  const names = new Map();
+  for (const e of history) if (e.role === "assistant") for (const tc of e.toolCalls || []) names.set(tc.id, tc.name);
+  return names;
+}
+
+/** 按行读一个流：SSE 和 NDJSON 都是一行一个事件，差别只在要不要剥掉 data: */
+async function eachLine(resp, onLine) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buf += done ? decoder.decode() + "\n" : decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (line) onLine(line);
+    }
+    if (done) break;
+  }
+}
+const sseJson = (line) => {
+  if (!line.startsWith("data:")) return null;
+  const payload = line.slice(5).trim();
+  if (!payload || payload === "[DONE]") return null;
+  try { return JSON.parse(payload); } catch { return null; }
+};
+
+/** 流里什么都没拿到：跟 OpenAI 那条同一个说法，好让 chatWithRetry 认得出来重试 */
+const EMPTY_REPLY = "LLM 返回了空响应（连接建立后没有收到任何内容，上游服务或网络异常）";
+
+// ---- OpenAI Responses（POST {base}/responses）----
+
+function toResponsesInput(rawHistory) {
+  const history = repairToolPairs(sendableHistory(rawHistory, false));
+  const input = [];
+  for (const e of history) {
+    if (e.role === "user") {
+      const parts = userParts(e.content);
+      input.push({
+        role: "user",
+        content: parts.length === 1 && parts[0].kind === "text"
+          ? parts[0].text
+          : parts.map((p) => (p.kind === "text" ? { type: "input_text", text: p.text } : { type: "input_image", image_url: p.url })),
+      });
+    } else if (e.role === "assistant") {
+      if (String(e.text || "").trim()) input.push({ role: "assistant", content: e.text });
+      for (const tc of e.toolCalls || []) {
+        input.push({ type: "function_call", call_id: tc.id, name: tc.name, arguments: JSON.stringify(tc.input || {}) });
+      }
+    } else if (e.role === "tool") {
+      for (const r of e.results) input.push({ type: "function_call_output", call_id: r.id, output: String(r.content == null ? "" : r.content) });
+    }
+  }
+  return input;
+}
+
+/** 一份完整的 Response 对象 → 统一结果。流式最后那个 response.completed 带的也是它 */
+function parseResponsesObject(r) {
+  let text = "";
+  const toolCalls = [];
+  for (const item of r.output || []) {
+    if (item.type === "message") {
+      for (const c of item.content || []) if (c.type === "output_text") text += c.text || "";
+    } else if (item.type === "function_call") {
+      toolCalls.push({ id: item.call_id || item.id || `call_${toolCalls.length}`, name: item.name, input: parseToolArgs(item.arguments, item.name) });
+    }
+  }
+  const u = r.usage;
+  const usage = u
+    ? { prompt: u.input_tokens || 0, completion: u.output_tokens || 0, cached: (u.input_tokens_details || {}).cached_tokens || 0 }
+    : null;
+  const cut = r.status === "incomplete" && /max_output_tokens/.test(String((r.incomplete_details || {}).reason || ""));
+  return { text, toolCalls, stopReason: cut ? "length" : toolCalls.length ? "tool_calls" : "stop", usage };
+}
+
+async function responsesChat(cfg, { system, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
+  const apiKey = headerKey(cfg, "openai") || "ollama";
+  const useStream = cfg.stream !== false;
+  // 推理模型的档位：thinking.js 给的是 chat 接口的 reasoning_effort，Responses 这边叫 reasoning.effort
+  const think = thinking.planFor(cfg, cfg.thinking).params;
+  const cap = outputCap(cfg);
+  const resp = await fetch(`${cfg.base_url.replace(/\/$/, "")}/responses`, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      ...(think.reasoning_effort ? { reasoning: { effort: think.reasoning_effort } } : {}),
+      ...(cap ? { max_output_tokens: cap } : {}),
+      ...(cfg.extra_body || {}),
+      model: cfg.model,
+      stream: useStream,
+      store: false, // 历史每轮我们自己整份带上，不用上游替我们存一份
+      instructions: system,
+      input: toResponsesInput(history),
+      ...(tools && tools.length && toolChoice !== "none"
+        ? { tools: tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.input_schema })) }
+        : {}),
+    }),
+  });
+  if (!resp.ok) throw httpError(cfg, resp.status, await resp.text());
+
+  if (!useStream) {
+    const data = await resp.json();
+    if (data.error) throw new Error(`LLM 接口错误 ${data.error.code || ""}: ${data.error.message || JSON.stringify(data.error).slice(0, 300)}`);
+    const out = parseResponsesObject(data);
+    if (out.text && onTextDelta) onTextDelta(out.text);
+    return out;
+  }
+
+  let text = "";
+  let final = null;
+  const doneCalls = [];
+  let failed = null;
+  await eachLine(resp, (line) => {
+    const ev = sseJson(line);
+    if (!ev) return;
+    if (onActivity) onActivity();
+    if (ev.type === "response.output_text.delta" && ev.delta) {
+      text += ev.delta;
+      if (onTextDelta) onTextDelta(ev.delta);
+    } else if (ev.type === "response.output_item.done" && ev.item && ev.item.type === "function_call") {
+      doneCalls.push(ev.item);
+    } else if (ev.type === "response.completed" || ev.type === "response.incomplete") {
+      final = ev.response;
+    } else if (ev.type === "response.failed" || ev.type === "error") {
+      const e = (ev.response && ev.response.error) || ev.error || ev;
+      failed = `LLM 接口错误 ${e.code || 502}: ${e.message || "上游在流中途报错"}`;
+    }
+  });
+  if (failed) throw new Error(failed);
+  if (final) {
+    const out = parseResponsesObject(final);
+    // 收尾那份对象里正文偶尔是空的（有的网关只在增量里给），以增量拼出来的为准
+    if (!out.text && text) out.text = text;
+    return out;
+  }
+  // 没等到收尾事件：拿增量和已经完整的调用凑一份，总比整轮作废强
+  const toolCalls = doneCalls.map((it, i) => ({ id: it.call_id || it.id || `call_${i}`, name: it.name, input: parseToolArgs(it.arguments, it.name) }));
+  if (!text && !toolCalls.length) throw new Error(EMPTY_REPLY);
+  return { text, toolCalls, stopReason: toolCalls.length ? "tool_calls" : "stop", usage: null };
+}
+
+// ---- Google Gemini（POST {base}/models/{model}:generateContent）----
+
+/**
+ * Gemini 的 parameters 只收 OpenAPI 的一个子集：JSON Schema 里常见的 additionalProperties、$schema、
+ * default 一律「Unknown name」400。这里只留它认的键；type 写成数组的（["string","null"]）拆成 type + nullable。
+ */
+const GEMINI_SCHEMA_KEYS = new Set([
+  "type", "format", "description", "nullable", "enum", "properties", "required", "items",
+  "minItems", "maxItems", "minimum", "maximum", "minLength", "maxLength", "pattern", "anyOf", "title",
+]);
+function geminiSchema(s) {
+  if (!s || typeof s !== "object") return s;
+  if (Array.isArray(s)) return s.map(geminiSchema);
+  const out = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (!GEMINI_SCHEMA_KEYS.has(k)) continue;
+    if (k === "type" && Array.isArray(v)) {
+      const real = v.filter((t) => t !== "null");
+      out.type = real[0] || "string";
+      if (real.length < v.length) out.nullable = true;
+    } else if (k === "properties" && v && typeof v === "object") {
+      out.properties = Object.fromEntries(Object.entries(v).map(([pk, pv]) => [pk, geminiSchema(pv)]));
+    } else if (k === "items" || k === "anyOf") out[k] = geminiSchema(v);
+    else out[k] = v;
+  }
+  // 没有属性的 object（无参工具）Gemini 也不收，整个 parameters 不发
+  if (out.type === "object" && out.properties && !Object.keys(out.properties).length) delete out.properties;
+  return out;
+}
+
+/** 我们自己编的调用 id：Gemini 2.5 回的调用不带 id，回结果时就别把我们编的发回去 */
+const GEMINI_OWN_ID = /^gm_/;
+
+function toGeminiContents(rawHistory) {
+  const history = repairToolPairs(sendableHistory(rawHistory, false));
+  const names = callNames(history);
+  const contents = [];
+  const push = (role, parts) => {
+    if (!parts.length) return;
+    const last = contents[contents.length - 1];
+    // 同角色挨着的并成一条：工具结果和紧跟着的插队消息都是 user
+    if (last && last.role === role) last.parts.push(...parts);
+    else contents.push({ role, parts });
+  };
+  for (const e of history) {
+    if (e.role === "user") {
+      push("user", userParts(e.content).map((p) => {
+        if (p.kind === "text") return { text: p.text };
+        const d = dataUrlParts(p.url);
+        return d ? { inlineData: { mimeType: d.mime, data: d.data } } : { fileData: { fileUri: p.url } };
+      }));
+    } else if (e.role === "assistant") {
+      const parts = [];
+      if (String(e.text || "").trim()) parts.push({ text: e.text });
+      for (const tc of e.toolCalls || []) {
+        // 思考签名要原样带回去：Gemini 3 缺了它就拒收整段带工具调用的历史
+        parts.push({
+          functionCall: { name: tc.name, args: tc.input || {}, ...(GEMINI_OWN_ID.test(tc.id) ? {} : { id: tc.id }) },
+          ...(tc.sig ? { thoughtSignature: tc.sig } : {}),
+        });
+      }
+      push("model", parts);
+    } else if (e.role === "tool") {
+      push("user", e.results.map((r) => ({
+        functionResponse: {
+          name: r.name || names.get(r.id) || "tool",
+          response: { result: String(r.content == null ? "" : r.content) },
+          ...(GEMINI_OWN_ID.test(r.id) ? {} : { id: r.id }),
+        },
+      })));
+    }
+  }
+  return contents;
+}
+
+/** Gemini 的地址：填的是 .../v1beta 这种根；填成了 .../models/xxx 的也认，把尾巴剪掉 */
+function geminiRoot(baseUrl) {
+  return String(baseUrl || "https://generativelanguage.googleapis.com/v1beta").trim().replace(/\/+$/, "").replace(/\/models(\/.*)?$/, "");
+}
+
+function geminiUsage(u) {
+  if (!u) return null;
+  return {
+    prompt: u.promptTokenCount || 0,
+    completion: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0),
+    cached: u.cachedContentTokenCount || 0,
+  };
+}
+
+/** 被安全策略拦下时 Gemini 不报错，回一个空候选 + 原因。说清楚是它拦的，不然人只看到一句「空响应」 */
+function geminiBlocked(chunk) {
+  const fb = chunk && chunk.promptFeedback;
+  if (fb && fb.blockReason) return `Gemini 拦下了这次请求（promptFeedback.blockReason=${fb.blockReason}）`;
+  const c = chunk && (chunk.candidates || [])[0];
+  if (c && /SAFETY|BLOCKLIST|PROHIBITED|RECITATION|SPII/.test(String(c.finishReason || "")) && !(c.content && (c.content.parts || []).length)) {
+    return `Gemini 拦下了这次回答（finishReason=${c.finishReason}）`;
+  }
+  return "";
+}
+
+async function geminiChat(cfg, { system, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
+  const key = headerKey(cfg, "gemini");
+  const useStream = cfg.stream !== false;
+  const lv = thinking.norm(cfg.thinking);
+  const on = ["low", "medium", "high"].includes(lv);
+  // 思考：auto 什么都不发；要它想就给预算；关的话只有 flash 系关得掉（pro 系最低也要想，发 0 会 400）
+  const thinkingConfig = on ? { thinkingBudget: thinking.QWEN_BUDGET[lv] }
+    : lv === "off" && /flash/i.test(cfg.model) ? { thinkingBudget: 0 } : null;
+  const cap = outputCap(cfg);
+  const url = `${geminiRoot(cfg.base_url)}/models/${encodeURIComponent(cfg.model)}:${useStream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
+  const resp = await fetch(url, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json", ...(key ? { "x-goog-api-key": key } : {}) },
+    body: JSON.stringify({
+      ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+      contents: toGeminiContents(history),
+      ...(tools && tools.length
+        ? {
+            tools: [{
+              functionDeclarations: tools.map((t) => {
+                const params = geminiSchema(t.input_schema);
+                return { name: t.name, description: t.description, ...(params && params.properties ? { parameters: params } : {}) };
+              }),
+            }],
+            // 历史里有工具往来时 Gemini 要求工具表还在，强制收尾就照发表、再把调用关掉
+            ...(toolChoice === "none" ? { toolConfig: { functionCallingConfig: { mode: "NONE" } } } : {}),
+          }
+        : {}),
+      generationConfig: { ...(cap ? { maxOutputTokens: cap } : {}), ...(thinkingConfig ? { thinkingConfig } : {}) },
+      ...(cfg.extra_body || {}), // 比如 safetySettings：放宽安全阈值只能在这儿写
+    }),
+  });
+  if (!resp.ok) throw httpError(cfg, resp.status, await resp.text());
+
+  let text = "";
+  const toolCalls = [];
+  let usage = null;
+  let finish = "";
+  let blocked = "";
+  const take = (chunk) => {
+    if (chunk.error) throw new Error(`LLM 接口错误 ${chunk.error.code || ""}: ${chunk.error.message || JSON.stringify(chunk.error).slice(0, 300)}`);
+    if (chunk.usageMetadata) usage = geminiUsage(chunk.usageMetadata);
+    blocked = blocked || geminiBlocked(chunk);
+    const c = (chunk.candidates || [])[0];
+    if (!c) return;
+    if (c.finishReason) finish = c.finishReason;
+    for (const p of (c.content || {}).parts || []) {
+      if (p.thought) continue; // 思考摘要不进正文
+      if (typeof p.text === "string" && p.text) {
+        text += p.text;
+        if (onTextDelta) onTextDelta(p.text);
+      }
+      if (p.functionCall) {
+        const fc = p.functionCall;
+        toolCalls.push({
+          id: fc.id || `gm_${toolCalls.length}_${Date.now().toString(36)}`,
+          name: fc.name,
+          input: fc.args && typeof fc.args === "object" && !Array.isArray(fc.args) ? fc.args : {},
+          ...(p.thoughtSignature ? { sig: p.thoughtSignature } : {}),
+        });
+      }
+    }
+  };
+  if (!useStream) take(await resp.json());
+  else await eachLine(resp, (line) => { const ev = sseJson(line); if (ev) { if (onActivity) onActivity(); take(ev); } });
+
+  if (!text && !toolCalls.length) throw new Error(blocked || EMPTY_REPLY);
+  return {
+    text, toolCalls, usage,
+    stopReason: finish === "MAX_TOKENS" ? "length" : toolCalls.length ? "tool_calls" : "stop",
+  };
+}
+
+// ---- Ollama 原生（POST {root}/api/chat）----
+
+/** 填的可能是 OpenAI 兼容那个 .../v1，也可能是根地址，统一剪成根 */
+function ollamaRoot(baseUrl) {
+  return String(baseUrl || "http://localhost:11434").trim().replace(/\/+$/, "").replace(/\/(v1|api)$/, "");
+}
+
+/**
+ * 上下文窗口：Ollama 不给 num_ctx 就按它自己的默认（几千 token）截——我们的系统提示词一截，
+ * 工具说明就没了，模型开始胡说。渠道里写了 context_window 就用它；没写按 32k，
+ * 往上猜要吃掉几个 G 的内存，16G 的机器会被拖死，要更大就在渠道里明写。
+ */
+const OLLAMA_CTX_DEFAULT = 32768;
+function ollamaCtx(cfg) {
+  const explicit = parseWindowSize(cfg && cfg.context_window);
+  return explicit >= 1024 ? explicit : Math.min(contextWindowOf(cfg, cfg && cfg.model), OLLAMA_CTX_DEFAULT);
+}
+
+function toOllamaMessages(system, rawHistory) {
+  const history = repairToolPairs(sendableHistory(rawHistory, false));
+  const names = callNames(history);
+  const messages = system ? [{ role: "system", content: system }] : [];
+  for (const e of history) {
+    if (e.role === "user") {
+      const parts = userParts(e.content);
+      const images = parts.filter((p) => p.kind === "image").map((p) => (dataUrlParts(p.url) || {}).data).filter(Boolean);
+      messages.push({ role: "user", content: parts.filter((p) => p.kind === "text").map((p) => p.text).join("\n"), ...(images.length ? { images } : {}) });
+    } else if (e.role === "assistant") {
+      messages.push({
+        role: "assistant",
+        content: e.text || "",
+        ...((e.toolCalls || []).length
+          ? { tool_calls: e.toolCalls.map((tc) => ({ function: { name: tc.name, arguments: tc.input || {} } })) }
+          : {}),
+      });
+    } else if (e.role === "tool") {
+      for (const r of e.results) {
+        messages.push({ role: "tool", content: String(r.content == null ? "" : r.content), tool_name: r.name || names.get(r.id) || "" });
+      }
+    }
+  }
+  return messages;
+}
+
+async function ollamaChat(cfg, { system, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
+  const useStream = cfg.stream !== false;
+  const lv = thinking.norm(cfg.thinking);
+  // think 只在明确要开 / 要关时发：不带思考的模型收到 think:true 会直接报错
+  const think = ["low", "medium", "high"].includes(lv) ? { think: true }
+    : lv === "off" && /qwen3|deepseek-r1|gpt-oss|magistral|qwq/i.test(cfg.model) ? { think: false } : {};
+  const cap = outputCap(cfg);
+  const key = headerKey(cfg, "openai");
+  const resp = await fetch(`${ollamaRoot(cfg.base_url)}/api/chat`, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+    body: JSON.stringify({
+      ...think,
+      ...(cfg.extra_body || {}),
+      model: cfg.model,
+      stream: useStream,
+      messages: toOllamaMessages(system, history),
+      options: { num_ctx: ollamaCtx(cfg), ...(cap ? { num_predict: cap } : {}), ...((cfg.extra_body || {}).options || {}) },
+      ...(tools && tools.length && toolChoice !== "none"
+        ? { tools: tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } })) }
+        : {}),
+    }),
+  });
+  if (!resp.ok) throw httpError(cfg, resp.status, await resp.text());
+
+  let text = "";
+  const toolCalls = [];
+  let usage = null;
+  let doneReason = "";
+  const guard = createLeakGuard(onTextDelta);
+  const take = (chunk) => {
+    if (chunk.error) throw new Error(`LLM 接口错误 500: ${String(chunk.error).slice(0, 300)}`);
+    const m = chunk.message || {};
+    if (m.content) { text += m.content; guard(m.content); }
+    for (const tc of m.tool_calls || []) {
+      const f = tc.function || {};
+      const args = typeof f.arguments === "string" ? parseToolArgs(f.arguments, f.name) : f.arguments;
+      toolCalls.push({ id: tc.id || `ol_${toolCalls.length}_${Date.now().toString(36)}`, name: f.name, input: args && typeof args === "object" && !Array.isArray(args) ? args : {} });
+    }
+    if (chunk.done) {
+      doneReason = chunk.done_reason || "";
+      usage = { prompt: chunk.prompt_eval_count || 0, completion: chunk.eval_count || 0, cached: 0 };
+    }
+  };
+  if (!useStream) take(await resp.json());
+  else await eachLine(resp, (line) => { let ev; try { ev = JSON.parse(line); } catch { return; } if (onActivity) onActivity(); take(ev); });
+
+  if (!toolCalls.length) {
+    const rescued = rescueLeakedToolCalls(text);
+    if (rescued.toolCalls.length) return { text: rescued.text, toolCalls: rescued.toolCalls, stopReason: "tool_calls", usage };
+  }
+  if (!text && !toolCalls.length && !usage) throw new Error(EMPTY_REPLY);
+  return { text, toolCalls, usage, stopReason: doneReason === "length" ? "length" : toolCalls.length ? "tool_calls" : "stop" };
+}
+
+/** 按格式分派。认不出的格式按最通用的 chat/completions 走 */
+const CHAT_BY_FORMAT = {
+  anthropic: (cfg, a) => anthropicChat(cfg, a),
+  "openai-responses": (cfg, a) => responsesChat(cfg, a),
+  gemini: (cfg, a) => geminiChat(cfg, a),
+  ollama: (cfg, a) => ollamaChat(cfg, a),
+};
+function chatFor(cfg) {
+  const fn = CHAT_BY_FORMAT[cfg && cfg.provider];
+  return fn ? (a) => fn(cfg, a) : (a) => openaiChat(cfg, a);
+}
+
+/**
+ * 「测一下」用的最小请求：每种格式的地址、头、正文各拼一份，只问一句 ping。
+ * 刻意不带工具表——这里只想知道 Key 认不认、模型名在不在。
+ */
+function pingRequest(m) {
+  const fmt = m.provider;
+  const tidy = (u, dflt) => String(u || dflt).replace(/\/+$/, "");
+  if (fmt === "anthropic") {
+    return {
+      url: anthropicBase(m.base_url).messagesUrl,
+      headers: { "Content-Type": "application/json", "x-api-key": m.api_key || "", "anthropic-version": "2023-06-01" },
+      body: { model: m.model, max_tokens: 8, messages: [{ role: "user", content: "ping" }] },
+    };
+  }
+  if (fmt === "gemini") {
+    return {
+      url: `${geminiRoot(m.base_url)}/models/${encodeURIComponent(m.model)}:generateContent`,
+      headers: { "Content-Type": "application/json", ...(m.api_key ? { "x-goog-api-key": m.api_key } : {}) },
+      body: { contents: [{ role: "user", parts: [{ text: "ping" }] }], generationConfig: { maxOutputTokens: 16 } },
+    };
+  }
+  if (fmt === "ollama") {
+    return {
+      url: `${ollamaRoot(m.base_url)}/api/chat`,
+      headers: { "Content-Type": "application/json", ...(m.api_key ? { Authorization: `Bearer ${m.api_key}` } : {}) },
+      body: { model: m.model, stream: false, messages: [{ role: "user", content: "ping" }], options: { num_predict: 8 } },
+    };
+  }
+  const auth = { "Content-Type": "application/json", Authorization: `Bearer ${m.api_key || "ollama"}` };
+  if (fmt === "openai-responses") {
+    return { url: tidy(m.base_url, "https://api.openai.com/v1") + "/responses", headers: auth, body: { model: m.model, max_output_tokens: 16, store: false, input: "ping" } };
+  }
+  return { url: tidy(m.base_url, "https://api.openai.com/v1") + "/chat/completions", headers: auth, body: { model: m.model, max_tokens: 8, stream: false, messages: [{ role: "user", content: "ping" }] } };
+}
+
 // ---------- 统一入口 ----------
 
 /**
  * 模型配置的两种来源（优先 models 列表）：
- * 1. config.models: [{ name, provider: "openai"|"anthropic", base_url?, api_key, model }] + config.active_model（按 name 选中）
+ * 1. config.models: [{ name, provider: "openai"|"openai-responses"|"anthropic"|"gemini"|"ollama", base_url?, api_key, model }] + config.active_model（按 name 选中）
  * 2. 旧式 config.provider + config.openai / config.anthropic
  */
 function createLLM(config) {
@@ -924,13 +1424,12 @@ function createLLM(config) {
     // 这里就地合成，下面两条路（anthropic / openai 兼容）读的都是 entry.thinking
     const level = picked.thinking || ((config.agent || {}).thinking || "auto");
     const entry = { ...picked, thinking: level };
-    const provider = entry.provider === "anthropic" ? "anthropic" : "openai";
+    const chat = chatFor(entry);
     return {
-      provider: entry.name || provider,
+      provider: entry.name || entry.provider || "openai",
       model: entry.model,
       contextWindow: contextWindowOf(entry, entry.model),
-      chat: (args) =>
-        chatWithRetry((a) => (provider === "anthropic" ? anthropicChat(entry, a) : openaiChat(entry, a)), args),
+      chat: (args) => chatWithRetry(chat, args),
     };
   }
 
@@ -1098,4 +1597,5 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, contextWindowOf, _internals: { chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };
+module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, contextWindowOf, pingRequest, _internals: {
+  responsesChat, geminiChat, ollamaChat, chatFor, toResponsesInput, toGeminiContents, toOllamaMessages, geminiSchema, ollamaRoot, geminiRoot, ollamaCtx, chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };

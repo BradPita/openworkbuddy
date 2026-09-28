@@ -34,6 +34,7 @@ const PROVIDER_KINDS = [
   // 这个地址挂对话模型必然 404。它在这儿只为视频那一路存在，所以别让它出现在对话渠道的下拉里。
   { kind: "minimax", label: "MiniMax 海螺（Hailuo 视频）", base_url: "https://api.minimax.chat/v1", key_url: "https://platform.minimaxi.com/user-center/basic-information/interface-key", media_only: true },
   { kind: "anthropic", label: "Anthropic Claude 官方", base_url: "", key_url: "https://console.anthropic.com/settings/keys", chat_only: true },
+  { kind: "gemini", label: "Google Gemini 官方", base_url: "https://generativelanguage.googleapis.com/v1beta", key_url: "https://aistudio.google.com/apikey", chat_only: true },
   { kind: "deepseek", label: "DeepSeek 官方", base_url: "https://api.deepseek.com/v1", key_url: "https://platform.deepseek.com/api_keys", chat_only: true },
   { kind: "moonshot", label: "Kimi（月之暗面）", base_url: "https://api.moonshot.cn/v1", key_url: "https://platform.moonshot.cn/console/api-keys", chat_only: true },
   { kind: "ollama", label: "Ollama 本地（不要 Key）", base_url: "http://localhost:11434/v1", key_url: "https://ollama.com/download" },
@@ -53,7 +54,29 @@ const PROVIDER_KINDS = [
  * 老配置里协议记在模型条目上（config.models[i].provider），迁移时按这条规则收上来。
  */
 function protoOfKind(kind) {
-  return kind === "anthropic" ? "anthropic" : "openai";
+  return kind === "anthropic" ? "anthropic" : kind === "gemini" ? "gemini" : "openai";
+}
+
+/**
+ * 对话能说的几种接口格式。渠道类型给个默认（protoOfKind），渠道上填了 api 就听它的——
+ * 本地部署 / 自建网关后面是哪门话只有用户知道：同一个 localhost 可能是 vLLM（chat/completions）、
+ * Ollama 原生（/api/chat）、也可能是套了一层 Responses 或 Gemini 的网关。
+ */
+const API_FORMATS = [
+  { id: "openai", label: "OpenAI Chat Completions（/chat/completions，最通用）" },
+  { id: "openai-responses", label: "OpenAI Responses（/responses）" },
+  { id: "anthropic", label: "Anthropic Messages（/v1/messages）" },
+  { id: "gemini", label: "Google Gemini（:generateContent）" },
+  { id: "ollama", label: "Ollama 原生（/api/chat）" },
+];
+const isApiFormat = (v) => API_FORMATS.some((f) => f.id === v);
+/** 模型条目上的 provider 规整成认识的格式；认不出的按最通用的那种算（老配置只有 openai / anthropic 两种） */
+function normApi(v) {
+  return isApiFormat(v) ? v : "openai";
+}
+/** 这条渠道实际走哪种格式：手选的优先，没选按类型 */
+function protoOfChannel(p) {
+  return p && isApiFormat(p.api) ? p.api : protoOfKind(p && p.kind);
 }
 
 /**
@@ -70,6 +93,8 @@ const CATALOG = {
     { kind: "anthropic", id: "claude-sonnet-5", label: "Claude Sonnet 5（写代码、干活稳）" },
     { kind: "anthropic", id: "claude-opus-5", label: "Claude Opus 5（最强，也最贵）" },
     { kind: "anthropic", id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5（快且便宜）" },
+    { kind: "gemini", id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { kind: "gemini", id: "gemini-2.5-flash", label: "Gemini 2.5 Flash（快且便宜）" },
     { kind: "openai", id: "gpt-5.2", label: "GPT-5.2" },
     { kind: "openai", id: "gpt-5-mini", label: "GPT-5 mini（便宜）" },
     { kind: "openai", id: "gpt-5-nano", label: "GPT-5 nano（最便宜）" },
@@ -127,6 +152,8 @@ const CATALOG = {
     { kind: "ark", id: "doubao-1-5-vision-pro-250328", label: "豆包 1.5 Vision Pro" },
     { kind: "dashscope", id: "qwen-vl-max", label: "通义千问 VL Max" },
     { kind: "dashscope", id: "qwen-vl-plus", label: "通义千问 VL Plus（便宜）" },
+    { kind: "gemini", id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { kind: "gemini", id: "gemini-2.5-flash", label: "Gemini 2.5 Flash（快且便宜）" },
     { kind: "openai", id: "gpt-5.2", label: "GPT-5.2" },
     { kind: "openai", id: "gpt-5-mini", label: "GPT-5 mini（便宜）" },
     { kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2（走 OpenRouter）" },
@@ -285,6 +312,7 @@ function guessKind(baseUrl) {
   if (/minimax/.test(b)) return "minimax";
   if (/api\.openai\.com/.test(b)) return "openai";
   if (/api\.anthropic\.com/.test(b)) return "anthropic";
+  if (/generativelanguage\.googleapis\.com/.test(b)) return "gemini";
   if (/deepseek\.com/.test(b)) return "deepseek";
   if (/moonshot\.cn/.test(b)) return "moonshot";
   if (/typesafe\.ai/.test(b)) return "typesafe";
@@ -924,7 +952,7 @@ function rehomeMismatched(providers, models) {
 
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
-  guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
+  guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, API_FORMATS, isApiFormat, normApi, protoOfChannel, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   VIDEO_SPECS, videoSpecOf, videoPlan,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,

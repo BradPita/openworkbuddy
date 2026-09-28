@@ -21,7 +21,7 @@ const migrate = require("./migrate");
 seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
-const { createLLM, createEmbedder, anthropicBase } = require("./llm");
+const { createLLM, createEmbedder, pingRequest } = require("./llm");
 const sessSearch = require("./session-search");
 const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
@@ -1227,6 +1227,7 @@ app.get("/api/model-catalog", (req, res) => {
   // 认的规矩必须和服务端是同一份，否则前端放行、后端自愈，用户看到的就是「我选了 A，存完变成 B」
   res.json({
     kinds: mediaModels.PROVIDER_KINDS, catalog: mediaModels.CATALOG, caps: mediaModels.CAPS, cap_cn: mediaModels.CAP_CN,
+    api_formats: mediaModels.API_FORMATS,
     brand_hints: mediaModels.BRAND_HINTS,
   });
 });
@@ -1312,7 +1313,8 @@ app.post("/api/provider-test", async (req, res) => {
       answers: r.ok ? r.answers.map((a) => systemOne.lineOf(a)) : [],
     });
   }
-  if (kind !== "anthropic" && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
+  const api = mediaModels.protoOfChannel({ kind, api: b.api == null ? known.api : b.api });
+  if (!["anthropic", "gemini"].includes(api) && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
   const mine = (config.models || []).filter((m) => m.channel === known.id);
   const model = String(b.model || "").trim()
     || (mine[0] || {}).model
@@ -1332,7 +1334,7 @@ app.post("/api/provider-test", async (req, res) => {
     return res.json({ ok: false, error: "这个渠道下面还没挂任何模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
   }
   const t0 = Date.now();
-  const why = await probeModel({ provider: mediaModels.protoOfKind(kind), base_url: base, api_key: key, model });
+  const why = await probeModel({ provider: api, base_url: base, api_key: key, model });
   res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
 });
 
@@ -1406,7 +1408,7 @@ app.post("/api/model-test", async (req, res) => {
       const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn });
       return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
     }
-    const why = await probeModel({ provider: mediaModels.protoOfKind(p.kind), base_url: p.base_url, api_key: p.api_key, model: m.model });
+    const why = await probeModel({ provider: mediaModels.protoOfChannel(p), base_url: p.base_url, api_key: p.api_key, model: m.model });
     res.json({
       ok: !why, ms: Date.now() - t0, model: m.model, error: why || "",
       note: why ? "" : `「${m.model}」在渠道「${p.name}」上答得上话`,
@@ -1593,7 +1595,7 @@ app.get("/api/settings", (req, res) => {
     // 渠道表：一把 Key 一行，图/视频/语音/视觉都引用它。普通成员看得见有哪些渠道，但看不到 Key——
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手
     providers: (config.providers || []).map((p) => ({
-      id: p.id, name: p.name, kind: p.kind, base_url: p.base_url,
+      id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, api: p.api || "",
       api_key: p.api_key ? "********" : "",
       key_hint: isPlatformOwner(req) ? keyHint(p.api_key) : "",
       has_key: !!p.api_key,
@@ -1750,7 +1752,7 @@ app.post("/api/settings", (req, res) => {
         if (systemOne.isDecisionModel(m.model)) {
           throw new Error(`「${m.model}」是判断模型（Jev），它不产文字、没有 /chat/completions，挂在对话模型列表里每一趟都是 400。它走自己那条路：命令行 openworkbuddy jev、接口 /api/decide，或在渠道里加一条「TypeSafe Jev」再点那颗「测一下」`);
         }
-        m.provider = m.provider === "anthropic" ? "anthropic" : "openai";
+        m.provider = mediaModels.normApi(m.provider);
         delete m.has_key;  // 读接口给界面加的，不进配置文件
         delete m.key_hint; // 同上：Key 的末四位只是给人看的，落盘就成了第二份 Key 副本
         // 读接口给非管理员回的是掩码。真有人把掩码原样存回来，按「没改」处理，别把 Key 抹成八个星号
@@ -1958,6 +1960,8 @@ app.post("/api/settings", (req, res) => {
           kind: String(p.kind || "").trim(),
           base_url: String(p.base_url || "").trim(),
           api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
+          // 接口格式：空 = 按渠道类型；认不出的值不落盘，免得一个拼错的字把整条渠道带去走最通用那种还不自知
+          ...(mediaModels.isApiFormat(p.api) ? { api: p.api } : {}),
         };
       });
       auditKeyChanges(req, old, config.providers);
@@ -2218,18 +2222,9 @@ function keyHint(k) {
 /** 发一条最小的真实请求验活。返回 null = 通过，返回字符串 = 人话版失败原因。
  *  刻意不走 createLLM：它会把工具 schema 一起发过去，这里只想知道"这个 key 认不认"。 */
 async function probeModel(m) {
-  const anthropic = m.provider === "anthropic";
-  // Claude 那条渠道的地址算法只有一份（llm.js 的 anthropicBase），验活和真跑必须打同一个地址：
+  // 每种接口格式的地址算法只有一份（llm.js 的 pingRequest），验活和真跑必须打同一个地址：
   // 否则填了中转的人验活验的是中转、跑起来打的是官方，绿勾骗人
-  const url = anthropic
-    ? anthropicBase(m.base_url).messagesUrl
-    : (m.base_url || "https://api.openai.com/v1").replace(/\/$/, "") + "/chat/completions";
-  const headers = anthropic
-    ? { "Content-Type": "application/json", "x-api-key": m.api_key || "", "anthropic-version": "2023-06-01" }
-    : { "Content-Type": "application/json", Authorization: `Bearer ${m.api_key || "ollama"}` };
-  const body = anthropic
-    ? { model: m.model, max_tokens: 8, messages: [{ role: "user", content: "ping" }] }
-    : { model: m.model, max_tokens: 8, stream: false, messages: [{ role: "user", content: "ping" }] };
+  const { url, headers, body } = pingRequest(m);
   try {
     const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
     if (r.ok) return null;

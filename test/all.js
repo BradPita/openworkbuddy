@@ -119,6 +119,7 @@ const SUITES = [
   ["memory-rules", "记忆超预算时规矩先进门：零相关的规矩留下、零相关的事实挤掉、命中只记给进了门的"],
   ["prefs", "偏好与配置落盘"],
   ["chat-models", "模型渠道与选型"],
+  ["api-formats", "通用接口格式：OpenAI Responses / Gemini / Ollama 原生，各起假服务端走一整圈工具来回"],
   ["media-models", "生图 / 生视频 / 配音 / 转写 多模型"],
   ["media-health", "连不通的渠道熔断：撞过的硬错下次连请求都不发"],
   ["gen-cache", "生成结果缓存：同一格重跑别再烧第二次钱"],

@@ -1006,6 +1006,10 @@ function paintModels(pane, s) {
       <select id="pf-kind">${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join("")}</select>
       <input id="pf-name" placeholder="给它起个名（如：我的火山方舟）">
       <input id="pf-base" placeholder="接口地址（选了类型会自动填）">
+      <select id="pf-api" title="本地部署或自建网关说的是哪种话，就选哪种">
+        <option value="">接口格式：跟着类型走</option>
+        ${((mediaCatalog || {}).api_formats || []).map((f) => `<option value="${esc(f.id)}">${esc(f.label)}</option>`).join("")}
+      </select>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <input id="pf-key" type="password" placeholder="API Key" autocomplete="off" style="flex:1;min-width:0;margin:0">
         <span id="pf-key-src"></span>
@@ -1494,6 +1498,7 @@ function bindModels(pane, s, po) {
     pane.querySelector("#pf-kind").value = (p && p.kind) || (kinds[0] || {}).kind || "custom";
     pane.querySelector("#pf-name").value = (p && p.name) || "";
     pane.querySelector("#pf-base").value = (p && p.base_url) || "";
+    pane.querySelector("#pf-api").value = (p && p.api) || "";
     // Key 框永远是空的：服务端只回末四位，原文谁也拿不到。留空 = 不动它（见 pf-save）
     const keyEl = pane.querySelector("#pf-key");
     keyEl.value = "";
@@ -1546,13 +1551,14 @@ function bindModels(pane, s, po) {
     const kind = v("pf-kind");
     if (!v("pf-name")) return toast("给渠道起个名字，下面挑模型时要按名字认");
     // Anthropic 官方不用填地址（SDK 自带），别的都得是完整的 http(s) 地址
-    if (kind !== "anthropic" && !/^https?:\/\//i.test(v("pf-base"))) return toast("接口地址要填完整的 http(s) 地址");
+    // Gemini 官方同理，地址有默认值
+    if (!["anthropic", "gemini"].includes(v("pf-api") || kind) && !/^https?:\/\//i.test(v("pf-base"))) return toast("接口地址要填完整的 http(s) 地址");
     // 改一个已有渠道时把 Key 框留空 = 「这次不动 Key」。八颗星是后端约定的暗号（/^\*+$/ 原样保留），
     // 直接送空串会把人家的 Key 抹掉——而「只是想改个地址」正是最常见的一次编辑
     const typed = v("pf-key");
     const had = editP >= 0 && s.providers[editP].has_key;
     const key = typed || (had ? "********" : "");
-    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: v("pf-base"), api_key: key, has_key: !!key };
+    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, api: v("pf-api"), base_url: v("pf-base"), api_key: key, has_key: !!key };
     if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
     liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
     if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }

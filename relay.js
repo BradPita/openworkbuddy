@@ -38,6 +38,7 @@ const budget = require("./budget");
 const vkeys = require("./vkeys");
 const log = require("./log");
 const { cleanKey } = require("./llm");
+const { protoOfChannel } = require("./media-models");
 
 /** 上游多久没有第一个字节就换下一条渠道。流式回答本身可以跑一小时，卡的是**握手** */
 const CONNECT_TIMEOUT_MS = 30000;
@@ -82,7 +83,7 @@ function pickChannels(config, model) {
   const out = [];
   for (const p of providers) {
     if (p.enabled === false) continue;
-    if ((p.kind || "") === "anthropic") continue;         // 见文件头第 1 条
+    if (protoOfChannel(p) !== "openai") continue;         // 见文件头第 1 条：Claude / Gemini / Responses / Ollama 原生都不走这条
     if (!String(p.base_url || "").trim()) continue;        // 没地址就不是一条能转发的渠道
     let ok, why;
     if (Array.isArray(p.models) && p.models.length) {

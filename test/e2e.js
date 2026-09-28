@@ -2606,7 +2606,9 @@ async function testAnthropicEndpointAgreement() {
 
     // 源码侧再钉一道：server.js 不许自己再长一套算法出来
     const srvSrc = srcLib.src("server");
-    assert.ok(/anthropicBase\(m\.base_url\)\.messagesUrl/.test(srvSrc), "probeModel 又自己拼地址了");
+    // 地址算法只在 llm.js 的 pingRequest 里有一份（它再调 anthropicBase），server.js 只许调它
+    assert.ok(/pingRequest\(m\)/.test(srvSrc) && !/\/chat\/completions"/.test(srvSrc.slice(srvSrc.indexOf("async function probeModel"), srvSrc.indexOf("async function probeModel") + 1500)), "probeModel 又自己拼地址了");
+    assert.ok(/anthropicBase\(m\.base_url\)\.messagesUrl/.test(fs.readFileSync(path.join(__dirname, "..", "llm.js"), "utf8")), "pingRequest 没走 anthropicBase，验活和真跑会各算各的");
     assert.ok(!/https:\/\/api\.anthropic\.com\/v1["'`]/.test(srvSrc), "server.js 里又写死了一个 Anthropic 端点");
   } finally {
     await new Promise((r) => srv.close(r));

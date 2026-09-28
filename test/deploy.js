@@ -309,7 +309,7 @@ console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
     "真跑时把 base_url 传给了 SDK（以前没传，填了中转的人验活过、一发消息打的还是官方）"
   );
   ok(
-    /anthropicBase\(m\.base_url\)\.messagesUrl/.test(src("server")),
+    /anthropicBase\(m\.base_url\)\.messagesUrl/.test(llmSrc) && /pingRequest\(m\)/.test(src("server")),
     "向导验活和真跑用同一个地址算法（两套算法 = 绿勾骗人）"
   );
 }
