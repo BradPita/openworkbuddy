@@ -6061,7 +6061,8 @@ app.post("/api/chat", async (req, res) => {
     }
   }
   if (activeRuns.has(sessionId)) {
-    return res.status(409).json({ error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
+    // busy：别处发起的那趟还在跑，前端据此接上它把话插进去，不甩红字
+    return res.status(409).json({ busy: true, error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
   }
   // 归属要赶在 SSE 头之前查：这条路由的 sessionId 来自请求体，以前一个字都没查——
   // 拿到别人的会话 id 就能接着他的上下文继续跑，跑出来的内容还会写进他的历史里。

@@ -1426,6 +1426,7 @@
       "系统授权（macOS）": "System permissions (macOS)",
       "已清掉本次运行期间记住的批准": "Cleared approvals remembered this run",
       "收到，做完这一步就看你这句": "Got it, I'll read your note after this step",
+      "这条对话上一趟还在跑，这句排在它后面": "The previous run is still going; this message is queued after it",
       "近 7 天消耗（tokens）": "Last 7 days usage (tokens)",
       "拿不到配置体检表，服务没起来？": "Couldn't load the config check. Is the server up?",
       "点一下带着写好的提示词开新任务": "Click to start a new task with this prompt",

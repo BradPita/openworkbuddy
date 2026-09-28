@@ -1372,20 +1372,20 @@ function drainQueue(sid) {
   runTurn(sid, m.text, m.mode);
 }
 /** 把一条消息立即注入正在执行的任务；任务恰好刚结束就直接当新一轮跑，两头都不丢消息 */
-async function interjectText(text) {
+async function interjectText(text, sid = sessionId) {
   const resp = await fetch("/api/chat/interject", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, message: text }),
+    body: JSON.stringify({ sessionId: sid, message: text }),
   }).catch(() => null);
   if (resp && resp.ok) {
-    const live = runningSessions.get(sessionId);
+    const live = runningSessions.get(sid);
     if (live && live.ui.markPendingInterject) live.ui.markPendingInterject(text);
     else toast("收到，做完这一步就看你这句");
   } else {
-    qOf(sessionId).push({ text, mode: currentMode });
-    renderQueueBar();
-    drainQueue(sessionId);
+    qOf(sid).push({ text, mode: currentMode });
+    if (sid === sessionId) renderQueueBar();
+    drainQueue(sid);
   }
 }
 async function interject() {
@@ -1655,7 +1655,38 @@ async function reattachRunning() {
   }
 }
 
-async function runTurn(sid, text, mode, regen, shown) {
+/**
+ * 发出去撞了 409 busy：服务端这条对话还有一趟在跑，这一页却不知道——
+ * 别的标签页或手机上发起的、断线重连几次没接回来的，都会走到这儿。
+ * 以前直接把「该会话已有任务在运行」当报错甩出来，人只看到一句红字，话也没送到。
+ * 现在：撤掉刚画的那一轮，接上那趟的直播，再把这句话按「插队 / 排队」开关送进去。
+ * 接不上（那趟恰好刚跑完）就当新一轮再发一次，只重发这一次，不打转。
+ * 返回 true = 已经接手，调用方别再报错。
+ */
+async function adoptBusyRun(sid, text, mode, shown, ui) {
+  ui.finish();
+  ui.turn.remove();
+  runningSessions.delete(sid);
+  updateSendUI();
+  await reattachRunning();
+  // 点开这条对话时那趟已经在跑的话，回放把跑到一半的那轮画成了一轮「中断了」；接上活的之后同一轮就有两份。
+  // 按服务端记录整页重画：openSession 看到它在跑，只回放到这一轮之前，再把活的那轮挂到最后
+  if (sid === sessionId && runningSessions.has(sid)) await openSession(sid);
+  if (!runningSessions.has(sid)) {
+    await runTurn(sid, text, mode, false, shown, true);
+    return true;
+  }
+  if (busySendMode === "queue") {
+    qOf(sid).push({ text, mode });
+    if (sid === sessionId) renderQueueBar();
+    toast("这条对话上一趟还在跑，这句排在它后面");
+  } else {
+    await interjectText(text, sid);
+  }
+  return true;
+}
+
+async function runTurn(sid, text, mode, regen, shown, retried) {
   if (runningSessions.has(sid)) { qOf(sid).push({ text, mode }); if (sid === sessionId) renderQueueBar(); return; }
   const ui = createTurnUI(text, mode, sid, shown);
   runningSessions.set(sid, { ui });
@@ -1672,6 +1703,7 @@ async function runTurn(sid, text, mode, regen, shown) {
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));
+      if (resp.status === 409 && d.busy && !regen && !retried) { await adoptBusyRun(sid, text, mode, shown, ui); return; }
       ui.handleEvent({ type: "error", message: d.error || `请求失败（HTTP ${resp.status}）` });
       if (resp.status === 401) showAuth(!!d.setup);
       sawDone = true; // 请求根本没被受理，没有可续的流

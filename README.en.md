@@ -246,6 +246,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 28** Sending "continue" to a chat still running elsewhere no longer errors: the page attaches to that run and slips your message in
 - **Sep 27** Video: say "make a 30-second promo", pick length, aspect ratio and sound in a form, and get voice-over, motion and a finished mp4; paid steps stay off unless you tick them
 - **Sep 27** Ready-made recipes: promo video, product demo, Xiaohongshu carousel, multi-platform posting; web demos can be screen-recorded, with local details masked before anything is published
 - **Sep 27** The library gains a Workspace tab you can click through folder by folder, so every workspace file is findable; "this turn's output" lists deeply nested files too
