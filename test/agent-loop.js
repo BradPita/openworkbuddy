@@ -584,6 +584,42 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         ok(saidG.includes(TRUNC_STOP) && !/调用/.test(saidG), "★没有调用就不说「调用没有执行」★ 措辞跟实际发生的对不上，用户会去找根本不存在的调用", saidG.slice(-200));
       }
 
+      // H 说到一半就断（DeepSeek 忙时的 insufficient_system_resource / 流断了没收到结束标记）：
+      //   以前只认 length，这种一律当答完了——界面上一句话停在「这是 Apple Developer 的身」，任务照样报完成
+      {
+        const { CUT_STOP, cutShortWhy } = require(path.join(ROOT, "agent"));
+        const llm = scripted([
+          { text: "明白了，这是 Apple Developer 的身", toolCalls: [], stopReason: "insufficient_system_resource" },
+          { text: "份核验页面。", toolCalls: [], stopReason: "stop" },
+        ]);
+        const { r, history, events } = await runOnce({ llm, history: [{ role: "user", content: "这页什么意思" }] });
+        eq(llm.seen.length, 2, "★★上游半路停：接着要后半段，不当成答完★★");
+        ok(!r.stopped, "  └ 续上了就是正常收尾，不报停止", r.stopped);
+        eq(r.finalText, "明白了，这是 Apple Developer 的身份核验页面。", "  └ 交付的是拼起来的整句");
+        eq(userTexts(history).filter((c) => c.startsWith("【系统·回复中断】")).length, 1, "  └ 续说提示只追加了一条");
+        const saidH = events.filter((e) => e.type === "text").map((e) => e.delta).join("");
+        ok(saidH.includes("回复中途断了") && !saidH.includes("输出长度上限"), "  └ 界面说的是「中途断了」，不冒充写满上限", saidH.slice(-200));
+
+        const llm2 = scripted([
+          { text: "半句", toolCalls: [], stopReason: "interrupted" },
+          { text: "又半句", toolCalls: [], stopReason: "interrupted" },
+          { text: "还是半句", toolCalls: [], stopReason: "interrupted" },
+          { text: "不该走到这", toolCalls: [], stopReason: "stop" },
+        ]);
+        const { r: r2 } = await runOnce({ llm: llm2, history: [{ role: "user", content: "说点什么" }] });
+        eq(llm2.seen.length, 3, "★连着断 3 次就停，不一直催着烧钱★");
+        eq(r2.stopped, CUT_STOP, "  └ 停止原因是「中途断开」");
+        ok(r2.finalText.startsWith("半句又半句还是半句"), "  └ 已经说出来的照样交给用户", r2.finalText);
+        const cn = stopNotice(CUT_STOP);
+        ok(cn.includes("继续") && !cn.includes("执行上限") && !cn.includes("拆小"), "  └ 停止提示：过会儿说继续或换渠道，不劝人调上限/拆小", cn);
+
+        ok(cutShortWhy("stop") === "" && cutShortWhy("content_filter") === "" && cutShortWhy("length") === "", "  └（对照）正常结束 / 审核 / 写满上限都不算「中途断」");
+        const llm3 = scripted([{ text: "敏感内", toolCalls: [], stopReason: "content_filter" }, { text: "不该走到这", toolCalls: [], stopReason: "stop" }]);
+        const { events: ev3 } = await runOnce({ llm: llm3, history: [{ role: "user", content: "x" }] });
+        eq(llm3.seen.length, 1, "上游审核掐掉：不自动接着要（接着要大概率还是被掐）");
+        ok(ev3.some((e) => e.type === "text" && /内容审核/.test(e.delta)), "  └ 但界面上说清这条被审核拦了，不装作答完");
+      }
+
       // 停下来那句话：说对下一步
       const tn = stopNotice(TRUNC_STOP);
       ok(tn.includes(TRUNC_STOP) && tn.includes("接着上次进度做") && !tn.includes("执行上限"), "停止提示：给一条走得回去的路，不劝人调执行上限", tn);
@@ -1193,6 +1229,12 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
 
       const one = await call(["data: " + JSON.stringify({ choices: [{ delta: { content: "你好" }, finish_reason: "stop" }] })]);
       ok(one.text === "你好" && !one.error, "  └ 整条流就一行、还不带换行：照样拿到正文，不误报「空响应」", one);
+
+      // 流断在半句：既没 finish_reason 也没 [DONE]——以前 stopReason 是 null，agent 当答完了
+      const cut = await call([d({ choices: [{ delta: { content: "这是 Apple Developer 的身" }, finish_reason: null }] })]);
+      ok(cut.text === "这是 Apple Developer 的身" && cut.stopReason === "interrupted", "★★流断在半句：标成 interrupted，不当答完★★", cut);
+      const doneOnly = await call([d({ choices: [{ delta: { content: "好" }, finish_reason: null }] }), "data: [DONE]\n\n"]);
+      ok(doneOnly.stopReason === "stop", "  └（对照）有 [DONE] 没 finish_reason 的网关：照旧算说完", doneOnly.stopReason);
     }
 
     // ── ⑰ 强制收尾在 Anthropic 通道：历史里有工具调用也得带上 tools ───────────

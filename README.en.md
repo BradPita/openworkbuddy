@@ -246,6 +246,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 28** Replies cut off mid-sentence no longer count as done: the model picks up where it stopped
 - **Sep 28** Pick a channel's API format: OpenAI, Responses, Anthropic, Gemini or Ollama native
 - **Sep 28** Sending "continue" to a chat still running elsewhere no longer errors: the page attaches to that run and slips your message in
 - **Sep 27** Video: say "make a 30-second promo", pick length, aspect ratio and sound in a form, and get voice-over, motion and a finished mp4; paid steps stay off unless you tick them

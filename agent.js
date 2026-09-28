@@ -852,6 +852,24 @@ function activeChannel(config) {
 
 /** 连着两次回复撞上输出长度上限时的停止原因。主循环落 stopNote、stopNotice 认前缀都用这一份 */
 const TRUNC_STOP = "输出被截断，已停止执行";
+/** 连着几次回复都是说到一半就断（不是写满上限）时的停止原因 */
+const CUT_STOP = "回复连着几次中途断开，已停止执行";
+/** 认得的结束原因；别的都记一行日志 */
+const KNOWN_STOPS = new Set(["stop", "end_turn", "tool_calls", "tool_use", "function_call", "length", "max_tokens", "stop_sequence", "content_filter"]);
+/** 连着断几次就不再让它接着说：上游那阵子扛不住，再催只是一直烧钱 */
+const CUT_MAX = 3;
+
+/**
+ * 回复没说完就收了尾、又不是写满上限的那几种结束原因 → 给人看的那半句；不是这类返回空串。
+ * 以前只认 length / max_tokens，其余一律当「答完了」：DeepSeek 忙的时候会带着
+ * insufficient_system_resource 在半句话上收流，流断了没收到结束标记也一样，
+ * 界面上就是一句话停在半截、任务照样报完成。
+ */
+function cutShortWhy(stopReason) {
+  if (stopReason === "insufficient_system_resource") return "上游说算力不够，这条回复停在了半路";
+  if (stopReason === "interrupted") return "这条回复没收到结束标记就断了";
+  return "";
+}
 
 /**
  * 被掐掉时追在正文后面的那半句。两条引擎路径（内置循环 / 本机 CLI 引擎）共用这一份，措辞不会漂开。
@@ -872,6 +890,7 @@ function stopNotice(note) {
   // 截断是单条回复写不下，跟步数/时长上限无关，劝人调「执行上限」同样是答非所问。
   // 这里不说「调用没有执行」：纯正文被截两次也走这条，那时根本没有调用（有没有调用由循环里那条提示说）
   if (String(note).startsWith(TRUNC_STOP)) return `注意：${note}。模型连着两次写满单条回复的上限，不会自动续跑。把要求拆小，再跟我说「接着上次进度做」。`;
+  if (String(note).startsWith(CUT_STOP)) return `注意：${note}。这是上游那边的回复没发完，不是任务本身的问题，不会自动续跑。过一会儿跟我说「继续」，或者换一条渠道再试。`;
   return `注意：${note}，任务强制收尾。${resume}；想让它一口气跑更久，去「设置 → 执行上限」调大上限、或把「自动续跑轮数」设成 1 以上（这页归平台管理员）。`;
 }
 
@@ -2723,6 +2742,7 @@ function modePrompt(mode) {
     let edited = false; // 这一趟真改过文件没有：没改过就不跑 done 钩子
     let finishRetries = 0; // 「没做完就收摊」被打回的次数（整个任务累计，不按轮重置）
     let truncStreak = 0; // 连着几次回复撞上输出上限（max_tokens / length）；没撞就清零
+    let cutStreak = 0; // 连着几次回复说到一半就断（上游半路停 / 流断了），见 cutShortWhy
     let textCarry = ""; // 正文写到一半被截、让它接着写时，前半段先存这儿，交付时跟后半段拼起来
     let openLeft = [];
     let todoItems = null;  // todo_write 最新那张表：收尾时还有没标 done 的，同样打回     // 收尾时进度档里仍未打勾的条目，用来如实告诉用户还差什么
@@ -2993,15 +3013,23 @@ function modePrompt(mode) {
       // 看着完整的对象，OpenAI 这边是 _raw 残片——哪种拿去执行都是替用户瞎编（写一半的文件、截断的命令）。
       // 所以只丢最后那一个（排在它前面的调用参数已经闭合，照常执行），再追加一次续写提示；
       // 紧接着又被截一次就停：同样的上限再续一次还是同样的结局，只会烧钱。
-      const truncated = result.stopReason === "max_tokens" || result.stopReason === "length";
-      truncStreak = truncated ? truncStreak + 1 : 0;
+      const hitCap = result.stopReason === "max_tokens" || result.stopReason === "length";
+      // 说到一半断了：跟写满上限一样是「没说完」，走同一套续写，只是计数和措辞分开
+      const cutWhy = hitCap ? "" : cutShortWhy(result.stopReason);
+      const truncated = hitCap || !!cutWhy;
+      truncStreak = hitCap ? truncStreak + 1 : 0;
+      cutStreak = cutWhy ? cutStreak + 1 : 0;
+      const giveUp = hitCap ? truncStreak >= 2 : cutStreak >= CUT_MAX;
+      if (cutWhy) console.warn(`[agent] ${L.provider || L.model} 的回复中途断了（结束原因 ${result.stopReason}，第 ${cutStreak} 次）`);
+      // 没见过的结束原因留一行：下回再有「话停在半截」时，日志里能直接看到上游到底报的是什么
+      else if (result.stopReason && !KNOWN_STOPS.has(result.stopReason)) console.warn(`[agent] ${L.provider || L.model} 报了没见过的结束原因 ${result.stopReason}，按答完处理`);
       let cutCall = null;
       let truncAsk = "";
       if (truncated) {
         const calls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
         cutCall = calls.length ? calls[calls.length - 1] : null;
-        // 第二次被截就整批都不执行：马上要停了，执行了也没人接着用这些结果
-        const drop = truncStreak >= 2 ? calls : calls.slice(-1);
+        // 要停的这一次整批都不执行：马上要停了，执行了也没人接着用这些结果
+        const drop = giveUp ? calls : calls.slice(-1);
         if (drop.length) {
           const ids = new Set(drop.map((c) => c.id));
           result.toolCalls = calls.filter((c) => !ids.has(c.id));
@@ -3021,32 +3049,49 @@ function modePrompt(mode) {
         raw: result.raw,
       });
       if (result.text) finalText = textCarry + result.text;
+      const carried = textCarry + (result.text || ""); // 连着断好几次时，前面每一段都得留着
       textCarry = "";
 
       if (truncated) {
-        if (truncStreak >= 2) {
-          stopNote = TRUNC_STOP;
+        if (giveUp) {
+          stopNote = hitCap ? TRUNC_STOP : CUT_STOP;
           // 只有真摘掉了调用才说「没有执行」；纯正文被截，半截正文照样交给用户（finalText 已拼好）
-          emit({ type: "text", delta: callout.line("warn", `**${TRUNC_STOP}**：连着两次写满单条回复的上限${cutCall ? "，这一批调用都没有执行" : ""}。`), depth });
+          const why = hitCap ? "连着两次写满单条回复的上限" : `${cutWhy}，连着 ${cutStreak} 次`;
+          emit({ type: "text", delta: callout.line("warn", `**${stopNote}**：${why}${cutCall ? "，这一批调用都没有执行" : ""}。`), depth });
           break;
         }
-        truncAsk = cutCall
-          ? `【系统·输出截断】你上一条回复撞上了输出长度上限，最后那个 ${cutCall.name} 调用的参数没写完，没有执行。重发这一步，但要拆小：长文件用 write_file 带 append:true 一节一节写，长参数拆成几次调用。`
-          : `【系统·输出截断】你上一条回复写到一半撞上了输出长度上限。从断开的地方接着写，别重复已经写过的部分；还很长就分几次说完，或者写进文件。`;
-        emit({
-          type: "text",
-          delta: callout.line("warn", cutCall ? `**输出被截断**：\`${cutCall.name}\` 的参数没写完，没有执行，已让它拆小重发。` : "**输出被截断**：已让它从断开的地方接着写。"),
-          depth,
-        });
+        if (cutWhy) {
+          truncAsk = cutCall
+            ? `【系统·回复中断】你上一条回复没发完就断了，最后那个 ${cutCall.name} 调用的参数不完整，没有执行。重发这一步。`
+            : `【系统·回复中断】你上一条回复说到一半就断了（不是你的问题）。从断开的地方接着说，别重复已经说过的部分。`;
+          emit({
+            type: "text",
+            delta: callout.line("warn", cutCall ? `**回复中途断了**：\`${cutCall.name}\` 没发完，没有执行，已让它重发。` : `**回复中途断了**：${cutWhy}，已让它接着说。`),
+            depth,
+          });
+        } else {
+          truncAsk = cutCall
+            ? `【系统·输出截断】你上一条回复撞上了输出长度上限，最后那个 ${cutCall.name} 调用的参数没写完，没有执行。重发这一步，但要拆小：长文件用 write_file 带 append:true 一节一节写，长参数拆成几次调用。`
+            : `【系统·输出截断】你上一条回复写到一半撞上了输出长度上限。从断开的地方接着写，别重复已经写过的部分；还很长就分几次说完，或者写进文件。`;
+          emit({
+            type: "text",
+            delta: callout.line("warn", cutCall ? `**输出被截断**：\`${cutCall.name}\` 的参数没写完，没有执行，已让它拆小重发。` : "**输出被截断**：已让它从断开的地方接着写。"),
+            depth,
+          });
+        }
         // 纯正文被截：下一条是后半段，交付时拼起来。只存这一条自己的正文——推理模型可能把额度全花在
         // 思考上、正文一个字没有，这时 finalText 还是更早那步的旁白，存它会被拼到最终答复前面
-        if (!cutCall) textCarry = result.text || "";
+        if (!cutCall) textCarry = carried;
         if (!result.toolCalls.length) {
           history.push({ role: "user", content: truncAsk });
           if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
           continue;
         }
         // 前面还有参数完整的调用：照常执行，续写提示排在它们的工具结果后面（见下面 push tool 那里）
+      }
+      // 上游审核把回复掐了：接着要大概率还是被掐，不自动续；但得让人看见这句话不是答完了
+      if (result.stopReason === "content_filter") {
+        emit({ type: "text", delta: callout.line("warn", "**上游内容审核拦下了这条回复**，后面的没收到。"), depth });
       }
 
       if (!result.toolCalls.length) {
@@ -3348,8 +3393,9 @@ function modePrompt(mode) {
       // 撞上限时，finalText 往往是半句过程叙述（"我先看一下这个文件"），直接抛给用户等于没有交代。
       // 再花一次调用让它把话说完：做到哪、有什么、还差什么。手动停止的不做——用户喊停就是不想再花钱。
       // 手动停止不花钱；模型响应超时也跳过——模型都挂起了，再拿它写收尾只是多等一轮超时
-      // 输出截断也跳过：它刚连着两次写爆上限，再让它写一段收尾大概率还是截断，白花一次钱
-      if (!(stopSignal && stopSignal.aborted) && !stopNote.startsWith("模型响应超时") && !stopNote.startsWith(TRUNC_STOP)) {
+      // 输出截断也跳过：它刚连着两次写爆上限，再让它写一段收尾大概率还是截断，白花一次钱；
+      // 连着中途断开同理，上游那阵子发不完整一条回复，再要一段收尾也是半截
+      if (!(stopSignal && stopSignal.aborted) && !stopNote.startsWith("模型响应超时") && !stopNote.startsWith(TRUNC_STOP) && !stopNote.startsWith(CUT_STOP)) {
         const wrapped = await wrapUp({ history, system, systemStableLen, stopNote, emit, depth, stats, llmOverride: L, traceNode: tr, tools });
         if (wrapped) finalText = wrapped;
       }
@@ -3890,4 +3936,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS };
+module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS };

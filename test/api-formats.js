@@ -257,6 +257,26 @@ const llmOf = (m) => createLLM({ models: [{ name: "测", api_key: "k-test", mode
     assert.strictEqual(pingRequest({ provider: "gemini", model: "m1", api_key: "k" }).headers["x-goog-api-key"], "k");
   });
 
+  console.log("流断在半句");
+  await check("★没收到结束标记就收流：三种格式都标成 interrupted，agent 靠它接着要后半段★", async () => {
+    const f = await fake((req, b, res) => {
+      if (req.url.endsWith("/responses")) return sse(res, [{ type: "response.output_text.delta", delta: "说到一" }]);
+      if (req.url.includes(":streamGenerateContent")) return sse(res, [{ candidates: [{ content: { role: "model", parts: [{ text: "说到一" }] } }] }]);
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.end(JSON.stringify({ message: { role: "assistant", content: "说到一" }, done: false }) + "\n");
+    });
+    for (const m of [
+      { provider: "openai-responses", base_url: f.base + "/v1" },
+      { provider: "gemini", base_url: f.base + "/v1beta" },
+      { provider: "ollama", base_url: f.base, api_key: "" },
+    ]) {
+      const r = await llmOf(m).chat({ system: "", history: [{ role: "user", content: "x" }] });
+      assert.strictEqual(r.text, "说到一", m.provider);
+      assert.strictEqual(r.stopReason, "interrupted", m.provider);
+    }
+    f.srv.close();
+  });
+
   console.log(`\n接口格式：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);
 })();

@@ -629,6 +629,7 @@ async function openaiChat(cfg, { system, history, tools, toolChoice, onTextDelta
   // ---- SSE 流式解析 ----
   let text = "";
   let finishReason = null;
+  let sawDone = false; // 收到过 data: [DONE]：和 finish_reason 一样算「上游说完了」
   let usage = null; // 最后一个 chunk 里的 token 用量（stream_options.include_usage）
   const tcByIndex = new Map(); // index -> {id, name, args}
   // 有的兼容网关不给 index：靠 id 认是哪一个调用，没 id 的续片接在上一个调用后面
@@ -649,7 +650,10 @@ async function openaiChat(cfg, { system, history, tools, toolChoice, onTextDelta
       buf = buf.slice(idx + 1);
       if (!line.startsWith("data:")) continue;
       const payload = line.slice(5).trim();
-      if (payload === "[DONE]") continue;
+      if (payload === "[DONE]") {
+        sawDone = true;
+        continue;
+      }
       let chunk;
       try {
         chunk = JSON.parse(payload);
@@ -726,7 +730,8 @@ async function openaiChat(cfg, { system, history, tools, toolChoice, onTextDelta
   if (!text && !toolCalls.length && !usage) {
     throw new Error("LLM 返回了空响应（连接建立后没有收到任何内容，上游服务或网络异常）");
   }
-  return { text, toolCalls, stopReason: finishReason, usage };
+  // 既没 finish_reason 也没 [DONE] 就收流了：半截话，不是说完了。标成 interrupted 让 agent 接着要后半段
+  return { text, toolCalls, stopReason: finishReason || (sawDone ? "stop" : INTERRUPTED), usage };
 }
 
 /**
@@ -975,6 +980,11 @@ const sseJson = (line) => {
 };
 
 /** 流里什么都没拿到：跟 OpenAI 那条同一个说法，好让 chatWithRetry 认得出来重试 */
+/**
+ * 流收了尾却没收到上游的结束标记（OpenAI 兼容的 finish_reason / [DONE]、Gemini 的 finishReason、
+ * Ollama 的 done、Responses 的 response.completed）——话说到一半。agent 见到它会让模型接着说
+ */
+const INTERRUPTED = "interrupted";
 const EMPTY_REPLY = "LLM 返回了空响应（连接建立后没有收到任何内容，上游服务或网络异常）";
 
 // ---- OpenAI Responses（POST {base}/responses）----
@@ -1083,10 +1093,10 @@ async function responsesChat(cfg, { system, history, tools, toolChoice, onTextDe
     if (!out.text && text) out.text = text;
     return out;
   }
-  // 没等到收尾事件：拿增量和已经完整的调用凑一份，总比整轮作废强
+  // 没等到收尾事件：拿增量和已经完整的调用凑一份，总比整轮作废强——但它没说完，得标出来
   const toolCalls = doneCalls.map((it, i) => ({ id: it.call_id || it.id || `call_${i}`, name: it.name, input: parseToolArgs(it.arguments, it.name) }));
   if (!text && !toolCalls.length) throw new Error(EMPTY_REPLY);
-  return { text, toolCalls, stopReason: toolCalls.length ? "tool_calls" : "stop", usage: null };
+  return { text, toolCalls, stopReason: INTERRUPTED, usage: null };
 }
 
 // ---- Google Gemini（POST {base}/models/{model}:generateContent）----
@@ -1259,7 +1269,10 @@ async function geminiChat(cfg, { system, history, tools, toolChoice, onTextDelta
   if (!text && !toolCalls.length) throw new Error(blocked || EMPTY_REPLY);
   return {
     text, toolCalls, usage,
-    stopReason: finish === "MAX_TOKENS" ? "length" : toolCalls.length ? "tool_calls" : "stop",
+    stopReason: !finish ? INTERRUPTED
+      : finish === "MAX_TOKENS" ? "length"
+      : /SAFETY|BLOCKLIST|PROHIBITED|SPII/.test(finish) ? "content_filter"
+      : toolCalls.length ? "tool_calls" : "stop",
   };
 }
 
@@ -1337,6 +1350,7 @@ async function ollamaChat(cfg, { system, history, tools, toolChoice, onTextDelta
   const toolCalls = [];
   let usage = null;
   let doneReason = "";
+  let sawDoneLine = false;
   const guard = createLeakGuard(onTextDelta);
   const take = (chunk) => {
     if (chunk.error) throw new Error(`LLM 接口错误 500: ${String(chunk.error).slice(0, 300)}`);
@@ -1348,6 +1362,7 @@ async function ollamaChat(cfg, { system, history, tools, toolChoice, onTextDelta
       toolCalls.push({ id: tc.id || `ol_${toolCalls.length}_${Date.now().toString(36)}`, name: f.name, input: args && typeof args === "object" && !Array.isArray(args) ? args : {} });
     }
     if (chunk.done) {
+      sawDoneLine = true;
       doneReason = chunk.done_reason || "";
       usage = { prompt: chunk.prompt_eval_count || 0, completion: chunk.eval_count || 0, cached: 0 };
     }
@@ -1360,7 +1375,7 @@ async function ollamaChat(cfg, { system, history, tools, toolChoice, onTextDelta
     if (rescued.toolCalls.length) return { text: rescued.text, toolCalls: rescued.toolCalls, stopReason: "tool_calls", usage };
   }
   if (!text && !toolCalls.length && !usage) throw new Error(EMPTY_REPLY);
-  return { text, toolCalls, usage, stopReason: doneReason === "length" ? "length" : toolCalls.length ? "tool_calls" : "stop" };
+  return { text, toolCalls, usage, stopReason: !sawDoneLine ? INTERRUPTED : doneReason === "length" ? "length" : toolCalls.length ? "tool_calls" : "stop" };
 }
 
 /** 按格式分派。认不出的格式按最通用的 chat/completions 走 */
