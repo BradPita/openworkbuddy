@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 技能（Skills）系统 —— 把「怎么做一类活」写成文件，让 agent 按需加载，而不是塞进系统提示词常驻。

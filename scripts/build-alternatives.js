@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 /**
  * 「XX 替代 / XX alternative」落地页生成器 —— 给 GitHub Pages（docs/）出静态页。
  *

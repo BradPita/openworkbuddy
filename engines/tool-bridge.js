@@ -1,4 +1,6 @@
 // @ts-check
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 把 OpenWorkBuddy 自己的工具，借给本机 CLI 引擎用。

@@ -1,4 +1,6 @@
 // @ts-check
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 把工作目录里的一个文件作为附件发进飞书会话：图片、视频、语音、普通文件各走各的接口。

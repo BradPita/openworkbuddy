@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * OpenWorkBuddy — 服务器主入口。
@@ -846,11 +848,16 @@ app.use(express.json({ limit: "60mb" }));
  * - SAMEORIGIN：别人用 iframe 套住这一页骗点击（点的是「删除」，他看见的是「领奖」）。
  * - base-uri/form-action：真出了 XSS 时，这两条能拦住最顺手的那两种偷法。
  *
+ * - X-Powered-By：Express 默认写的是 "Express"，换成产品名。不带版本号——版本号只对挑漏洞的人有用。
+ *   写产品名是为了让放到公网上的部署能被认出来：商用没授权的，大多就是这么被发现的。
+ *
  * 没上完整 CSP 是故意的：预览 AI 生成的网页用的是 blob: iframe，而 blob: 会继承
  * 这一页的 CSP。加上 script-src/connect-src，生成的网页里引个图表库就白屏了——
  * 那是主线功能。iframe 那边已经用 sandbox 隔成独立源，先靠它。
  */
+app.disable("x-powered-by");
 app.use((req, res, next) => {
+  res.setHeader("X-Powered-By", "OpenWorkBuddy");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
@@ -7217,6 +7224,9 @@ async function main() {
     console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
   }
   console.log(`OpenWorkBuddy 已启动: http://localhost:${bound}（服务端初始化 ${Date.now() - BOOT_T0}ms）`);
+  // 命令行 / Docker 部署的人可能从头到尾不打开「关于」页，启动日志是他一定会看到的那一屏。
+  // 一行说完，按显示宽度（中文算 2 列）不过 80 列，窄终端里不折行
+  console.log("授权: 个人非商用免费；公司使用和个人商用需商业授权 · COMMERCIAL-LICENSE.md");
   console.log(`模型: ${llm.provider} / ${llm.model}`);
   console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
   console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);

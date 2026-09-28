@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* ============================================================================
  * app-08-recipe.js —— 内容配方的开头表单卡
  *   makeRecipeFormCard(ev, turnSid, submit, ctx)

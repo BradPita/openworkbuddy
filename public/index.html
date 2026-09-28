@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="generator" content="OpenWorkBuddy">
+<meta name="copyright" content="Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · PolyForm Noncommercial 1.0.0 · 商业使用需授权">
 <title>OpenWorkBuddy</title>
 <link rel="icon" href="/favicon.png">
 <link rel="stylesheet" href="/css/ui.css">
@@ -1526,6 +1528,12 @@
   /* 链接带码进来时那个框里是一串没头没尾的字符（XYZ789），卡上又一个标签都没有。
      不说一句的话，人只会盯着那个框想「这是要我填什么」。 */
   .auth-card .hint { font-size: 12px; color: var(--owb-text-3); margin: -4px 0 10px 2px; }
+  /* 卡片最底下那行授权说明：登录页是每个用这套软件的人都会经过的一屏，
+     「谁免费、谁要买授权」放在这儿，比藏在设置 → 关于 里靠谱。小字、次要色，不跟登录按钮抢眼 */
+  .auth-card .auth-lic { font-size: 12px; color: var(--owb-text-3); text-align: center; line-height: 1.6;
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--owb-border); }
+  .auth-card .auth-lic:empty { display: none; }
+  .auth-card .auth-lic a { color: var(--owb-brand-text); }
   /* 「忘了密码」展开的那段：里面是一句要照着敲的命令，所以给它一个能一眼认出是命令的样子，
      并且允许选中复制（.alt 那几行是点的，这一段是抄的，两回事） */
   #auth-forgot-hint { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--owb-border);
@@ -1598,6 +1606,14 @@
   .onb-im-src .get-key { margin-left: 2px; }
   .onb-ok { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--owb-ok) 12%, transparent); color: var(--owb-ok-text); font-size: 13px; margin-bottom: 6px; }
   .onb-ok a { margin-left: auto; color: var(--owb-brand-text); cursor: pointer; font-size: 12px; }
+  /* 向导第一屏顶上那张授权说明：刚装好的人最该在这时候知道自己属不属于免费那一类。
+     有底色、有边，一眼看得见；但不带勾选框也不带按钮，看完直接往下填 Key，不挡路 */
+  .onb-lic { padding: 9px 12px; margin-bottom: 14px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg);
+    background: var(--owb-bg-hover); font-size: 12px; line-height: 1.7; color: var(--owb-text-2); }
+  .onb-lic b { color: var(--owb-text); }
+  .onb-lic a { color: var(--owb-brand-text); }
+  .onb-lic .i { width: 13px; height: 13px; vertical-align: -2px; }
+  .onb-lic.ok { color: var(--owb-ok-text); background: color-mix(in srgb, var(--owb-ok) 10%, transparent); border-color: transparent; }
   .onb-seg { display: flex; gap: 6px; margin-top: 4px; }
   .onb-seg button { flex: 1; padding: 9px 10px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg); color: var(--owb-text-2); font-size: 13px; cursor: pointer; }
   .onb-seg button.on { border-color: var(--owb-brand); color: var(--owb-brand-text); background: var(--owb-brand-weak); font-weight: 600; }
@@ -3008,6 +3024,8 @@
          「在服务器上敲一句命令」这条路。这里只把话说明白，具体命令由 app-03.js 填。 -->
     <div class="alt" id="auth-forgot-alt">忘了密码？<a id="auth-forgot-go">改回来的办法</a></div>
     <div class="hint" id="auth-forgot-hint" style="display:none"></div>
+    <!-- 授权说明：内容由 app-03.js 按 /api/auth/state 的 license 填（已授权给谁 / 已到期 / 谁免费谁要买） -->
+    <div class="auth-lic" id="auth-lic"></div>
   </div>
 </div>
 

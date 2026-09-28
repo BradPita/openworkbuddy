@@ -1,4 +1,6 @@
 // @ts-check
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * `openworkbuddy workflow` 跑着的时候那块面板 —— 纯的：给状态、给宽度，吐几行字。怎么擦、怎么重画是 cli.js 的事。

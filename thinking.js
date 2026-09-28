@@ -1,4 +1,6 @@
 // @ts-check
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 思考模式开关 —— 「有思考模式的模型可以支持关闭思考模式」。

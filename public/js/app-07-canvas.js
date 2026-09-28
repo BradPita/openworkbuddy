@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* 通用无限画布
  *
  * JointJS 只负责画布/节点/连线交互；这里负责 AI 短剧创作工作流的数据。

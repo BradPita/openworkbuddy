@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 "use strict";
 /** 闸要比的就这几栏。updated 不比：它每天都变，比它等于要求每天重跑一遍 */
 const COUNTED = ["skills", "tools", "connectors", "experts", "teams"];

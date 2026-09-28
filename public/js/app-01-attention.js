@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 // ================= 注意力：哪条会话在等你 =================
 /*
  * 几条任务并行跑的时候，人只盯得住眼前这一条。别的会话卡在一道题上等人、出了错、

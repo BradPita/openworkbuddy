@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* 无限画布 · 节点交互与检查器（第 6 片）
  *
  * 开头是统一画风和选模型那几个小工具：生成、展开分镜表、预估花费都用它们。

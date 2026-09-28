@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* 无限画布 · 节点卡片（第 3 片）
  *
  * 节点卡片的表单字段、上传和选文件、卡片外观、选中与删除、右键菜单，

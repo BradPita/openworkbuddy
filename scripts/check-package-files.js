@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 "use strict";
 /**
  * 打包完整性闸门：装机包里少一个 require 得到的文件，应用就是打不开。

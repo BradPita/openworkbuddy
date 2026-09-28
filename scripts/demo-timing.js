@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 /**
  * demo 录屏的时长整形：打字和最后停在结果上的那几秒保持原速，只把「等模型干活」那段压进目标时长。
  * 纯函数放这里，record-demo.js 顶部 require("electron")，node 直接测不了。

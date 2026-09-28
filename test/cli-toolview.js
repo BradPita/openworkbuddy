@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 终端里一次工具调用的样子：「● Shell(npm test)」+ 下面挂「└ 输出」，跟 Claude Code / Codex 一个读法。

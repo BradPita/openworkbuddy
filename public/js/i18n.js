@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* OpenWorkBuddy 界面语言
  *
  * 中文是源文：代码和模板里照旧写中文。英文是一本词典（中文原句 → 英文）。
@@ -29,8 +31,6 @@
       "画布文件读取失败，改动未存入项目（本机有备份），请刷新页面。": "Couldn't read the canvas file — changes weren't saved to the project (a local copy is kept). Refresh the page.",
       "还没有历史版本。每次重跑或保存前会自动留一份。": "No history yet. A copy is kept automatically before each re-run or save.",
       "部署配置、脚本、技能模板等示例代码按 MIT 发布，可商用。": "Deployment configs, scripts, skill templates and sample code are MIT-licensed and free for commercial use.",
-      "买授权不解锁功能，买的是商用许可和支持。": "A licence unlocks no features — it buys commercial rights and support.",
-      "公司或任何营利用途 —— 需购买商业授权。": "Companies or any for-profit use — a commercial licence is required.",
       "点「检查更新」重试；仍不行请重启 OpenWorkBuddy。": "Click Check for updates to retry; if it persists, restart OpenWorkBuddy.",
       "登录已过期，刷新页面重新登录。": "Session expired — refresh and sign in again.",
       "遇到问题：先看 设置→安全中心→审计中心 是否被拦；LLM 报 503 是上游繁忙，可在 设置→模型 换渠道。": "Trouble? Check Settings → Security → Audit for blocks; an LLM 503 means the upstream is busy — switch provider in Settings → Models.",
@@ -192,7 +192,9 @@
       "轮到": "It is up to ",
       "改动，能不能上由你点头——": " changes; you decide whether to apply them — ",
       "永 Ag": "Always Ag",
-      "发布：": "Publish:",
+      // 全仓只有「关于」页一处用：「……。按 <b>PolyForm Noncommercial 1.0.0</b> 发布：」，
+      // 前半句已经译成 "Released under"。前面那个空格翻译器会原样留着，单写冒号会成 "1.0.0 :"，补个词接上
+      "发布：": "terms:",
       "此浏览器不支持音频预览。": "This browser does not support audio preview.",
       "素材已移除，请重新选择": "Asset removed. Select it again.",
       "不选择，稍后再补": "Skip for now and add it later",
@@ -601,9 +603,6 @@
       "执行上限（步数 / 超时 / token 预算）": "Execution limits (steps / timeout / token budget)",
       "没有现成应用？让本机 lark-cli 替你建一个，建完 App ID 自动填上": "No app yet? Let the local lark-cli create one; the App ID fills itself in",
       "开源的 AI Agent 办公工作台。会做这些事：": "An open-source AI agent workbench for office work. It can:",
-      "著作权人：开发者猫叔。本软件按": "Copyright: CatCatUncle. This software is provided under ",
-      "自己用、学习研究、学校与公益机构用 —— 免费，不用问。": "Personal, study, academic, non-profit and government use — free, no need to ask.",
-      "名称「OpenWorkBuddy」和项目标志不在授权范围内，换名换标对外售卖要另谈。": "The name OpenWorkBuddy and the project logo are outside the licence; rebranding and reselling is a separate conversation.",
       "哪些按 MIT": "What's MIT",
       "拖拽文件到这里，自动保存到工作区": "Drop files here to save them into the workspace",
       "分镜表是输入，场次/镜头是可继续创作的节点。": "The shot list is the input; scenes and shots are nodes you can keep building on.",
@@ -2606,6 +2605,157 @@
   PATTERNS.en.push([/^(.+?) 已写回分镜表，但你改了其中的全片画风，下次展开会重复追加。改画风请改分镜表的 style$/,
     "$1 written back, but you edited the film-wide style inside it — expanding again will append it twice. Change style in the storyboard instead"]);
 
+  // ---------- 商业授权：后台「商业授权」页和首页待办、登录卡那一行、向导第一步那张卡、「关于」页 ----------
+  // 单列一段：授权政策是英文用户最该看懂的一段，改哪一处文案都只用找这里。
+  // 口径跟 COMMERCIAL-LICENSE.md 一致：个人非商用和非营利免费，公司使用和个人商用要买，公司可试用 30 天
+  for (const [zh, en] of Object.entries({
+    "商业授权": "Commercial license",
+    "商业授权：": "Commercial license: ", // 首页待办的开头，后面紧跟服务端给的原因，自带尾部空格
+    "授权码和使用声明": "License code and usage declaration",
+    "去处理": "Handle it",
+    "功能照常，处理完就不再提醒。": " Nothing is locked, and this goes away once handled.", // 前面是单独一个「。」节点
+    "已授权给": "Licensed to",
+    "授权已到期。续上之后把新码换上就行。": "The license has expired. Renew it, then swap in the new code.",
+    "这台机器上离线验过了。": "Verified offline on this machine.",
+    "已到期": "Expired",
+    "有效": "Valid",
+    "换一张": "Replace",
+    "填授权码": "Enter license code",
+    "换一张授权码": "Replace license code",
+    "范围": "Scope",
+    "编号": "ID",
+    "签发日期": "Issued",
+    "备注": "Note",
+    "还没填授权码": "No license code yet",
+    "个人非商用、学校公益免费；公司使用和个人商用都要买授权，公司可免费试用 30 天。":
+      "Free for personal non-commercial use, schools and non-profits. Company use and personal commercial use need a license; companies may evaluate free for 30 days.",
+    "这台机器上看到的": "Seen on this machine",
+    "只在本机算，不往外发。": "Worked out on this machine only, never sent anywhere.",
+    "只在本机算，不往外发。按这些看，像是团队在用。": "Worked out on this machine only, never sent anywhere. By these, it looks like team use.",
+    "只在本机算，不往外发。按这些看，还不像团队在用。": "Worked out on this machine only, never sent anywhere. By these, it doesn't look like team use yet.",
+    "带底色的一条就算团队在用，只有边框的要凑两条。": "One filled sign counts as team use; outlined ones take two.",
+    "没看到团队在用的迹象。": "No signs of team use.",
+    "使用声明": "Usage declaration",
+    "没买授权时，选一项说明这台机器怎么用。": "Without a license, pick the option that says how this machine is used.",
+    "现在的声明": "Current declaration",
+    "谁选的": "Chosen by",
+    "什么时候": "When",
+    "当时看到": "Signs at the time",
+    "没看到团队迹象": "No team signs",
+    "还没人选过。": "Nobody has picked one yet.",
+    "已选": "Selected",
+    "重新选": "Pick again",
+    "选这项": "Pick this",
+    "试用已满 30 天": "30-day evaluation over",
+    "试用满 30 天了，接着用就买授权：": "The 30-day evaluation is over. To keep using it, buy a license: ",
+    "试用已结束": "Evaluation over",
+    "试用已结束，接着用就买授权：": "The evaluation is over. To keep using it, buy a license: ",
+    "公司用在实际业务上、个人商用，不在这几项里，要买授权。": "Company use in real business and personal commercial use aren't listed here. They need a license.",
+    "买授权不解锁任何功能，没买也不锁。授权码离线验签，声明和迹象只存在这台机器上。":
+      "A license unlocks nothing, and going without locks nothing. Codes are verified offline; declarations and signs stay on this machine.",
+    "授权细则": "License terms",
+    "整段粘贴，折行不要紧。在这台机器上离线验签，不联网。": "Paste it whole; line breaks are fine. It's verified offline on this machine.",
+    "授权码": "License code",
+    "验证并保存": "Verify and save",
+    "先把授权码粘进来。": "Paste the license code first.",
+    "授权码已生效": "License code applied",
+    "删掉授权码？": "Delete the license code?",
+    "删掉后回到「没填授权码」，功能照常。这一步会记进操作审计。": "You'll be back to “no license code” and everything keeps working. This goes into the audit log.",
+    "授权码已删掉": "License code deleted",
+    "会记进操作审计：你的账号、现在的时间、当时看到的迹象。": "This goes into the audit log: your account, the time, and the signs seen now.",
+    "公司用在实际业务上、个人接单或做付费产品，不属于这几项，要买授权。":
+      "Company use in real business, freelance client work or paid products aren't covered here. They need a license.",
+    "就选这项": "Pick it",
+    "声明已记下": "Declaration recorded",
+    // 声明的几项、授权范围、团队迹象：名字来自服务端 license.js（KINDS / SCOPE_LABEL / signalsOf）
+    "个人自用": "Personal use",
+    "非营利机构": "Non-profit organization",
+    "公司评估试用": "Company evaluation",
+    "学习、研究、业余项目，没有商业用途": "Study, research or hobby projects with no commercial use",
+    "学校、科研、公益或政府机构": "Schools, research, non-profit or government bodies",
+    "还没用在实际业务上，最长 30 天": "Not yet used in real business; 30 days at most",
+    "内部使用": "Internal use",
+    "对外提供服务": "Serving outside users",
+    "给客户交付": "Client delivery",
+    "打包分发": "Bundled distribution",
+    "不限商业用途": "Any commercial use",
+    "接了企业微信": "WeCom connected",
+    "接了飞书": "Feishu connected",
+    "接了钉钉": "DingTalk connected",
+    "对局域网或公网开放": "Open to the LAN or internet",
+    // 服务端的待办原因（status().why）里不带参数的几句，和授权码验不过时的原话（verify）
+    "填着的授权码验不过了": "The license code on file no longer verifies",
+    "看起来是团队在用，还没人做过使用声明": "Looks like team use, and nobody has made a usage declaration",
+    "评估试用的开始时间读不出来": "Can't read when the evaluation started",
+    "评估试用的开始时间比现在还晚": "The evaluation start date is in the future",
+    "授权码是空的": "The license code is empty",
+    "这不是 OpenWorkBuddy 的授权码": "This isn't an OpenWorkBuddy license code",
+    "授权码读不出内容，对一下是不是完整复制的": "Can't read the license code. Check it was copied in full",
+    "签名对不上：这串码和作者签发的不一致": "Signature mismatch: this code doesn't match what the author issued",
+    "授权码里没写授权给谁": "The license code doesn't say who it's for",
+    "没有这一项声明": "No such declaration option",
+    // 登录卡最底下那行、向导第一步那张卡（app-03.js）。被 <b>名字</b> 切开的后半句带前导空白，
+    // 空白由原文给，译文用破折号接上名字
+    "的商业授权已到期 ·": "— commercial license expired ·",
+    "个人非商用免费 · 公司和个人商用需授权 ·": "Free for personal non-commercial use · company and commercial use need a license ·",
+    "授权说明": "License terms",
+    "的商业授权已到期，功能照常能用": "— commercial license expired; everything still works",
+    "先看一眼：你属不属于免费的那一类": "First, check whether your use is free",
+    "个人非商用，学校、科研、公益、政府机构：免费用。": "Personal non-commercial use, schools, research, non-profit and government bodies: free.",
+    "公司使用（哪怕只在内部）、个人商用（接单、做付费产品）：要买商业授权。":
+      "Company use (even internal only) and personal commercial use (client work, paid products): buy a commercial license.",
+    "公司可以先免费试用 30 天，用到实际业务上就得买。": "Companies can evaluate free for 30 days. Once it's used in real business, buy a license.",
+    // 只能向作者买、未经授权商用的后果（向导卡、关于页、后台授权页）。说法跟 COMMERCIAL-LICENSE.md 一致：
+    // 5 倍是著作权法第五十四条「故意侵权、情节严重」的上限，500 万是算不清损失时的法定赔偿上限
+    "商业授权只能向作者购买；未经授权商用属侵权，须停止使用并赔偿。":
+      "Commercial licenses are sold only by the author. Commercial use without one infringes copyright: you must stop and pay damages.",
+    "商业授权只能向作者购买，别处买的不算授权。": "Commercial licenses are sold only by the author; one bought anywhere else is not a license.",
+    "未经授权商用属侵犯著作权：须停止使用、赔偿损失。": "Commercial use without a license infringes copyright: you must stop using it and pay damages.",
+    "故意侵权情节严重的，最高按 5 倍赔偿；损失算不清的，最高可判 500 万元。":
+      "Serious willful infringement can cost up to 5 times the damages; where losses can't be worked out, courts can award up to RMB 5 million.",
+    "商业授权只能向作者购买。未经授权商用须停用并赔偿，故意侵权情节严重的最高 5 倍。":
+      "Commercial licenses are sold only by the author. Unlicensed commercial use must stop and pay damages, up to 5 times for serious willful infringement.",
+    // 「关于」页授权那张卡（app-06.js）。Copyright 那一行是许可证要求原样保留的声明，人名不翻
+    "授权": "License",
+    "正在读这台的授权状态…": "Reading this machine's license status…",
+    // 英文界面只留英文名：译文里不许有汉字（testI18n 那道闸）。许可证原文里的那行版权声明不经过这里，照原样在 LICENSE 里
+    "Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)。按": "Copyright (c) 2026 DeveloperCatUncle. Released under",
+    "个人非商用，学校、科研、公益、政府机构 —— 免费，不用问。":
+      "Personal non-commercial use, schools, research, non-profit and government bodies — free, no need to ask.",
+    "公司使用（哪怕只在内部用）、个人商用（接单、做付费产品）—— 要买商业授权。":
+      "Company use (even internal only) and personal commercial use (client work, paid products) — buy a commercial license.",
+    "做 SaaS、打包进要卖的产品、给客户交付或定制 —— 同样要买。":
+      "Running it as SaaS, bundling it into products you sell, client delivery or custom work — also needs a license.",
+    "公司可以先免费试用 30 天；长期用、或用到实际业务上，就得买。":
+      "Companies can evaluate free for 30 days. For longer use, or use in real business, buy a license.",
+    "名称「OpenWorkBuddy」和项目标志不在授权范围内，换名换标出售要另谈。":
+      "The OpenWorkBuddy name and logo aren't covered by the license. Rebranding for sale needs a separate deal.",
+    "买授权不解锁任何功能：没有功能锁，不联网验证。": "A license unlocks no features: nothing is locked, and nothing is checked online.",
+    "当前：已授权给": "Current: licensed to",
+    "当前：还没填授权码。买了授权的，由管理员在管理后台「商业授权」页填。":
+      "Current: no license code. If you bought one, an admin enters it on the Commercial license page of the admin console.",
+    "去填授权码": "Enter code",
+    "的商业授权已到期，功能照常能用。续期写信到 contact@aijentra.com。":
+      "— commercial license expired; everything still works. To renew, write to contact@aijentra.com.",
+  })) if (!(zh in DICT.en)) DICT.en[zh] = en;
+  // 带数字、日期、名字的整句。迹象和声明项的名字在句子中间，查一遍词典再拼回去，查不到的原样留着
+  const licName = (s) => lookup(s, "en") || s;
+  PATTERNS.en.push(
+    [/^([\d,]+) 个账号$/, "$1 accounts"],
+    [/^开了 (\d+) 个组织$/, "$1 organizations"],
+    [/^发了 (\d+) 把中转 Key$/, "$1 relay key(s) issued"],
+    [/^现在有 ([\d,]+) 个(，超了)?。$/, (m) => `There are ${m[1]} now${m[2] ? ", over the limit" : ""}.`],
+    [/^已授权给 (.+)$/, "Licensed to $1"],
+    [/^填着的码验不过：(.+)$/, (m) => `The code on file doesn't verify: ${licName(m[1])}`],
+    [/^选「(.+)」？$/, (m) => `Pick “${licName(m[1])}”?`],
+    [/^商业授权 (\d{4}-\d{2}-\d{2}) 已到期$/, "The commercial license expired on $1"],
+    [/^授权 (\d+) 席，现在有 (\d+) 个账号$/, "Licensed for $1 seats, and there are $2 accounts now"],
+    [/^公司评估试用从 (\d{4}-\d{2}-\d{2}) 起已超过 (\d+) 天$/, "The company evaluation started on $1 and is past $2 days"],
+    [/^声明之后多了：(.+)$/, (m) => "New since the declaration: " + m[1].split("、").map(licName).join(", ")],
+    // 「关于」页当前状态那行：「· 范围 · 有效期到 日期」。范围只认这几个，免得这条把别处的「· 什么」都吞了
+    [/^· (内部使用|对外提供服务|给客户交付|打包分发|不限商业用途)(?: · 有效期到 (\d{4}-\d{2}-\d{2}))?$/,
+      (m) => `· ${licName(m[1])}` + (m[2] ? ` · valid until ${m[2]}` : "")],
+  );
 
   // ---------- 企业管理后台：带数字/日期/名字的整句 ----------
   PATTERNS.en.push(

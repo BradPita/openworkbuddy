@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 账号体系 + 积分体系 + 用量流水 — Web / CLI / IM / 定时任务 共用一套账本。
@@ -317,6 +319,14 @@ function hasUsers(st) {
 /** 这台机器上一共几个账号。admin.js 用它判「这还算不算一个人的桌面」 */
 function userCount(st) {
   return (st || loadUsers()).users.length;
+}
+/**
+ * 占席位的账号有几个：停用的不算，等审核的算，没 status 的老账号当在用。
+ * 跟 memberStats 的 used 同一个口径，只是不分组织。商业授权拿它比授权码上的席位——
+ * 离职走的是停用、不删账号，按 userCount 数，走两个人就「超席」了
+ */
+function seatCount(st) {
+  return (st || loadUsers()).users.filter((u) => (u.status || "active") !== "disabled").length;
 }
 // ---------- 二次验证（TOTP） ----------
 // 算术在 totp.js（对着 RFC 4226 / 6238 的标准向量测过），这儿只管「存在哪、怎么算数」。
@@ -1893,6 +1903,27 @@ function migrateLegacySettings() {
   return true;
 }
 
+/**
+ * 授权状态里能公开的那一点（授权给了谁）。用到才 require：license.js 数账号时会回头 require 本文件。
+ * 读不出来就当没授权——这一行字不该让登录页整个起不来。
+ * 没登录只给登录页用得上的三个字段：授权范围和到期日是合同条款，部署在公网上时
+ * 谁打开登录页都看得见；「关于」页要的那两个字段，登录之后才给
+ */
+function publicLicense(authed) {
+  // 带 .js：不分大小写的文件系统上 "./license" 会读到 LICENSE 那份许可证全文，见 admin.js 顶上
+  try {
+    const p = require("./license.js").publicStatus();
+    if (authed) return p;
+    // 按名单挑，不按黑名单删：publicStatus 以后多一个字段，也不会自己漏到登录页上
+    const out = { licensed: p.licensed, licensee: p.licensee };
+    if ("expired" in p) out.expired = p.expired;
+    return out;
+  } catch (e) {
+    console.warn("[授权] 读授权状态失败：" + e.message);
+    return { licensed: false, licensee: "" };
+  }
+}
+
 function createRouter(opts) {
   // express 只有这儿用：命令行每次起一个任务都会 require 本文件，顶上加载 express 白花 25–35 ms
   const router = require("express").Router();
@@ -1919,6 +1950,8 @@ function createRouter(opts) {
       can_admin: canAdmin(user),
       multi_tenant: org.multiTenant(),
       org: user ? { id: o.id, name: o.name, ...org.planInfo(o) } : null,
+      // 登录页底下那一行：授权给了谁。没登录也给——那一行本来就是写给每个要登录的人看的
+      license: publicLicense(!!user),
     });
   });
 
@@ -2267,6 +2300,7 @@ module.exports = {
   fixLegacyCache,
   hasUsers,
   userCount,
+  seatCount,
   defaultUser,
   userFromReq,
   creditsFor,

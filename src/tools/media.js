@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 媒体那几样：生图 / 生视频 / 配音 / 转写 / 看图 / HTML 截图，外加花钱那三样的生成结果缓存和计量。

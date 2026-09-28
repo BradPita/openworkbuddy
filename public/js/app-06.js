@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 function renderSecurityPane(pane, s) {
   const sec = s.security || {};
   const joinLines = (a) => esc((a || []).join("\n"));
@@ -869,15 +871,22 @@ function renderAboutPane(pane) {
     </div>
     <div class="card-item">
       <div class="t">${ic("scale")} 授权</div>
-      <div class="d">著作权人：开发者猫叔。本软件按 <b>PolyForm Noncommercial License 1.0.0</b> 发布：<br>
-      自己用、学习研究、学校与公益机构用 —— 免费，不用问。<br>
-      公司或任何营利用途 —— 需购买商业授权。<br>
-      名称「OpenWorkBuddy」和项目标志不在授权范围内，换名换标对外售卖要另谈。<br>
-      买授权不解锁功能，买的是商用许可和支持。<br>
+      <div class="d" id="ab-lic-now" style="margin-bottom:8px">正在读这台的授权状态…</div>
+      <div class="d">Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)。按 <b>PolyForm Noncommercial 1.0.0</b> 发布：<br>
+      个人非商用，学校、科研、公益、政府机构 —— 免费，不用问。<br>
+      公司使用（哪怕只在内部用）、个人商用（接单、做付费产品）—— 要买商业授权。<br>
+      做 SaaS、打包进要卖的产品、给客户交付或定制 —— 同样要买。<br>
+      公司可以先免费试用 30 天；长期用、或用到实际业务上，就得买。<br>
+      商业授权只能向作者购买，别处买的不算授权。<br>
+      <b>未经授权商用属侵犯著作权：须停止使用、赔偿损失。</b><br>
+      故意侵权情节严重的，最高按 5 倍赔偿；损失算不清的，最高可判 500 万元。<br>
+      名称「OpenWorkBuddy」和项目标志不在授权范围内，换名换标出售要另谈。<br>
+      买授权不解锁任何功能：没有功能锁，不联网验证。<br>
       部署配置、脚本、技能模板等示例代码按 MIT 发布，可商用。<br>
       <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noreferrer">商业授权怎么谈</a>
       · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE-ECOSYSTEM.md" target="_blank" rel="noreferrer">哪些按 MIT</a>
-      · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE" target="_blank" rel="noreferrer">许可证全文</a></div>
+      · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE" target="_blank" rel="noreferrer">许可证全文</a>
+      · <a class="link" href="mailto:contact@aijentra.com" target="_blank" rel="noreferrer">contact@aijentra.com</a></div>
     </div>
     <div class="card-item">
       <div class="t">${ic("message-circle")} 帮助与反馈</div>
@@ -885,6 +894,7 @@ function renderAboutPane(pane) {
       遇到问题：先看 设置→安全中心→审计中心 是否被拦；LLM 报 503 是上游繁忙，可在 设置→模型 换渠道。</div>
     </div>`;
   pane.querySelector("#about-onb").onclick = () => { mask.classList.remove("show"); openOnboarding(); };
+  drawAboutLicense(pane.querySelector("#ab-lic-now"));
 
   // 更新检查：默认用 6 小时缓存，点按钮才真去问 GitHub
   const upVer = pane.querySelector("#ab-ver"), upHow = pane.querySelector("#ab-up-how");
@@ -925,6 +935,36 @@ function renderAboutPane(pane) {
   };
   pane.querySelector("#ab-up-btn").onclick = () => loadUpdate(true);
   loadUpdate(false);
+}
+
+/**
+ * 关于页授权卡顶上那行：这台现在是什么授权状态。
+ *
+ * 只读 /api/auth/state 里公开的那一小块（授权给谁、到没到期），不去打管理后台那条接口——
+ * 那条只有平台管理员打得开，普通成员一打就是 403，这一行就成了一句报错。
+ * 读不到时照「还没填授权码」讲：说错成「已授权」的代价，比多提醒一句大得多。
+ * 名字来自授权码，走 textContent，不拼进 HTML。
+ */
+function drawAboutLicense(el) {
+  if (!el) return;
+  const put = (parts) => el.replaceChildren(...parts.filter((p) => p !== ""));
+  const bold = (t) => Object.assign(document.createElement("b"), { textContent: String(t) });
+  fetch("/api/auth/state").then(r => r.json()).catch(() => null).then((d) => {
+    const lic = (d && d.license) || null;
+    if (lic && lic.licensed && lic.licensee) {
+      const extra = [lic.scope_label, lic.expires_at ? "有效期到 " + String(lic.expires_at).slice(0, 10) : ""].filter(Boolean).join(" · ");
+      put(["当前：已授权给 ", bold(lic.licensee), extra ? " · " + extra : ""]);
+    } else if (lic && lic.expired && lic.licensee) {
+      put(["当前：", bold(lic.licensee), " 的商业授权已到期，功能照常能用。续期写信到 contact@aijentra.com。"]);
+    } else {
+      // 后台「商业授权」页只对默认组织的管理员开；前端手上现成的只有 platform_owner（机主）这一个标记，
+      // 就只给机主摆链接。给别人摆一个点了就被弹回后台首页的链接，不如只说一句该找谁
+      const owner = typeof amPlatformOwner === "function" && amPlatformOwner();
+      const go = owner ? Object.assign(document.createElement("a"), { className: "link", href: "/admin.html#/license", textContent: "去填授权码" }) : "";
+      if (go) go.style.whiteSpace = "nowrap"; // 四个字折成两行，看着像两个链接
+      put(["当前：还没填授权码。买了授权的，由管理员在管理后台「商业授权」页填。", go ? " " : "", go]);
+    }
+  });
 }
 
 /**

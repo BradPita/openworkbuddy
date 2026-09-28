@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 自己写的斜杠命令：把常用的一段话存成 `.openworkbuddy/commands/<名字>.md`，终端里敲 `/<名字> 参数` 就发出去。

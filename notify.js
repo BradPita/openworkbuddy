@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /** 结果推送 — 企业微信群机器人 + 钉钉自定义机器人（支持加签），任务/定时任务完成通知共用。 */
 

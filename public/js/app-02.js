@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /**
  * 这条模型现在点下去能不能真跑起来。
  * 本机服务（Ollama 之类）不要 Key，填不填都算能用；其余看 has_key——

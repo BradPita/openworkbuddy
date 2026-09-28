@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 端到端测试 — 用"脚本化模拟 LLM"驱动 Agent 运行时完整跑一遍，不需要真实模型 API Key。
@@ -10359,6 +10361,37 @@ async function testEmbedFailoverResilience() {
     assert.strictEqual(skip.length, 1, "跳过了却一声不吭（用户不知道语义召回为什么没了）");
     assert(/Access denied/.test(skip[0]) && /分钟后自动重试/.test(skip[0]), "跳过的理由和重试时机没说清：" + skip[0]);
   } finally { console.warn = w0; srv.close(); deadEmbedChannels.clear(); }
+
+  // ②c 一次塞太多条：DashScope 的 text-embedding-v4 一次最多 10 条，memory 补向量一批 16 条，
+  //     整批 400「batch size is invalid」→ 被当成渠道不通拉黑 → 明明 key 好好的却退到了 Ollama
+  const { embedCandidates } = require("../llm")._internals;
+  const ds = embedCandidates({ models: [{ name: "通义", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "sk-test-not-a-real-key" }] });
+  assert.strictEqual(ds[0].batch, 10, "DashScope 渠道的单次条数上限不是 10");
+  const sizes = [];
+  const srv2 = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      const input = JSON.parse(body).input;
+      sizes.push(input.length);
+      if (input.length > 10) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: "batch size is invalid, it should not be larger than 10.: input.contents" } }));
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: input.map((_, i) => ({ index: i, embedding: [i, 1] })) }));
+    });
+  });
+  await new Promise((r) => srv2.listen(0, "127.0.0.1", r));
+  try {
+    const emb = createEmbedder({ embedding: { base_url: `http://127.0.0.1:${srv2.address().port}/v1`, api_key: "sk-test-not-a-real-key", model: "text-embedding-v4" } });
+    const texts = Array.from({ length: 16 }, (_, i) => `第 ${i} 条`);
+    const out = await emb(texts);
+    assert(out && out.length === 16, "一批 16 条没切开，整批 400 了");
+    assert.deepStrictEqual(sizes, [10, 6], "没按上限切成 10 + 6：" + JSON.stringify(sizes));
+    assert.deepStrictEqual(out[12], [2, 1], "切开后拼回来的顺序乱了");
+    assert(!embedChannelDead({ base_url: `http://127.0.0.1:${srv2.address().port}/v1`, api_key: "sk-test-not-a-real-key", model: "text-embedding-v4" }), "好好的渠道被拉黑了");
+  } finally { srv2.close(); deadEmbedChannels.clear(); }
 
   // ③ 同一条坏配对每轮都要补，但只该喊一次 —— 否则真正的新问题被重复日志淹了
   const { repairToolPairs, warnedLeakedPairs } = require("../llm")._internals;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 /**
  * 录完 demo 把 GIF 挂进两份 README 的首屏（徽章 / Star 那段之后、第一条 --- 分隔线之前）。
  * 已经挂过就不动；找不到分隔线就不猜位置，交给人手挂。

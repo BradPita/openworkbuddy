@@ -26,7 +26,11 @@ ws.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4
 ws.views = [{ state: "frozen", ySplit: 1 }];
 
 // 数据行
-ws.addRow({ date: "2026-08-01", product: "A", qty: 10, amount: 1234.5 });
+const rows = [
+  { date: "2026-08-01", product: "A", qty: 10, amount: 1234.5 },
+  { date: "2026-08-02", product: "B", qty: 6, amount: 880 },
+];
+ws.addRows(rows);
 
 // 汇总行用公式，并且把自己算好的结果一起写进 result
 const last = ws.rowCount;
@@ -39,7 +43,8 @@ ws.getRow(ws.rowCount).font = { bold: true };
 // 金额列格式
 ws.getColumn("amount").numFmt = "#,##0.00";
 
-await book.xlsx.writeFile("报表.xlsx");
+// run_node 按 CommonJS 跑，顶层不能写 await
+book.xlsx.writeFile("报表.xlsx").then(() => console.log("已生成 报表.xlsx"));
 ```
 
 ## 规范

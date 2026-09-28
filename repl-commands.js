@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * `openworkbuddy` 交互模式里的那张命令表 —— 纯的：不碰 process、不碰 fs、不打印、不读 argv。

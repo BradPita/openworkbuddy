@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* ============================================================================
  * app-00-ui.js —— 界面底层小工具，排在 app-01 之前，后面所有模块直接用
  *   ic(name)  取一个 lucide 图标（sprite 在 index.html 顶部，离线可用）

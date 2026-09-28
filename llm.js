@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * LLM 适配层 — 五种通用接口格式：OpenAI Chat Completions（DeepSeek/Qwen/GLM/Kimi/vLLM…）、
@@ -1473,12 +1475,16 @@ function createLLM(config) {
 // 厂商（DashScope/智谱/OpenAI/Ollama 本地）复用它的 key 和域名。DeepSeek/OpenRouter 压根
 // 没有 embeddings 接口，配了也是白配，所以不瞎猜。一条都找不到就返回 null——
 // 记忆召回自动退回关键词匹配，功能不缺，只是召回没那么聪明。
+// batch = 这家一次请求最多收几条。DashScope 的 text-embedding-v4 超过 10 条整批 400
+// （batch size is invalid），而 4xx 会被当成「这条渠道不通」直接拉黑——所以得按各家的上限切开发。
 const EMBED_KNOWN = [
-  { match: /dashscope\.aliyuncs\.com/i, model: "text-embedding-v4" },
-  { match: /open\.bigmodel\.cn/i, model: "embedding-3" },
-  { match: /api\.openai\.com/i, model: "text-embedding-3-small" },
-  { match: /localhost:11434|127\.0\.0\.1:11434/, model: "nomic-embed-text" },
+  { match: /dashscope\.aliyuncs\.com/i, model: "text-embedding-v4", batch: 10 },
+  { match: /open\.bigmodel\.cn/i, model: "embedding-3", batch: 64 },
+  { match: /api\.openai\.com/i, model: "text-embedding-3-small", batch: 256 },
+  { match: /localhost:11434|127\.0\.0\.1:11434/, model: "nomic-embed-text", batch: 32 },
 ];
+// 不认识的渠道（设置里显式填的自建网关之类）按最保守的 10 条走：切小了只是多几次请求，切大了整批 400
+const EMBED_BATCH_DEFAULT = 10;
 
 /**
  * 攒一份候选清单而不是只挑一条：配了 Ollama 但没开机、或某条渠道欠费，都不该让记忆召回
@@ -1493,7 +1499,8 @@ function embedCandidates(config) {
     // DashScope 原生 /api/v1 不认 /embeddings，OpenAI 兼容层在 /compatible-mode/v1
     if (/dashscope\.aliyuncs\.com/i.test(b)) b = b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1");
     if (out.some((c) => c.base_url === b && c.model === model)) return;
-    out.push({ base_url: b, api_key: api_key || "", model, label });
+    const batch = (EMBED_KNOWN.find((k) => k.match.test(b)) || {}).batch || EMBED_BATCH_DEFAULT;
+    out.push({ base_url: b, api_key: api_key || "", model, label, batch });
   };
 
   const ec = config.embedding;
@@ -1564,28 +1571,34 @@ function createEmbedder(config) {
 
   let idx = 0, fails = 0, dead = false;
   /** @param {string[]} texts @returns {Promise<number[][]|null>} 失败返回 null，绝不抛出 */
+  /** 一次请求，条数不超过这条渠道的上限 */
+  const embedOnce = async (cfg, texts) => {
+    const resp = await fetch(`${cfg.base_url}/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cleanKey(cfg.api_key, cfg) || "ollama"}` },
+      body: JSON.stringify({ model: cfg.model, input: texts }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) {
+      const err = new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+      // 4xx = 这条渠道压根不给用（没开通/欠费/key 不对/模型不存在），重试三次也是白试
+      if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) err.fatalForChannel = true;
+      throw err;
+    }
+    const data = await resp.json();
+    const out = (Array.isArray(data.data) ? data.data : [])
+      .slice()
+      .sort((a, b) => (a.index || 0) - (b.index || 0))
+      .map((d) => d.embedding);
+    if (out.length !== texts.length || out.some((v) => !Array.isArray(v))) throw new Error("返回的向量条数或形状不对");
+    return out;
+  };
   const embed = async (texts) => {
     if (dead) return null;
     const cfg = cands[idx];
     try {
-      const resp = await fetch(`${cfg.base_url}/embeddings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cleanKey(cfg.api_key, cfg) || "ollama"}` },
-        body: JSON.stringify({ model: cfg.model, input: texts }),
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!resp.ok) {
-        const err = new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-        // 4xx = 这条渠道压根不给用（没开通/欠费/key 不对/模型不存在），重试三次也是白试
-        if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) err.fatalForChannel = true;
-        throw err;
-      }
-      const data = await resp.json();
-      const out = (Array.isArray(data.data) ? data.data : [])
-        .slice()
-        .sort((a, b) => (a.index || 0) - (b.index || 0))
-        .map((d) => d.embedding);
-      if (out.length !== texts.length || out.some((v) => !Array.isArray(v))) throw new Error("返回的向量条数或形状不对");
+      const out = [];
+      for (let i = 0; i < texts.length; i += cfg.batch) out.push(...await embedOnce(cfg, texts.slice(i, i + cfg.batch)));
       fails = 0;
       return out;
     } catch (e) {
@@ -1613,4 +1626,4 @@ function createEmbedder(config) {
 }
 
 module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, contextWindowOf, pingRequest, _internals: {
-  responsesChat, geminiChat, ollamaChat, chatFor, toResponsesInput, toGeminiContents, toOllamaMessages, geminiSchema, ollamaRoot, geminiRoot, ollamaCtx, chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };
+  responsesChat, geminiChat, ollamaChat, chatFor, toResponsesInput, toGeminiContents, toOllamaMessages, geminiSchema, ollamaRoot, geminiRoot, ollamaCtx, chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, EMBED_BATCH_DEFAULT, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };

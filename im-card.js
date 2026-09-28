@@ -1,4 +1,6 @@
 // @ts-check
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 飞书里那张「活的」任务卡片长什么样 —— 纯的：给状态、给时刻，吐一份卡片 JSON（schema 2.0）。

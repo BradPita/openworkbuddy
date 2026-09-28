@@ -2,9 +2,14 @@ Required Notice: Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
 OpenWorkBuddy is licensed under the PolyForm Noncommercial License 1.0.0 (below).
 
-In short: personal, hobby, study, academic, non-profit and government use is
-free. Commercial use requires a separate commercial license from the copyright
-holder — see COMMERCIAL-LICENSE.md.
+In short: personal non-commercial use (hobby, study, research), academic,
+non-profit and government use is free. Commercial use — including a company's
+internal use and an individual's paid work — requires a separate commercial
+license from the copyright holder — see COMMERCIAL-LICENSE.md.
+
+Separately from the license terms below, the copyright holder also lets a
+company evaluate the software free for up to 30 days, as long as it is not yet
+used in real business — see COMMERCIAL-LICENSE.md.
 
 Exception: parts of this repository are ADDITIONALLY licensed under the MIT
 License and may be used commercially — deployment and CI configs, helper

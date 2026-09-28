@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* 无限画布 · 状态与节点数据（第 1 片，最先加载）
  *
  * 存储键、节点和连线的定义表、全局画布状态，以及读写节点数据的小工具：

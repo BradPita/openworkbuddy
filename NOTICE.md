@@ -1,6 +1,7 @@
 # 第三方组件与署名（NOTICE）
 
-OpenWorkBuddy 自身按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，商业授权见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+OpenWorkBuddy 自身 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)，按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，
+公司使用和个人商用需要商业授权，见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
 但打包出去的桌面版里还住着一批别人的代码和资源，它们各自的许可照旧有效。这份文件就是把它们一条条写清楚——
 谁、哪个版本、什么许可、去哪拿源码。**发版前如果动了依赖，记得回来改这里。**
 

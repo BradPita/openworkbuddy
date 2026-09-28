@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /**
  * 项目规范：工作目录里（以及往上直到 git 仓库根）的 AGENTS.md / CLAUDE.md。
  *

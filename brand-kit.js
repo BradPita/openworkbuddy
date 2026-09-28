@@ -1,4 +1,6 @@
 // @ts-check
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 产品品牌档案（brand kit + 事实卡）：一个产品的名字、一句话、卖点（带出处）、配色、字体、口吻、禁用词……

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* 无限画布 · 时间线（第 8 片）
  *
  * 按放映顺序排的时间线、连播预览、角色面板、画布内查找、合成完成的提醒。

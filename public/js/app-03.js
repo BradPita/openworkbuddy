@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /**
  * 缓存命中率。agent 每走一步都要把整段上下文重发一遍，真实账本里 prompt 和 completion
  * 是 64:1 —— 这一大坨到底是全价重买还是走了缓存，光看 tokens 总数完全看不出来，
@@ -456,9 +458,36 @@ function showTwoFactorGate(user) {
   renderTwoFactorBox(card.querySelector("#tfa-box"), { gate: true });
 }
 
+/**
+ * 登录卡最底下那行授权说明。
+ *
+ * 登录页是每个用这套软件的人都一定会经过的一屏（管理员发邀请链接过来的同事也一样），
+ * 「个人非商用免费、公司和个人商用要买授权」写在这里，比只写在「关于」页里有用得多。
+ * 买过授权的换成一句「已授权给 某某」：对他们是确认，对来访的人是交代。
+ * 授权方的名字来自服务端读出的授权码，一律走 textContent，不拼进 HTML。
+ */
+function renderAuthLicense(lic) {
+  const el = document.getElementById("auth-lic");
+  if (!el) return; // 等审核 / 二次验证那几屏会把整张卡换掉，这一行跟着没了，不用补
+  el.textContent = "";
+  const link = () => Object.assign(document.createElement("a"), {
+    href: "https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md",
+    target: "_blank", rel: "noopener", textContent: "授权说明",
+  });
+  if (lic && lic.licensed && lic.licensee) {
+    el.append("已授权给 ", Object.assign(document.createElement("b"), { textContent: String(lic.licensee) }));
+  } else if (lic && lic.expired && lic.licensee) {
+    // 到期了照样能用（没有功能锁），但得让人知道，续不续由他们自己定
+    el.append(Object.assign(document.createElement("b"), { textContent: String(lic.licensee) }), " 的商业授权已到期 · ", link());
+  } else {
+    el.append("个人非商用免费 · 公司和个人商用需授权 · ", link());
+  }
+}
+
 async function initAuth() {
   const st = await fetch("/api/auth/state").then(r => r.json()).catch(() => null);
   if (!st) return; // 服务器没起来时不挡界面
+  renderAuthLicense(st.license);
   canRegister = !!st.open_register;
   creditsOn = !!st.credits_enabled;
   if (!st.authed) { showAuth(st.users === 0); return; }
@@ -652,10 +681,42 @@ async function maybeOnboard() {
 }
 
 // 设置 → 关于 里「重新打开新手引导」也走这里；传 st 则直接用已拉好的体检表
+/**
+ * 向导第一屏顶上那张授权说明卡。
+ *
+ * 刚装好、第一次打开，是「我属不属于免费那一类」最该被说清楚的时候——等人把它用进公司业务里
+ * 半年才知道，就晚了。所以放在第一步最上面，跟政策原文一个口径（COMMERCIAL-LICENSE.md）。
+ * 只是一张说明：不加勾选框、不加「我已阅读」，也不单占一步（步骤数有闸门盯着），看完照常往下填 Key。
+ * 买过授权的只留一行「已授权给 某某」，不再对他们念一遍条款。
+ */
+const ONB_LIC_URL = "https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md";
+const ONB_LIC_MAIL = "contact@aijentra.com";
+/** 授权状态只看 /api/auth/state 里公开的那一小块；拿不到（断网、老服务端）一律按没授权讲政策 */
+function onbLicFetch() {
+  return fetch("/api/auth/state").then(r => r.json()).then(d => (d && d.license) || null).catch(() => null);
+}
+function onbLicCard(lic) {
+  if (lic && lic.licensed && lic.licensee) {
+    return `<div class="onb-lic ok" id="onb-lic">${ic("circle-check")} 已授权给 <b>${esc(lic.licensee)}</b></div>`;
+  }
+  const head = lic && lic.expired && lic.licensee
+    ? `<b>${esc(lic.licensee)}</b> 的商业授权已到期，功能照常能用`
+    : "<b>先看一眼：你属不属于免费的那一类</b>";
+  return `<div class="onb-lic" id="onb-lic">
+    <div>${ic("scale")} ${head}</div>
+    <div>个人非商用，学校、科研、公益、政府机构：免费用。</div>
+    <div>公司使用（哪怕只在内部）、个人商用（接单、做付费产品）：要买商业授权。</div>
+    <div>公司可以先免费试用 30 天，用到实际业务上就得买。</div>
+    <div><b>商业授权只能向作者购买；未经授权商用属侵权，须停止使用并赔偿。</b></div>
+    <div><a href="${ONB_LIC_URL}" target="_blank" rel="noopener">授权说明${ic("arrow-up-right")}</a> · <a href="mailto:${ONB_LIC_MAIL}" target="_blank" rel="noopener">${ONB_LIC_MAIL}</a></div>
+  </div>`;
+}
+
 async function openOnboarding(st) {
+  const licP = onbLicFetch(); // 跟体检表并排去拿，不多等一趟
   if (!st || !st.models) st = await fetch("/api/onboarding?probe=1").then(r => r.json()).catch(() => null);
   if (!st || st.error || !st.models) { toast("拿不到配置体检表，服务没起来？"); return; }
-  onbState = { st, step: 0, skipped: new Set(), dir: "" };
+  onbState = { st, step: 0, skipped: new Set(), dir: "", lic: await licP };
   renderOnb();
   document.getElementById("onb-mask").classList.add("show");
 }
@@ -731,6 +792,7 @@ function renderOnbBrain(body) {
   const engs = st.engines || [];
   const installed = engs.filter(e => e.installed);
   body.innerHTML = `
+    ${onbLicCard(onbState.lic)}
     ${onbHead("先接上一个大模型", "OpenWorkBuddy 自己不含模型。填一家服务商的 API Key，或者直接用你电脑上已登录的 Claude Code / Codex。", "必需")}
     ${st.brain.ok ? `<div class="onb-ok" id="onb-brain-ok">${ic("circle-check")} 已接上 <b>${esc(st.brain.name)}</b>${st.brain.model ? ` · ${esc(st.brain.model)}` : ""}<a id="onb-brain-change">换一个</a></div>` : ""}
     <div id="onb-brain-form" ${st.brain.ok ? "hidden" : ""}>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 网页演示录屏 record_web_demo —— 纯函数那一层（lib/web-demo-plan.js）+ 马赛克（lib/demo-mask.js）

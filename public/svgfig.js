@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 // ================= 内联 SVG 信息图（流式） =================
 // 模型直接在正文里画 <svg>，界面当图渲染而不是当代码贴出来。流式输出时 SVG 是一点点吐出来的，
 // 把半截内容补全再渲染，就能看着图自己长出来——比对着满屏尖括号干等强得多。

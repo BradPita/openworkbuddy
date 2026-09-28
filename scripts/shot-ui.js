@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 "use strict";
 /**
  * 给 README 拍界面静图 —— 零成本、零隐私风险。

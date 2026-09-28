@@ -1,4 +1,6 @@
 #!/usr/bin/env electron
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 /**
  * 首屏 demo 录屏：用 Electron 离屏渲染把「输入任务 → 助理干活 → 出结果」录成 GIF（+ mp4）。
  *

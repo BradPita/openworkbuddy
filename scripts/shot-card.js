@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 /**
  * 给闪卡网页拍效果图：真浏览器打开 127.0.0.1:4173，等 three 渲染完，
  * 拖到指定角度再截。要几张角度就传几个角度。

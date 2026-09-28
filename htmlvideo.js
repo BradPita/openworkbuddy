@@ -1,4 +1,6 @@
 // @ts-check
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * HTML 动画 → mp4：render_motion 的执行层。画幅、帧时间表、虚拟时钟这些纯逻辑都在 motion-clock.js，

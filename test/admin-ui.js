@@ -1,10 +1,12 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 企业管理后台（/admin.html + public/js/admin.js）的真浏览器测试。
  *
  * 跑法：npx electron test/admin-ui.js（由 test/e2e.js 拉起；没装 electron 就整体跳过）
  *
- * 为什么非得开真 Chromium：这一页是 19 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
+ * 为什么非得开真 Chromium：这一页是 20 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
  * 「某一页 render 里读了个 undefined，整块白屏」——这种错在 node 里一个字节都测不出来，
  * 只有真的把每一页点一遍、盯着 console 有没有报错才看得见。
  *
@@ -208,6 +210,47 @@ const GOTO = (id) => `(async () => {
            html: b.innerHTML.slice(0, 400) };
 })()`;
 
+// ---------- 商业授权页的几种状态 ----------
+// 私钥不在仓库里，签不出真码，所以「有码」的几种直接喂给 PAGES.license.render。
+// 字段照 license.js status() 的形状写；中文串照服务端原样抄（KINDS / signalsOf / why），
+// 英文扫描那边要的就是「服务端原话到了英文界面也翻得出来」。授权方名字用英文：带汉字会被当成漏翻
+const LIC = (() => {
+  const kinds = [
+    { id: "personal", label: "个人自用", hint: "学习、研究、业余项目，没有商业用途" },
+    { id: "nonprofit", label: "非营利机构", hint: "学校、科研、公益或政府机构" },
+    { id: "evaluation", label: "公司评估试用", hint: "还没用在实际业务上，最长 30 天" },
+  ];
+  const sig = [{ key: "accounts_3", label: "3 个账号", strong: true }, { key: "orgs", label: "开了 2 个组织", strong: true },
+               { key: "feishu", label: "接了飞书", strong: false }];
+  const decl = (kind, label, keys) => ({ kind, label, by: "laoban", at: "2026-08-01T02:00:00.000Z", signals: keys,
+                                         seen: keys.map((k) => sig.find((s) => s.key === k).label) });
+  const all = sig.map((s) => s.key);
+  const base = { code_error: "", declaration: null, signals: sig, team_like: true, attention: false, why: "", users: 3, kinds };
+  return {
+    // 到期 + 超席 + 声明过「个人自用」：待办是到期那条，跟声明无关，「已选」不该变成「重新选」
+    expired: { ...base, state: "expired", declaration: decl("personal", "个人自用", all), attention: true, why: "商业授权 2026-02-01 已到期", why_kind: "expired",
+               license: { id: "L-1", licensee: "<img src=x onerror=alert(1)>Bad Co", scope: "internal", scope_label: "内部使用", seats: 2,
+                          issued_at: "2026-01-01", expires_at: "2026-02-01", note: "<script>x</script>", expired: true } },
+    valid: { ...base, state: "licensed", signals: [], team_like: false, users: 1,
+             license: { id: "L-2", licensee: "<b>Good Co</b>", scope: "all", scope_label: "不限商业用途", seats: 0,
+                        issued_at: "2026-01-01", expires_at: "", note: "", expired: false } },
+    badCode: { ...base, state: "unlicensed", license: null, code_error: "签名对不上：这串码和作者签发的不一致", attention: true, why: "填着的授权码验不过了", why_kind: "bad_code" },
+    // 评估满期：迹象跟声明时一样，待办只可能是满期
+    evalOver: { ...base, state: "declared", license: null, declaration: decl("evaluation", "公司评估试用", all), attention: true,
+                why: "公司评估试用从 2026-08-01 起已超过 30 天", why_kind: "eval_expired" },
+    // 满期又多了新迹象：服务端先判满期（why_kind 说了算），不能因为多了迹象就摆出「重新选」
+    evalOverFresh: { ...base, state: "declared", license: null, declaration: decl("evaluation", "公司评估试用", ["accounts_3"]), attention: true,
+                     why: "公司评估试用从 2026-08-01 起已超过 30 天", why_kind: "eval_expired" },
+    // 开始时间读不出来：试用照样算结束，但别说成「满 30 天」
+    evalBadStart: { ...base, state: "declared", license: null, declaration: decl("evaluation", "公司评估试用", all), attention: true,
+                    why: "评估试用的开始时间读不出来", why_kind: "eval_bad_start" },
+    // 声明之后多了新迹象：这是唯一一种重选同一项就能消掉的待办
+    fresh: { ...base, state: "declared", license: null, declaration: decl("personal", "个人自用", ["accounts_3"]), attention: true,
+             why: "声明之后多了：开了 2 个组织、接了飞书", why_kind: "fresh_signals" },
+  };
+})();
+const RENDER_LIC = (d) => `PAGES.license.render(${JSON.stringify(d)})`;
+
 (async () => {
   await listening;
   await electronApp.whenReady();
@@ -233,14 +276,14 @@ const GOTO = (id) => `(async () => {
   r = await call("POST", "/api/auth/login", { body: { username: "kuaiji", password: auditorPw } });
   const auditor = r.cookie;
 
-  // ================= 1. 管理员：19 个面板一个一个点过去 =================
+  // ================= 1. 管理员：20 个面板一个一个点过去 =================
   console.log("\n【1】平台管理员：每一页都真渲染出东西，且 console 干净");
   const A = await openAdmin(boss, "boss");
   ok("首屏就有内容，不是白屏", (await A.js(`document.getElementById("ad-body").textContent.trim().length > 40`)));
   ok("标题写的是这个组织的名字", /企业管理后台/.test(await A.js(`document.title`)), await A.js(`document.title`));
 
   const IDS = ["home", "security", "sub", "usage-member", "usage-org", "usage-app", "usage-detail", "relay", "stats",
-               "members", "pending", "roles", "basic", "net", "meter", "models", "orgs", "audit", "integration"];
+               "members", "pending", "roles", "basic", "net", "meter", "models", "orgs", "license", "audit", "integration"];
   const seen = [];
   for (const id of IDS) {
     const res = await A.js(GOTO(id));
@@ -248,16 +291,16 @@ const GOTO = (id) => `(async () => {
     if (res.len < 30) throw new Error(`【${id}】几乎是空的（${res.len} 字）：` + res.html);
     seen.push(`${id}=${res.len}`);
   }
-  ok("19 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 19, seen.join(" "));
-  ok("点完 19 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
+  ok(`${IDS.length} 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）`, seen.length === 20, seen.join(" "));
+  ok(`点完 ${IDS.length} 页，console 一条 error 都没有`, A.errs.length === 0, A.errs);
 
   // ================= 1.2 切成英文：整个后台不许剩中文 =================
   // 这个后台以前压根没引 i18n.js——工作台切成 English，点进管理后台还是满屏中文。
-  // 一页一页人眼看是看不过来的（19 页、五百多条），所以这里按机器判：切到英文，
-  // 把 19 页全走一遍，DOM 里但凡还剩一个汉字就算漏。
+  // 一页一页人眼看是看不过来的（20 页、五百多条），所以这里按机器判：切到英文，
+  // 把 20 页全走一遍，DOM 里但凡还剩一个汉字就算漏。
   // 只有一类允许剩下：用户自己起的名字——组织名、部门名、渠道名、模型名。
   // 那些是数据不是界面，翻了等于把人家的渠道给改了名。
-  console.log("\n【1.2】界面语言：切成英文之后，19 页里不许再剩下界面中文");
+  console.log("\n【1.2】界面语言：切成英文之后，20 页里不许再剩下界面中文");
   {
     const 等 = (ms) => ` new Promise(r=>setTimeout(r,${ms}))`;
     const 用户起的名 = ["我的团队", "华东分公司", "市场部", "火山方舟", "本机 Ollama", "内网网关", "方舟-主力", "OR-备用"];
@@ -305,9 +348,18 @@ const GOTO = (id) => `(async () => {
 
     const 剩 = await 扫全部(L);
     const 真漏 = 剩.filter((s) => !用户起的名.some((n) => s.includes(n)));
-    ok(`★切成英文，19 页扫下来一条界面中文都不剩★ 剩下的 ${剩.length} 条全是用户自己起的名字`
+    ok(`★切成英文，${IDS.length} 页扫下来一条界面中文都不剩★ 剩下的 ${剩.length} 条全是用户自己起的名字`
        + "（组织 / 部门 / 渠道 / 模型），那是数据不是界面",
        真漏.length === 0, 真漏.slice(0, 12));
+
+    // 商业授权页上面只扫到了「没码、没声明」那一种。到期、有效、码验不过、试用满期、多了新迹象
+    // 这几种在测试数据里造不出来（签不出真码），直接把 render 的结果放进页面，让翻译器照常翻一遍再扫
+    for (const [k, d] of Object.entries(LIC)) {
+      await L.js(`document.getElementById("ad-body").innerHTML = ${RENDER_LIC(d)}; ` + 等(150));
+      const 漏 = (await L.js(扫一页)).filter((s) => !用户起的名.some((n) => s.includes(n)));
+      ok(`商业授权页「${k}」这一种，切成英文也一条界面中文都不剩`, 漏.length === 0, 漏.slice(0, 8));
+    }
+    await L.js(`route(true).then(() => 1)`);
 
     // 数字的写法也得跟着变：中文按「万」分档，英文按 k / M 分档。
     // 判据不能是「页面上有没有『万』字」——这份测试数据只有 2450 tokens，本来就走不到万那一档，
@@ -467,6 +519,96 @@ const GOTO = (id) => `(async () => {
   const forced = (await call("GET", "/api/admin/members", { cookie: boss })).json.members.find((u) => u.username === "xiaolan");
   ok("反向对照：明写了角色就听明写的（模板是默认值，不是强制）", forced && forced.role === "member", forced);
 
+  // ================= 1.8 商业授权：提醒挂得出来、处理得掉，处理的那一下不能是续期 =================
+  // 这页管的是「公司在用却没买授权」这件事，提醒要够显眼，又不能读着像催款单；
+  // 最容易坏的是按钮：试用满 30 天那一行要是还摆一颗「重新选」，点一下就续了一个月。
+  // 上面造的数据里有好几个账号、两个组织，服务端会判成「像团队在用」，首页那条待办正好现成
+  console.log("\n【1.8】商业授权：首页提醒 → 授权页 → 填码 / 选声明；满期那一行不能再点");
+  {
+    const err0 = A.errs.length;
+    await A.js(GOTO("home"));
+    ok("首页待办里挂着商业授权（多个账号 + 两个组织 = 像团队在用，又没人做过声明）",
+       await A.js(`!!document.querySelector('.ad-todo a[href="#/license"]')`));
+    const todoTxt = await A.js(`[...document.querySelectorAll(".ad-todo-i")].map(li=>li.textContent).join("|")`);
+    ok("那条待办说的是服务端给的原因，后半句说清功能照常", /看起来是团队在用/.test(todoTxt) && /功能照常/.test(todoTxt), todoTxt);
+    ok("「商业授权：」连冒号整个加粗（冒号单独一个文本节点的话，英文界面会剩一个全角冒号）",
+       await A.js(`[...document.querySelectorAll(".ad-todo b")].some(b=>b.textContent==="商业授权：")`));
+
+    let res = await A.js(GOTO("license"));
+    ok("授权页渲染出正文", res.title === "商业授权" && res.len > 80, res);
+    ok("侧栏里有「商业授权」", await A.js(`!!document.querySelector('.ad-nav-i[href="#/license"]')`));
+    ok("页顶挂着同一条提醒", await A.js(`!!document.querySelector('#ad-body > .ad-wrap > .ui-alert--warn')`));
+    ok("没填码：只有「填授权码」，没有「删掉」", await A.js(`!!document.querySelector("[data-lic-code]") && !document.querySelector("[data-lic-del]")`));
+    ok("没人声明过：三项都能选", (await A.js(`document.querySelectorAll("[data-kind]").length`)) === 3);
+    ok("看到的迹象一条一个徽标", (await A.js(`document.querySelectorAll(".ad-card .ad-row .ui-badge").length`)) >= 2,
+       await A.js(`document.getElementById("ad-body").innerText.slice(0,600)`));
+    ok("页底写着许可证全文和授权细则的链接、联系邮箱", await A.js(`(() => { const b = document.getElementById("ad-body");
+       return !!b.querySelector('a[href$="/LICENSE"]') && !!b.querySelector('a[href$="/COMMERCIAL-LICENSE.md"]') && !!b.querySelector('a[href="mailto:contact@aijentra.com"]'); })()`));
+
+    // 填码：空的在弹层里就挡下；假码让服务端的原话留在弹层上，弹层不关
+    await A.js(`document.querySelector("[data-lic-code]").click(); ` + wait(150));
+    ok("弹层里的输入框提示码长什么样", (await A.js(`document.querySelector("#mf-code").placeholder`)) === "OWB1.…");
+    await A.js(`document.querySelector(".ui-overlay [data-ok]").click(); ` + wait(200));
+    ok("空码不发请求，弹层里直接说", /先把授权码粘进来/.test(await A.js(`document.getElementById("mf-err").textContent`)));
+    await A.js(`document.querySelector("#mf-code").value = "OWB1.abc.def"; document.querySelector(".ui-overlay [data-ok]").click(); ` + wait(500));
+    const bad = await A.js(`({ open: !!document.querySelector(".ui-overlay"), err: document.getElementById("mf-err").textContent })`);
+    ok("假码：弹层不关，服务端的原话留在弹层上", bad.open && bad.err.length > 0, bad);
+    await A.js(`document.querySelector(".ui-overlay [data-x]").click(); ` + wait(150));
+
+    // 选「公司评估试用」：确认框要把「记审计」「商用要买授权」说在前头
+    await A.js(`document.querySelector('[data-kind="evaluation"]').click(); ` + wait(150));
+    const box = await A.js(`document.querySelector(".ui-overlay").textContent`);
+    ok("确认框说了会记进操作审计、实际业务要买授权", /操作审计/.test(box) && /要买授权/.test(box), box);
+    await A.js(`document.querySelector(".ui-overlay [data-ok]").click(); ` + wait(900));
+    ok("选完：这一项变成禁用的「已选」", await A.js(`[...document.querySelectorAll("#ad-body button[disabled]")].some(b=>/已选/.test(b.textContent))`),
+       await A.js(`document.getElementById("ad-body").innerText.slice(0,900)`));
+    const after = await A.js(`document.getElementById("ad-body").textContent`);
+    ok("选完：写着现在的声明和谁选的", /公司评估试用/.test(after) && /laoban/.test(after));
+    ok("选完：页顶提醒撤了", !(await A.js(`!!document.querySelector('#ad-body > .ad-wrap > .ui-alert--warn')`)));
+    await A.js(GOTO("home"));
+    ok("选完：首页那条待办也撤了", !(await A.js(`!!document.querySelector('.ad-todo a[href="#/license"]')`)));
+
+    // 下面几种造不出来（签不出真码、等不了 30 天），直接喂 render
+    const R = async (d) => A.js(RENDER_LIC(d));
+    const bare = async (d) => A.js(`(() => { const t = document.createElement("div"); t.innerHTML = ${RENDER_LIC(d)}; return t.textContent; })()`);
+
+    // 服务端字符串里夹着标签：授权方、备注、验不过的原因都得转义
+    let h = await R(LIC.expired);
+    ok("授权方和备注都转义了（签发时手填的，不能原样进 innerHTML）", !/<img|<script/.test(h) && /&lt;img/.test(h), h.slice(0, 300));
+    ok("到期：「已到期」徽标、席位超了、能删码，没有有效授权时照样问声明", /已到期/.test(h) && /超了/.test(h) && /data-lic-del/.test(h) && /使用声明/.test(h));
+    ok("到期的待办跟声明无关：声明过的那一项还是「已选」，不摆一颗点了也白点的「重新选」",
+       !/重新选/.test(h) && !/data-kind="personal"/.test(h) && /已选/.test(h));
+    h = await R(LIC.valid);
+    ok("有效授权：席位不限、长期，不再问声明，没填备注就不出那一行", /不限/.test(h) && /长期/.test(h) && !/使用声明/.test(h) && !/备注/.test(h));
+    ok("有效授权：授权方名字里的标签原样转义", /&lt;b&gt;Good Co&lt;\/b&gt;/.test(h));
+    h = await R({ ...LIC.badCode, code_error: "签名<对不上>" });
+    ok("码验不过：原话转义后摆出来，能换一张、能删掉", /填着的码验不过：签名&lt;对不上&gt;/.test(h) && /换一张/.test(h) && /data-lic-del/.test(h));
+
+    // ★满期那一行★：选中的是评估试用、待办又是满期，这一行不能再有能点的按钮
+    h = await R(LIC.evalOver);
+    ok("★试用满 30 天：评估那一行没有能点的按钮★ 以前摆的是「重新选」，点一下就又是 30 天",
+       !/data-kind="evaluation"/.test(h), h.slice(0, 400));
+    ok("满期那一行写的是「试用已满 30 天」（禁用），后面跟一句接着用就买授权和联系邮箱",
+       /<button[^>]*disabled[^>]*>试用已满 30 天<\/button>/.test(h) && /接着用就买授权/.test(h) && /mailto:contact@aijentra\.com/.test(h));
+    ok("满期不挡别的两项：个人自用、非营利机构照样能选", /data-kind="personal"/.test(h) && /data-kind="nonprofit"/.test(h));
+    ok("满期那一行不再写「最长 30 天」（写了跟旁边的「已满」对不上）", !/最长 30 天/.test(await bare(LIC.evalOver)));
+    h = await R(LIC.evalOverFresh);
+    ok("★满期又多了新迹象：还是没有能点的评估按钮★ 以前按迹象倒推类别，这种会摆出「重新选」",
+       !/data-kind="evaluation"/.test(h) && /试用已满 30 天/.test(h), h.slice(0, 400));
+    h = await R(LIC.evalBadStart);
+    ok("开始时间读不出来：评估那一行写「试用已结束」、不能点，不说成「满 30 天」",
+       !/data-kind="evaluation"/.test(h) && /<button[^>]*disabled[^>]*>试用已结束<\/button>/.test(h) && !/满 30 天/.test(h), h.slice(0, 400));
+
+    // 反向对照：声明之后多了新迹象——这一种重选同一项才有用（会把现在的迹象记进去）
+    h = await R(LIC.fresh);
+    ok("反向对照：多了新迹象时，选过的那一项是能点的「重新选」", /data-kind="personal"[^>]*>重新选</.test(h), h.slice(0, 400));
+    const seenBadges = await A.js(`(() => { const t = document.createElement("div"); t.innerHTML = ${RENDER_LIC(LIC.evalOver)};
+      const dt = [...t.querySelectorAll(".ad-dl dt")].find((x) => x.textContent === "当时看到");
+      return dt ? dt.nextElementSibling.querySelectorAll(".ui-badge").length : -1; })()`);
+    ok("「当时看到」一条迹象一个徽标，不拿「、」连成一句（连成一句的话英文界面整句对不上）", seenBadges === 3, seenBadges);
+    ok("这一段 console 干净", A.errs.length === err0, A.errs.slice(err0));
+  }
+
   // ================= 2. 审计员：能查账，改不动 =================
   console.log("\n【2】审计员：进得来、看得见，但写操作的控件全禁掉");
   const B = await openAdmin(auditor, "auditor");
@@ -497,6 +639,13 @@ const GOTO = (id) => `(async () => {
     return { total: inputs.length, off: inputs.filter(x => x.disabled).length };
   })()`);
   ok("反向对照：管理员在同一页上控件是能改的（" + (rwA.total - rwA.off) + "/" + rwA.total + " 可用）", rwA.total > 0 && rwA.off === 0, rwA);
+  // 商业授权页对审计员：看得见也改不了。有没有这一页看他在不在平台组织里，
+  // 所以只读那半不靠导航，直接拿他那一版的 render 喂满期和新迹象两种（最可能冒出按钮的两种）
+  for (const k of ["evalOver", "fresh"]) {
+    const h = await B.js(RENDER_LIC(LIC[k]));
+    ok(`审计员看授权页（${k}）：没有填码、删码、选声明的按钮`, !/data-lic-code|data-lic-del|data-kind=/.test(h), h.slice(0, 300));
+  }
+  ok("审计员看满期：那一行只有一枚「试用已满 30 天」的牌子", /试用已满 30 天/.test(await B.js(RENDER_LIC(LIC.evalOver))));
   ok("审计员这一路 console 也是干净的", B.errs.length === 0, B.errs);
 
   // ================= 3. 改一个设置：真存进去了 =================
@@ -769,7 +918,7 @@ const GOTO = (id) => `(async () => {
 
   // ================= 7. 每一颗按钮都真点一下 =================
   // 「渲染得好好的，点下去什么都不发生」是这一页最贵的坏法：按钮在那儿摆着，
-  // 人点三次、以为网慢，然后去别处想办法。上面 19 页各渲染一遍抓不到它——
+  // 人点三次、以为网慢，然后去别处想办法。上面 20 页各渲染一遍抓不到它——
   // 渲染是对的，坏的是 bind 里那一下。
   // 真抓到过一个：成员页的「办离职」在 bind 里读了个只在 render 里存在的变量（shown），
   // 点下去是一句 Uncaught ReferenceError，界面上一点动静都没有。整套后端接口都是好的，
@@ -821,7 +970,7 @@ const GOTO = (id) => `(async () => {
   const deadBtns = clicks.filter((c) => c.err);
   ok("测试自检：真点到了东西（30 颗以上）——数据没造起来的话这一整条就是空断言",
      clicks.length >= 30, { 点了: clicks.length, 覆盖的页: [...new Set(clicks.map((c) => c.page))].length });
-  ok("★19 个面板上的按钮，点下去没有一颗是只在 console 里报个错的★",
+  ok(`★${IDS.length} 个面板上的按钮，点下去没有一颗是只在 console 里报个错的★`,
      deadBtns.length === 0, deadBtns.map((c) => c.page + "/data-" + c.key + "：" + c.err));
 
   // 「办离职」单独再验一次：不光是「没报错」，得真把那张对话框弹出来、交接下拉里有人
@@ -1086,7 +1235,7 @@ const GOTO = (id) => `(async () => {
   }
 
   server.close();
-  console.log(`\n✅ 企业管理后台：18 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 · 审计到顶说得出口、导得全 ${pass} 项通过`);
+  console.log(`\n✅ 企业管理后台：20 面板真渲染 · 商业授权提醒与满期按钮 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 · 审计到顶说得出口、导得全 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });
   clearTimeout(WATCHDOG);
   electronApp.exit(0);

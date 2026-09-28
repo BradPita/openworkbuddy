@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 企业管理后台的前端（/admin.html）。
@@ -494,6 +496,7 @@ const NAV = [
       { id: "models", icon: "sparkles", title: "模型与 Key", sub: "这台服务器用哪些模型、哪把 Key", platform: true },
       { id: "apiquota", icon: "sliders-horizontal", title: "API 与额度", sub: "搜索、生图、生视频这些按次收费的接口，统一配、统一限", platform: true },
       { id: "orgs", icon: "building", title: "组织管理", sub: "新建组织、给别的组织配套餐", platform: true, owner: true },
+      { id: "license", icon: "scale", title: "商业授权", sub: "授权码和使用声明", platform: true },
       { id: "audit", icon: "clock", title: "操作审计", sub: "谁在什么时候改了什么" },
     ],
   },
@@ -514,10 +517,16 @@ PAGES.home = {
   load: async () => {
     // 「额度见底几个人」以前是把整份花名册拉过来前端自己数的——3000 人的组织，
     // 为了首页上一行待办搬 1041 KB。现在概览那趟顺手把这个数一起带回来了
-    const [o, st] = await Promise.all([api("/api/admin/overview"), api("/api/admin/stats")]);
-    return { o, st };
+    // 授权状态只有平台管理员拿得到（别的组织的管理员去要是 403）。它只是首页的一条待办，
+    // 拉不到就当没有——为了一行提醒把整个首页弄成错误挡板，是拿小事砸了大事
+    const [o, st, lic] = await Promise.all([
+      api("/api/admin/overview"),
+      api("/api/admin/stats"),
+      PLATFORM ? api("/api/admin/license").catch(() => null) : null,
+    ]);
+    return { o, st, lic };
   },
-  render: ({ o, st }) => {
+  render: ({ o, st, lic }) => {
     const t = st.totals;
     const seatPct = o.seats.total ? (o.seats.used / o.seats.total) * 100 : 0;
 
@@ -532,6 +541,12 @@ PAGES.home = {
     // 额度见底的人：闸门开着才有意义，关着的时候额度只是记账，拦不住人
     if (o.settings && o.settings.meter_on && o.monthly.dry)
       todo.push({ kind: "warn", icon: "zap", text: `<b>${o.monthly.dry} 个人</b>本月固定额度已用完（${(o.monthly.dry_names || []).map(esc).join("、")}${o.monthly.dry > (o.monthly.dry_names || []).length ? " 等" : ""}），他们现在发不出请求。`, to: "usage-member?dry=1", act: "去充值" });
+    // 商业授权：why 由服务端给（到期、席位超了、像团队在用却没声明……），前端不自己再判一遍。
+    // 后半句说清楚两件事：不锁东西，处理完就不挂了——否则这条读着像催款单。
+    // why 单独包一层：它是服务端拼的句子，跟前后的固定文字分成不同文本节点，词典才能各翻各的。
+    // 冒号收进 <b> 里：单独一个「：」的文本节点词典不收，英文界面上会剩一个全角冒号
+    if (lic && lic.attention)
+      todo.push({ kind: "warn", icon: "scale", text: `<b>商业授权：</b><span>${esc(lic.why)}</span>。<span class="fd">功能照常，处理完就不再提醒。</span>`, to: "license", act: "去处理" });
     if (!t.runs_month)
       todo.push({ kind: "info", icon: "info", text: "本月还没人跑过任务。新部署先去「模型与 Key」检查渠道。", to: PLATFORM ? "models" : "usage-org", act: "去看看" });
     const todoHtml = todo.length
@@ -2368,6 +2383,190 @@ PAGES.orgs = {
             route(true);
           },
         });
+    });
+  },
+};
+
+/* ============ 商业授权（平台管理员）============ */
+/**
+ * 授权码和使用声明。服务端 license.js 文件头写死了几条对外承诺：不锁功能、不联网、不往外发。
+ * 所以这一页也不许有任何「不填就用不了」的暗示——它只把三件事摆清楚：
+ * 授权码填了没有、这台机器看起来像不像团队在用、没授权码的话是谁以什么身份在用。
+ *
+ * 声明卡只在**没有有效授权码**时出现：填了码还让人选「个人自用」，等于问一句已经答过的话。
+ * 列表里故意没有「商业使用」这一项（理由见 license.js 的 KINDS），弹窗里要把这句话说出来。
+ *
+ * 服务端回来的字符串一律 esc：授权给谁、备注是签发时手填的，声明人是登录名，
+ * 验不过的原因里可能夹着别人粘进来的半截码——哪一个都不能原样进 innerHTML。
+ */
+const LICENSE_TERMS_URL = "https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md";
+const LICENSE_TEXT_URL = "https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE";
+const LICENSE_MAIL = "contact@aijentra.com";
+/**
+ * 待办是哪一种。按钮怎么摆得按原因分，类别由服务端给（license.js status() 的 why_kind）。
+ * 不去比 why 的字面：措辞一改、或者界面切成英文，比字面的判断就悄悄失效了。
+ */
+function licWhyKind(d) {
+  return d.attention ? d.why_kind || "" : "";
+}
+PAGES.license = {
+  load: () => api("/api/admin/license"),
+  render: (d) => {
+    const L = d.license;
+    const valid = !!(L && !L.expired);
+    const hasCode = !!(L || d.code_error); // 填着码（哪怕验不过）才有「换一张」「删掉」
+
+    // ---- 授权状态 ----
+    const codeBtns = RO
+      ? ""
+      : `<button class="ui-btn ui-btn--${hasCode ? "outline" : "default"} ui-btn--sm" data-lic-code>${ic(hasCode ? "pencil" : "key")} ${hasCode ? "换一张" : "填授权码"}</button>
+         ${hasCode ? `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-lic-del>${ic("trash")} 删掉</button>` : ""}`;
+    // 席位写成「10 个账号」而不是「10 席」：服务端比的就是账号数，写法跟着判据走
+    const seats = L && L.seats
+      ? `<span class="v ad-num">${num(L.seats)} 个账号</span><div class="fd">现在有 ${num(d.users)} 个${d.users > L.seats ? "，超了" : ""}。</div>`
+      : `<span class="v">不限</span>`;
+    const statusCard = L
+      ? cardT(
+          headRow(
+            secT("已授权给 " + L.licensee, L.expired ? "授权已到期。续上之后把新码换上就行。" : "这台机器上离线验过了。"),
+            `${L.expired ? badge("已到期", "destructive") : badge("有效", "success")}${codeBtns}`
+          ),
+          `<div class="ad-card-b">${dl([
+            ["范围", `<span class="v">${esc(L.scope_label)}</span>`],
+            ["席位", seats],
+            // 日期原样显示：服务端给的是 YYYY-MM-DD，丢进 new Date() 会按 UTC 解析，西半球要差一天
+            ["到期", L.expires_at ? `<span class="v ad-mono">${esc(L.expires_at)}</span>${L.expired ? " " + badge("已到期", "destructive") : ""}` : `<span class="v">长期</span>`],
+            ["编号", `<span class="ad-mono">${esc(L.id || "—")}</span>`],
+            ["签发日期", `<span class="ad-mono">${esc(L.issued_at || "—")}</span>`],
+            ...(L.note ? [["备注", esc(L.note)]] : []),
+          ])}</div>`
+        )
+      : cardT(
+          headRow(
+            secT("还没填授权码", "个人非商用、学校公益免费；公司使用和个人商用都要买授权，公司可免费试用 30 天。"),
+            codeBtns
+          ),
+          d.code_error ? `<div class="ad-card-b">${note(`填着的码验不过：${esc(d.code_error)}`, "warn")}</div>` : ""
+        );
+
+    // ---- 迹象：强的一条就算团队在用，弱的要凑两条（判据在 license.js 的 signalsOf） ----
+    const sig = d.signals || [];
+    const sigCard = cardT(
+      secT("这台机器上看到的", `只在本机算，不往外发。${sig.length ? (d.team_like ? "按这些看，像是团队在用。" : "按这些看，还不像团队在用。") : ""}`),
+      `<div class="ad-card-b">${
+        sig.length
+          ? `<div class="ad-row">${sig.map((s) => badge(s.label, s.strong ? "secondary" : "outline")).join("")}</div>
+             <div class="fd" style="margin-top:10px">带底色的一条就算团队在用，只有边框的要凑两条。</div>`
+          : `<div class="fd">没看到团队在用的迹象。</div>`
+      }</div>`
+    );
+
+    // ---- 使用声明：没有有效授权码时才问 ----
+    let declCard = "";
+    if (!valid) {
+      const cur = d.declaration;
+      const why = licWhyKind(d);
+      // 只有「声明之后多了新迹象」能靠重选同一项消掉：重选会把现在的迹象记进去。
+      // 别的待办（授权码到期、验不过）重选什么都不改，摆一个「重新选」只是让人白点
+      const stale = why === "fresh_signals";
+      // 评估试用满期：这一项不能再给按钮。「处理完就不再提醒」最顺手的那一下要是续期，
+      // 「最长 30 天」就成了点一下续一个月（服务端也不从头算，见 license.js 的 declare）
+      const evalOver = why === "eval_expired" || why === "eval_bad_start";
+      // 开始时间读不出来、或者比现在还晚：试用照样算结束，但不说成「满 30 天」
+      const overLabel = why === "eval_expired" ? "试用已满 30 天" : "试用已结束";
+      const curHtml = cur
+        ? dl([
+            ["现在的声明", `<span class="v">${esc(cur.label)}</span>`],
+            ["谁选的", `<span class="ad-mono">${esc(cur.by || "—")}</span>`],
+            ["什么时候", `<span class="ad-mono">${esc(fmtTs(cur.at))}</span>`],
+            // 一条迹象一个徽标，不拿「、」连成一句：连成一句的话英文界面得整句去匹配，永远对不全
+            ["当时看到", (cur.seen || []).length ? cur.seen.map((s) => badge(s, "outline")).join(" ") : "没看到团队迹象"],
+          ])
+        : `<div class="fd" style="padding:4px 0 8px">还没人选过。</div>`;
+      const kindRows = (d.kinds || [])
+        .map((k) => {
+          const picked = cur && cur.kind === k.id;
+          const over = picked && evalOver;
+          const ctl = RO
+            ? picked ? badge(over ? overLabel : "已选", over ? "destructive" : "success") : ""
+            : over
+            ? `<button class="ui-btn ui-btn--outline ui-btn--sm" disabled>${overLabel}</button>`
+            : picked && !stale
+            ? `<button class="ui-btn ui-btn--outline ui-btn--sm" disabled>${ic("check")} 已选</button>`
+            : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-kind="${esc(k.id)}">${picked ? "重新选" : "选这项"}</button>`;
+          const desc = over ? `${why === "eval_expired" ? "试用满 30 天了" : "试用已结束"}，接着用就买授权：<a href="mailto:${LICENSE_MAIL}">${LICENSE_MAIL}</a>` : esc(k.hint);
+          return field(k.label, desc, ctl);
+        })
+        .join("");
+      declCard = cardT(
+        secT("使用声明", "没买授权时，选一项说明这台机器怎么用。"),
+        `<div class="ad-card-b">${curHtml}
+          <div style="margin-top:8px">${kindRows}</div>
+          <div class="fd" style="margin-top:10px">公司用在实际业务上、个人商用，不在这几项里，要买授权。</div>
+        </div>`
+      );
+    }
+
+    return `<div class="ad-wrap">
+      ${d.attention ? note(esc(d.why), "warn") : ""}
+      ${statusCard}
+      ${sigCard}
+      ${declCard}
+      ${note(`商业授权只能向作者购买。未经授权商用须停用并赔偿，故意侵权情节严重的最高 5 倍。<br>
+        买授权不解锁任何功能，没买也不锁。授权码离线验签，声明和迹象只存在这台机器上。<br>
+        <a href="${LICENSE_TERMS_URL}" target="_blank" rel="noreferrer">授权细则</a> ·
+        <a href="${LICENSE_TEXT_URL}" target="_blank" rel="noreferrer">许可证全文</a> ·
+        <a href="mailto:${LICENSE_MAIL}">${LICENSE_MAIL}</a>`)}
+    </div>`;
+  },
+  bind: (root, d) => {
+    if (RO) return;
+    const L = d.license;
+    const c = root.querySelector("[data-lic-code]");
+    if (c)
+      c.onclick = () =>
+        modal({
+          title: L || d.code_error ? "换一张授权码" : "填授权码",
+          body: `<div class="fd">整段粘贴，折行不要紧。在这台机器上离线验签，不联网。</div>`,
+          fields: [{ name: "code", label: "授权码", type: "textarea", placeholder: "OWB1.…" }],
+          ok: "验证并保存",
+          onOk: async (v) => {
+            // 空的就别发了：服务端也会挡，但弹层里直接说比等一趟来回快
+            if (!v.code.trim()) throw new Error("先把授权码粘进来。");
+            await post("/api/admin/license/code", { code: v.code });
+            toast("授权码已生效");
+            route(true);
+          },
+        });
+    const x = root.querySelector("[data-lic-del]");
+    if (x)
+      x.onclick = () =>
+        confirmBox(
+          "删掉授权码？",
+          "删掉后回到「没填授权码」，功能照常。这一步会记进操作审计。",
+          "删掉",
+          async () => {
+            await del("/api/admin/license/code");
+            toast("授权码已删掉");
+            route(true);
+          },
+          true
+        );
+    root.querySelectorAll("[data-kind]").forEach((b) => {
+      const k = (d.kinds || []).find((x) => x.id === b.dataset.kind);
+      if (!k) return;
+      b.onclick = () =>
+        confirmBox(
+          `选「${k.label}」？`,
+          `会记进操作审计：你的账号、现在的时间、当时看到的迹象。<br><br>
+           公司用在实际业务上、个人接单或做付费产品，不属于这几项，要买授权。`,
+          "就选这项",
+          async () => {
+            await post("/api/admin/license/declare", { kind: k.id });
+            toast("声明已记下");
+            route(true);
+          }
+        );
     });
   },
 };

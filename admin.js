@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 企业管理后台的接口层（/api/admin/*）。
@@ -27,6 +29,10 @@ const vkeys = require("./vkeys");
 const budget = require("./budget");
 const pricing = require("./pricing");
 const usageStore = require("./usage-store");
+// 商业授权：授权码、使用声明、团队迹象。只记账不拦路，见文件头。
+// 必须带 .js：macOS / Windows 的文件系统不分大小写，"./license" 先撞上仓库根的 LICENSE（许可证全文），
+// 当 JS 一跑就是语法错，整个服务起不来。Linux 上分大小写，CI 那条腿看不出来
+const license = require("./license.js");
 
 function platformAdmin(user) {
   return account.isAdmin(user) && org.orgIdOf(user) === org.DEFAULT_ORG;
@@ -156,6 +162,7 @@ const PERSONAL_READ = new Set(["/api/memory"]);
  */
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"]);
 let desktopShell = false;   // ①②：装成什么形态、绑在哪个地址，起服务那一下就定死了
+let deployHost = "";        // 绑在哪个地址。授权页拿它判「是不是对局域网开放」
 // ③ 每个请求都要问一次，可它只会 0→1→2 地涨：数到 2 就再也不用回头问了，
 // 剩下的情况 2 秒内不重复读盘（platformGuard / redactGuard / tenantScope 每条请求都要问）
 let soloCount = { at: 0, solo: true };
@@ -169,7 +176,8 @@ function soloAccounts() {
   return solo;
 }
 function setDeployment({ host, shell } = {}) {
-  desktopShell = !!shell && LOOPBACK.has(String(host || "").trim().replace(/^\[|\]$/g, ""));
+  deployHost = String(host || "").trim();
+  desktopShell = !!shell && LOOPBACK.has(deployHost.replace(/^\[|\]$/g, ""));
   soloCount = { at: 0, solo: true };   // 换一次部署形态就把上面那个缓存清掉（测试里会来回切）
   return isSoloDesktop();
 }
@@ -342,6 +350,18 @@ function createAdminRouter(deps = {}) {
       me: account.publicUser(req.user),
     };
   }));
+
+  // ---------- 商业授权 ----------
+  // 授权是整台机器的事，不是哪个组织的：看和改都只给平台管理员（个人桌面版上就是机主本人）。
+  // 别的组织的管理员连这一页都不该有——他们是这台服务器的租户，不是持证人
+  const licenseFacts = () => license.gather({ config: deps.readConfig ? deps.readConfig() : {}, host: deployHost });
+  router.get("/api/admin/license", platformOnly, guarded(() => license.status(licenseFacts())));
+  router.post("/api/admin/license/declare", account.adminOnly, platformOnly, guarded((req) =>
+    license.declare(String((req.body || {}).kind || ""), req.user, licenseFacts())));
+  router.post("/api/admin/license/code", account.adminOnly, platformOnly, guarded((req) =>
+    license.setCode(String((req.body || {}).code || ""), req.user, licenseFacts())));
+  router.delete("/api/admin/license/code", account.adminOnly, platformOnly, guarded((req) =>
+    license.clearCode(req.user, licenseFacts())));
 
   // ---------- 成员与部门 ----------
   // 部门模板跟着这一趟一起回去：成员页要拿它画「这个部门进来的人默认什么权限」，

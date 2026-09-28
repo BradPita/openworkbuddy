@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 仓库卫生：测试喂进去的「真文件」，必须真的随仓库发出去。
@@ -816,5 +818,73 @@ console.log("\n【11】test/lib/src.js：没拆时逐字等于原文件，拆了
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
+// ---------------------------------------------------------------------------
+console.log("\n【12】技能说明书里的 JS 例子，不许写顶层 await");
+// 模型照着说明书里的模板写 run_node，而 run_node 按 CommonJS 跑（tools.js precheckSyntax）：
+// 模板末尾一句 `await book.xlsx.writeFile(...)`，照抄就是语法错，白烧一轮再改。
+// 只抓「原样编不过、包进 async 函数就编得过」的块——说明书里有些块本来就不是脚本
+// （比如 data-viz 那段 echarts 配置对象），不该拿它们的语法说事。
+{
+  const vm = require("vm");
+  const compiles = (code) => { try { vm.compileFunction(code, [], { filename: "block.cjs" }); return true; } catch { return false; } };
+  const topLevelAwait = (code) => !compiles(code) && compiles(`(async () => {\n${code}\n})();`);
+  const blocksOf = (md) => {
+    const out = [];
+    const re = /^```(?:js|javascript|node)\s*\n([\s\S]*?)^```/gm;
+    let m;
+    while ((m = re.exec(md))) out.push({ code: m[1], line: md.slice(0, m.index).split("\n").length });
+    return out;
+  };
+  const list = (args) => execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).split("\n");
+  const docs = [...new Set([
+    ...list(["ls-files", "skills"]),
+    ...list(["ls-files", "--others", "--exclude-standard", "skills"]),
+  ])].filter((f) => /^skills\/[^/]+\/(skill|SKILL)\.md$/.test(f) && fs.existsSync(path.join(ROOT, f)));
+  const hits = [];
+  for (const f of docs)
+    for (const b of blocksOf(fs.readFileSync(path.join(ROOT, f), "utf8")))
+      if (topLevelAwait(b.code)) hits.push(`${f}:${b.line}`);
+  ok(docs.length > 20, `扫到了 ${docs.length} 份技能说明书（少于 20 份说明路径或 git 调用坏了，扫了个寂寞）`);
+  ok(hits.length === 0, "没有技能模板在顶层写 await", hits.join("\n"));
+  // 反向对照：扫描器自己得认得出来、也得放得过
+  ok(topLevelAwait('const fs = require("fs");\nawait book.xlsx.writeFile("a.xlsx");'), "  └ 反向对照：顶层 await 抓得到");
+  ok(!topLevelAwait('(async () => {\n  await book.xlsx.writeFile("a.xlsx");\n})();'), "  └ 反向对照：包在 async 函数里的放过");
+  ok(!topLevelAwait('{ title: { text: "Q3" },\n  series: [{ type: "bar" }] }'), "  └ 反向对照：不是脚本的配置对象块放过");
+  ok(blocksOf("x\n```js\nawait a();\n```\n").length === 1 && blocksOf("```json\n{}\n```\n").length === 0, "  └ 反向对照：只认 js 代码块");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n【13】自有 JS 文件开头都带 SPDX 版权头，协议写对");
+// COMMERCIAL-LICENSE.md 把「源码文件带 SPDX 版权头」列为版权声明的一部分：文档这么写了，
+// 代码里就得真有——少一份就是文档在说假话。MIT 那几块（LICENSE-ECOSYSTEM.md）标 MIT，别的标 PolyForm。
+// 头要放在 shebang 和 `// @ts-check` 后面：@ts-check 只认文件开头的注释（typecheck 测试也钉着）。
+{
+  const MIT = (f) => /^scripts\//.test(f) || f === "eval/tasks.js" || /^skills\/skill-creator\//.test(f) || /^deploy\//.test(f);
+  const want = (f) => (MIT(f) ? "MIT" : "PolyForm-Noncommercial-1.0.0");
+  const headOf = (src) => {
+    const lines = src.split("\n");
+    let at = 0;
+    if (lines[0] && lines[0].startsWith("#!")) at = 1;
+    if (lines[at] && /^\/\/\s*@ts-(check|nocheck)\b/.test(lines[at])) at++;
+    const m = /^\/\/ SPDX-License-Identifier: (\S+)$/.exec(lines[at] || "");
+    return { id: m && m[1], notice: /^\/\/ Copyright \(c\) 2026 开发者猫叔 \(DeveloperCatUncle\)/.test(lines[at + 1] || "") };
+  };
+  const files = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" }).split("\0")
+    .filter((f) => /\.(js|cjs|mjs)$/.test(f) && fs.existsSync(path.join(ROOT, f)));
+  const bad = [];
+  for (const f of files) {
+    const h = headOf(fs.readFileSync(path.join(ROOT, f), "utf8"));
+    if (h.id !== want(f) || !h.notice) bad.push(`${f}：${h.id ? `标的是 ${h.id}，应为 ${want(f)}` : "没有 SPDX 头"}${h.id && !h.notice ? "，下一行缺版权行" : ""}`);
+  }
+  ok(files.length > 200, `扫了 ${files.length} 个跟踪中的 js（少于 200 说明 git ls-files 坏了）`);
+  ok(bad.length === 0, "每个都有 SPDX 头和版权行，协议标对", bad.slice(0, 15).join("\n") + (bad.length > 15 ? `\n…还有 ${bad.length - 15} 个` : ""));
+  // 反向对照
+  const NC = "// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0\n// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · x\n";
+  ok(headOf("#!/usr/bin/env node\n// @ts-check\n" + NC + "x").id === "PolyForm-Noncommercial-1.0.0", "  └ 反向对照：shebang 和 @ts-check 后面的头认得出");
+  ok(!headOf("const a = 1;\n" + NC).id, "  └ 反向对照：头不在开头的不算");
+  ok(!headOf("// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0\nconst a = 1;\n").notice, "  └ 反向对照：只有 SPDX 没有版权行的抓得到");
+  ok(want("scripts/issue-license.js") === "MIT" && want("server.js") === "PolyForm-Noncommercial-1.0.0", "  └ 反向对照：MIT 和 PolyForm 的分界跟 LICENSE-ECOSYSTEM.md 一致");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

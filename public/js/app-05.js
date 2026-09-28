@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 async function renderHubMcp(box) {
   box.innerHTML = '<div class="hub-empty">加载中…</div>';
   // 连接器的配置里躺着 API Key 和令牌（env / headers），加一条就等于替整台服务器接了个外部系统——

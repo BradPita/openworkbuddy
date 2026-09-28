@@ -34,7 +34,8 @@
 </p>
 
 <p align="center">
- Free for personal, learning and non-profit use. <b>Commercial license</b>: <a href="mailto:contact@aijentra.com"><b>contact@aijentra.com</b></a><br>
+ <b>Free</b> for personal non-commercial use, schools and non-profits. Company use (even internal only) and personal commercial use need a <b>commercial license</b><br>
+ Companies may evaluate free for 30 days (not yet in real business use); long-term use requires a license: <a href="mailto:contact@aijentra.com"><b>contact@aijentra.com</b></a><br>
  We also offer <b>enterprise FDE</b> · <b>AI training</b> · <b>AI adoption consulting</b> — <a href="#commercial-license--enterprise-services">how to work with us ↓</a>
 </p>
 
@@ -64,8 +65,21 @@
 ## Commercial license · Enterprise services
 
 > [!IMPORTANT]
-> **Using it at a company or to make money (including internal use) needs a commercial license.**
+> **Free for personal non-commercial use, schools and non-profits. Company use (even internal only) and personal commercial use require a paid commercial license.**
+> Companies may evaluate it free for up to 30 days, as long as it isn't used in real business yet; long-term use requires a license.
 > Email **[contact@aijentra.com](mailto:contact@aijentra.com)** with your company, how you plan to use it and roughly how many users; we'll get back to you soon. Terms: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+
+| Your situation | License needed? |
+|---|---|
+| Personal non-commercial use (learning, research, hobby projects) | Free |
+| Schools, research institutions, non-profits, government bodies | Free |
+| Company evaluation: up to 30 days, not yet used in real business | Free |
+| A company or team using it in real business, **even internal only** | **Required** |
+| **Personal commercial use**: freelancing, client work, paid products or services | **Required** |
+| SaaS offered to others, bundling into products you sell, client delivery / outsourcing / custom work | **Required** |
+
+A license unlocks no features: there is only this one codebase, with no feature locks, no countdowns and no online checks.
+Commercial use without a license can be pursued by the rights holder under civil law, and removing or altering copyright notices without permission may itself infringe — legal basis and court cases in [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果) (Chinese).
 
 Beyond licensing, we take on enterprise AI work:
 
@@ -246,6 +260,10 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 28** License terms spelled out: free for personal non-commercial use; company use (even internal only) and individual commercial use need a commercial license from the author, and companies can try it free for 30 days
+- **Sep 28** The admin console has a Commercial License page: enter a license code and it is verified on this machine, offline, with no features locked
+- **Sep 28** Memory embeddings on a Qwen (DashScope) channel are no longer marked "unavailable": requests are split to each provider's limit
+- **Sep 28** Rewrote the Word document skill; the Excel and PPT skill templates run as written
 - **Sep 28** Replies cut off mid-sentence no longer count as done: the model picks up where it stopped
 - **Sep 28** Pick a channel's API format: OpenAI, Responses, Anthropic, Gemini or Ollama native
 - **Sep 28** Sending "continue" to a chat still running elsewhere no longer errors: the page attaches to that run and slips your message in
@@ -311,10 +329,20 @@ Most docs are in Chinese; the code and comments are the source of truth.
 
 ## License
 
-**Free for personal, learning and non-profit use; making money with it (including internal company use) needs a commercial license.**
-[PolyForm Noncommercial 1.0.0](LICENSE); for a commercial license email [contact@aijentra.com](mailto:contact@aijentra.com) (terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)).
+**Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use require a paid commercial license. Companies may evaluate free for 30 days (not yet used in real business); long-term use requires a license.**
+[PolyForm Noncommercial 1.0.0](LICENSE); for a commercial license email [contact@aijentra.com](mailto:contact@aijentra.com) (terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)). The name "OpenWorkBuddy" and its logo are not covered by any of these licenses.
 
-Copyright (c) 2026 开发者猫叔
+**What happens with unlicensed commercial use** (short version; full legal basis in [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果), Chinese):
+
+- Commercial use is outside what the license permits. The first time you're notified in writing, you have 32 days to come into full compliance and take practical steps to correct past violations; otherwise all licenses granted under it end.
+- Civil liability under Articles 53 and 54 of China's Copyright Law: damages follow actual loss or illegal gains; where hard to calculate, the license fee (i.e. the commercial license price) is the reference; 1 to 5 times for willful, serious infringement; statutory damages of RMB 500 to 5 million where none of these can be determined, plus reasonable enforcement costs.
+- Internal-only company use, and client companies receiving an unlicensed delivery from a vendor, are covered too: Article 19 of the Supreme People's Court copyright interpretation (Fa Shi [2026] No. 18). (A holder who didn't know, and had no reasonable grounds to know, that the copy was infringing owes no damages but must stop using it; if stopping would cause major losses, it may keep using it after paying a reasonable fee: Art. 30 of the Computer Software Protection Regulations.) In court, a user who claims no liability must show it holds a license (Copyright Law Art. 59, para. 2).
+- Removing or altering copyright notices, the license or the licensing notice without permission may itself infringe (Copyright Law Art. 51(1) and Art. 53(7)). Changing the code for a non-commercial purpose is allowed by the license, but copies you pass on must keep the license and the Required Notice.
+- For-profit copying and distribution, making it available to the public over a network (e.g. downloads) or resale, above the thresholds, may fall under Article 217 of the Criminal Law; plain internal company use generally does not constitute this crime.
+
+**What the software does**: the login page, About page and onboarding state the licensing terms; when the admin console sees signs of team use such as multiple accounts or organizations, it posts a to-do asking an admin to declare the use or enter a license code, and records the answer in the audit log. License codes are verified offline with Ed25519; no feature locks, no network calls, no data collected. Details: [软件里的版权保护措施](COMMERCIAL-LICENSE.md#软件里的版权保护措施) (Chinese).
+
+Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
 ## Disclaimer
 

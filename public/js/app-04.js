@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 async function updateEvalView() {
   if (pageKind !== "eval") return;
   const st = await fetch("/api/eval/status").then((r) => r.json()).catch(() => null);

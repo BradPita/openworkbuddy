@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 "use strict";
 /**
  * 评测任务集 — 每个任务 = 固定题面 + 固定输入文件 + 机器判分。

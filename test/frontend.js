@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 前端测试 — 在 Electron 的真 Chromium 里跑，验证 public/svgfig.js。
@@ -2879,7 +2881,7 @@ const AUTH_STUBS = [
 // 里面一个字节没改，外面能换地址、能数刷新了几次。
 // authMode / canRegister 是段内的 let，用取值器透出去，用例照样能摆布它们。
 const AUTH_WRAP = (src) =>
-  "window.__mkAuth = (location, history, sessionStorage) => {\n" + src + "\nreturn { showAuth, applyAuthMode, submitAuth, showAuthBlocked,\n" +
+  "window.__mkAuth = (location, history, sessionStorage) => {\n" + src + "\nreturn { showAuth, applyAuthMode, submitAuth, showAuthBlocked, renderAuthLicense,\n" +
   "  get authMode(){ return authMode; }, set authMode(v){ authMode = v; },\n" +
   "  get canRegister(){ return canRegister; }, set canRegister(v){ canRegister = v; } };\n};";
 const AUTH_CHECKS = `
@@ -3050,6 +3052,22 @@ const AUTH_CHECKS = `
   ok("回到第一步：payload 里没有 code 这个键", !("code" in window.__posts[0].body), JSON.stringify(window.__posts[0].body));
   ok("没有那个响应头就什么都不写", !("owb-recovery-left" in store),
      "写一个空值进去，界面下回就会拿它当「还剩 0 条」报警");
+
+  // ---- 8b. 登录卡底下那行授权说明：来访的人一进门就知道谁得买授权 ----
+  const lic = $("auth-lic");
+  A.renderAuthLicense(null);
+  ok("没授权：写明个人非商用免费、公司和个人商用需授权", /个人非商用免费/.test(lic.textContent) && /公司和个人商用需授权/.test(lic.textContent), lic.textContent);
+  ok("没授权：附授权说明链接，新窗口打开", !!lic.querySelector('a[href$="/COMMERCIAL-LICENSE.md"][target=_blank][rel=noopener]'));
+  ok("没授权时这一行看得见（:empty 才藏）", vis(lic));
+  A.renderAuthLicense({ licensed: true, licensee: "<img src=x onerror=alert(1)>示例科技" });
+  ok("已授权：换成「已授权给 名字」，名字只当文字", /已授权给/.test(lic.textContent) && lic.textContent.includes("<img src=x") && !lic.querySelector("img")
+     && !/需授权/.test(lic.textContent), lic.innerHTML);
+  A.renderAuthLicense({ licensed: false, expired: true, licensee: "旧公司" });
+  ok("授权到期：点名到期，附授权说明链接", /旧公司 的商业授权已到期/.test(lic.textContent) && !!lic.querySelector("a[href$='/COMMERCIAL-LICENSE.md']"), lic.textContent);
+  A.renderAuthLicense({ licensed: false, expired: true, licensee: "" });
+  ok("到期但没名字：退回通用那一行，不出现「 的商业授权已到期」", /公司和个人商用需授权/.test(lic.textContent) && !/已到期/.test(lic.textContent), lic.textContent);
+  A.renderAuthLicense(null); A.renderAuthLicense(null);
+  ok("重画不叠行", (lic.textContent.match(/个人非商用免费/g) || []).length === 1, lic.textContent);
 
   // ---- 9. 待审核：不放进工作台，直接把话说清楚 ----
   A.showAuthBlocked("pending", { username: "xiaowang", nickname: "小王" });
@@ -5437,6 +5455,7 @@ const ONB_STUBS = `
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
     engine: "builtin", search: { provider: "", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
+  let LIC = { licensed: false, licensee: "" }, LIC_DOWN = false;
   // 本机 Ollama 装了哪些模型：null = 它压根没跑起来
   let OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
   const GETS = []; window.__GETS = GETS;
@@ -5447,6 +5466,8 @@ const ONB_STUBS = `
     const j = (o) => ({ json: async () => o });
     // 带不带 ?probe=1 都是同一张体检表：probe 只决定服务端要不要去探本机 CLI，前端拿到的字段一样
     if (url.split("?")[0] === "/api/onboarding" && method === "GET") { GETS.push(url); return j(JSON.parse(JSON.stringify(ST))); }
+    // 第一步最上面那张授权卡只要 /api/auth/state 里公开的 license 一块；LIC_DOWN = 服务端拿不到
+    if (url === "/api/auth/state") { if (LIC_DOWN) throw new Error("down"); return j({ license: LIC }); }
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
       const nm = body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
@@ -5477,6 +5498,33 @@ const ONB_CHECKS = `
   ok("默认选中还没配 Key 的云端渠道", q("#onb-model").value === "DeepSeek" && q("#onb-tip").textContent.includes("中文强"));
   const dsLink = q("#onb-tip a.get-key");
   ok("大脑步：提示旁有「去拿 Key ↗」直达 DeepSeek 建 Key 页，新窗口打开", dsLink && dsLink.href === "https://platform.deepseek.com/api_keys" && dsLink.target === "_blank" && dsLink.rel === "noopener" && dsLink.textContent.includes("去拿 Key"), dsLink && dsLink.outerHTML);
+  // ---- 第一步最上面的授权卡：谁免费、谁要买、只能找作者买、未经授权商用的后果 ----
+  let lic = q("#onb-lic");
+  ok("授权卡在第一步最上面", lic && body.firstElementChild === lic);
+  ok("没授权：写明个人非商用免费、公司和个人商用要买、公司试用 30 天",
+     /个人非商用/.test(lic.textContent) && /公司使用/.test(lic.textContent) && /个人商用/.test(lic.textContent) && /30 天/.test(lic.textContent), lic.textContent);
+  ok("没授权：写明只能向作者购买、未经授权商用须停止使用并赔偿",
+     /只能向作者购买/.test(lic.textContent) && /停止使用并赔偿/.test(lic.textContent), lic.textContent);
+  ok("没授权：链到授权说明和联系邮箱，都开新窗口",
+     !!lic.querySelector('a[href$="/COMMERCIAL-LICENSE.md"][target=_blank]') && !!lic.querySelector('a[href="mailto:contact@aijentra.com"]'));
+  ok("授权卡不挂必须勾的框，向导照样五步", !lic.querySelector("input") && steps.querySelectorAll(".onb-step").length === 5);
+  closeOnboarding();
+  LIC = { licensed: true, licensee: "<img src=x onerror=alert(1)>示例科技" };
+  await openOnboarding(); await tick();
+  lic = q("#onb-lic");
+  ok("已授权：只剩一行「已授权给 名字」，名字转义不进标签", lic.classList.contains("ok") && /已授权给/.test(lic.textContent)
+     && lic.textContent.includes("<img src=x") && !lic.querySelector("img") && !/公司使用/.test(lic.textContent), lic.innerHTML);
+  closeOnboarding();
+  LIC = { licensed: false, expired: true, licensee: "旧公司" };
+  await openOnboarding(); await tick();
+  lic = q("#onb-lic");
+  ok("授权到期：点名到期，下面照样列政策", /旧公司/.test(lic.textContent) && /已到期/.test(lic.textContent) && /只能向作者购买/.test(lic.textContent) && !lic.classList.contains("ok"), lic.textContent);
+  closeOnboarding();
+  LIC_DOWN = true;
+  await openOnboarding(); await tick();
+  lic = q("#onb-lic");
+  ok("拿不到授权状态时按没授权讲，不是整卡消失", lic && /只能向作者购买/.test(lic.textContent) && !lic.classList.contains("ok"));
+  LIC = { licensed: false, licensee: "" }; LIC_DOWN = false;
   q("#onb-model").value = "Ollama"; q("#onb-model").dispatchEvent(new Event("change"));
   ok("选本地 Ollama 时 Key 框禁用", q("#onb-key").disabled && q("#onb-tip").textContent.includes("Ollama"));
   ok("本地模型：链接变成「装 Ollama」而不是「去拿 Key」", q("#onb-tip a.get-key") && q("#onb-tip a.get-key").textContent.includes("装 Ollama") && /ollama\.com/.test(q("#onb-tip a.get-key").href));

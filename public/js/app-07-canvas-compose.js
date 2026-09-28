@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 /* 无限画布 · 进度、批量与合成（第 7 片）
  *
  * 进度条和预计时间、批量补齐及花费预估、合成成片的开始轮询和停止，

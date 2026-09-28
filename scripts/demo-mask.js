@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 "use strict";
 /**
  * 演示录屏的「马赛克层」：把临时目录、home 目录、用户名、主机名这些本机信息在页面里替换掉。

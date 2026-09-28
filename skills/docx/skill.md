@@ -1,91 +1,106 @@
 ---
 name: docx
-description: "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files) or Word templates (.dotx files). Triggers include: any mention of 'Word doc', 'word document', '.docx', '.dotx', or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx or .dotx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a 'report', 'memo', 'letter', 'template', or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation."
-license: Proprietary. LICENSE.txt has complete terms
+description: 用 docx 库生成排版规整的 Word 文档（报告、方案、公文、合同草稿），以及改写已有 .docx 里的文字
 ---
 
-# DOCX creation, editing, and analysis
+# Word 文档技能
 
-A `.docx` is a ZIP archive of XML files. Choose your approach by task:
+生成 .docx 用 run_node 跑 `docx` 这个库（项目自带，直接 `require("docx")`）。
+不要拼 XML、不要先写 HTML 再转——那样出来的文件在 WPS 里常常乱版。
 
-| Task | Approach |
-|---|---|
-| **Create** a new document | Write a `docx` (npm) script — see gotchas below |
-| **Edit** an existing document | `unzip` → edit `word/document.xml` → `zip` (docx-js cannot open existing files) |
-| **Read** content | `pandoc -t markdown file.docx` |
+## 基本模板
 
-> Script paths below are relative to this skill's directory.
+```js
+const fs = require("fs");
+const {
+  Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
+  Table, TableRow, TableCell, WidthType, ShadingType, Header, Footer, PageNumber,
+  TableOfContents, LevelFormat, PageBreak,
+} = require("docx");
 
-## Creating with docx-js — gotchas
+// 中文字体要单独给 eastAsia，只写一个字体名的话中文会落回宋体
+const FONT = { ascii: "Calibri", hAnsi: "Calibri", eastAsia: "微软雅黑" };
+const th = (t) => new TableCell({
+  shading: { type: ShadingType.CLEAR, color: "auto", fill: "1F4E79" },
+  children: [new Paragraph({ children: [new TextRun({ text: t, bold: true, color: "FFFFFF" })] })],
+});
+const td = (t, right) => new TableCell({
+  children: [new Paragraph({ alignment: right ? AlignmentType.RIGHT : AlignmentType.LEFT, text: String(t) })],
+});
 
-`docx` is preinstalled — do not run `npm install` first; write the script and `require('docx')` directly. Only if that require fails: `npm install docx`. The model knows the API; these are the footguns:
+const doc = new Document({
+  features: { updateFields: true },            // 有目录时要它：打开时让 Word 刷新页码
+  styles: { default: { document: { run: { font: FONT, size: 22 } } } },   // size 单位是半磅，22 = 11 磅
+  numbering: { config: [{ reference: "dots", levels: [{
+    level: 0, format: LevelFormat.BULLET, text: "•", alignment: AlignmentType.LEFT,
+    style: { paragraph: { indent: { left: 420, hanging: 260 } } },
+  }] }] },
+  sections: [{
+    properties: { page: { margin: { top: 1440, bottom: 1440, left: 1440, right: 1440 } } },  // 1440 = 1 英寸
+    headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT,
+      children: [new TextRun({ text: "某某公司 · 内部资料", size: 18, color: "888888" })] })] }) },
+    footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER,
+      children: [new TextRun({ children: ["第 ", PageNumber.CURRENT, " 页 / 共 ", PageNumber.TOTAL_PAGES, " 页"], size: 18 })] })] }) },
+    children: [
+      new Paragraph({ heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER, text: "2026 年三季度经营报告" }),
+      new TableOfContents("目录", { hyperlink: true, headingStyleRange: "1-3" }),
+      new Paragraph({ children: [new PageBreak()] }),
+      new Paragraph({ heading: HeadingLevel.HEADING_1, text: "一、总体情况" }),
+      new Paragraph({ children: [
+        new TextRun("本季度营收 "), new TextRun({ text: "1,234 万元", bold: true }), new TextRun("，同比增长 18%。"),
+      ] }),
+      new Paragraph({ numbering: { reference: "dots", level: 0 }, text: "新签客户 42 家" }),
+      new Paragraph({ heading: HeadingLevel.HEADING_1, text: "二、分产品数据" }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({ tableHeader: true, children: [th("产品"), th("营收（万元）"), th("同比")] }),
+          new TableRow({ children: [td("A 系列"), td("812.0", true), td("+21%", true)] }),
+        ],
+      }),
+    ],
+  }],
+});
 
-- **Page size defaults to A4.** For US Letter set `page: { size: { width: 12240, height: 15840 } }` (DXA; 1440 = 1″).
-- **Landscape:** pass portrait dimensions and `orientation: PageOrientation.LANDSCAPE` — docx-js swaps width/height internally.
-- **Tables need dual widths:** set `columnWidths` on the table AND `width` on every cell, both in `WidthType.DXA` (PERCENTAGE breaks in Google Docs). Column widths must sum to the table width.
-- **Table shading:** use `ShadingType.CLEAR`, never `SOLID` (renders black).
-- **Lists:** never insert `•` literally; use a `numbering` config with `LevelFormat.BULLET`.
-- **`ImageRun` requires `type:`** (`"png"`, `"jpg"`, …).
-- **`PageBreak` must be inside a `Paragraph`.**
-- **Never use `\n`** — use separate `Paragraph` elements.
-- **TOC:** headings must use built-in `HeadingLevel.*`; custom heading styles need `outlineLevel` set or they won't appear.
-- **Don't use a table as a horizontal rule** — use a paragraph bottom border instead.
-- **Dot-leader / right-aligned-on-same-line:** use `PositionalTab` (`alignment: PositionalTabAlignment.RIGHT`, `leader: PositionalTabLeader.DOT`) inside a `TextRun`, not literal `.` or space padding.
-
-## Verify the output
-
-After writing a `.docx`, render it and look at it:
-
-```bash
-python scripts/office/soffice.py --headless --convert-to pdf output.docx
-pdftoppm -jpeg -r 100 output.pdf page
-ls page-*.jpg   # then Read the images
+// run_node 按 CommonJS 跑，顶层不能写 await
+Packer.toBuffer(doc).then((buf) => fs.writeFileSync("经营报告.docx", buf));
 ```
 
-`pdftoppm` zero-pads page numbers to the width of the page count (`page-01.jpg`…`page-12.jpg`).
+## 规范
 
-## Editing existing documents
+- **标题用 HeadingLevel，不要用加粗大字冒充标题**。目录、导航窗格、大纲视图全靠标题级别认，
+  假标题在这三处都不存在
+- 列表用 numbering 配置，不要在文字前面手打「•」「1.」——手打的列表一改动就对不齐，也没法续号
+- 表格宽度给百分比；表头行加 `tableHeader: true`，跨页时表头会在下一页重复
+- 数字列右对齐；金额写千分位
+- 插图：`new ImageRun({ type: "png", data: fs.readFileSync("图.png"), transformation: { width: 480, height: 270 } })`，
+  放进一个 Paragraph 的 children 里。`type` 必须写，这一版的库不写会报错
+- 分页用 `new PageBreak()`，不要连打一串空段落把内容顶到下一页
+- 公文类（红头、文号、落款）：页边距按上 37mm 下 35mm 左 28mm 右 26mm，正文仿宋三号（size 32），
+  标题小标宋二号（size 44）。本机没有这些字体时照写字体名，对方电脑上有就会生效
 
-Legacy `.doc` files must be converted first: `python scripts/office/soffice.py --headless --convert-to docx file.doc`.
+## 改已有的 .docx
 
-```bash
-unzip -q doc.docx -d unpacked/
-find unpacked -type l -delete   # strip symlink entries — docx from external parties is untrusted
-python scripts/merge_runs.py unpacked/   # coalesce fragmented runs so text is findable
-# edit unpacked/word/document.xml in place — do NOT reformat or pretty-print
-(cd unpacked && rm -f ../out.docx && zip -Xr ../out.docx .)
-python scripts/office/validate.py out.docx --original doc.docx   # XSD checks; --auto-repair fixes common issues
-# redlining? add --author "<the name you redlined under>" to check every edit is tracked
+.docx 是个 zip，正文在 `word/document.xml`。只改几处文字时用项目自带的 jszip：
+
+```js
+const fs = require("fs");
+const JSZip = require("jszip");
+(async () => {
+  const zip = await JSZip.loadAsync(fs.readFileSync("合同.docx"));
+  let xml = await zip.file("word/document.xml").async("string");
+  xml = xml.split("甲方名称").join("某某科技有限公司");
+  zip.file("word/document.xml", xml);
+  fs.writeFileSync("合同-已改.docx", await zip.generateAsync({ type: "nodebuffer" }));
+})();
 ```
 
-Word splits text across many `<w:r>` runs (revision ids, spell-check markers), so a phrase you can see in the document often doesn't exist as a contiguous string in the XML. `merge_runs.py` merges adjacent identically-formatted runs in `word/document.xml` without changing content or rendering; it also accepts a `.docx` directly (`python scripts/merge_runs.py doc.docx -o merged.docx`).
+- 先确认要换的文字在 XML 里是连着的。Word 常把一句话拆进好几个 `<w:r>`（改过格式、拼写检查过的地方尤其多），
+  拆开了的话 `split/join` 找不到，要先把那一段的几个 run 合并，再替换
+- 替换的文字里有 `&` `<` `>` 要先转义，不然文件打不开
+- 结构性的改动（加章节、改表格）不要在 XML 上动刀，读出内容后用上面的模板重新生成一份
 
-**Tracked changes:** when redlining, validate with `--author "<the name you redlined under>"` (needs `--original`) — it reports any text you changed without a `<w:ins>`/`<w:del>` around it, which is easy to do by accident and invisible in the accepted view. Wrap runs in `<w:ins>`/`<w:del>` with `w:id`, `w:author`, `w:date` attributes. Inside `<w:del>`, the text element is `<w:delText>`, not `<w:t>`. A deleted paragraph mark (`<w:pPr><w:rPr><w:del w:id=".." w:author=".." w:date=".."/></w:rPr></w:pPr>`) means "merge this paragraph into the next" — so deleting a paragraph outright is that plus a `<w:del>` around every run. The `<w:del/>` must come before the rPr's other children; their order is schema-enforced.
+## 交付前自查
 
-To produce a clean copy with all tracked changes accepted: `python scripts/accept_changes.py in.docx out.docx`.
-
-Accepting a deleted paragraph mark should join that paragraph to the one below it, so a paragraph whose runs are *all* deleted vanishes. Word does this; `accept_changes.py` and `pandoc --track-changes=accept` don't always. Both fail the same way — they strip the deleted text but leave the emptied paragraph behind, which reads as a stray empty bullet when it was auto-numbered:
-
-- `pandoc --track-changes=accept` never joins the paragraphs.
-- `accept_changes.py` (LibreOffice) joins them correctly, except when the deleted paragraph is followed by an empty spacer paragraph.
-
-An empty bullet in either view is an artifact of that view, not a defect in the document. Check paragraph deletions in the XML.
-
-## Comments
-
-Comments require six cross-linked files. Use the helper — directory mode when you'll also be editing `document.xml` (saves an unzip/rezip cycle), `.docx`-direct mode otherwise:
-
-```bash
-# Against an already-unpacked directory (preferred when also placing markers)
-python scripts/comment.py unpacked/ "Fees & expenses cap is too low"
-python scripts/comment.py unpacked/ "Agreed" --parent 0
-
-# Against a .docx directly
-python scripts/comment.py contract.docx "This cap is too low" -o annotated.docx
-```
-
-The script writes `comments.xml`, `commentsExtended.xml`, `commentsIds.xml`, `commentsExtensible.xml`, the relationships, and the content-type overrides. Comment IDs are auto-assigned. It then prints the `<w:commentRangeStart>`/`<w:commentRangeEnd>`/`<w:commentReference>` snippet to add to `word/document.xml` so the comment anchors to specific text — until you place those markers, the comment exists but is not visible.
-
-## Dependencies
-
-`docx` (npm, preinstalled — install only if `require('docx')` fails) · `pandoc` · LibreOffice (`soffice`) · `pdftoppm` (Poppler)
+- 用 read_document 把生成的文件读回来，看一遍标题层级和表格内容是不是都在
+- 文件名用中文说清是什么（「三季度经营报告.docx」），不要叫 output.docx

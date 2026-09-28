@@ -115,11 +115,11 @@ s.addTable(rows, { x: 0.8, y: 1.6, w: 11.7, fontSize: 13, color: "333333",
 ## 收尾与自检（必须做）
 
 ```js
-await pptx.writeFile({ fileName: "汇报.pptx" });
-console.log("slides:", pptx.slides.length);
+// run_node 按 CommonJS 跑，顶层不能写 await
+pptx.writeFile({ fileName: "汇报.pptx" }).then(() => console.log("slides:", pptx.slides.length));
 ```
 - 中文字体统一 `fontFace: "Microsoft YaHei"`（标题正文都要设，不设中文会退成衬线体）。
-- `writeFile` 要在 async 函数里 await，脚本末尾打印页数。
+- `writeFile` 返回 Promise：顶层用 `.then`，写完再打印页数。
 - 写完用 list_files 确认 .pptx 真实存在、大小合理（有图的 PPT 通常 >100KB；只有几 KB 说明图没进去）。
 - 交付时报：文件名、页数、用了哪套配色、图表数据来源。
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
  * 把所有测试跑一遍。
@@ -133,6 +135,7 @@ const SUITES = [
   ["toolward", "外挂的第二把尺子：装了多一层检查，没装 / 崩了一切照旧，密钥不出门"],
   ["rbac", "权限模型：管理员之间谁也动不了谁 / 超管只能转让 / 老账本搬家"],
   ["tenant", "多租户与权限"],
+  ["license", "商业授权：离线验签 / 团队迹象 / 待办先后 / 进审计 / 只有平台管理员看得见（钥匙现造，不碰作者那把）"],
   ["lifecycle", "入职 / 离职：权限一次关完 + 排期归属"],
   ["ops", "运行状况：日志 / 指标与告警 / 分片用量账本"],
   ["remote", "远程访问：配对授权 + 静态资源压缩"],
