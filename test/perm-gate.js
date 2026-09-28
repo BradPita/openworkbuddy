@@ -157,7 +157,9 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
     ok(nobody.aStill, "  └ 文件还在");
     if (!havePty()) console.log("  - 没有 pty（python3 pty 模块），跳过终端里摆卡这段");
     else {
-      const card = await cliRun([], ["run_shell", { command: long }], { pty: true, stopAt: /触发的片段：rm a\.txt/ });
+      // 掐在整张卡印完之后（三个选项和提示在原文下面）：只认「触发的片段」那行就掐的话，
+      // 慢机器上原文还在后一块输出里没到，查的是半张卡
+      const card = await cliRun([], ["run_shell", { command: long }], { pty: true, stopAt: /触发的片段：rm a\.txt[\s\S]*不允许/ });
       // 终端按列宽折行，折点落在哪不归这里管：去掉控制序列和折行再找
       const flat = card.all.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "").replace(/\n +/g, "");
       ok(card.stopped, "★终端前有人：长命令摆了审批卡★", card.all.slice(-300));
