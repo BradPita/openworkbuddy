@@ -19,6 +19,7 @@
  &nbsp;·&nbsp; <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a>
  &nbsp;·&nbsp; <a href="docs/功能清单.md">Feature list (zh)</a>
  &nbsp;·&nbsp; <a href="#docs">Docs</a>
+ &nbsp;·&nbsp; <a href="#commercial-license--enterprise-services"><b>Commercial license · Services</b></a>
  &nbsp;·&nbsp; <a href="README.md#交流群">Feishu group</a>
  &nbsp;·&nbsp; <a href="CHANGELOG.en.md">Changelog</a>
 </p>
@@ -33,7 +34,8 @@
 </p>
 
 <p align="center">
- <sub>Free for personal, learning and non-profit use. Commercial use needs a license — <a href="#license">one sentence below ↓</a></sub>
+ Free for personal, learning and non-profit use. <b>Commercial license</b>: <a href="mailto:contact@aijentra.com"><b>contact@aijentra.com</b></a><br>
+ We also offer <b>enterprise FDE</b> · <b>AI training</b> · <b>AI adoption consulting</b> — <a href="#commercial-license--enterprise-services">how to work with us ↓</a>
 </p>
 
 <p align="center">
@@ -58,6 +60,24 @@
 
 > [!NOTE]
 > Also: parallel tasks, goal-based acceptance, 👍👎 feedback that feeds self-evolution, two-layer memory, permission tiers, remote control over Feishu / WeChat, a desktop pet… Full list (Chinese): **[功能清单](docs/功能清单.md)**.
+
+## Commercial license · Enterprise services
+
+> [!IMPORTANT]
+> **Using it at a company or to make money (including internal use) needs a commercial license.**
+> Email **[contact@aijentra.com](mailto:contact@aijentra.com)** with your company, how you plan to use it and roughly how many users; we'll get back to you soon. Terms: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+
+Beyond licensing, we take on enterprise AI work:
+
+| Service | What it covers |
+|---|---|
+| **Enterprise FDE (forward-deployed engineering)** | Engineers join your team, wire Agents into real business workflows, and hand over once it runs |
+| **AI training** | In-house training so your team uses AI in everyday work, not just demos |
+| **AI adoption consulting** | Pick the use cases, shape the plan, size the cost; private deployment and industry agents included |
+
+The author is a former big-tech Agent engineer who has delivered AI solutions for cross-border e-commerce, manufacturing, AI startups, private funds, major consumer brands and state-owned enterprises. Based in Shenzhen — visits welcome.
+
+📮 **[contact@aijentra.com](mailto:contact@aijentra.com)**
 
 ## Why this one
 
@@ -289,7 +309,7 @@ Most docs are in Chinese; the code and comments are the source of truth.
 ## License
 
 **Free for personal, learning and non-profit use; making money with it (including internal company use) needs a commercial license.**
-[PolyForm Noncommercial 1.0.0](LICENSE); commercial terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)).
+[PolyForm Noncommercial 1.0.0](LICENSE); for a commercial license email [contact@aijentra.com](mailto:contact@aijentra.com) (terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)).
 
 Copyright (c) 2026 开发者猫叔
 
@@ -333,14 +353,3 @@ Thanks to everyone who has changed something here. Want to join them: [CONTRIBUT
  </picture>
 </a>
 </p>
-
-## About the author · Work with us
-
-Former big-tech Agent engineer with extensive hands-on experience shipping Agents in production.
-
-- ✔️ AI solutions delivered for cross-border e-commerce, manufacturing, AI startups, private funds, major consumer brands and state-owned enterprises
-- ✔️ Corporate AI training ｜ Private deployment ｜ Industry agents ｜ End-to-end AI transformation ｜ AI search optimization (GEO) ｜ Agent project delivery
-
-Based in Shenzhen — visits and conversations welcome.
-
-For FDE (forward-deployed engineering), Agent projects or other enterprise AI work, email [contact@aijentra.com](mailto:contact@aijentra.com).

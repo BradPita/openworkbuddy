@@ -19,6 +19,7 @@
  &nbsp;·&nbsp; <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a>
  &nbsp;·&nbsp; <a href="docs/功能清单.md">功能清单</a>
  &nbsp;·&nbsp; <a href="#文档">文档</a>
+ &nbsp;·&nbsp; <a href="#商用授权--企业服务"><b>商用授权 · 企业服务</b></a>
  &nbsp;·&nbsp; <a href="#交流群">交流群</a>
  &nbsp;·&nbsp; <a href="CHANGELOG.md">变更记录</a>
 </p>
@@ -33,7 +34,8 @@
 </p>
 
 <p align="center">
- <sub>自己用、学习用、非营利用 <b>免费</b>；公司里用要授权，<a href="#协议">一句话讲清 ↓</a></sub>
+ 自己用、学习用、非营利用 <b>免费</b>；公司里用、拿去赚钱要 <b>商用授权</b>：<a href="mailto:contact@aijentra.com"><b>contact@aijentra.com</b></a><br>
+ 我们承接 <b>企业 FDE 驻场</b> · <b>AI 培训</b> · <b>AI 落地咨询</b>，<a href="#商用授权--企业服务">怎么合作 ↓</a>
 </p>
 
 <p align="center">
@@ -58,6 +60,24 @@
 
 > [!NOTE]
 > 多任务并行、目标验收、👍👎 进自进化、双层记忆、权限档位、IM 远程指挥、桌面宠物…… 全部能力见 **[功能清单](docs/功能清单.md)**。
+
+## 商用授权 · 企业服务
+
+> [!IMPORTANT]
+> **公司里用、拿去赚钱（含公司内部用），需要商用授权。**
+> 发邮件到 **[contact@aijentra.com](mailto:contact@aijentra.com)**，写清楚公司、怎么用、大概多少人用，我们尽快回你。细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+
+除了授权，我们还承接企业 AI 业务：
+
+| 服务 | 做什么 |
+|---|---|
+| **企业 FDE（驻场工程）** | 工程师进你们团队，把 Agent 接进真实业务流程，跑起来再交接 |
+| **AI 培训** | 企业内训，让团队把 AI 用进日常工作，不停在尝鲜 |
+| **AI 落地咨询** | 挑场景、定方案、算成本；私有化部署、行业智能体都能谈 |
+
+作者是前大厂 Agent 工程师，服务过跨境电商、制造业、AI 初创、私募金融机构、消费品巨头、国央企等客户。常驻深圳，欢迎来交流和考察。
+
+📮 合作邮箱：**[contact@aijentra.com](mailto:contact@aijentra.com)**
 
 ## 为什么是它
 
@@ -301,7 +321,7 @@ OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 ## 协议
 
 **自己用、学习用、非营利用免费；拿去赚钱（含公司内部用）需要商业授权。**
-协议 [PolyForm Noncommercial 1.0.0](LICENSE)，商用怎么谈见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。买授权不解锁功能——只有这一份代码。部署配置、脚本、技能模板等另按 MIT 发布（[LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)）。
+协议 [PolyForm Noncommercial 1.0.0](LICENSE)，商用授权请邮件 [contact@aijentra.com](mailto:contact@aijentra.com)，细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。买授权不解锁功能——只有这一份代码。部署配置、脚本、技能模板等另按 MIT 发布（[LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)）。
 
 Copyright (c) 2026 开发者猫叔
 
@@ -345,14 +365,3 @@ Copyright (c) 2026 开发者猫叔
  </picture>
 </a>
 </p>
-
-## 关于作者 · 合作
-
-前大厂 Agent 工程师，有丰富的 Agent 落地实践经验。
-
-- ✔️ 服务过跨境电商、制造业、AI 初创、私募金融机构、消费品巨头、国央企等客户的 AI 解决方案
-- ✔️ 企业 AI 内训 ｜ 企业私有化部署 ｜ 行业智能体 ｜ AI 数字化全案 ｜ AI 搜索优化 ｜ Agent 项目落地
-
-常驻深圳，欢迎前来交流和考察。
-
-FDE（驻场工程）、Agent 项目落地及其他企业 AI 业务合作，请直接邮件联系：[contact@aijentra.com](mailto:contact@aijentra.com)
