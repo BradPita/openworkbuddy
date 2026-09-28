@@ -41,6 +41,10 @@ process.on("exit", (code) => {
   console.log(`\n✗ 这套测试没跑完就退了（跑到第 ${pass + fail} 条）——多半是有人 unref 了某个定时器，事件循环空了`);
   process.exitCode = 1;
 });
+// 每个用例一个装 schedules.json 的临时目录，退出时一起收（红了也收：里头只有几行假计划，没现场可看）。
+// 2026-09-28 实测：以前一个都不删，临时目录里已经堆了 21 个 owb-doubt-*
+const TMP_DIRS = [];
+process.on("exit", () => { for (const d of TMP_DIRS) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} } });
 
 function ok(cond, name, extra) {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
@@ -190,6 +194,7 @@ const padTo = (base, n) => base + "。".repeat(Math.max(0, n - base.length));
 
     function boot({ finalText, stopped, secondOpinion, doubtTimeoutMs }) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-doubt-"));
+      TMP_DIRS.push(dir);
       const notes = [];
       const calls = [];
       const wrapped = secondOpinion && (async (item, text) => { calls.push({ item, text }); return secondOpinion(item, text); });

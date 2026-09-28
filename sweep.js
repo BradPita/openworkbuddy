@@ -53,10 +53,19 @@ const SEQ_RATIO = 0.8;
 const VIDEO_RE = /\.(mp4|mov|webm|m4v|mkv|ogv)$/i;
 const AUDIO_RE = /\.(mp3|m4a|aac|ogg|opus)$/i;
 const DOC_RE = /\.(md|markdown|docx?|pptx?|xlsx?|pdf|csv|html?|json|srt|vtt)$/i;
+const IMG_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
 /** 这些名字一律不碰：一眼就是成品，哪怕它恰好长得像中间物 */
 const KEEP_NAME_RE = /(封面|成片|终稿|定稿|final|cover|poster|thumbnail|readme)/i;
 /** 过程脚本 */
 const SCRIPT_RE = /\.(js|mjs|cjs|ts|py|sh|bash|rb)$/i;
+/**
+ * 调试草稿：下划线开头、或 check_/debug_/probe_… 开头的脚本、自检截图、数据转储。
+ * 2026-09-28 真事故：做网页小游戏的任务往成果文件夹里塞了 _pose.js/_crop.js/_trace.js/check_02.png
+ * 一共 21 个，成品只有一个 html。这些名字是模型给自己起的「用完即弃」记号，跟随手写的
+ * cdp_read.js 不一样——后者用户可能就要那个脚本，所以 SCRIPT 那组默认不勾，这组默认勾。
+ * 不收 html：一个叫 _final.html 的东西万一就是成品，删错了收不回来。
+ */
+const DEBUG_NAME_RE = /^(?:_|(?:check|debug|probe|diag|tmp|temp)[_-]).+\.(?:m?js|cjs|ts|py|sh|png|jpe?g|webp|json|txt|log)$/i;
 
 /** 浏览器/工具随手落下的临时库。只认这几个名字——用户真交付一个 .db 是可能的，别一锅端 */
 const SCRATCH_DB_RE = /^(ck|cookie|cookies|cache|tmp|temp|session)\.(db|sqlite3?)$/i;
@@ -167,12 +176,15 @@ function deliverablesOf(dirs) {
   for (const d of dirs.values()) {
     for (const f of d.files) {
       const t = taskOf(f.rel);
-      if (!has.has(t)) has.set(t, { video: 0, audio: 0, doc: 0, any: 0 });
+      if (!has.has(t)) has.set(t, { video: 0, audio: 0, doc: 0, img: 0, any: 0 });
       const h = has.get(t);
+      // 调试草稿不算成品：一个任务只剩 _dump.json 时，它证明不了「成品已经在手上」
+      if (DEBUG_NAME_RE.test(f.name)) continue;
       h.any++;
       if (VIDEO_RE.test(f.name)) h.video++;
       else if (AUDIO_RE.test(f.name)) h.audio++;
       else if (DOC_RE.test(f.name)) h.doc++;
+      else if (IMG_RE.test(f.name)) h.img++;
     }
   }
   return has;
@@ -204,6 +216,7 @@ const GROUP_META = {
   stems:  { label: "分离出来的音轨", on: true },
   build:  { label: "编译产物", on: true },
   scratch:{ label: "零碎（cookie 库、空的错误输出）", on: true },
+  debug:  { label: "调试草稿", on: true },
   script: { label: "过程脚本", on: false },
 };
 
@@ -329,6 +342,12 @@ function plan(root, opts = {}) {
       else if (/\.(log|txt)$/i.test(f.name) && f.size === 0) why = "空文件";
       if (why) { add("scratch", { path: f.rel, count: 1, bytes: f.size, why }); continue; }
 
+      // ⑤a 调试草稿。前提：任务第一层、这个任务手上另有成品（草稿本身不算，ck.db 这类零碎也不算）
+      if (DEBUG_NAME_RE.test(f.name) && task && f.rel.split("/").length === 2 && (h.video || h.audio || h.doc || h.img)) {
+        add("debug", { path: f.rel, count: 1, bytes: f.size, why: "_ 或 check_ 开头的调试脚本、自检截图，成品另外有" });
+        continue;
+      }
+
       // ⑤ 过程脚本。默认不勾——用户完全可能就是让我写个脚本给他。
       //    前提：这个任务另有成品，脚本不是这次唯一的交付
       // 只认**任务目录第一层**的脚本。真事故：一个任务的成果本来就是一棵 Python 源码树
@@ -380,4 +399,4 @@ function apply(root, paths, opts = {}) {
   return { removed, bytes, skipped };
 }
 
-module.exports = { plan, apply, scan, usageOf, dirSize, taskOf, taskOfDir, _internals: { SEQ_RE, SEQ_MIN, BUILD_DIRS, STEM_DIRS } };
+module.exports = { plan, apply, scan, usageOf, dirSize, taskOf, taskOfDir, _internals: { SEQ_RE, SEQ_MIN, BUILD_DIRS, STEM_DIRS, DEBUG_NAME_RE } };

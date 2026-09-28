@@ -211,7 +211,16 @@ console.log("\n⑨ 同一条会话第二轮");
 console.log("\n⑩ 接线");
 {
   const srv = src("server");
-  ok(/worktree\.plan\(getWorkspaceDir\(\)/.test(srv), "★服务端按当前工作目录判要不要隔离★");
+  ok(/await worktree\.planAsync\(getWorkspaceDir\(\)/.test(srv), "★服务端按当前工作目录判要不要隔离（异步那一版，不卡窗口线程）★");
+  ok(!/worktree\.plan\(getWorkspaceDir\(\)/.test(srv), "★服务端不许退回同步 plan★ 每轮卡整个应用约 90ms");
+  // root 必须在 await 之前先登上：await 那几十毫秒里进来的下一条要看得见这一条
+  const rootFirst = (s) => {
+    const at = s.indexOf("await worktree.planAsync(");
+    return at > 0 && /runState\.root = getWorkspaceDir\(\);/.test(s.slice(Math.max(0, at - 400), at));
+  };
+  ok(rootFirst(srv), "★await 之前先把自己的 root 登上★ 不然两条同时进来会一起改用户那份工作区");
+  ok(!rootFirst("const busy = [];\n    const p = await worktree.planAsync(getWorkspaceDir(), {});\n  runState.root = getWorkspaceDir();"),
+    "反向对照：root 只在 await 之后才登（改之前那种写法）会被认出来");
   ok(/enterWorkspace\(opened\.dir\)/.test(srv), "★判出来要隔离就真的换了工作目录★ 少这行整套就是个空壳");
   ok(/cliLive\.list\(\{ prune: false \}\)[\s\S]{0,200}busy\.push/.test(srv),
     "★撞车名单把终端里那趟也算上★ 网页一条 + 终端一条是最常见的撞法，而它俩是两个进程");
@@ -247,6 +256,97 @@ console.log("\n⑪ 换工作目录只染自己这条链");
   eq(seen.a, A + "-分身", "★换完之后，await 那边看到的是分身★ 少了这条，整套隔离就是个摆设");
   eq(seen.b, B + "-分身", "★另一条链是另一个分身★ 两条请求同时进来不会串");
   eq(getWorkspaceDir(), before, "★出了那条链，工作目录还是原来那个★ 串出去就是把 A 的活儿写进 B 的仓库");
+  // 服务端现在是先 await 问 git、再 enterWorkspace：换目录发生在 await 之后，照样只能染自己这条
+  const seen2 = {};
+  const late = (name, dir) => withWorkspace(dir, async () => {
+    await new Promise((r) => setTimeout(r, 3)); // 等 planAsync 回话的那一下
+    enterWorkspace(dir + "-分身");
+    await new Promise((r) => setTimeout(r, 5));
+    seen2[name] = getWorkspaceDir();
+  });
+  const watch = withWorkspace(A, async () => {
+    for (let i = 0; i < 8; i++) { await new Promise((r) => setTimeout(r, 1)); if (getWorkspaceDir() !== A) seen2.leak = getWorkspaceDir(); }
+  });
+  await Promise.all([late("a", A), late("b", B), watch]);
+  eq(seen2.a, A + "-分身", "★await 之后再换目录，后面看到的也是分身★");
+  eq(seen2.b, B + "-分身", "另一条链 await 之后换的是它自己的");
+  eq(seen2.leak, undefined, "★同时在跑的第三条链一次都没被染到★");
+  eq(getWorkspaceDir(), before, "出了链还是原来那个");
+
+  // ── ⑫ 每轮开头那一问：异步、按目录记 60 秒 ─────────────────────────────
+  console.log("\n⑫ 每轮开头那一问不卡窗口线程");
+  const cp = require("child_process");
+  const realExec = cp.execFile;
+  let execN = 0;
+  cp.execFile = function (...a) { if (a[0] === "git") execN++; return realExec.apply(this, a); };
+  const I = wt._internals;
+  try {
+    const r1 = mkRepo("repo-a1"), r2 = mkRepo("repo-a2");
+    const sub = path.join(r1, "src"); fs.mkdirSync(sub, { recursive: true });
+    const plain = path.join(TMP, "异步非仓库"); fs.mkdirSync(plain);
+    const cases = [
+      [r1, { session: "s1", busy: [] }],
+      [r1, { session: "s1", busy: [{ session: "s1", dir: r1 }] }],
+      [r1, { session: "s1", busy: [{ session: "s2", dir: r2 }] }],
+      [r1, { session: "s1", busy: [{ session: "s2", dir: r1 }, { session: "s3", dir: r2 }, { session: "s4", dir: sub }] }],
+      [plain, { session: "s1", busy: [{ session: "s2", dir: plain }] }],
+      [path.join(TMP, "根本不存在-异步"), { session: "s1", busy: [] }],
+      [r1, { session: "s1", busy: [{ session: "s2", dir: path.join(TMP, "也不存在") }, { session: "s3", dir: "" }, null] }],
+    ];
+    let same = 0; const diff = [];
+    for (const [d, o] of cases) {
+      const a = JSON.stringify(wt.plan(d, o)), b = JSON.stringify(await wt.planAsync(d, o));
+      if (a === b) same++; else diff.push(a + "\n≠ " + b);
+    }
+    eq(same, cases.length, "★异步版每种情况跟同步 plan 答得一字不差★", diff.join("\n"));
+    ok(cases.some(([d, o]) => wt.plan(d, o).need) && cases.some(([d, o]) => !wt.plan(d, o).need),
+      "反向对照：这组情况里要隔离、不要隔离的都有，不是全挑同一种答案的来比");
+
+    const gOk = await I.gitAsync(r1, ["rev-parse", "--show-toplevel"]);
+    const gBad = await I.gitAsync(plain, ["rev-parse", "--show-toplevel"]);
+    eq(gOk.status, 0, "gitAsync 成功时 status 是 0，跟 spawnSync 一个样");
+    ok(gBad.status !== 0 && typeof gBad.status === "number", "★git 报错时 status 非 0★ 不然 out() 会把报错那次的输出当真", JSON.stringify(gBad));
+
+    I.repoCache.clear(); execN = 0;
+    await wt.planAsync(r2, { session: "s1", busy: [] });
+    eq(execN, 3, "★冷的时候走 execFile 问 3 下★（不占窗口线程）");
+    execN = 0; wt.plan(r2, { session: "s1", busy: [] });
+    eq(execN, 0, "反向对照：同步 plan 一次 execFile 都不走（它走的是 spawnSync）");
+    ok(!/\brepoOf\(|[^.\w]git\(/.test(wt.planAsync.toString() + I.repoOfCached.toString() + wt.repoOfAsync.toString()),
+      "★异步那条路上一个同步 git 调用都没有★");
+    ok(/\brepoOf\(/.test(wt.plan.toString()), "反向对照：同一个检查对同步 plan 是命中的");
+
+    execN = 0;
+    for (let i = 0; i < 5; i++) await wt.planAsync(r2, { session: "s1", busy: [{ session: "s2", dir: r2 }] });
+    eq(execN, 0, "★60 秒内同一个目录再问：一个 git 进程都不起★ 每轮都起三次就是每轮卡一下");
+    I.repoCache.get(path.resolve(r2)).at -= I.REPO_TTL + 1;
+    execN = 0; await wt.planAsync(r2, { session: "s1", busy: [] });
+    eq(execN, 3, "反向对照：过了 60 秒就重新问（仓库被挪走、换了的话一分钟内认得出）");
+
+    I.repoCache.clear(); execN = 0;
+    const many = await Promise.all([1, 2, 3, 4].map(() => wt.planAsync(r1, { session: "s1", busy: [] })));
+    eq(execN, 3, "★四条同时进来只问一遍★ 并发的共用同一个 Promise");
+    ok(many.every((p) => p.repo && p.repo.key === many[0].repo.key), "四条拿到的是同一个仓库");
+
+    // 不是仓库不记：用户 git init 完，下一轮就得认出来
+    const late2 = path.join(TMP, "等会儿才init"); fs.mkdirSync(late2);
+    eq((await wt.planAsync(late2, {})).repo, undefined, "反向对照：init 之前它确实不是仓库");
+    git(late2, "init", "-q", "-b", "main");
+    ok(!!(await wt.planAsync(late2, {})).repo, "★「不是仓库」不记账★ git init 完下一轮当场认得出，不用等一分钟");
+
+    // 目录没了就不算：分身收掉之后那条路径不该还被当成仓库
+    const gone = mkRepo("repo-gone");
+    ok(!!(await I.repoOfCached(gone)), "反向对照：删之前认得出、而且记进了缓存");
+    ok(I.repoCache.has(path.resolve(gone)), "（缓存里确实有它）");
+    fs.rmSync(gone, { recursive: true, force: true });
+    eq(await I.repoOfCached(gone), null, "★目录删了，缓存里有也不认★ 目录在不在每次现查");
+
+    // 交出去的是拷贝：调用方改了它，下一轮拿到的还是对的
+    const pa = await wt.planAsync(r1, {});
+    const realKey = pa.repo.key;
+    pa.repo.key = "被人改坏了";
+    eq((await wt.planAsync(r1, {})).repo.key, realKey, "★调用方改了返回值，串不到下一轮★ 缓存里那份是共用的");
+  } finally { cp.execFile = realExec; }
 
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

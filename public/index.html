@@ -2335,6 +2335,10 @@
       scroll-behavior: auto !important;
     }
   }
+  /* 桌面版窗口收起来、最小化了（主进程挂上 owb-away，见 win-away.js）：无限循环的呼吸灯、转圈一律停住。
+     2026-09-28 实测：以前窗口藏起来界面照样按 120Hz 在画，侧栏每个在跑的对话一盏呼吸灯，谁也看不见。
+     只停不改：拿回窗口那一下接着转；全项目没人监听 animationend，停着也卡不住谁。 */
+  body.owb-away *, body.owb-away *::before, body.owb-away *::after { animation-play-state: paused !important; }
 
   /* 滚到底之后别把滚动传给外层：文件面板、设置弹窗、聊天流都是独立的一块，
      在里面划到头还继续带动整页（或者在 macOS 上触发返回上一页的橡皮筋），是最出戏的一下。 */
@@ -2983,6 +2987,7 @@
   <div class="rsz l" data-rsz="fp" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整成果文件面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <h2><span><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><a href="#" id="fp-sweep" class="link" style="font-weight:400;font-size: 12px" title="看看哪些是任务跑完剩下的中间文件">整理文件夹</a><span style="flex:1"></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
   <div class="fp-filter" id="fp-filter" hidden>
+    <div class="fp-segs" id="fp-scope" hidden></div>
     <input id="fp-q" class="fp-q" type="search" placeholder="按名字找：文件名、文件夹名…" autocomplete="off" spellcheck="false" aria-label="按名字筛选成果文件" hidden>
     <div class="fp-segs" id="fp-segs" hidden></div>
   </div>

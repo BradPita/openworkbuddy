@@ -318,6 +318,8 @@ let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
 const SESS_DIR = dataPath("data", "sessions");
 const sessions = new Map();
 const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject: [] }（「停止」与「插队」用）
+// 浏览器标签页的闲置关页、到顶腾位，不许收还在跑的任务的页（等用户回话超过 10 分钟的，回来表单还得在）
+try { require("./cdp").setActivePredicate((sid) => activeRuns.has(sid) || require("./tools").runHeld(sid)); } catch {}
 // 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
 // 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
 const RUNNING_FILE = dataPath("data", "running.json");
@@ -472,6 +474,26 @@ function forgetSession(id) {
   sessUsedAt.delete(id);
   sessHold.delete(id);
 }
+/**
+ * 删会话：盘上跟它有关的每一份一起删——正本、.bak、.corrupt / .corrupt-<时间戳>、写到一半的 .tmp，
+ * 外加这条会话压缩时归档的原文（compact-archive/<id>-<毫秒>.json）。
+ * 以前只删正本：2026-09-28 实测 data/sessions 下 5 个 .bak 的正本早没了——
+ * 用户点了删除，整段对话原样躺在 .bak 里。按文件名精确比对，别的会话一个字节都碰不到。
+ * 目录从 SESS_DIR 推，不用 dataPath()：e2e / memory 两个测试把这一整段切出去单跑，注进去的就那几个依赖。
+ */
+function removeSessionFiles(id) {
+  const base = path.basename(sessFile(id));
+  const safe = base.slice(0, -".json".length);
+  const tail = /^(?:bak|corrupt(?:-\d+)?|\d+\.tmp|bak\.\d+\.tmp)$/;
+  const sweep = (dir, hit) => {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { return; }
+    for (const n of names) if (hit(n)) { try { fs.rmSync(path.join(dir, n), { force: true }); } catch {} }
+  };
+  sweep(SESS_DIR, (n) => n === base || (n.startsWith(base + ".") && tail.test(n.slice(base.length + 1))));
+  sweep(path.join(path.dirname(SESS_DIR), "compact-archive"),
+    (n) => n.startsWith(safe + "-") && /^\d{13}\.json$/.test(n.slice(safe.length + 1)));
+}
 /** 当前内存里这些会话占了多少字节（按盘上那份算） */
 function sessCacheBytes() {
   let n = 0;
@@ -552,7 +574,13 @@ function saveSession(id, sess) {
   if (!s.history) return;
   touchSession(id);
   s.updated_at = new Date().toISOString();
-  store.writeJsonAtomic(sessFile(id), s);
+  // 盘上那份还是我们上回读 / 写下的样子（mtime+size 都对得上）：上一版不用再整份读回来 JSON.parse
+  // 一遍才配当 .bak，直接硬链接过去（见 store.js linkBackup）。对不上——命令行写过、
+  // 或者这条压根不在缓存里（定时任务把对象直接递进来那条路）——就还走老路先验再拷，
+  // 残骸永远顶不掉一份好的 .bak。
+  const mine = sessStamp.get(id), disk = mine ? sessStat(id) : null;
+  const trustPrev = !!(mine && disk && disk.size > 0 && disk.mtime === mine.mtime && disk.size === mine.size);
+  store.writeJsonAtomic(sessFile(id), s, { trustPrev });
   // 记下自己写完之后的样子，别把自己这次写当成「别人改的」。
   // 只给还在缓存里的记：清掉的那些记了也没人看，反倒让这个 Map 接着涨
   if (sessions.has(id)) sessStamp.set(id, sessStat(id));
@@ -865,6 +893,18 @@ app.use((req, res, next) => {
   next();
 });
 /**
+ * /api 的 GET 默认 no-store，别让 Chromium 往盘上的 HTTP 缓存里写。
+ * 这些回应本来就不复用（下一次一定回来重新要），可不写头的话 Chromium 照样把它们落进
+ * userData/Cache：GET /api/session/:id 一份就 936 KB，切一次任务写一份，2026-09-28 看到那个目录
+ * 大部分是这种用不上的旧会话。要缓存的路由自己会再 res.set 一次、盖掉这里的默认值——
+ * /api/files/view 带对版本号时就是这么拿到长期缓存的（见 viewCacheHeader）；
+ * sendFile 看到已经有 Cache-Control 就不再写它那个 public, max-age=0。
+ */
+app.use((req, res, next) => {
+  if ((req.method === "GET" || req.method === "HEAD") && req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
+  next();
+});
+/**
  * 静态文本先压再发，摆在 express.static 前面。
  *
  * 首屏那 1.9 MB（HTML + 八个 app-0*.js + i18n 词典 + JointJS + Dagre）全是文本，
@@ -1159,6 +1199,39 @@ function guardRun(req, res, id) {
   if (sessionAllowed(req.user, getSession(id))) return true;
   res.status(403).json({ ok: false, error: "这条对话不属于你" });
   return false;
+}
+
+/**
+ * 一页只占一条直播连接：/api/chat/live 用到的几样东西。
+ *
+ * 2026-09-28 实测：同时跑 6 个对话，每个对话各占一条长连接（POST /api/chat 的 SSE、断线后的
+ * /api/chat/stream），Chromium 对同一主机最多开 6 条 HTTP/1.1 连接——池子被占满，点开别的对话、
+ * 点停止、开预览、预览里的 iframe 全排在后面干等，界面看着就是「点了没反应、右边一片白」。
+ * 所以运行中的事件改成整页合用一条 /api/chat/live，按 sid 分流，几条对话都只占这一个连接。
+ *
+ * lastRuns：刚跑完的那一趟再留 60 秒。detach 模式下 POST 先回「收到了」、页面随后才来订阅，
+ * 跑得快的任务（秒回、开头就报错）这中间可能已经收尾——不留着的话订上来只剩一句「没有这趟」，
+ * 这一轮在页面上就是空白。
+ * side：不进回放记录、页面却要用的事件（成果目录、目标卡、标题、收尾文件清单、清理提示、done），
+ * 每种只留最新一条，订阅晚到或重连时补发；前端按内容去重，补几遍都不会重复画。
+ */
+const lastRuns = new Map(); // sessionId -> 最近一趟的 runState（跑完后再留 60 秒）
+let liveRunSeq = 0;
+const LIVE_SIDE = new Set(["dir", "goal", "title", "sweep", "files", "done"]);
+function noteSide(run, ev) {
+  if (!ev || !LIVE_SIDE.has(ev.type)) return;
+  if (ev.type === "files" && (ev.changed || []).length) return; // 有变更的那批已经进了记录，回放里有
+  if (!run.side) run.side = new Map();
+  run.side.set(ev.type, ev);
+}
+/**
+ * 第 k 条记录发出之前、记录里的位置：n = 已经记了几条，t = 最后一条是文本时它有多长（不是文本记 -1）。
+ * 每帧都带上它，前端拿来校正自己的计数——以前全靠前端照着服务端的记账口径自己数，
+ * 口径差一点（比如 files 事件）重连时就从错的位置补发，同一段过程画两遍。
+ */
+function livePos(events, k) {
+  const prev = k > 0 ? events[k - 1] : null;
+  return { n: k, t: prev && prev.type === "text" ? String(prev.delta || "").length : -1 };
 }
 
 let runtime; // MCP 启动后创建
@@ -1512,6 +1585,8 @@ app.get("/api/settings", (req, res) => {
   const myModel = prefs.modelCfg(config);
   res.json({
     workspace_dir: getWorkspaceDir(),
+    // 默认工作空间里每个对话各有一个成果文件夹：成果区据此默认只摆「本对话」那一格
+    workspace_is_default: path.resolve(getWorkspaceDir()) === dataPath("workspace"),
     // Key 从不发原文，谁来问都一样：回一串八颗星（= 「没改」的暗号）+ has_key（配没配）。
     // 平台管理员多拿一个 key_hint（sk-…4f2a）用来认「我装的是哪一把」；普通成员连这截也没有——
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手。
@@ -2164,6 +2239,9 @@ app.get("/api/ops/metrics.prom", (req, res) => {
   put("tokens", m.tokens, "prompt + completion tokens in the window");
   put("disk_free_pct", m.disk_free_pct, "free space on the data volume");
   put("rss_mb", m.rss_mb, "resident memory of the server process");
+  put("loop_p99_ms", m.loop_p99_ms, "99th percentile event-loop delay in the window");
+  put("loop_max_ms", m.loop_max_ms, "worst event-loop delay in the window");
+  put("loop_util", m.loop_util, "event-loop utilization (plain node only)");
   for (const [name, n] of Object.entries(m.channel_fail_streak || {})) {
     out.push(`openworkbuddy_channel_fail_streak{channel="${String(name).replace(/["\\]/g, "")}"} ${n}`);
   }
@@ -2674,6 +2752,9 @@ app.get("/api/cli/stream/:id", (req, res) => {
   const sid = String(req.params.id || "");
   const meta = cliLive.get(sid);
   if (!meta) return res.status(404).json({ error: "终端里没有这趟活儿（可能已经跑完很久了）" });
+  // 同 /api/chat/live：请求在中间件那段就被掐了，close 早发过，下面 400ms 一次的读尾部定时器就一直转到这趟活儿跑完。
+  // 2026-09-29 复审同一个写法，终端里一趟活儿跑几个小时，页面每重开一次都可能多留一个
+  if (res.destroyed || req.socket.destroyed) return;
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -4213,7 +4294,56 @@ function dirSize(p) {
 function cacheTmpDirs() {
   const set = new Set([path.join(getWorkspaceDir(), ".tmp")]);
   for (const p of config.projects || []) if (p && p.dir) set.add(path.join(p.dir, ".tmp"));
+  // 每个成果文件夹自己的 .tmp/：提示词让模型把调试脚本、自检截图放这儿，不摊在成品旁边
+  try {
+    for (const e of fs.readdirSync(getWorkspaceDir(), { withFileTypes: true })) {
+      if (!e.isDirectory() || !e.name.startsWith("任务_")) continue;
+      const d = path.join(getWorkspaceDir(), e.name, ".tmp");
+      if (fs.existsSync(d)) set.add(d);
+    }
+  } catch {}
   return [...set];
+}
+/**
+ * 成果文件夹里的 .tmp/ 是给模型的草稿区。一轮一轮只进不出的话，截图攒多了一样占地方——
+ * 收尾时把三天没动过的清掉。三天：续跑、第二天接着改都还在，一周前那次调试就没人要了
+ *
+ * 子目录「动没动过」按它里面最新的那一项算，不看目录自己的 mtime：往已有的文件里接着写、
+ * 在更深一层加东西，目录自己的 mtime 都纹丝不动。2026-09-29 复审：三天前建的 .tmp/venv、
+ * .tmp/调试/ 今天还在往里写，按目录 mtime 算整棵被删，下一步 import 直接找不到。
+ * 翻目录全走异步、翻到一个新的就停——收尾这一刻在 Electron 主进程上，同步翻一棵 node_modules 整个应用陪着卡。
+ * 翻了 TASK_TMP_SCAN_MAX 项还没翻完就当它还在用：宁可留着一棵大的，不拿半截证据去删。
+ */
+const TASK_TMP_SCAN_MAX = 20000;
+async function pruneTaskTmp(taskAbs) {
+  const dir = path.join(taskAbs, ".tmp");
+  const dead = Date.now() - 3 * 24 * 3600 * 1000;
+  let names = [];
+  try { names = await fs.promises.readdir(dir); } catch { return; }
+  for (const n of names) {
+    const fp = path.join(dir, n);
+    try {
+      const st = await fs.promises.lstat(fp); // 软链只解链，绝不跟进去
+      if (st.mtimeMs >= dead) continue;
+      if (st.isSymbolicLink()) { await fs.promises.unlink(fp); continue; }
+      if (st.isDirectory() && await touchedSince(fp, dead, { left: TASK_TMP_SCAN_MAX })) continue;
+      await fs.promises.rm(fp, { recursive: true, force: true });
+    } catch {}
+  }
+}
+/** 目录里有没有 dead 之后动过的（软链只看它自己，不跟进去）。读不了、翻不完一律按「动过」算 */
+async function touchedSince(dir, dead, budget) {
+  let ents;
+  try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return true; }
+  for (const e of ents) {
+    if (--budget.left < 0) return true;
+    const fp = path.join(dir, e.name);
+    let st;
+    try { st = await fs.promises.lstat(fp); } catch { continue; } // 翻的这一下被删了：它不算数
+    if (st.mtimeMs >= dead) return true;
+    if (st.isDirectory() && await touchedSince(fp, dead, budget)) return true;
+  }
+  return false;
 }
 function cacheStats() {
   const ud = appUserDataDir();
@@ -4232,6 +4362,31 @@ const BACKUP_ENTRIES = ["data", "prefs", "config.json", "schedules.json", "exper
 // 包里允许出现的顶层条目。比 BACKUP_ENTRIES 多一个 skills/——自己写的技能是跟着备份走的
 // （见 userSkillEntries），所以列清单和解包的时候也得认它。
 const BACKUP_TOP = [...BACKUP_ENTRIES, "skills"];
+/**
+ * 能重新生成的东西不进包。2026-09-28 量过一台用了一个月的机器：data/ 里缩略图、每份会话旁边
+ * 那个孪生 .bak、压缩前的原文归档、codex 的下载缓存、运维指标加起来占了一大半，
+ * 每天一个自动备份把它们原样再背一遍。
+ * - 缩略图/codex 缓存：看一眼就重新生成、重新下载。
+ * - *.json.bak：正本坏了才用得上的那一份，打包那一刻正本是好的。
+ * - compact-archive / metrics：前者是压缩前的原文（会话里留着压缩后的版本），后者是运维曲线。
+ * 恢复不会删这几样：恢复是 tar -x 盖回去、不清目录，盘上现有的原样留着。
+ * 必须摆在文件参数前面：GNU tar 规定 --exclude 只管它后面的参数。
+ * 模式都从包里的开头算（只管顶层那个 data/）：两家 tar 默认都不锚定，不锚的话用户技能
+ * skills/x/data/ 底下同名的东西会一起漏打。怎么锚按 tar 是哪一家定，见 backup-auto.js 的 tarExcludeArgs。
+ */
+const BACKUP_EXCLUDES = ["data/thumbs", "data/*.json.bak", "data/compact-archive", "data/runtime/codex/cache", "data/metrics"];
+let tarVersionText = null; // 本机 tar 是哪一家：一个进程里问一次就够
+function backupExcludeArgs() {
+  if (!tarVersionText) {
+    tarVersionText = new Promise((resolve) => {
+      require("child_process").execFile("tar", ["--version"], { timeout: 10000 }, (e, out) => {
+        if (e) tarVersionText = null; // 没问成下回再问；这一回按认不出处理，一个都不排除
+        resolve(e ? "" : String(out || ""));
+      });
+    });
+  }
+  return tarVersionText.then((v) => require("./backup-auto").tarExcludeArgs(v, BACKUP_EXCLUDES));
+}
 
 /**
  * 自己写的技能也得跟着搬家。
@@ -4281,8 +4436,8 @@ function makeBackup(tag) {
     const name = `openworkbuddy-backup-${stamp}${tag ? "-" + tag : ""}.tar.gz`;
     const entries = [...BACKUP_ENTRIES.filter((e) => fs.existsSync(dataPath(e))), ...userSkillEntries()];
     if (!entries.length) return reject(new Error("没有可备份的数据"));
-    require("child_process").execFile(
-      "tar", ["-czf", path.join(BACKUP_DIR, name), "-C", DATA_DIR, ...entries],
+    backupExcludeArgs().then((excludes) => require("child_process").execFile(
+      "tar", ["-czf", path.join(BACKUP_DIR, name), ...excludes, "-C", DATA_DIR, ...entries],
       { timeout: 300000 },
       (err) => {
         if (err) return reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带；更老的 Windows 请先升级系统）" : "tar 打包失败：" + err.message));
@@ -4292,7 +4447,7 @@ function makeBackup(tag) {
         store.tighten(path.join(BACKUP_DIR, name), store.SECRET_MODE);
         resolve(name);
       }
-    );
+    )).catch(reject);
   });
 }
 
@@ -6087,6 +6242,7 @@ app.post("/api/chat", async (req, res) => {
   const runState = { ctrl: new AbortController(), interject: [], asks: new Map(), subscribers: new Set(), events: null };
   const send = (event) => {
     const line = `data: ${JSON.stringify(event)}\n\n`;
+    noteSide(runState, event); // 不进记录的那几种留个最新的，/api/chat/live 晚到的订阅者靠它补
     if (!res.destroyed && !res.writableEnded) { try { res.write(line); } catch {} }
     for (const sub of runState.subscribers) { try { sub.write(line); } catch {} }
   };
@@ -6130,7 +6286,16 @@ app.post("/api/chat", async (req, res) => {
 
   runState.events = asstEvents; // 续流端点靠它补发已记录的事件
   activeRuns.set(sessionId, runState);
+  runState.rid = Date.now().toString(36) + "." + (++liveRunSeq).toString(36); // 同一条对话前后两趟靠它分开
+  lastRuns.set(sessionId, runState);
   persistRunning();
+  // detach：页面只要一句「收到了」，过程走整页共用的 /api/chat/live。这条请求当场结束，不再占一条连接
+  // （为什么非得这样见 lastRuns 上面那段）。不带这个标记的调用方（命令行、老页面、画布）照旧拿整条 SSE，
+  // 一个字节都不变。响应头上面已经按 SSE 设好了，这里换回 JSON；之后 send 看到 writableEnded 就不再写它。
+  if (req.body && req.body.detach === true) {
+    res.removeHeader("Content-Type"); res.removeHeader("Cache-Control"); res.removeHeader("Connection");
+    res.json({ accepted: true, sessionId, rid: runState.rid });
+  }
   const emitFn = recordingEmit(send, asstEvents, sessionId);
   /**
    * 撞车才隔离：另有任务正在改这同一个 git 仓库，这一条就去自己的 worktree 里改。
@@ -6147,7 +6312,11 @@ app.post("/api/chat", async (req, res) => {
     // 而这两个是两个进程——盘上那个 cli-live 目录是它们唯一互相看得见的地方
     const busy = [...activeRuns].map(([sid, r]) => ({ session: sid, dir: r.root || "" }));
     try { for (const r of cliLive.list({ prune: false })) if (r.live && r.cwd) busy.push({ session: r.id, dir: r.cwd }); } catch {}
-    const p = worktree.plan(getWorkspaceDir(), { session: sessionId, busy });
+    // 下面那一问是异步的（同步问 git 每轮卡整个应用约 90ms，见 worktree.js planAsync 上面）。
+    // 名单在 await 之前就拍好了；自己的 root 也得先登上：不然等 git 回话这几十毫秒里进来的下一条
+    // 看到的是 root 为空、当没这条，两条就一起在用户那份工作区里改了。开了分身后面会再改成分身目录
+    runState.root = getWorkspaceDir();
+    const p = await worktree.planAsync(getWorkspaceDir(), { session: sessionId, busy });
     if (p.need) {
       const opened = worktree.open(WORKTREE_DIR, { repo: p.repo, session: sessionId });
       if (opened && opened.dir) {
@@ -6318,6 +6487,11 @@ app.post("/api/chat", async (req, res) => {
   } finally {
     activeRuns.delete(sessionId);
     persistRunning();
+    // 这趟开过的浏览器标签页跟着收掉：不收的话后台 Chrome 里一天挂几十个页面，越跑越卡
+    try { require("./cdp").releaseOwner(sessionId).catch(() => {}); } catch {}
+    // 这一轮起的后台命令（没说 keep 的）、`&`/nohup 甩出去的进程组一起收：以前一个都不收，
+    // 看网页起的 http.server 活过两次应用重启，并发的对话还撞端口（tools.js noteStray）
+    try { require("./tools").releaseRun(sessionId, { browser: false }).catch(() => {}); } catch {}
     if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
   }
   if (total.calls > 0) modelFailStreak.delete(ranLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
@@ -6388,10 +6562,16 @@ app.post("/api/chat", async (req, res) => {
    * 用户点「清理」时心里想的是「刚才这一趟」，多删一个字都是背信。
    * 门槛 20 MB / 30 个：比这还少就别打扰人，一条提示本身也是打扰。
    */
+  // 有成果文件夹就只看这一个：几条对话同时在跑时，按整个工作区算会把**别的对话**刚造的
+  // 文件也端到这张卡上，用户在 A 对话里点「清掉」删的是 B 对话手上正在用的东西。
+  // 调试草稿（_pose.js、check_02.png）另开一道门槛：它们个头小，攒不到 20 MB，
+  // 但就躺在成品旁边，用户打开文件夹第一眼看到的是它们——3 个就值得问一句。
+  if (taskBaseDir) pruneTaskTmp(path.join(getWorkspaceDir(), taskBaseDir)).catch(() => {}); // 异步翻，不拖收尾
   try {
-    const sw = sweep.plan(getWorkspaceDir(), { since: runStartedAt });
-    if (sw.count && (sw.bytes >= 20 * 1024 * 1024 || sw.count >= 30)) {
-      send({ type: "sweep", since: runStartedAt, ...sw });
+    const sw = sweep.plan(getWorkspaceDir(), { since: runStartedAt, task: taskBaseDir || undefined });
+    const dbg = ((sw.groups || []).find((g) => g.key === "debug") || {}).count || 0;
+    if (sw.count && (sw.bytes >= 20 * 1024 * 1024 || sw.count >= 30 || dbg >= 3)) {
+      send({ type: "sweep", since: runStartedAt, task: taskBaseDir || "", ...sw });
     }
   } catch {} // 清单算不出来不该拖累一次成功的任务
   // 分身收尾：什么都没干就地收掉（跟上面"空的任务文件夹不留"同一个道理），
@@ -6404,9 +6584,11 @@ app.post("/api/chat", async (req, res) => {
     } catch (e) { log.warn("worktree", "分身收尾出错（东西还在，没丢）", { session: sessionId, err: e.message }); }
   }
   send({ type: "done" });
+  runState.finished = true; // 先标上再通知订阅者：/api/chat/live 在 end() 里、以及之后晚到的订阅都靠它判「这趟完了」
   if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
   for (const sub of runState.subscribers) { try { sub.end(); } catch {} }
   runState.subscribers.clear();
+  setTimeout(() => { if (lastRuns.get(sessionId) === runState) lastRuns.delete(sessionId); }, 60000).unref();
 });
 
 // 插队：往正在运行的任务里注入一条补充消息（agent 在下一个安全间隙读到并继续）
@@ -6451,6 +6633,8 @@ app.get("/api/chat/stream/:id", (req, res) => {
   const run = activeRuns.get(req.params.id);
   if (!run || !run.events) return res.status(404).json({ error: "该会话没有正在运行的任务" });
   if (!guardRun(req, res, req.params.id)) return;
+  // 同 /api/chat/live：请求在中间件那段就被掐了，close 已经发过，订阅挂上去就一直留到这趟跑完
+  if (res.destroyed || req.socket.destroyed) return;
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -6463,6 +6647,81 @@ app.get("/api/chat/stream/:id", (req, res) => {
   });
   run.subscribers.add(res);
   req.on("close", () => run.subscribers.delete(res));
+});
+
+/**
+ * 整页合用的一条直播（为什么要有它见 lastRuns 上面那段）。上面那条 /api/chat/stream 原样留着，命令行和老页面还在用。
+ *
+ * GET /api/chat/live?subs=<sid>:<from>:<textOffset>[:<rid>],...   sid 先 encodeURIComponent 一遍，带冒号逗号也不怕
+ * 每条订阅：按 from/textOffset 补发已记录的（口径跟 /api/chat/stream 一样），再补那几种不进记录的，然后接上直播。
+ *   data: {"sid","rid","n","t","ev":{原事件}}    n/t = 这条事件之前记录里的位置（livePos），前端拿来校正计数
+ *   data: {"sid","rid","end":true}              这一趟跑完了。连接不关，别的对话还挂在上面
+ *   data: {"sid","end":true,"gone":true}        没有这一趟，或者不是你的——两种回得一模一样，不透露别人的任务在不在跑
+ *   : hb                                         25 秒一次，前端 60 秒一个字节都没收到就当断了、重连
+ * 订阅有增减时前端整条重开：服务端只管「开」和「关」，不做中途增删，出错的地方少一半。
+ */
+app.get("/api/chat/live", (req, res) => {
+  // 前面有异步中间件（express.static 先去 stat 一下文件）：页面在这之间就把请求掐了的话，close 早就发过了，
+  // 下面挂的 close 监听永远等不到——25 秒心跳定时器和挂到各趟任务上的订阅就一直留着。
+  // 2026-09-29 复审实测：发出请求 1-2ms 内就掐断的那几次，心跳定时器全漏了，任务跑完也还在
+  if (res.destroyed || req.socket.destroyed) return;
+  const subs = String(req.query.subs || "").split(",").filter(Boolean).slice(0, 64).map((s) => {
+    const [a, b, c, d] = s.split(":");
+    let sid = "";
+    try { sid = decodeURIComponent(a || ""); } catch {}
+    return { sid, from: Math.max(0, parseInt(b, 10) || 0), textOffset: Math.max(0, parseInt(c, 10) || 0), rid: d || "" };
+  });
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.on("error", () => {});
+  const put = (s) => { if (!res.destroyed && !res.writableEnded) { try { res.write(s); } catch {} } };
+  const out = (obj) => put(`data: ${JSON.stringify(obj)}\n\n`);
+  put(": ok\n\n");
+  const attached = [];
+  for (const { sid, from, textOffset, rid } of subs) {
+    const run = sid ? activeRuns.get(sid) || lastRuns.get(sid) : null;
+    // 先看有没有这趟、再查归属：getSession 碰到不存在的 id 会在内存里建一条空会话，不能让随便一个 id 都走到那一步
+    if (!run || !run.events || (rid && run.rid !== rid) || !sessionAllowed(req.user, getSession(sid))) { out({ sid, end: true, gone: true }); continue; }
+    const evs = run.events, R = run.rid;
+    for (let k = from; k < evs.length; k++) {
+      const ev = evs[k];
+      // 最后一条还在长的文本：前端已经看过前 textOffset 个字，只补后半段（它自己那份计数里这条已经算过了，所以 n 是 k+1）
+      if (k === from && textOffset && ev.type === "text") {
+        const rest = String(ev.delta).slice(textOffset);
+        if (rest) out({ sid, rid: R, n: k + 1, t: textOffset, ev: { type: "text", delta: rest } }); // 一个字都没多出来就不发空帧
+      } else out({ sid, rid: R, ...livePos(evs, k), ev });
+    }
+    const tail = livePos(evs, evs.length);
+    for (const ev of (run.side || new Map()).values()) out({ sid, rid: R, ...tail, ev });
+    if (run.finished) { out({ sid, rid: R, end: true }); continue; }
+    const a = { sid, run, over: false, strikes: 0 };
+    a.sub = {
+      // send 是先发后记：这一刻 events 还停在这条事件之前，量出来的正好是「发之前」的位置
+      write(line) {
+        if (a.over) return;
+        const p = livePos(evs, evs.length);
+        put(`data: {"sid":${JSON.stringify(sid)},"rid":${JSON.stringify(R)},"n":${p.n},"t":${p.t},"ev":${line.slice(6, -2)}}\n\n`);
+      },
+      end() { if (a.over) return; a.over = true; out({ sid, rid: R, end: true }); },
+    };
+    run.subscribers.add(a.sub);
+    attached.push(a);
+  }
+  const hb = setInterval(() => {
+    put(": hb\n\n");
+    // 安全网：这趟已经从 activeRuns 里摘掉了却迟迟没走到收尾（收尾那段自己抛了异常），
+    // 订阅者会永远挂着、页面上那一轮永远在转圈。连着两次心跳还这样就替它发 end
+    for (const x of attached) {
+      if (x.over || x.run.finished || activeRuns.get(x.sid) === x.run) { x.strikes = 0; continue; }
+      if (++x.strikes >= 2) { x.run.subscribers.delete(x.sub); x.sub.end(); }
+    }
+  }, 25000);
+  // 页面刷新、关掉、断网、前端整条重开：都走到这里，把挂在各趟任务上的订阅一起摘掉
+  res.on("close", () => {
+    clearInterval(hb);
+    for (const x of attached) { x.over = true; x.run.subscribers.delete(x.sub); }
+  });
 });
 
 // 任务历史列表。前端侧栏以前只信 localStorage，清个缓存 / 换台机器就「历史全没了」，
@@ -6823,7 +7082,7 @@ app.post("/api/assist/model", (req, res) => {
 app.delete("/api/session/:id", (req, res) => {
   if (!guardSession(req, res)) return;
   forgetSession(req.params.id);
-  try { fs.unlinkSync(sessFile(req.params.id)); } catch {}
+  removeSessionFiles(req.params.id);   // 正本 + .bak + 隔离件 + 压缩归档，一份不留
   res.json({ ok: true });
 });
 
@@ -6959,7 +7218,15 @@ function accountedRuntime(baseRuntime, source) {
       // IM 里每一条消息都是真人敲的，跟网页对话同一个判据（定时任务不算：那是 cron 在说话，
       // 一分钟一轮地把断掉的渠道重撞一遍，正是这道闸当初要拦的东西）
       const reopened = source === "im" ? (() => { try { return mediaHealth.reopen(); } catch { return []; } })() : [];
-      const r = await baseRuntime.runTask({
+      // IM / 定时任务这两条路以前从不收尾：开过的浏览器标签页、后台命令、`&` 甩出去的进程一直挂到退出应用。
+      // 跟网页对话同一个收尾（tools.releaseRun）；没带会话的不收——空串不能当「所有人」。
+      // 走 holdRun：webhook 同一个会话键可能两轮并发，最后一轮跑完才收
+      let letGo = () => {};
+      try { letGo = require("./tools").holdRun(rest.sessionId); } catch {}
+      const release = () => { try { letGo().catch(() => {}); } catch {} };
+      let r;
+      try {
+      r = await baseRuntime.runTask({
         user: caller || (owner ? owner.username : undefined),
         ...(reopened.length ? { mediaReopened: reopened } : {}),
         taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
@@ -6972,6 +7239,7 @@ function accountedRuntime(baseRuntime, source) {
         ...rest,
         ...(want ? { llmOverride: runLLM } : {}),
       });
+      } finally { release(); }
       if (owner && r && r.usage && r.usage.calls > 0) {
         const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;
         account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source });
@@ -7060,7 +7328,7 @@ async function main() {
     for (const id of ids || []) {
       if (!id) continue;
       forgetSession(id);
-      try { fs.rmSync(sessFile(id), { force: true }); } catch {}
+      removeSessionFiles(id);   // .bak 跟着走，不然 cron 每挤掉一段就在盘上留一份孤儿 .bak
     }
   };
 
@@ -7195,6 +7463,23 @@ async function main() {
     const done = worktree.sweep(WORKTREE_DIR, {});
     if (done.length) log.info("worktree", `收掉了 ${done.length} 个没人管的分身`, { dirs: done.map((d) => d.branch).filter(Boolean) });
   } catch (e) { log.warn("worktree", "分身打扫没做成", { err: e.message }); }
+  // 派生数据的保留规则（缩略图、会话 .bak、压缩归档、Codex 引擎缓存），规则和绝不碰的东西见 retention.js。
+  // 开机一分钟后才跑：刚起来那阵子界面在拉会话列表、引擎在探测，别跟它们抢盘。之后每天一次。
+  // 全是异步 IO、一次一个文件，跑的时候界面照常点得动
+  {
+    let sweeping = false;
+    const sweep = () => {
+      if (sweeping) return;
+      sweeping = true;
+      // require 也包进来：定时器回调里同步抛出来的错没人接，会直接变成主进程的未捕获异常
+      Promise.resolve()
+        .then(() => require("./retention").sweepAll({ dataDir: dataPath("data"), log: (m) => log.info("retention", m) }))
+        .catch((e) => log.warn("retention", "派生数据清理没跑完", { err: e.message }))
+        .finally(() => { sweeping = false; });
+    };
+    setTimeout(sweep, 60 * 1000).unref();
+    setInterval(sweep, 24 * 3600 * 1000).unref();
+  }
 
   // config.json 是用户手改的文件，少一个顶层块很正常。以前这里直接 config.server.port，
   // 结果是启动时抛 “Cannot read properties of undefined (reading 'host')”——

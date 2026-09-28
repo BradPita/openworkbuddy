@@ -9,6 +9,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { dataPath, seedDataDir, resolvePort } = require("./paths");
+const { throttleWhenAway } = require("./win-away");
 
 // ---------- 桌面壳这一层的文案 ----------
 /**
@@ -153,6 +154,10 @@ const NO_GPU = process.env.OPENWORKBUDDY_DISABLE_GPU === "1" || (() => {
 if (NO_GPU) {
   try { app.disableHardwareAcceleration(); bootLog("已关闭硬件加速（disable_gpu）"); } catch {}
 }
+// 窗口收起来以后要降频（win-away.js），但不要 Chromium 藏满 5 分钟后那档「计时器一分钟才醒一次」：
+// 前端的断流看门狗、审批倒计时都挂在计时器上，晚一分钟才发现断流，用户切回来看到的是一条早就断了的流。
+// 必须在 ready 之前设
+try { app.commandLine.appendSwitch("disable-features", "IntensiveWakeUpThrottling"); } catch {}
 
 let win;
 let PAGE_UP = false; // 页面真加载出来了：之后再有偶发异常，不该把用户正在做的事掐掉
@@ -380,9 +385,11 @@ app.whenReady().then(async () => {
     backgroundColor: "#ffffff",
     show: false, // 页面渲染好了再亮相（ready-to-show），不给用户看白屏；下面有兜底定时防止永不出现
     webPreferences: {
-      backgroundThrottling: false, // 窗口隐藏（快捷键收起）时任务还在流式回报，计时器不许被降频
+      // 看得见的时候不降频；收起、最小化时 throttleWhenAway 再打开，拿回来关上（为什么见 win-away.js）
+      backgroundThrottling: false,
     },
   });
+  throttleWhenAway(win, { log: bootLog });
   // 窗口挪了、拉大了就记下来；拖动时 move 一秒几十次，停手半秒再写。关窗那一下立刻写
   let saveTimer = null;
   const saveWinState = () => {
@@ -458,6 +465,7 @@ app.whenReady().then(async () => {
         width: 1000, height: 780, backgroundColor: "#ffffff",
         webPreferences: { backgroundThrottling: false },
       });
+      throttleWhenAway(child); // 子窗口收起来一样降频
       child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
       attachContextMenu(child.webContents);
       child.loadURL(url);

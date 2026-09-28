@@ -180,11 +180,16 @@ console.log("\n【5】闸卡在拷贝之前：被拦下的技能不许在磁盘�
 // ══════════════════════════════════════════════════════════════════
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-guard-"));
 process.env.OPENWORKBUDDY_HOME = home;
+// 这套建的临时目录都记在这儿，退出时一起收，中途抛了也收。2026-09-28 实测：以前一个都不删，
+// 跑一次留 8 个（其中 owb-odd-* 自带一个 2MB 的 big.txt），临时目录里已经堆了 48 个
+const TMP_DIRS = [home];
+process.on("exit", () => { for (const d of TMP_DIRS) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} } });
 const skills = require("../skills");
 
 /** 造一个技能源目录（模拟 git clone 下来的样子） */
 function mkSrc(name, body, extra) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "owb-src-"));
+  TMP_DIRS.push(d);
   fs.writeFileSync(path.join(d, "skill.md"), `---\nname: ${name}\ndescription: 测试用\n---\n\n${body}\n`);
   for (const [rel, content] of Object.entries(extra || {})) {
     fs.mkdirSync(path.join(d, path.dirname(rel)), { recursive: true });
@@ -310,6 +315,7 @@ console.log("\n【9】扫描器本身不能被一份技能搞死");
 // ══════════════════════════════════════════════════════════════════
 {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "owb-odd-"));
+  TMP_DIRS.push(d);
   fs.writeFileSync(path.join(d, "skill.md"), "---\nname: odd\ndescription: x\n---\n\n正文\n");
   fs.writeFileSync(path.join(d, "big.txt"), "A".repeat(2 * 1024 * 1024));        // 超过扫描上限
   fs.writeFileSync(path.join(d, "bin.dat"), Buffer.from([0, 1, 2, 0, 255]));      // 没扩展名线索的二进制
@@ -333,6 +339,7 @@ console.log("\n【9】扫描器本身不能被一份技能搞死");
 
   // 空技能：报告要说实话，不能说成「安全」
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), "owb-empty-"));
+  TMP_DIRS.push(empty);
   fs.writeFileSync(path.join(empty, "skill.md"), "---\nname: e\ndescription: x\n---\n\n正文\n");
   const txt = guard.explain(guard.scanDir(empty), "e");
   ok(/不等于它是安全的/.test(txt), "扫干净的时候把话说满了 —— 静态规则只能说「没命中已知写法」", txt);

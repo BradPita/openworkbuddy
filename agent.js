@@ -844,9 +844,11 @@ function worktreeLine() {
  * 判断这张图该不该绕开单配的看图模型——丢了它就只能按型号名猜，
  * 而名字是一层很薄的伪装（同一个理由见 media-models.js capOfModel 那段）。
  */
-function activeChannel(config) {
+function activeChannel(config, llmOverride) {
   const list = Array.isArray(config.models) ? config.models : [];
-  const e = list.find((m) => m.name === config.active_model) || list[0];
+  // llmOverride 是 createLLM 给这个对话造的那个，provider 字段放的就是模型条目名（llm.js）
+  const own = llmOverride && llmOverride.provider ? list.find((m) => m.name === llmOverride.provider) : null;
+  const e = own || list.find((m) => m.name === config.active_model) || list[0];
   if (e && e.base_url && e.model) return { base_url: e.base_url, api_key: e.api_key, model: e.model, provider: e.provider, caps: Array.isArray(e.caps) ? e.caps : null };
   const legacy = config.provider === "anthropic" ? config.anthropic : config.openai;
   return legacy && legacy.model ? { ...legacy, provider: config.provider } : {};
@@ -1039,6 +1041,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 1. 接到任务先简短说明计划（2-4 句），然后立即执行，不要等用户确认。信息不全时不要停下来用**文字**反问，自己挑一个最合理的默认假设、写在开场白里继续做。要问就用 ask_user 工具（弹可点的选项卡片）。**该问的只有这三类**：①缺了它整件事会白做的关键信息（发给谁、用哪个账号）；②选错了成品形态会完全不同的岔路（报告交 Word 还是 PDF、视频出横版还是竖版）；③要花钱、不可逆、要覆盖或删除已有内容、要对外发布，以及只有用户本人才知道的事（预算、口味、时间安排）。**这三类之外一律自己定**——技术路线（用哪个库、抓哪条接口、代码怎么组织、跑几轮）永远算自己定。一次只问一个，问完接着干，不许连环追问，也不许拿 ask_user 汇报进度。
 2. 涉及已有文件/项目的任务，动手前先 list_files、search_files、read_file 把现场看清楚，不要凭文件名猜内容。**看明白之后直接改**——用户让你改，你就改，不要回头问"要不要我改""确认后我再动手"；只有删文件、清空目录、推远端这类不可逆的事才值得停下来问一句。改的方式是 edit_file 精准替换，不是 write_file 整篇盖掉。
 3. 成果文件写到工作目录根目录，文件名有意义。**一件产出只留一份**——写完不要再 cp 一份到别处（工作空间根目录也不行）：聊天里的产出卡片和右侧文件面板本来就能直接预览、直接「所在位置」，多出来的副本只会让用户看到同一个文件显示两遍。用户要把成果拿去别的地方，等他开口再动。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
+3.0 调试脚本、自检截图这类用完即弃的文件写进 \`.tmp/\`（不进成果区），别摊在成品旁边。
 3.1 消息里带「已上传文件：xxx」就是用户拖进来或粘贴进来的东西，一律先看再动手：
    - 用户输入中可能还有「【图片 1：xxx.png】」「【视频 1：xxx.mp4】」「【音频 1：xxx.wav】」「【文本摘录 1：xxx.txt】」这类素材锚点。**锚点出现的顺序和它前后的描述就是用户指定的输入关系**：例如「【图片 1】是人物、【图片 2】是背景」或两个锚点中间的动作描述，必须照此理解、引用和生成，不能按文件名或上传时间自行重排。末尾的「已上传文件」清单只是在兼容旧会话，文件是否可用以它为准。
    - 图片（.png/.jpg/…）用 look_at_image，带上一个具体问题（"把报错原文一字不差抄下来"、"这页分几块、各放了什么"）。**别用 read_file 读图**，读出来是乱码。图不进对话历史，只有你问到的答案会进，所以一次就把要用的细节问全。
@@ -1935,7 +1938,7 @@ function modePrompt(mode) {
         extendMs: grown(),
       };
     }
-    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit }));
+    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit, llmOverride }));
   }
 
   /**
@@ -1943,14 +1946,16 @@ function modePrompt(mode) {
    * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
    * 少传一个 actor，审批卡片就跑去问了别人。
    */
-  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit }) {
+  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit, llmOverride }) {
     return {
       onProgress: emit ? progressSink(emit, { id: callId, name, depth }) : undefined, // 长工具（渲染 / 配音 / 合成）往回报进度；只直播不存盘
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
       media: mediaModels.resolve(config), // 带上全表，generate_image 这些才能按名字点名用哪个模型
-      visionFallback: activeChannel(config), // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 src/tools/media.js pickEye）
+      // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 src/tools/media.js pickEye）。
+      // 「主模型」是这个对话此刻在用的那个——单独给对话选了多模态模型、全局默认却是纯文本的，要按对话这个算
+      visionFallback: activeChannel(config, llmOverride),
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,
       // 判断模型那条路。只带它认路要用的两样，不把整份 config（连着所有 Key）递进工具层
@@ -2121,7 +2126,7 @@ function modePrompt(mode) {
 
   // force=true 是人手动敲 /compact：这时候不看阈值也不看「关了自动压缩」这个设置——
   // 那个设置管的是「别自作主张」，不是「不许我自己压」。
-  async function compactHistory(history, { emit = () => {}, stats, traceNode, force = false, llm: useLlm = null, skills = [] } = {}) {
+  async function compactHistory(history, { emit = () => {}, stats, traceNode, force = false, llm: useLlm = null, skills = [], sessionId = "" } = {}) {
     // 压缩用的模型跟这一趟对话选的那条走（llmOverride）。以前写死全局 llm：用户在「模型」里把默认
     // 渠道填成了判断模型（Jev），对话本身走的是按对话选的另一条，压缩那一下却撞到 Jev 的 400
     // 「is a decisions model」——整趟任务因此报错，而用户根本没在那条渠道上跑过任何东西。
@@ -2215,10 +2220,14 @@ function modePrompt(mode) {
     const summary = String(result.text || "").trim();
     if (!summary) { emit({ type: "compact", removed: 0, failed: "模型没吐出摘要，这一次没压成" }); return; }
     // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
+    // 文件名带会话 id（跟 sessFile 同一道替换）：删会话时 server.js 的 removeSessionFiles 按它把归档一起删掉，
+    // 不然用户删了对话，被压掉的那段原文还躺在这儿。不缩进：2026-09-28 实测 482 份 30M，缩进占了一截，
+    // 这些文件是给程序兜底、给人偶尔翻的，不是给人天天读的。保留期（90 天 / 200MB）在 retention.js
     try {
       const dir = dataPath("data", "compact-archive");
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, `${Date.now()}.json`), JSON.stringify(old, null, 2));
+      const sid = String(sessionId || "").replace(/[^\w-]/g, "_");
+      fs.writeFileSync(path.join(dir, `${sid ? sid + "-" : ""}${Date.now()}.json`), JSON.stringify(old));
     } catch (e) { console.warn("[agent] 压缩归档失败（不拦压缩）:", e.message); }
     history.splice(0, cut, {
       role: "user",
@@ -2825,7 +2834,7 @@ function modePrompt(mode) {
     // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
     const ctxState = { lastCtxPct: -1 };
     if (depth === 0) {
-      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()], sessionId }); }
       catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
       // 压完再播：让界面上那根条直接落到压缩后的真实位置，而不是先闪一下旧数字
       emitContext(history, emit, ctxState, L);
@@ -2901,7 +2910,7 @@ function modePrompt(mode) {
       // 发请求前先把老工具结果压进上下文预算，宁可丢细节也不能让整个任务撞 400 全丢
       // 超阈值时先智能压缩（老步骤浓缩成接手摘要），压不动再盲截。没有这一步，
       // 跑到几十步的长任务只能靠 trimHistory 把早期工具输出截成空壳，模型越跑越失忆
-      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()], sessionId }); }
       catch (e) { console.warn("[agent] 任务中压缩失败，本步跳过:", e.message); }
       if (depth === 0) emitContext(history, emit, ctxState, L);
       const trimmed = trimHistory(history, ctxBudget(L)); // 按这一步真正要发的那条渠道的窗口算（换过道就按新渠道）
@@ -3938,4 +3947,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS };
+module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel };

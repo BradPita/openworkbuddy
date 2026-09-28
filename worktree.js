@@ -28,7 +28,8 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { spawnSync } = require("child_process");
+const childProcess = require("child_process");
+const { spawnSync } = childProcess;
 
 const BRANCH_PREFIX = "owb/";
 const SEED_MAX_FILES = 200;            // 没跟踪的文件带过去的上限
@@ -91,6 +92,72 @@ function plan(dir, { session, busy } = {}) {
     return cache.get(d);
   };
   const clash = (busy || []).filter((b) => b && b.dir && b.session !== session && keyFor(b.dir) === me.key);
+  if (!clash.length) return { need: false, why: "没有别的任务在改这个仓库", repo: me };
+  return { need: true, why: `另有 ${clash.length} 条任务正在改这个仓库`, repo: me, clash: clash.map((b) => b.session) };
+}
+
+/**
+ * 服务端每一轮开头走的是下面这套异步 + 缓存的，不是上面那两个同步的。
+ *
+ * 2026-09-28 实测：macOS 上 git 是 /usr/bin/git 那个 xcrun 转发壳，spawnSync 一次 rev-parse
+ * 中位 29ms、最慢 132ms；plan 自己问 3 次，名单里每多一个别的目录再问 3 次。服务端跟窗口
+ * 同一个线程，于是工作目录一指到仓库上，**每开一轮整个应用就定住约 90ms**——另外几条对话的
+ * 流、拖窗口、点菜单一起卡；六条对话同开一个仓库（这个功能本来就是为它做的）卡得最狠。
+ *
+ * 两件事：git 改成 execFile 不占主线程；同一个目录 60 秒内问过「是哪个仓库」就不再问，
+ * 并发的几问共用同一个 Promise。只记「是仓库」：「不是仓库」不记，用户刚 git init 完下一轮
+ * 就得认出来。目录还在不在每次都现查（分身收掉之后那个路径就不该再算仓库了）。
+ * 同步的 repoOf/plan 原样留着：命令行、测试、开分身那几步还在用，它们不在窗口线程上。
+ */
+const REPO_TTL = 60 * 1000;
+const REPO_CACHE_MAX = 64;
+const repoCache = new Map(); // 绝对路径 → { at, p }
+
+function gitAsync(cwd, args, opt) {
+  return new Promise((resolve) => {
+    childProcess.execFile("git", ["-C", cwd, ...args], {
+      encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, ...opt,
+    }, (err, stdout, stderr) => {
+      // 跟 spawnSync 的返回长一个样，out() 两边通用：没起来（没装 git / 超时被杀）算非 0
+      resolve({ status: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr });
+    });
+  });
+}
+
+/** repoOf 的异步版，一步不差地照抄：是不是仓库、仓库根、主仓库，三问 */
+async function repoOfAsync(dir) {
+  if (!dir) return null;
+  try { if (!(await fs.promises.stat(dir)).isDirectory()) return null; } catch { return null; }
+  if (out(await gitAsync(dir, ["rev-parse", "--is-inside-work-tree"])) !== "true") return null;
+  const root = out(await gitAsync(dir, ["rev-parse", "--show-toplevel"]));
+  if (!root) return null;
+  const common = path.resolve(root, out(await gitAsync(root, ["rev-parse", "--git-common-dir"])) || ".git");
+  const main = path.basename(common) === ".git" ? path.dirname(common) : common;
+  return { root: path.resolve(root), main, key: keyOf(main) };
+}
+
+async function repoOfCached(dir) {
+  if (!dir) return null;
+  const k = path.resolve(dir);
+  try { if (!(await fs.promises.stat(k)).isDirectory()) { repoCache.delete(k); return null; } } catch { repoCache.delete(k); return null; }
+  const hit = repoCache.get(k);
+  if (hit && Date.now() - hit.at < REPO_TTL) return hit.p;
+  const ent = { at: Date.now(), p: null };
+  const drop = () => { if (repoCache.get(k) === ent) repoCache.delete(k); };
+  ent.p = repoOfAsync(k).then((r) => { if (!r) drop(); return r; }, () => { drop(); return null; });
+  repoCache.set(k, ent);
+  if (repoCache.size > REPO_CACHE_MAX) repoCache.delete(repoCache.keys().next().value);
+  return ent.p;
+}
+
+/** plan 的异步版：判法、返回的每个字都跟 plan 一样，只是问 git 的方式换了 */
+async function planAsync(dir, { session, busy } = {}) {
+  const hit = await repoOfCached(dir);
+  if (!hit) return { need: false, why: "工作目录不是 git 仓库，成果目录那套隔离就够了" };
+  const me = { ...hit }; // 缓存里那份是几轮共用的，交出去的给一份拷贝，谁改了也串不到下一轮
+  const others = (busy || []).filter((b) => b && b.dir && b.session !== session);
+  const keys = await Promise.all(others.map((b) => repoOfCached(b.dir).then((r) => (r || {}).key || "")));
+  const clash = others.filter((b, i) => keys[i] === me.key);
   if (!clash.length) return { need: false, why: "没有别的任务在改这个仓库", repo: me };
   return { need: true, why: `另有 ${clash.length} 条任务正在改这个仓库`, repo: me, clash: clash.map((b) => b.session) };
 }
@@ -322,7 +389,7 @@ function hint(info) {
 }
 
 module.exports = {
-  repoOf, plan, open, list, status, close, release, sweep, hint, commitAll, markOf,
+  repoOf, plan, repoOfAsync, planAsync, open, list, status, close, release, sweep, hint, commitAll, markOf,
   BRANCH_PREFIX, KEEP_DAYS,
-  _internals: { git, seedFrom, keyOf, safeName, metaPath, readMeta, SEED_MAX_FILES, SEED_MAX_BYTES },
+  _internals: { git, gitAsync, repoOfCached, repoCache, REPO_TTL, seedFrom, keyOf, safeName, metaPath, readMeta, SEED_MAX_FILES, SEED_MAX_BYTES },
 };

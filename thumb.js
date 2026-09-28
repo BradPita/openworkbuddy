@@ -50,6 +50,22 @@ function cacheName(abs, st, w) {
 }
 
 /**
+ * 缓存里有没有这张，有就顺手「摸」一下：mtime 当「最后一次用到」，retention.js 清缓存时
+ * 按它挑最久没人看的删。原图改过、挪走留下的那张再也不会被摸，一个月后自己走掉。
+ * 一天之内摸过的不再摸——每张卡渲染都 utimes 一次，等于翻一次聊天记录就往盘上写一串元数据。
+ * 跟原来的 existsSync 一样只是一次 stat，命中路径不变慢。
+ */
+const TOUCH_EVERY_MS = 24 * 3600 * 1000;
+function cacheHit(out, now = Date.now()) {
+  let st;
+  try { st = fs.statSync(out); } catch { return false; }
+  if (now - st.mtimeMs > TOUCH_EVERY_MS) {
+    try { const t = new Date(now); fs.utimesSync(out, t, t); } catch {}
+  }
+  return true;
+}
+
+/**
  * 缩一张出来，缩不动就返回 null（调用方原样发原图）。
  * 统一出 PNG：源图多半是带透明通道的 PNG，转 JPEG 会把透明底压成黑块，
  * 而卡片底下还垫着一层同图的模糊放大版，黑块会很显眼。320px 的 PNG 撑死一两百 KB，
@@ -87,7 +103,7 @@ function thumbFile(abs, w, cacheDir) {
     const st = fs.statSync(abs);
     if (st.size <= THUMB_MIN_BYTES) return null;
     const out = path.join(cacheDir, cacheName(abs, st, w));
-    if (fs.existsSync(out)) return out;
+    if (cacheHit(out)) return out;
     const buf = makeThumb(abs, w);
     if (!buf) return null;
     fs.mkdirSync(cacheDir, { recursive: true });
@@ -213,7 +229,7 @@ async function thumbFileAsync(abs, w, cacheDir) {
     const st = fs.statSync(abs);
     if (st.size <= THUMB_MIN_BYTES) return null;
     const out = path.join(cacheDir, cacheName(abs, st, w));
-    if (fs.existsSync(out)) return out;
+    if (cacheHit(out)) return out;
 
     if (hasNativeImage()) {
       const buf = makeThumb(abs, w);
@@ -255,7 +271,7 @@ function thumbPoolStats() {
 }
 
 module.exports = {
-  thumbFile, thumbFileAsync, makeThumb, cacheName, closeThumbPool, thumbPoolStats,
-  hasNativeImage, THUMB_EXT, THUMB_SIZES, THUMB_MIN_BYTES,
+  thumbFile, thumbFileAsync, makeThumb, cacheName, cacheHit, closeThumbPool, thumbPoolStats,
+  hasNativeImage, THUMB_EXT, THUMB_SIZES, THUMB_MIN_BYTES, TOUCH_EVERY_MS,
 };
 

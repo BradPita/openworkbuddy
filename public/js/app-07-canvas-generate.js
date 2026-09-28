@@ -843,6 +843,11 @@ async function canvasGenerate(node, kind) {
   // 也可能人已经切去别的画布。所以现在只记「是谁、在哪张画布」，回来按 id 重新取，
   // 手里这个 node 对象到时候可能已经是个孤儿：往它身上写，屏幕上看不到，存盘也存不进去
   const id = node.id, board = canvasState.canvasName, project = canvasState.workspaceName, graphAtStart = canvasState.graph;
+  // 眼下主区摆的是哪一页（app-03 的 pageKind：画布是 "canvas"，切去对话就回到 null）。
+  // 只拿来比发起时和回来时是不是同一页，所以测试里没加载 app-03、变量压根不存在也照样能比。
+  // 写成本函数里的局部量：有测试按「async function canvasGenerate(」起切这一段源码单独跑
+  const viewKind = () => (typeof pageKind === "undefined" ? "" : String(pageKind || ""));
+  const viewAtStart = viewKind(); // 结尾弹不弹右侧预览要对这个
   if (canvasState.inflight) canvasState.inflight.add(id);
   const startedAt = Date.now();   // 真跑过多久要记下来，不然「还要多久」永远只能靠猜
   let placed = false;
@@ -928,7 +933,10 @@ async function canvasGenerate(node, kind) {
     const swapped = result.fallbackFrom ? canvasT("（{a} 没成，按设置里的备用顺序换成了 {b}）", { a: result.fallbackFrom, b: String(input.model || "") }) : "";
     if (back) canvasToast(`${said}${swapped}，但${back}`, "triangle-alert", "err");
     else canvasToast(`${said}${swapped}`, swapped ? "triangle-alert" : "circle-check");
-    if (typeof previewFile === "function") previewFile(canvasResolvedFileName(file));
+    // 人还在这张画布这一页才开右侧预览。离开画布去看对话时 canvasState 不拆（图、画布名都还在），
+    // 光看上面的 here 认不出来，结果一枪几分钟的视频生完，预览面板直接弹在他正看着的那条对话上
+    if (typeof previewFile === "function" && viewKind() === viewAtStart
+      && canvasState.canvasName === board && canvasState.workspaceName === project) previewFile(canvasResolvedFileName(file));
     // 回写分镜表没成也算「做好了」：画布上这一格确实有了，重跑只会再花一次钱
     return { ok: true };
   } catch (error) {

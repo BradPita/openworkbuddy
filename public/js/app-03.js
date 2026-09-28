@@ -1263,10 +1263,16 @@ function openPageView(kind) {
 function openAssistView() {
   if (pageKind === "assist") return;
   openPageView("assist");
+  // 上一趟还没回来就不再叠一趟。2026-09-28 实测连接被占满时请求一排半分钟，每 5 秒一条越排越长
+  let busy = false;
   assistTimer = setInterval(async () => {
     if (pageKind !== "assist" || !document.getElementById("im-feed")) { clearInterval(assistTimer); assistTimer = null; return; }
-    renderAssistFeed(await fetch("/im/log").then(r => r.json()).catch(() => []));
-    updateAssistLive();
+    if (busy) return;
+    busy = true;
+    try {
+      renderAssistFeed(await fetch("/im/log").then(r => r.json()).catch(() => []));
+      await updateAssistLive();
+    } finally { busy = false; }
   }, 5000);
 }
 function closeAssistView() {
@@ -1357,11 +1363,13 @@ async function doAssistLocal(text, model) {
     feed.scrollTop = feed.scrollHeight;
   }
   // 等结果期间把「执行中…」气泡变成实时进度（第几步、在用哪个工具），跟飞书状态消息同一份文案
+  let liveBusy = false; // 上一问没回来不叠问：连接占满时 1.5 秒一条，越排越长
   const liveT = setInterval(async () => {
     const el = document.querySelector("#im-pending .im-b");
-    if (!el) return;
-    const p = await fetch("/im/progress").then(r => r.json()).catch(() => null);
-    if (p && p.local_assist && p.local_assist.text) setMsg(el, "hourglass", p.local_assist.text);
+    if (!el || liveBusy) return;
+    liveBusy = true;
+    const p = await fetch("/im/progress").then(r => r.json()).catch(() => null).finally(() => { liveBusy = false; });
+    if (p && p.local_assist && p.local_assist.text && el.isConnected) setMsg(el, "hourglass", p.local_assist.text);
   }, 1500);
   try {
     // 模型标签上显示的是哪个就真用哪个：以前这里不带 model，助理页选了模型也是白选，

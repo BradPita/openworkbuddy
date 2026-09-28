@@ -2140,7 +2140,7 @@ function renderOpsPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">最近的运行指标</div>
-      <div class="d" style="margin-bottom:8px">每分钟存一份快照到 <code>data/metrics/&lt;年-月&gt;.jsonl</code>，保留 6 个月，计数为每分钟增量。</div>
+      <div class="d" style="margin-bottom:8px">每分钟存一份快照到 <code>data/metrics/&lt;年-月&gt;.jsonl</code>，闲着时十分钟一份，保留 3 个月，计数为每分钟增量。</div>
       <div id="ops-cards" style="display:flex;flex-wrap:wrap;gap:10px;margin:10px 0"></div>
       <div id="ops-chart"></div>
     </div>

@@ -264,7 +264,8 @@ const TOOL_DEFS = [
       properties: {
         command: { type: "string", description: "要执行的完整 shell 命令（可含管道、&& 串联）" },
         purpose: { type: "string", description: "一句话说明这条命令做什么（展示给用户）" },
-        background: { type: "boolean", description: "true = 放到后台跑、立刻返回一个 id（开发服务器、watch 构建、要跑很久的测试用）。之后用 shell_output 看新输出，用 shell_kill 停掉。不传就是等它跑完" },
+        background: { type: "boolean", description: "true = 放到后台跑、立刻返回一个 id（开发服务器、watch 构建、要跑很久的测试用）。之后用 shell_output 看新输出，用 shell_kill 停掉。不传就是等它跑完。后台命令在这一轮任务结束时会被收掉" },
+        keep: { type: "boolean", description: "配合 background:true：这一轮结束后也留着接着跑（要交给用户继续用的开发服务器之类）。不传就随这一轮一起收掉" },
       },
       required: ["command"],
     },
@@ -555,8 +556,8 @@ const TOOL_DEFS = [
         selector: { type: "string", description: "inspect/click/type 的 CSS 选择器" },
         text: { type: "string", description: "type 要输入的内容" },
         url: { type: "string", description: "navigate 要打开的 URL" },
-        expression: { type: "string", description: "evaluate 要执行的页面 JavaScript" },
-        path: { type: "string", description: "screenshot 保存到 workspace 的相对路径，默认 chrome-screenshot.png" },
+        expression: { type: "string", description: "evaluate 要执行的页面 JavaScript。代码直接写在这里，别先存成文件再 fetch 进页面（那些文件会留在用户的成果文件夹里）" },
+        path: { type: "string", description: "screenshot 保存到 workspace 的相对路径，默认 chrome-screenshot.png。自己检查用的截图放 .tmp/（如 .tmp/check1.png），不进成果区" },
         max_chars: { type: "number", description: "inspect 最多返回多少字符，默认 20000" },
         full_page: { type: "boolean", description: "screenshot 截整页（含需要滚动的部分），默认只截当前视口" },
         width: { type: "number", description: "screenshot 视口宽，配合 height 用，默认按窗口实际大小" },
@@ -1071,7 +1072,7 @@ function timeoutNote(timeoutMs, tip) {
   return `(执行超时被终止：跑满 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒没结束，连同它拉起的子进程一起停了${tip || ""})\n`;
 }
 
-function runNode(code, timeoutMs, cwd, stopSignal) {
+function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
   ensureDirs();
   const syntaxErr = precheckSyntax(code);
   if (syntaxErr) return Promise.resolve({ content: syntaxErr, isError: true });
@@ -1118,7 +1119,10 @@ function runNode(code, timeoutMs, cwd, stopSignal) {
       if (stopped) result += "(用户已停止任务，脚本被终止)\n";
       else if (timedOut) result += timeoutNote(timeoutMs);
       result += `exit code: ${code2}`;
-      resolve({ content: result, isError: stopped || timedOut || code2 !== 0 });
+      const done = { content: result, isError: stopped || timedOut || code2 !== 0 };
+      // 脚本自己 spawn 了没等的子进程：看一眼进程组，还有人就记账（见 noteStray）
+      noteStray(child.pid, "run_node 脚本", session, { quiet: stopped || timedOut, tip: "要一直跑，用 run_shell 的 background:true 起" })
+        .then((n) => { if (n) done.content += "\n" + n; resolve(done); }, () => resolve(done));
     });
     child.on("error", (e) => {
       unbind(); disarm();
@@ -1198,7 +1202,7 @@ function missingBinHint(text, platform) {
   return lines.join("\n");
 }
 
-function runShell(command, timeoutMs, cwd, stopSignal) {
+function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
   ensureDirs();
   return new Promise((resolve) => {
     const sh = pickShell(command);
@@ -1234,7 +1238,10 @@ function runShell(command, timeoutMs, cwd, stopSignal) {
       // 缺的是我们认识的外部工具时，把 shell 那句 command not found 翻译一遍再递出去
       const hint = code2 !== 0 ? missingBinHint(o + "\n" + e) : "";
       if (hint) result += "\n" + hint;
-      resolve({ content: result, isError: stopped || timedOut || code2 !== 0 });
+      const done = { content: result, isError: stopped || timedOut || code2 !== 0 };
+      // `(python3 -m http.server 8731 >/dev/null 2>&1 &)`、`nohup ... &`：外层 shell 退了，进程组里还有人（见 noteStray）
+      noteStray(child.pid, command, session, { quiet: stopped || timedOut, tip: "要一直跑，用 background:true 起，交给用户接着用的再加 keep:true" })
+        .then((n) => { if (n) done.content += "\n" + n; resolve(done); }, () => resolve(done));
     });
     child.on("error", (e) => {
       unbind(); disarm();
@@ -2017,12 +2024,15 @@ function bgOwner(opts) {
   return String((a && typeof a === "object" ? a.id || a.name : a) || "");
 }
 
-function startBackground(cmd, cwd, opts) {
+function startBackground(cmd, cwd, opts, keep = false) {
   ensureDirs();
   const r = CT.bgStart({
     command: cmd,
     cwd: cwd || ws(),
     owner: bgOwner(opts),
+    // 归这一轮：这一轮收尾（releaseRun）时跟着收，keep 的留下
+    session: String((opts && opts.sessionId) || ""),
+    keep: !!keep,
     logDir: tmpDir(),
     spawnFn: () => {
       const sh = pickShell(cmd);
@@ -2036,8 +2046,11 @@ function startBackground(cmd, cwd, opts) {
     },
   });
   if (r.error) return { content: r.error, isError: true };
+  const life = r.job.keep
+    ? "这一轮结束后也留着，用户不要了再 shell_kill 停掉。"
+    : r.job.session ? "这一轮结束时会被收掉（要交给用户接着用，起的时候加 keep:true）。" : "";
   return {
-    content: `已在后台起好 ${r.id}：${cmd.slice(0, 160)}\n用 shell_output {id:"${r.id}"} 看输出（起服务器的话等它打出监听端口再去访问），用完 shell_kill {id:"${r.id}"} 停掉。`,
+    content: `已在后台起好 ${r.id}：${cmd.slice(0, 160)}\n用 shell_output {id:"${r.id}"} 看输出（起服务器的话等它打出监听端口再去访问），用完 shell_kill {id:"${r.id}"} 停掉。${life}`,
     isError: false,
   };
 }
@@ -2052,12 +2065,257 @@ function hookBgExit() {
 }
 hookBgExit();
 
+// ─────────────────────────────────────────────────────────────
+// 普通 run_shell / run_node 里甩到后台的进程（& / nohup）
+// ─────────────────────────────────────────────────────────────
+/**
+ * 2026-09-28 实测：模型为了看一眼网页，常在普通 run_shell 里写
+ * `(python3 -m http.server 8731 >/dev/null 2>&1 &) && curl ...`、`nohup python3 -m http.server 8921 ... &`。
+ * 外层 shell 一退工具就回了，http.server 还挂在原来的进程组里、父进程变成 1——
+ * 停止、收尾、退出应用都收不到它，活过了两次应用重启；并发的对话撞端口，有一轮把别的项目的页面当成自己的验了好几步。
+ *
+ * 这里在命令跑完那一刻看一眼进程组还有没有人：有就记账（归哪一轮、每个成员的 pid + 启动时刻），
+ * 这一轮收尾时整组送走。账本按进程落盘（data/run-strays/<pid>.json），应用崩了下次开机还认得回来。
+ */
+const strays = new Map(); // pgid → { pgid, session, command, at, members: [{ pid, lstart, command }] }
+const PS_ARGS = ["-A", "-o", "pid=,pgid=,lstart=,command="];
+const PS_ROW = /^\s*(\d+)\s+(\d+)\s+([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$/;
+const PS_ENV = () => ({ ...process.env, LC_ALL: "C" }); // lstart 的星期、月份按英文出，格式才固定
+let hostStart = "";   // 本进程自己的启动时刻：开机收账时拿它分辨「记账的那个进程还在不在」
+let strayWrite = Promise.resolve();
+const strayDir = () => dataPath("data", "run-strays");
+const strayFile = () => path.join(strayDir(), `${process.pid}.json`);
+
+/** ps 那几列拆成行；lstart 的空白压成一个，免得「Sep  8」和「Sep 8」对不上 */
+function psRows(text) {
+  const rows = [];
+  for (const line of String(text || "").split("\n")) {
+    const m = line.match(PS_ROW);
+    if (m) rows.push({ pid: +m[1], pgid: +m[2], lstart: m[3].replace(/\s+/g, " "), command: m[4].slice(0, 300) });
+  }
+  return rows;
+}
+
+/** 异步列一次全机进程；ps 跑不了返回 null——认不出是谁就不杀 */
+function psList() {
+  return new Promise((resolve) => {
+    require("child_process").execFile("ps", PS_ARGS, { env: PS_ENV(), maxBuffer: 16 * 1048576, timeout: 5000 }, (err, stdout) => resolve(err ? null : psRows(stdout)));
+  });
+}
+
+function groupAlive(pgid) {
+  if (process.platform === "win32" || !(pgid > 0)) return false;
+  try { process.kill(-pgid, 0); return true; } catch { return false; }
+}
+
+/** 账本落盘：串起来写，后一次总是写最新的；空了就删文件 */
+function saveStrays() {
+  strayWrite = strayWrite.then(async () => {
+    if (!strays.size) return fs.promises.rm(strayFile(), { force: true });
+    await fs.promises.mkdir(strayDir(), { recursive: true });
+    await fs.promises.writeFile(strayFile(), JSON.stringify({ host: { pid: process.pid, lstart: hostStart }, strays: [...strays.values()] }));
+  }).catch(() => {});
+  return strayWrite;
+}
+
+/**
+ * 命令跑完时调用：进程组里还有人就记账，返回追加给模型的那句话（没人就是空串）。
+ * 绝大多数命令组里早没人了，只花一次 kill(0) 系统调用，不多跑 ps。
+ * quiet：用户按了停 / 超时，组已经在收了，只记账不多嘴。
+ */
+async function noteStray(pgid, command, session, { quiet = false, tip = "" } = {}) {
+  if (!groupAlive(pgid)) return "";
+  const rows = await psList();
+  if (!rows) return quiet ? "" : `（后台还留着进程组 ${pgid}，没能登记，收尾时收不到它：用完自己停掉）`;
+  const self = rows.find((r) => r.pid === process.pid);
+  if (self) hostStart = self.lstart;
+  const members = rows.filter((r) => r.pgid === pgid).map(({ pid, lstart, command: c }) => ({ pid, lstart, command: c }));
+  if (!members.length) return "";
+  const sid = String(session || "");
+  strays.set(pgid, { pgid, session: sid, command: String(command || "").slice(0, 300), at: Date.now(), members });
+  saveStrays();
+  if (quiet) return "";
+  const what = members.map((m) => m.command.slice(0, 60)).join("；");
+  return `（后台还留着进程组 ${pgid}：${what}。${sid ? "这一轮结束会被收掉" : "应用退出时会被收掉"}；${tip}）`;
+}
+
+/**
+ * 按账本认人：组里得有一个成员的 pid 和启动时刻都对得上，才算我们那组。
+ * 只比 pid + 启动时刻、不比命令行：npm 起来会改自己的 process.title（ps 里从 node .../npm 变成 npm run dev），
+ * 比命令行会把真是自己的那组认丢。pid 加秒级启动时刻已经唯一，重启、重开机之后 pid 撞号也认不错。
+ */
+function verifiedPgids(entries, rows) {
+  const out = [];
+  for (const e of entries) {
+    const cur = rows.filter((r) => r.pgid === e.pgid);
+    if (cur.some((r) => (e.members || []).some((m) => m.pid === r.pid && m.lstart === r.lstart))) out.push(e.pgid);
+  }
+  return out;
+}
+
+/** 整组送走：先 SIGTERM，2 秒后还在就 SIGKILL（同 killTree） */
+function killGroup(pgid, grace = 2000) {
+  try { process.kill(-pgid, "SIGTERM"); } catch { return; }
+  const t = setTimeout(() => { try { process.kill(-pgid, "SIGKILL"); } catch {} }, grace);
+  if (t.unref) t.unref();
+}
+
+/** 收某一轮的散户。session 为空不动。返回真送走的那几组 */
+async function reapStrays(session) {
+  const sid = String(session || "");
+  const mine = sid ? [...strays.values()].filter((e) => e.session === sid) : [];
+  if (!mine.length) return [];
+  const rows = await psList();
+  if (!rows) return []; // 认不出来就不杀；账留着，退出应用 / 下次开机再认
+  const ok = verifiedPgids(mine, rows);
+  for (const e of mine) strays.delete(e.pgid);
+  for (const g of ok) killGroup(g);
+  saveStrays();
+  return mine.filter((e) => ok.includes(e.pgid));
+}
+
+/**
+ * 开机收账：上次进程（崩了、被强退）留下的账本，记账进程确实已经不在了，才按账本认人再杀。
+ * 记账进程还活着（同 pid、同启动时刻）的账不碰：那是另一个正在跑的实例（比如命令行版），它的账它自己收。
+ */
+async function reapLeftoverStrays() {
+  if (process.platform === "win32") return [];
+  let names = [];
+  try { names = await fs.promises.readdir(strayDir()); } catch { return []; }
+  const files = names.filter((n) => /^\d+\.json$/.test(n) && Number(n.split(".")[0]) !== process.pid);
+  if (!files.length) return [];
+  const rows = await psList();
+  if (!rows) return [];
+  const killed = [];
+  for (const n of files) {
+    const f = path.join(strayDir(), n);
+    let rec = null;
+    try { rec = JSON.parse(await fs.promises.readFile(f, "utf8")); } catch { continue; }
+    const host = (rec && rec.host) || {};
+    if (rows.some((r) => r.pid === host.pid && (!host.lstart || r.lstart === host.lstart))) continue;
+    const entries = Array.isArray(rec && rec.strays) ? rec.strays : [];
+    const ok = verifiedPgids(entries, rows);
+    for (const g of ok) killGroup(g);
+    killed.push(...entries.filter((e) => ok.includes(e.pgid)));
+    await fs.promises.rm(f, { force: true }).catch(() => {});
+  }
+  return killed;
+}
+
+/** 退出时同步收一遍（exit 里不能等异步）。账本文件留着，下次开机再核一次，SIGTERM 没收干净的那次补上 */
+function reapStraysAtExit() {
+  if (!strays.size || process.platform === "win32") return;
+  let rows = null;
+  try { rows = psRows(require("child_process").execFileSync("ps", PS_ARGS, { env: PS_ENV(), encoding: "utf8", timeout: 3000, maxBuffer: 16 * 1048576 })); } catch {}
+  if (!rows) return;
+  for (const g of verifiedPgids([...strays.values()], rows)) { try { process.kill(-g, "SIGTERM"); } catch {} }
+}
+process.on("exit", reapStraysAtExit);
+{
+  const t = setTimeout(() => { reapLeftoverStrays().catch(() => {}); }, 2000);
+  if (t.unref) t.unref();
+}
+
+/**
+ * 一轮任务收尾：这一轮起的后台命令（没说 keep 的）、甩到后台的散户、开过的浏览器标签页，一起收。
+ * 网页对话、IM、定时任务、命令行都走这里；sessionId 为空一律不动——空串不是「所有人」，
+ * 一个没带会话的调用不能把别人的开发服务器全停了。
+ * browser:false 给网页对话那条用：它在同一个 finally 里已经单独收过标签页了。
+ */
+async function releaseRun(sessionId, { browser = true } = {}) {
+  const sid = String(sessionId || "");
+  if (!sid) return { jobs: [], kept: [], strays: [] };
+  const { killed, kept } = CT.bgReapSession(sid, (c) => killTree(c));
+  if (browser) { try { await require("./cdp").releaseOwner(sid); } catch {} }
+  let gone = [];
+  try { gone = await reapStrays(sid); } catch {}
+  if (killed.length || gone.length || kept.length) {
+    console.log(`[收尾] ${sid}：收掉后台命令 ${killed.length} 条、散落进程组 ${gone.length} 个` +
+      (kept.length ? `；按 keep 留着 ${kept.map((j) => `${j.id}（${j.command.slice(0, 60)}）`).join("、")}` : ""));
+  }
+  return { jobs: killed.map((j) => j.id), kept: kept.map((j) => j.id), strays: gone.map((e) => e.pgid) };
+}
+
+/**
+ * 同一个会话键可能有两轮同时在跑（webhook 那条的 session 缺省都是 webhook_default）：
+ * 先跑完的那轮不能把还在跑的那轮的开发服务器收了。开跑时 hold 一下，最后一个放手的才真收尾。
+ * 返回放手函数，重复调用只算一次。
+ */
+const runHolds = new Map(); // sessionId → 正在跑的轮数
+function holdRun(sessionId, opt) {
+  const sid = String(sessionId || "");
+  if (!sid) return () => Promise.resolve(null);
+  runHolds.set(sid, (runHolds.get(sid) || 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return Promise.resolve(null);
+    done = true;
+    const n = (runHolds.get(sid) || 1) - 1;
+    if (n > 0) { runHolds.set(sid, n); return Promise.resolve(null); }
+    runHolds.delete(sid);
+    return releaseRun(sid, opt);
+  };
+}
+/** IM / 定时任务 / webhook 这一轮是不是还在跑（cdp.js 据此不去收它的标签页） */
+const runHeld = (sessionId) => runHolds.has(String(sessionId || ""));
+
 /** 读 → 算 → 写一步到位。不用过审批的调用方和测试用这个 */
 function editFile(file, label, input) {
   const plan = planEdit(readSource(file, label), label, input);
   if (!plan.noop) fs.writeFileSync(file, plan.out, "utf8");
   return plan.msg;
 }
+
+// ---- 自检里要起外部进程的那几样（.py/.sh、ESM 兜底）：一律异步、同时最多两个 ----
+// 2026-09-28 实测：这里原来是 spawnSync，而桌面版里 server 跑在 Electron 主进程上，等于整个应用陪着等。
+// JS 自检还是整只 Electron 二进制冷启动，中位 ~200ms、最慢 430ms；最近 60 段会话里改了 114 次 .js，
+// 光这一项就让整个应用（所有对话的流、打字、拖窗口）一共冻住二十多秒，六个对话一起写代码时一格一格地卡。
+// JS 现在进程内编译（跟 node --check 走的是同一个 V8 解析，报错格式一模一样），剩下的外部检查异步排队，
+// 同时最多两个：六个对话同时写 .py，不能一口气叉出六个 python3。
+const EXT_CHECK_MAX = 2;
+const extCheck = { running: 0, queue: /** @type {Array<() => void>} */ ([]) };
+/** @returns {Promise<{status:number|null, stderr:string}>} status=null：没跑成（没装、超时），不是语法错 */
+function execCheck(cmd, args, opt = {}) {
+  return new Promise((resolve) => {
+    const go = () => {
+      extCheck.running++;
+      let settled = false;
+      const done = (r) => {
+        if (settled) return;
+        settled = true;
+        extCheck.running--;
+        const next = extCheck.queue.shift();
+        if (next) next();
+        resolve(r);
+      };
+      try {
+        require("child_process").execFile(cmd, args, { encoding: "utf8", maxBuffer: 4 * 1048576, windowsHide: true, ...opt }, (e, _out, err) => {
+          done({ status: e ? (typeof e.code === "number" ? e.code : null) : 0, stderr: String(err || "") });
+        });
+      } catch {
+        done({ status: null, stderr: "" });
+      }
+    };
+    if (extCheck.running < EXT_CHECK_MAX) go();
+    else extCheck.queue.push(go);
+  });
+}
+/** 进程内查 CommonJS 语法：只编译不执行。没错返回空串，有错返回跟 node --check 一样的那几行 */
+function cjsSyntaxError(src, file) {
+  try {
+    require("vm").compileFunction(src, ["exports", "require", "module", "__filename", "__dirname"], { filename: file });
+    return "";
+  } catch (e) {
+    if (!e || e.name !== "SyntaxError") return "";
+    return String(e.stack || e.message || e);
+  }
+}
+// 按 CJS 编译才会报、换成 ESM 就可能是好代码的那几种错（跟 Node 自己的 ESM 探测认的是同一批）。
+// 2026-09-29 复审实测：原来只认「行首是 import/export」才按 ESM 再判，顶层 await、import.meta、
+// 顶层 for await、await using、自己声明 require/__dirname 的 .js 全被报成「JS 语法没过」——
+// 换成进程内编译之前走的 node --check 会自己探测 ESM，这几种都是放行的。
+// 普通写错（少括号、多逗号）的报错里没有这些词，照样零进程当场报
+const ESM_ONLY_ERR_RE = /Cannot use import statement|Unexpected token 'export'|Cannot use 'import\.meta'|await is only valid in async functions and the top level bodies of modules|Unexpected reserved word|Identifier '(?:module|exports|require|__filename|__dirname)' has already been declared/;
 
 /**
  * 写完/改完立刻做一次自检。
@@ -2082,7 +2340,7 @@ function editFile(file, label, input) {
  * 所以判据改成：**闭合标签比开始标签还多**（怎么往下写都圆不回来）才算错；
  * 「开着还没闭」在文档明显还没收尾时只提一句，不占 isError。
  */
-function selfCheck(file, rel, partial = false) {
+async function selfCheck(file, rel, partial = false) {
   // note 照说，bad 才算失败
   const bad = (note) => ({ note, bad: true });
   const ok = (note = "") => ({ note, bad: false });
@@ -2109,25 +2367,28 @@ function selfCheck(file, rel, partial = false) {
   if ([".js", ".cjs", ".mjs"].includes(ext)) {
     // ELECTRON_RUN_AS_NODE 必须带上：桌面版里 execPath 是 Electron 二进制，不带的话每检查一个 .js
     // 就真的启动一个 Electron 实例去加载用户的文件——满屏弹 JavaScript error 弹窗，还把合法代码误判成语法错误
-    const check = (f) =>
-      spawnSync(process.execPath, ["--check", f], {
-        encoding: "utf8",
-        timeout: 15000,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-      });
-    let r = check(file);
-    // .js 里写 ESM（import/export）在 CJS 下必然报错，但项目可能本来就是 type:module —— 换成 .mjs 再判一次，别误伤
-    if (r.status !== 0 && /^\s*(import|export)\s/m.test(src)) {
-      const alt = path.join(tmpDir(), `syntax-${Date.now()}.mjs`);
+    const esmCheck = (f) => execCheck(process.execPath, ["--check", f], { timeout: 15000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+    // .mjs 本来就按 ESM 解析（严格模式等规则跟 CJS 不同），直接交给 node --check
+    let err = ext === ".mjs" ? "" : cjsSyntaxError(src, file);
+    if (ext === ".mjs") {
+      const r = await esmCheck(file);
+      if (r.status !== 0 && r.status !== null) err = r.stderr;
+    } else if (err && (/^\s*(import|export)\s/m.test(src) || (ext === ".js" && ESM_ONLY_ERR_RE.test(err)))) {
+      // .js 里写 ESM（import/export、顶层 await、import.meta）在 CJS 下必然报错，但项目可能本来就是 type:module，
+      // 没有 package.json 的 Node 也会自己探测成 ESM —— 换成 .mjs 再判一次，别误伤。.cjs 永远按 CJS，不走这条
+      const alt = path.join(tmpDir(), `syntax-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mjs`);
       try {
-        fs.mkdirSync(tmpDir(), { recursive: true });
-        fs.writeFileSync(alt, src);
-        if (check(alt).status === 0) r = { status: 0 };
+        await fs.promises.mkdir(tmpDir(), { recursive: true });
+        await fs.promises.writeFile(alt, src);
+        const r = await esmCheck(alt);
+        // 按 ESM 过了就是好的；按 ESM 也报错就报 ESM 的那条（路径换回用户的文件）；没跑成就不下结论
+        if (r.status === 0 || r.status === null) err = "";
+        else if (r.stderr) err = r.stderr.split(alt).join(file);
       } catch {}
       fs.rmSync(alt, { force: true });
     }
-    if (r.status !== 0) {
-      const msg = String(r.stderr || "").split("\n").filter((l) => l && !/^\s*at /.test(l)).slice(0, 6).join("\n");
+    if (err) {
+      const msg = String(err).split("\n").filter((l) => l && !/^\s*at /.test(l)).slice(0, 6).join("\n");
       if (partial && looksUnfinished(msg)) return ok();
       return bad(`\n注意：JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`);
     }
@@ -2137,7 +2398,7 @@ function selfCheck(file, rel, partial = false) {
     // 用 ast.parse 而不是 py_compile：后者会往 __pycache__ 写 .pyc 污染工作目录。
     // 本机没 python3 / spawn 失败一律跳过，环境问题不能报成语法错误
     try {
-      const r = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", file], { encoding: "utf8", timeout: 15000 });
+      const r = await execCheck(process.platform === "win32" ? "python" : "python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", file], { timeout: 15000 });
       if (r.status === 1 && /SyntaxError|IndentationError|TabError/.test(String(r.stderr))) {
         const msg = String(r.stderr).split("\n").filter((l) => l && !/^Traceback|^\s*File "<string>"/.test(l)).slice(-4).join("\n");
         if (partial && looksUnfinished(msg)) return ok();
@@ -2148,7 +2409,7 @@ function selfCheck(file, rel, partial = false) {
   }
   if ([".sh", ".bash", ".zsh"].includes(ext)) {
     try {
-      const r = spawnSync(ext === ".zsh" ? "zsh" : "bash", ["-n", file], { encoding: "utf8", timeout: 10000 });
+      const r = await execCheck(ext === ".zsh" ? "zsh" : "bash", ["-n", file], { timeout: 10000 });
       if (r.status !== 0 && r.stderr) {
         if (partial && looksUnfinished(r.stderr)) return ok();
         return bad(`\n注意：Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`);
@@ -2333,6 +2594,38 @@ function auditHtml(src, baseDir, opts = {}) {
  * 活着，于是没退成」，所以判据改成**主窗口曾经存在且已经没了**；从来就没有过主窗口 =
  * 有意的无头宿主，不许动它。
  */
+// ---- agent 打开网页用的隐藏窗口：独立的内存分区、静音、低帧率 ----
+// 2026-09-28 实测：renderPage/checkPage 原来用默认会话，跟应用界面是同一个 profile。agent 读过的
+// youtube、小红书、抖音、头条、百度文库各自装了 Service Worker、预缓存了一堆脚本，
+// Application Support/openworkbuddy/Service Worker 涨到 46M，界面自己一个都没用过，也没人会去清。
+// 改成固定名字的内存分区（不带 persist: 前缀，退出就没，不碰界面那份）。不用每次一个新名字：
+// Electron 按名字把会话留到退出，每抓一次网页就漏一个会话。最后一个窗口关掉时把 SW 和 CacheStorage
+// 清一下，内存分区在一次开好几天的应用里也不能越攒越多。
+// 静音：视频站打开就自动播，隐藏窗口里的声音会从用户音箱里冒出来。帧率压到 8：离屏窗口没人看，
+// 默认 60 帧白白烧一个核（带动画的首页尤其明显）。
+const WEB_PARTITION = "owb-web";
+const hiddenWeb = { open: 0 };
+function openHiddenWeb(electron) {
+  const win = new electron.BrowserWindow({
+    show: false,
+    width: 1440,
+    height: 1000,
+    webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true, partition: WEB_PARTITION },
+  });
+  hiddenWeb.open++;
+  try { win.webContents.setAudioMuted(true); } catch {}
+  try { win.webContents.setFrameRate(8); } catch {}
+  win.once("closed", () => {
+    hiddenWeb.open--;
+    if (hiddenWeb.open > 0) return;
+    try {
+      const p = electron.session.fromPartition(WEB_PARTITION).clearStorageData({ storages: ["serviceworkers", "cachestorage"] });
+      if (p && p.catch) p.catch(() => {});
+    } catch {}
+  });
+  return win;
+}
+
 function closeHiddenWindow(win, electron) {
   try {
     if (win && !win.isDestroyed()) win.destroy();
@@ -2391,12 +2684,7 @@ async function checkPage(file, rel) {
     lines.push("\n【浏览器实测】跳过（当前是命令行模式，没有内置浏览器）。交付前请在桌面版里再跑一次。");
     return lines.join("\n");
   }
-  const win = new electron.BrowserWindow({
-    show: false,
-    width: 1440,
-    height: 1000,
-    webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true },
-  });
+  const win = openHiddenWeb(electron);
   const errs = [], warns = [];
   try {
     // 控制台报错是白屏的头号原因，光看源码看不出来
@@ -2877,12 +3165,7 @@ async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
   if (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady()) {
     throw new Error("内置浏览器不可用（命令行模式）");
   }
-  const win = new electron.BrowserWindow({
-    show: false,
-    width: 1440,
-    height: 1000,
-    webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true },
-  });
+  const win = openHiddenWeb(electron);
   try {
     win.webContents.setUserAgent(BROWSER_UA);
     await win.loadURL(url);
@@ -3543,7 +3826,7 @@ async function executeToolCore(name, input, opts = {}) {
         // modeGated：只看不动/每步都问是用户当场选的档，闸门总开关关着也得照档办
         const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code, { force: modeGated() });
         if (blocked) return blocked;
-        return await runNode(code, timeoutMs, fileBase, opts.stopSignal);
+        return await runNode(code, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "");
       }
       case "run_shell": {
         if (orgBlocksShell()) return shellBlocked("run_shell");
@@ -3556,8 +3839,8 @@ async function executeToolCore(name, input, opts = {}) {
         const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
         if (hookSays) { security.audit("命令执行", cmd, "钩子拦截"); return { content: hookSays, isError: true }; }
         security.audit("命令执行", cmd, "放行");
-        if (input.background) return startBackground(cmd, fileBase, opts);
-        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal);
+        if (input.background) return startBackground(cmd, fileBase, opts, input.keep === true);
+        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "");
       }
       case "shell_output": {
         const who = bgOwner(opts);
@@ -3612,7 +3895,7 @@ async function executeToolCore(name, input, opts = {}) {
         if (plan.noop) return { content: plan.msg, isError: false };
         fs.writeFileSync(p, plan.out, "utf8");
         CT.stampSeen(opts.sessionId, p);
-        const c = selfCheck(p, rel);
+        const c = await selfCheck(p, rel);
         return noteChange(
           { content: plan.msg + c.note, isError: c.bad },
           { root: ws(), abs: p, rel, before: plan.src, after: plan.out, tool: "multi_edit", session: opts.sessionId, call: opts.callId }
@@ -3689,7 +3972,7 @@ async function executeToolCore(name, input, opts = {}) {
           const unseen = existed && CT.staleNote(opts.sessionId, p, rel);
           fs.appendFileSync(p, body, "utf8");
           if (!unseen) CT.stampSeen(opts.sessionId, p);
-          const c = selfCheck(p, rel, true);
+          const c = await selfCheck(p, rel, true);
           return noteChange(
             { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${c.note}`, isError: c.bad },
             { ...change, after: Buffer.concat([before || Buffer.alloc(0), Buffer.from(body, "utf8")]) }
@@ -3697,7 +3980,7 @@ async function executeToolCore(name, input, opts = {}) {
         }
         fs.writeFileSync(p, body, "utf8");
         CT.stampSeen(opts.sessionId, p);
-        const c = selfCheck(p, rel);
+        const c = await selfCheck(p, rel);
         // 覆盖和新建要说清楚：整篇重写一个已有文件，多半是该用 edit_file 却偷懒了
         return noteChange(
           {
@@ -3730,7 +4013,7 @@ async function executeToolCore(name, input, opts = {}) {
         if (plan.noop) return { content: plan.msg, isError: false };
         fs.writeFileSync(p, plan.out, "utf8");
         CT.stampSeen(opts.sessionId, p);
-        const c = selfCheck(p, rel);
+        const c = await selfCheck(p, rel);
         return noteChange(
           { content: plan.msg + c.note, isError: c.bad },
           { root: ws(), abs: p, rel, before: plan.src, after: plan.out, tool: "edit_file", session: opts.sessionId, call: opts.callId }
@@ -3826,14 +4109,16 @@ async function executeToolCore(name, input, opts = {}) {
         if (action === "navigate" && !/^https?:\/\//i.test(String(input.url || ""))) {
           return { content: "navigate 只接受 http/https URL。", isError: true };
         }
-        const r = await cdp.run(input);
+        // owner：几个对话同时开浏览器时各用各的标签页（cdp.js OWNED）
+        const r = await cdp.run({ ...input, owner: opts.sessionId || "" });
         if (action === "screenshot") {
           const rel = String(input.path || "chrome-screenshot.png").replace(/^[/\\]+/, "");
           const p = resolveFile(rel);
           const blocked = await passGate(security.checkWrite(sec, rel), "写截图", rel, { force: true });
           if (blocked) return blocked;
           fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(r.data, "base64"));
-          return { content: `已保存 Chrome 截图：${rel}（${Math.round(fs.statSync(p).size / 1024)}KB，tab ${r.tab_id}）`, isError: false };
+          // 结果里的 note（标签页被收掉换了新页 / 刚从冻住解开）不能在这里丢：丢了模型就拿一张白页或一屏旧画面当真
+          return { content: `已保存 Chrome 截图：${rel}（${Math.round(fs.statSync(p).size / 1024)}KB，tab ${r.tab_id}）` + (r.note ? `\n${r.note}` : ""), isError: false };
         }
         return { content: JSON.stringify(r, null, 2), isError: false };
       }
@@ -4310,4 +4595,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };
+  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };

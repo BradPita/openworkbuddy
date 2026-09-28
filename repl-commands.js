@@ -748,7 +748,7 @@ function compactedText(before, after, removed) {
   if (!removed) return "没压：最近几轮是要留着的，再往前没有可并的了——上下文一点没动。\n";
   const save = b > a ? Math.round(((b - a) / b) * 100) : 0;
   return `压好了：${removed} 条聊天记录并成 1 条摘要，上下文 ${Math.round(b / 1000)}k → ${Math.round(a / 1000)}k 字符` +
-    `${save ? "，省了 " + save + "%" : ""}。原文归档在 data/compact-archive，没删。\n`;
+    `${save ? "，省了 " + save + "%" : ""}。原文归档在 data/compact-archive，没删，留 90 天。\n`;
 }
 
 /**

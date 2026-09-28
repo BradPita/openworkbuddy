@@ -136,10 +136,23 @@ function attnRunEnded(sid) {
   attnTidy(sid);
   attnChanged();
 }
+/**
+ * 人此刻不在看这个页面：标签页切走了、窗口失焦（切到别的应用），或者桌面版窗口收起来了。
+ * 光看 document.hidden 不够——2026-09-28 实测桌面版窗口收起、最小化以后它一直是 false
+ * （主进程关着 backgroundThrottling），「你不在时跑完了」和审批的系统通知一次都没弹过。
+ * 桌面版主进程收起窗口时往 body 上挂 owb-away（win-away.js）；老版本主进程不挂，就只看前两样。
+ */
+function isAway() {
+  if (typeof document === "undefined") return false;
+  if (document.hidden) return true;
+  if (typeof document.hasFocus === "function" && !document.hasFocus()) return true;
+  return !!(document.body && document.body.classList && document.body.classList.contains("owb-away"));
+}
+
 /** 记一笔「出错了 / 跑完了没看」。人正看着这条就不记：他已经看见了 */
 function attnFlag(sid, flag) {
   if (!sid || attnGone.has(sid) || (flag !== "error" && flag !== "unseen")) return;
-  if (sid === sessionId && !document.hidden) return;
+  if (sid === sessionId && !isAway()) return;
   const st = attnOf(sid, true);
   if (st[flag]) return;
   st[flag] = true;
@@ -228,7 +241,7 @@ function attnDotHtml(sid, cliLive) {
  */
 function notifyAttention(sid, e) {
   if (!e || e.src === "approval") return;
-  const away = document.hidden || !document.hasFocus();
+  const away = isAway();
   if (sid === sessionId && !away) return;
   if (!attnShouldCall(attnLastCall, sid, Date.now())) return;
   const name = attnName(sid);

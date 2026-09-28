@@ -228,14 +228,21 @@ async function until(fn, ms = 5000) {
     const id2 = (/(bg\d+)/.exec(done.content) || [])[1];
     ok(await until(async () => /exit code 3/.test((await executeTool("shell_output", { id: id2, all: true }, S1)).content)), "自己跑完的命令报出 exit code");
 
-    // 上限：起满 8 条后第 9 条被拒
+    // 上限两层：一个对话最多 BG_PER_RUN 条；几个对话加起来最多 BG_MAX 条
     const ids = [];
-    for (let i = 0; i < CT.BG_MAX; i++) {
+    for (let i = 0; i < CT.BG_PER_RUN; i++) {
       const x = await executeTool("run_shell", { command: "sleep 30", background: true }, S1);
       const m = /(bg\d+)/.exec(x.content); if (m) ids.push(m[1]);
     }
-    const over = await executeTool("run_shell", { command: "sleep 30", background: true }, S1);
-    ok(over.isError && /上限/.test(over.content), `同时挂满 ${CT.BG_MAX} 条之后拒绝再起`, over.content);
+    const overRun = await executeTool("run_shell", { command: "sleep 30", background: true }, S1);
+    ok(ids.length === CT.BG_PER_RUN && overRun.isError && new RegExp(`这个对话后台已经挂着 ${CT.BG_PER_RUN} 条`).test(overRun.content), `一个对话挂满 ${CT.BG_PER_RUN} 条之后拒绝再起`, overRun.content);
+    for (let i = CT.BG_PER_RUN; i < CT.BG_MAX; i++) {
+      const x = await executeTool("run_shell", { command: "sleep 30", background: true }, { ...S1, sessionId: "s_one_b" });
+      const m = /(bg\d+)/.exec(x.content); if (m) ids.push(m[1]);
+    }
+    ok(ids.length === CT.BG_MAX, `换一个对话还能接着起，加起来到 ${CT.BG_MAX} 条（反向对照：单个对话的上限不拦别的对话）`, ids.length);
+    const over = await executeTool("run_shell", { command: "sleep 30", background: true }, { ...S1, sessionId: "s_one_c" });
+    ok(over.isError && new RegExp(`后台已经挂着 ${CT.BG_MAX} 条`).test(over.content), `几个对话加起来挂满 ${CT.BG_MAX} 条之后，新对话也拒`, over.content);
     for (const i of ids) await executeTool("shell_kill", { id: i }, S1);
     const fg = await executeTool("run_shell", { command: "echo fg" }, S1);
     ok(!fg.isError && /fg/.test(fg.content) && /exit code: 0/.test(fg.content), "不带 background 照旧等它跑完（反向对照）", fg.content);

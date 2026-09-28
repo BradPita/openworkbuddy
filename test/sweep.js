@@ -159,6 +159,45 @@ console.log("\n⑤ 过程脚本：默认不勾，而且只认摊在任务根上�
     "反向对照：任务里那棵源码树一个文件都不提（深一层的 .py 是交付物，不是脚手架）", pathsOf(sweep.plan(src), "script"));
 }
 
+console.log("\n⑤b 调试草稿：_ 开头的脚本、check_ 截图默认就勾（2026-09-28 小游戏任务留了 21 个）");
+{
+  const ws = fixture({
+    "任务G1/鹈鹕鹕飞车.html": 60000,
+    "任务G1/_pose.js": 357, "任务G1/_probe.js": 1200, "任务G1/_diag.js": 1300,
+    "任务G1/check_02.png": 40000, "任务G1/_dump.json": 800,
+    "任务G1/game.js": 3000,
+  });
+  const p = sweep.plan(ws);
+  const g = group(p, "debug");
+  ok(g && g.count === 5, "★这一组必须真的响★ 五个草稿都认出来了", pathsOf(p, "debug"));
+  ok(g && g.on === true, "默认勾上（名字本身就写着「用完即弃」）", g && g.on);
+  ok(!pathsOf(p, "debug").includes("任务G1/鹈鹕鹕飞车.html"), "成品 html 不进清单", pathsOf(p, "debug"));
+  ok(!pathsOf(p, "script").some((x) => /\/_/.test(x)), "_ 开头的脚本归调试草稿，不在「过程脚本」里重复报一次", pathsOf(p, "script"));
+  ok(pathsOf(p, "script").includes("任务G1/game.js"), "★反向对照★ 普通名字的脚本照旧走「过程脚本」（默认不勾）", pathsOf(p, "script"));
+
+  // 任务里只剩草稿：它们就是这次仅有的东西，不提
+  const only = fixture({ "任务G2/_probe.js": 1200, "任务G2/check_01.png": 3000 });
+  ok(!group(sweep.plan(only), "debug"), "反向对照：任务里只有草稿、没有别的东西时一个都不提", pathsOf(sweep.plan(only), "debug"));
+  // 草稿不能拿来当「成品在手上」的证据
+  const dumpOnly = fixture({ "任务G3/_dump.json": 800, "任务G3/ck.db": 500 });
+  ok(!pathsOf(sweep.plan(dumpOnly), "debug").length, "_dump.json 不算成品，证明不了草稿可以扔", pathsOf(sweep.plan(dumpOnly), "debug"));
+
+  // 深一层的 _x.js 可能是交付的一棵源码树里的（Next.js 的 pages/_app.js）
+  const deep = fixture({ "任务G4/site/pages/_app.js": 900, "任务G4/site/index.html": 900, "任务G4/说明.md": 300 });
+  ok(!pathsOf(sweep.plan(deep), "debug").length, "反向对照：深一层的 _app.js 不碰", pathsOf(sweep.plan(deep), "debug"));
+  // html 不收：_final.html 万一就是成品
+  const html = fixture({ "任务G5/_final.html": 9000, "任务G5/说明.md": 300 });
+  ok(!pathsOf(sweep.plan(html), "debug").length, "反向对照：_final.html 不收", pathsOf(sweep.plan(html), "debug"));
+  // 名字只是以 check 开头，不是 check_ 草稿
+  const cl = fixture({ "任务G6/checklist.png": 900, "任务G6/报告.md": 300 });
+  ok(!pathsOf(sweep.plan(cl), "debug").length, "反向对照：checklist.png 不是 check_ 草稿", pathsOf(sweep.plan(cl), "debug"));
+
+  // 真删一遍：apply 认这一组
+  const r = sweep.apply(ws, ["任务G1/_pose.js", "任务G1/check_02.png"]);
+  ok(r.removed.length === 2 && !fs.existsSync(path.join(ws, "任务G1/_pose.js")) && fs.existsSync(path.join(ws, "任务G1/鹈鹕鹕飞车.html")),
+    "apply 删得掉草稿，成品还在", r);
+}
+
 console.log("\n⑥ 圈定范围：只看一个任务 / 只看这一轮新造的");
 {
   const ws = fixture({

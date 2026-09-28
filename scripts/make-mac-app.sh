@@ -88,8 +88,17 @@ process.env.OPENWORKBUDDY_HOME = REPO;
 // 从 Finder 启动时 PATH 只有系统目录，agent 要用的 node/npx/brew 工具全都找不到——把生成时的 node 位置烤进去
 process.env.PATH = [$NODE_DIR_JS, "/opt/homebrew/bin", "/usr/local/bin", process.env.PATH || ""].filter(Boolean).join(":");
 // 日志落盘：Finder 启动没有终端，出了事到 ~/Library/Logs/OpenWorkBuddy.log 看
+const LOG = path.join(process.env.HOME || "", "Library/Logs/OpenWorkBuddy.log");
+// 启动时先轮转：2026-09-28 实测这个文件只追加从不截断，每次启动把全部输出往后续，已经 47 万字节还在涨。
+// 超过 20MB 就挪成 .1，原来的 .1 挪成 .2，再早的不留——出事往回翻两代够用，也不会哪天把磁盘吃满
 try {
-  const log = fs.createWriteStream(path.join(process.env.HOME || "", "Library/Logs/OpenWorkBuddy.log"), { flags: "a" });
+  if (fs.statSync(LOG).size > 20 * 1024 * 1024) {
+    try { fs.renameSync(LOG + ".1", LOG + ".2"); } catch {}
+    fs.renameSync(LOG, LOG + ".1");
+  }
+} catch {}
+try {
+  const log = fs.createWriteStream(LOG, { flags: "a" });
   const w = (chunk) => { try { log.write(chunk); } catch {} return true; };
   process.stdout.write = w;
   process.stderr.write = w;

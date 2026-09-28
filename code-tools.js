@@ -124,18 +124,40 @@ function findFilesText(root, input) {
 // 2. 后台命令
 // ─────────────────────────────────────────────────────────────
 
-const BG_MAX = 8;            // 同时挂着的后台命令上限：开发服务器 + 监听构建 + 测试，够了
+const BG_MAX = 8;            // 整个进程同时挂着的后台命令上限（安全阀）
+const BG_PER_RUN = 4;        // 一个会话同时挂着的上限：开发服务器 + 监听构建 + 测试，够了
 const BG_KEEP = 256 * 1024;  // 每条留最近这么多字符在内存里；全文在日志文件
 const BG_READ = 12000;       // 一次读回给模型的上限
+const BG_DONE_TTL = 30 * 60 * 1000; // 跑完的留 30 分钟给 shell_output 看结果，过了就从表里摘掉
+const BG_DONE_MAX = 16;      // 跑完的最多留这么多条（每条最多攥 BG_KEEP 的输出）
 const bg = new Map();        // id → job
 let bgSeq = 0;
 
 /**
+ * 跑完的后台命令从表里摘掉。
+ * 2026-09-28 实测：以前一条都不删，每条跑完还攥着最多 256KB 输出，应用开几天就越攒越多；
+ * 全局上限 8 条又是所有会话共用的，六个对话各起一个开发服务器就满了，后来的只能退回 `&`（进程还没人管）。
+ */
+function bgEvict(now = Date.now()) {
+  const done = [...bg.values()].filter((j) => j.exit !== undefined).sort((a, b) => (a.endedAt || 0) - (b.endedAt || 0));
+  let over = done.length - BG_DONE_MAX;
+  for (const j of done) {
+    if (over > 0 || now - (j.endedAt || 0) > BG_DONE_TTL) { j.buf = ""; bg.delete(j.id); over--; }
+  }
+}
+
+/**
  * 起一条后台命令。spawnFn 由 tools.js 递进来（它知道挑哪个 shell、PATH 怎么补、进程组怎么开），
  * 这儿只管登记、收输出、按游标读。
+ * session：这条命令归哪一趟对话——这一趟收尾时（bgReapSession）跟着收；keep=true 的留下来接着跑。
  */
-function bgStart({ command, cwd, spawnFn, logDir, owner = "" }) {
+function bgStart({ command, cwd, spawnFn, logDir, owner = "", session = "", keep = false }) {
+  bgEvict();
   const alive = [...bg.values()].filter((j) => j.exit === undefined);
+  const mine = session ? alive.filter((j) => j.session === session) : [];
+  if (session && mine.length >= BG_PER_RUN) {
+    return { error: `这个对话后台已经挂着 ${mine.length} 条命令了（上限 ${BG_PER_RUN}）。先用 shell_kill 收掉不用的：${mine.map((j) => j.id).join("、")}` };
+  }
   if (alive.length >= BG_MAX) {
     return { error: `后台已经挂着 ${alive.length} 条命令了（上限 ${BG_MAX}）。先用 shell_kill 收掉不用的：${alive.map((j) => j.id).join("、")}` };
   }
@@ -145,27 +167,54 @@ function bgStart({ command, cwd, spawnFn, logDir, owner = "" }) {
     fs.mkdirSync(logDir, { recursive: true });
     logFile = path.join(logDir, `bg-${Date.now().toString(36)}-${id}.log`);
   } catch {}
-  const job = { id, command, cwd, owner, startedAt: Date.now(), buf: "", dropped: 0, total: 0, cursor: 0, exit: undefined, signal: null, child: null, logFile };
+  const job = { id, command, cwd, owner, session: String(session || ""), keep: !!keep, startedAt: Date.now(), buf: "", dropped: 0, total: 0, cursor: 0, exit: undefined, signal: null, child: null, logFile, reaped: false };
   let child;
   try { child = spawnFn(); } catch (e) { return { error: `起不来：${e.message}` }; }
   job.child = child;
+  // 日志走写入流：以前每来一块输出就 appendFileSync 一次，话多的开发服务器每秒几百次同步写盘，
+  // 全压在 server 的主线程上（桌面版里就是整个应用的主线程）
+  let log = null;
+  if (logFile) {
+    try { log = fs.createWriteStream(logFile, { flags: "a" }); log.on("error", () => { log = null; }); } catch { log = null; }
+  }
+  const endLog = () => { if (log) { try { log.end(); } catch {} log = null; } };
   const take = (d) => {
     const s = d.toString("utf8");
     job.total += s.length;
     job.buf += s;
     if (job.buf.length > BG_KEEP) { const cut = job.buf.length - BG_KEEP; job.buf = job.buf.slice(cut); job.dropped += cut; }
-    if (logFile) { try { fs.appendFileSync(logFile, s); } catch {} }
+    if (log) { try { log.write(s); } catch {} }
   };
   if (child.stdout) child.stdout.on("data", take);
   if (child.stderr) child.stderr.on("data", take);
-  child.on("close", (code, signal) => { job.exit = code; job.signal = signal; job.endedAt = Date.now(); });
-  child.on("error", (e) => { take(Buffer.from(`\n[启动失败] ${e.message}\n`)); job.exit = -1; job.endedAt = Date.now(); });
+  child.on("close", (code, signal) => { job.exit = code; job.signal = signal; job.endedAt = Date.now(); endLog(); });
+  child.on("error", (e) => { take(Buffer.from(`\n[启动失败] ${e.message}\n`)); job.exit = -1; job.endedAt = Date.now(); endLog(); });
   bg.set(id, job);
   return { id, job };
 }
 
+/**
+ * 一趟对话收尾：它起的、没说要留着的后台命令一起收。返回收了哪些、留了哪些（留下的要让人知道）。
+ * session 为空一律不动：空串不能当「所有人的」用，否则一个没带会话的调用会把别人的开发服务器全停了。
+ */
+function bgReapSession(session, killFn) {
+  const sid = String(session || "");
+  const killed = [], kept = [];
+  if (!sid) return { killed, kept };
+  for (const j of bg.values()) {
+    if (j.session !== sid || j.exit !== undefined) continue;
+    if (j.keep) { kept.push(j); continue; }
+    j.reaped = true;
+    try { killFn(j.child); } catch {}
+    killed.push(j);
+  }
+  bgEvict();
+  return { killed, kept };
+}
+
 function bgState(job) {
-  if (job.exit === undefined) return `还在跑（${Math.round((Date.now() - job.startedAt) / 1000)} 秒）`;
+  if (job.exit === undefined) return `还在跑（${Math.round((Date.now() - job.startedAt) / 1000)} 秒）${job.keep ? "，这一轮结束后也留着" : ""}`;
+  if (job.reaped) return "上一轮结束时收掉了（要跨轮留着，起的时候加 keep:true）";
   if (job.signal) return `已被 ${job.signal} 终止`;
   return `已结束，exit code ${job.exit}`;
 }
@@ -298,7 +347,7 @@ function forgetSession(session) { seen.delete(session); }
 
 module.exports = {
   globToRegex, findFiles, findFilesText, SKIP_DIRS, FIND_MAX, WALK_BUDGET,
-  bgStart, bgRead, bgKill, bgList, bgKillAll, bgState, BG_MAX, BG_READ,
+  bgStart, bgRead, bgKill, bgList, bgKillAll, bgState, bgReapSession, bgEvict, BG_MAX, BG_PER_RUN, BG_READ, BG_DONE_TTL, BG_DONE_MAX,
   normalizeTodos, todoText, todoReceipt, TODO_MAX,
   stampSeen, staleNote, forgetSession,
   _internals: { bg, seen },

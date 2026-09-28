@@ -463,7 +463,10 @@ const TURNOUT_CHECKS = `
   ok("反向对照：dirWithSlash 改回 dirOf，同名检查当场量得出来", DUP_FNS_OLD.some((d) => d.startsWith("dirOf @ app-01.js:")), DUP_FNS_OLD.join("；"));
 
   // 事故原样重演：8 个擦水印用的中间文件 + 1 张最终成品
-  const mid = ["海报.png","_corner.png","_tab3.png","_tab2.png","_tab1.png","_bottom.png","海报v2.png","_wm2.png"].map((n) => F(n));
+  // 原事故里这几个叫 _tab1.png 那样的下划线名字。现在下划线开头的图压根不上卡（isDebugDraft，
+  // 2026-09-28 小游戏那次加的），所以这里把下划线去掉——测的是「删掉的撤卡、腾位给成品」这条机制本身，
+  // 它对 tab1.png、角标2.png 这种不带记号的中间图照样得管用
+  const mid = ["海报.png","corner.png","tab3.png","tab2.png","tab1.png","bottom.png","海报v2.png","wm2.png"].map((n) => F(n));
   const clean = F("海报_clean.png");
 
   // ── 负向控制：不传完整列表 = 修好之前那条代码路径，必须能把 bug 原样复现出来。
@@ -485,7 +488,7 @@ const TURNOUT_CHECKS = `
     renderTurnOutputs(b, [clean], [clean]);   // 磁盘上现在只剩成品
     ok("已从磁盘删掉的中间文件，卡片跟着撤掉", !cards(b).some((n) => n !== "海报_clean.png"), JSON.stringify(cards(b)));
     ok("腾出位置后成品补进了卡片区", cards(b).includes("海报_clean.png"));
-    const gone = b.querySelector('.out-row[data-name="_wm2.png"]');
+    const gone = b.querySelector('.out-row[data-name="wm2.png"]');
     ok("变更清单留痕：行还在，但打上已删除、摘掉下载和定位入口",
       gone && gone.classList.contains("gone") && !gone.querySelector(".dl") && !gone.querySelector(".rv"));
     ok("留痕行的大小位改成了「已删除」", gone.querySelector(".sz").textContent === "已删除");
@@ -899,6 +902,21 @@ const TURNOUT_CHECKS = `
     ok("带语种后缀的 README / PROGRESS 也算脚手架，不上产出卡",
       !isDeliverable("README.en.md") && !isDeliverable("PROGRESS.zh-CN.md") && !isDeliverable("README.md"));
     ok("  ← 别误伤真交付物", isDeliverable("方案.md") && isDeliverable("README_对外版.md") && isDeliverable("年报.en.md"));
+
+    // 2026-09-28：做网页小游戏的任务在成果区摆了 21 个文件，成品只有一个 html，
+    // 其余是 _probe.js/_diag.js/check_02.png。用户：「怎么产出给我一个文件夹啊？？？？？」
+    {
+      const b2 = document.createElement("div");
+      const G = "任务_0928_小游戏/";
+      const 成品 = F(G + "鹈鹕鹕飞车.html", 60000), 截图 = F(G + "check_02.png", 4000), 探针 = F(G + "_probe.js", 1200), 转储 = F(G + "_dump.txt", 300);
+      renderTurnOutputs(b2, [成品, 截图, 探针, 转储], [成品, 截图, 探针, 转储], { root: "r1" });
+      const cs = cards(b2);
+      ok("★调试草稿不上产出卡★ check_02.png / _dump.txt 只进清单", !cs.some((c) => /check_02|_dump|_probe/.test(JSON.stringify(c))), JSON.stringify(cs));
+      ok("  ← 反向对照：成品 html 照样有卡", cs.some((c) => /鹈鹕鹕飞车/.test(JSON.stringify(c))), JSON.stringify(cs));
+      ok("草稿名认得出来，也不算够格上卡", isDebugDraft(G + "check_02.png") && isDebugDraft(G + "_probe.js") && !isDeliverable("_notes.txt") && !cardWorthy(G + "check_02.png"));
+      ok("  ← 反向对照：checklist.png / 普通截图 / _final.html 照样上卡",
+        cardWorthy(G + "checklist.png") && cardWorthy(G + "截图1.png") && cardWorthy(G + "_final.html"));
+    }
   }
 
   // ── 对话里的图和右侧面板必须是同一份字节（用户：「对话里预览的图和右边打开的不一样」）。
@@ -967,6 +985,8 @@ const TURNOUT_CHECKS = `
       FILES_EV.includes("const pool = outPool(ev);") && FILES_EV.includes("pool.filter(f => ev.changed.includes(f.name))")
         && FILES_EV.includes("renderTurnOutputs(body, turnOut, pool, ev)") && FILES_EV.includes("renderFiles(ev.files)"), FILES_EV.slice(0, 400));
     ok("接线：角标只数面板里点得到的（outputArrivalPlan 收 listed: ev.files，面板只画 ev.files）", FILES_EV.includes("listed: ev.files"), FILES_EV.slice(FILES_EV.indexOf("outputArrivalPlan")));
+    ok("接线：只有眼前这个对话的回合才重画成果区（后台对话只更新缓存）",
+      FILES_EV.includes("if (!isReplaying && turnSid === sessionId) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }"), FILES_EV.slice(FILES_EV.indexOf("renderFiles") - 200, FILES_EV.indexOf("renderFiles") + 200));
     const p = outPool({ files: [F("a.md"), F("任务/b.png", 1)], turn_files: [F("任务/b.png", 2), F("任务/x/y/z/深.png", 3)] });
     ok("outPool：并起来、按名字去重（files 那份优先）", p.map((f) => f.name).join() === "a.md,任务/b.png,任务/x/y/z/深.png" && p[1].size === 1, JSON.stringify(p));
     ok("  ← 老记录没有 turn_files：原样就是 files", outPool({ files: [F("a.md")] }).length === 1 && outPool({}).length === 0);
@@ -1016,6 +1036,80 @@ const TURNOUT_CHECKS = `
     for (const x of [b1, b2, b0]) x.remove();
   }
 
+  return names;
+})()
+`;
+
+// ---- 打不开本机文件夹的人回放历史：每一轮的产出都得画出来（BCP-3） ----
+// 上面那组把 revealBtn 桩成了永远有按钮，所以一直没人发现：多人服务器的成员（platform_owner:false）、
+// 或者设置还没拉回来（settingsCache 为 null）时 revealBtn 返回空串，产出那一行的
+// row.querySelector("[data-rv]").onclick 直接对 null 赋值抛错。回放循环没有逐条兜底，
+// 整段对话画到第一张产出清单就断了——实测一条 75016 字的对话只画出 1 轮、1785 字。
+// 这里用真的 revealBtn + canOpenOnHost + amPlatformOwner，按回放的样子一轮轮喂下去。
+// ★反向对照★ 把空值判断摘掉（eval 出一份修之前的 renderTurnOutputs），同一段回放在第一轮就断。
+const REVEALBTN_STUB = `const revealBtn = (name) => '<span class="dl rv" data-rv="' + esc(name) + '">RV</span>';`;
+const TURNOUT_STUBS_REALRV = (() => {
+  if (!TURNOUT_STUBS.includes(REVEALBTN_STUB)) throw new Error("TURNOUT_STUBS 里 revealBtn 的桩子改过了，BCP-3 那组没法换成真源码");
+  return TURNOUT_STUBS.replace(REVEALBTN_STUB, srcLine("const revealBtn = (name) =>")) + "\n" + HOSTCAP_SRC + "\nvar settingsCache = null;";
+})();
+const REPLAY_NOHOST_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const REVEALED = [];
+  revealFile = (n) => { REVEALED.push(n); };
+  const F = (name, size) => ({ name, size: size || 100, mtime: "2026-09-05T00:00:00.000Z" });
+  // 一段 6 轮的对话，每轮都落了文件——回放时 files 事件一条接一条进 renderTurnOutputs
+  const TURNS = [1, 2, 3, 4, 5, 6].map((i) => [F("第" + i + "轮/报告.md", 100 + i), F("第" + i + "轮/图.png", 200 + i)]);
+  // 修之前 openSession 的回放循环长这样：try/finally、没有 catch，一条抛了整段就停
+  const replay = (render) => {
+    const boxes = [];
+    let threw = "";
+    try {
+      for (const files of TURNS) {
+        const box = document.createElement("div");
+        box.className = "turn";
+        document.body.appendChild(box);
+        boxes.push(box);
+        render(box, files, null, { root: "" });
+      }
+    } catch (e) { threw = String((e && e.message) || e); }
+    const drawn = boxes.filter((b) => b.querySelectorAll(".out-row").length === 2).length;
+    const rv = boxes.reduce((n, b) => n + b.querySelectorAll("[data-rv]").length, 0);
+    for (const b of boxes) b.remove();
+    return { threw, drawn, rv, boxes: boxes.length };
+  };
+
+  for (const [label, sc] of [["成员（platform_owner:false）", { platform_owner: false }], ["设置还没拉回来（null）", null]]) {
+    settingsCache = sc;
+    ok(label + "：真的判成了打不开本机文件夹", canOpenOnHost() === false && revealBtn("x") === "");
+    const r = replay(renderTurnOutputs);
+    ok(label + "：6 轮回放一轮不落，每轮两行产出都画出来", !r.threw && r.boxes === 6 && r.drawn === 6, JSON.stringify(r));
+    ok(label + "：一颗「打开所在位置」都不画（点了也打不开）", r.rv === 0, JSON.stringify(r));
+  }
+
+  // 平台管理员那一档：按钮照旧有、点得动
+  settingsCache = { platform_owner: true };
+  {
+    const box = document.createElement("div");
+    document.body.appendChild(box);
+    renderTurnOutputs(box, TURNS[0], null, { root: "" });
+    const b = box.querySelector(".out-row [data-rv]");
+    if (b) b.click();
+    ok("平台管理员：每行照旧有「打开所在位置」，点下去真去开",
+      !!b && box.querySelectorAll(".out-row [data-rv]").length === 2 && REVEALED.length === 1 && TURNS[0].some((f) => f.name === REVEALED[0]), JSON.stringify(REVEALED));
+    box.remove();
+  }
+
+  // ★反向对照★ 修之前那一句：直接 .onclick
+  settingsCache = { platform_owner: false };
+  const src = renderTurnOutputs.toString();
+  const re = /const rv = row\\.querySelector\\("\\[data-rv\\]"\\);\\s*if \\(rv\\) rv\\.onclick/;
+  ok("反向对照的前提：真源里那句空值判断还在", re.test(src));
+  (0, eval)(src.replace(re, 'row.querySelector("[data-rv]").onclick').replace("function renderTurnOutputs(", "function renderTurnOutputsOld("));
+  const old = replay(renderTurnOutputsOld);
+  ok("反向对照：修之前那份，成员回放在第一轮就抛错，后面 5 轮一轮都没画", !!old.threw && old.boxes === 1 && old.drawn === 0, JSON.stringify(old));
+  settingsCache = null;
   return names;
 })()
 `;
@@ -1302,6 +1396,7 @@ const FILELIST_CHECKS = `
     f("任务_0805_老的/稿.docx", new Date(t0.getFullYear(), t0.getMonth() - 1, 5).getTime()),
     f("散在根目录的.txt", t0.getTime() - 60 * D),
   ];
+  filesAllScope = true; // 下面这一大段验的是「全部对话」那一档的整库视图；默认「本对话」那档在后面单独验
   renderFiles(data);
   ok("清单一刷新就去补回答里的文件链接（对的是整列对话）", window.RELINKS.length === 1 && window.RELINKS[0] === window.chatCol, String(window.RELINKS.length));
   const el = document.getElementById("file-list");
@@ -1351,6 +1446,28 @@ const FILELIST_CHECKS = `
   [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").click();
   ok("再点一下展开回来", between("今天").join() === "任务_0903_本对话", JSON.stringify(between("今天")));
 
+  // ── 「本对话 / 全部对话」：默认只摆本对话那一格。几个对话一起跑，打开成果区满眼别人的产出，看着就是「串了」
+  filesAllScope = false;
+  renderFiles(data);
+  const scopeSeg = () => [...document.querySelectorAll("#fp-scope .fp-seg")];
+  ok("默认只摆本对话文件夹里的，别的对话的一个不见", dirs().length === 1 && /本对话/.test(dirs()[0]) && !el.querySelector(".time-head")
+    && !/昨天干的|上周的|老的|工作空间根目录/.test(el.textContent), JSON.stringify(dirs()));
+  ok("顶上摆出「本对话 / 全部对话」，各带条数", scopeSeg().map((b) => b.textContent).join("|") === "本对话 2|全部对话 6" && scopeSeg()[0].classList.contains("on"),
+    scopeSeg().map((b) => b.textContent).join("|"));
+  scopeSeg()[1].click();
+  ok("点「全部对话」整个工作空间回来", heads().length === 4 && dirs().some((d) => d.includes("上周的")) && scopeSeg()[1].classList.contains("on"), JSON.stringify(dirs()));
+  scopeSeg()[0].click();
+  ok("点回「本对话」又只剩自己的", dirs().length === 1 && /本对话/.test(dirs()[0]), JSON.stringify(dirs()));
+  // 新对话还没建文件夹：默认工作空间里就该是空的，而不是把别的对话的摆上来
+  window.sessionId = null; window.settingsCache = { platform_owner: true, workspace_is_default: true };
+  renderFiles(data);
+  ok("新对话还没产出：给一句人话，不摆别的对话的文件", /这个对话还没产出文件/.test(el.textContent) && !el.querySelector(".dir-head, .file-item"), el.textContent.slice(0, 80));
+  ok("  └ 想看全部也有路：「全部对话」那档在", scopeSeg().length === 2 && scopeSeg()[0].textContent === "本对话 0", scopeSeg().map((b) => b.textContent).join("|"));
+  // 反向对照：本对话之外一个文件都没有时不摆这组开关——切了看不出差别
+  window.sessionId = "s_now"; window.settingsCache = { platform_owner: true };
+  renderFiles(data.slice(0, 2));
+  ok("反向对照：全是本对话的文件时不摆「本对话 / 全部对话」", document.getElementById("fp-scope").hidden, document.getElementById("fp-filter").innerHTML.slice(0, 160));
+
   // 用户自选工作目录：压根不建对话文件夹，文件全在根目录，那才是正文，得原样摊开
   window.sessionDirs = new Map();
   renderFiles([f("甲.txt", t0.getTime()), f("乙.txt", t0.getTime())]);
@@ -1378,6 +1495,9 @@ const FILELIST_CHECKS = `
     byName("方案.pptx").classList.contains("res") && byName("配图.png").classList.contains("res") &&
     !byName("raw1.json").classList.contains("res") && !byName("抓取.py").classList.contains("res"));
   ok("PROGRESS.md 是过程账本，不算成果", !byName("PROGRESS.md").classList.contains("res"));
+  // 2026-09-28 小游戏任务：_probe.js、check_02.png 是模型的调试草稿，跟成品混排在一起，用户以为交了一堆东西
+  ok("调试草稿（_probe.js / check_02.png）不算成果", !isResultFile(DIR + "/check_02.png") && !isResultFile(DIR + "/_probe.js"));
+  ok("  ← 反向对照：checklist.png、_final.html 照样算成果", isResultFile(DIR + "/checklist.png") && isResultFile(DIR + "/_final.html"));
   // 真样式：只加类名不加样式的话，用户看到的还是一模一样的一行
   const w = (it) => getComputedStyle(it.querySelector(".name")).fontWeight;
   ok("成果的文件名真的更重（" + w(byName("方案.pptx")) + " vs " + w(byName("抓取.py")) + "）",
@@ -5124,7 +5244,58 @@ const STREAM_CHECKS = `
 })()
 `;
 
-const IMPANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
+// ---- 带图的回答也得能边写边定稿（FE-1） ----
+// 2026-09-28 实测：data 里最长那条带 7 张图的回答（2 万字）从头到尾定稿 0 字——图的 id 是全局自增，
+// 同一段正文渲两遍 id 就不同，paintStream「整份重渲以已定稿那截为前缀」这条永远不成立，
+// 每 100ms 把整篇连图带字推倒重建，写到 2 万字时一帧 22.8ms。现在 id 按图的源码定（SvgFig.figUid）。
+// 用真的 svgfig.js（STREAM 那组把 SvgFig 换成了空壳，那组验不到图）。
+// ★反向对照★ 把 extractSvgFigures 里按源码给 id 的那一处摘掉（退回自增号），「越过第一张图」必须当场红。
+const SVGFIG_UID_NEEDLE = "svgFigureHtml(code, growing, live, figUid(code))";
+const SVGFIG_SEQ_MUTANT = (() => {
+  if (!SVGFIG.includes(SVGFIG_UID_NEEDLE)) throw new Error("svgfig.js 里按源码给图 id 的那一处找不到了，反向对照没法做");
+  return SVGFIG.replace(SVGFIG_UID_NEEDLE, "svgFigureHtml(code, growing, live)");
+})();
+const SVG_STREAM_CHECKS = `
+(() => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const el = document.getElementById("t"), ref = document.getElementById("ref");
+  const fig = (i) => '<svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg"><style>.t{fill:#333;font-size:12px}</style>'
+    + '<rect x="4" y="4" width="' + (60 + i * 10) + '" height="30" rx="4" fill="#4a7"/><text class="t" x="10" y="60">第 ' + i + ' 张图</text></svg>';
+  const para = (i) => ("第 " + i + " 段说明：把上面那张图里的数字挨个讲一遍，顺便交代口径和出处。").repeat(30);
+  const parts = [];
+  for (let i = 1; i <= 7; i++) parts.push(para(i), fig(i));
+  parts.push(para(8));
+  const text = parts.join("\\n\\n");
+
+  ok("图的 id 按源码定：同一张图两次同号、不同的图不同号、还是 svgfig<数字> 的老形状",
+    SvgFig.figUid(fig(1)) === SvgFig.figUid(fig(1)) && SvgFig.figUid(fig(1)) !== SvgFig.figUid(fig(2)) && /^svgfig\\d+$/.test(SvgFig.figUid(fig(1))));
+  ok("同一段带图的正文渲两遍一字不差（定稿判据的前提）", renderMd(text, null, true) === renderMd(text, null, true));
+
+  el._raw = ""; el._split = null;
+  let firstDone = null;
+  for (let p = 120; ; p += 120) {
+    const cut = Math.min(text.length, p);
+    el._raw = text.slice(0, cut);
+    paintStream(el);
+    if (!firstDone && el._split.done.querySelector(".svg-fig")) firstDone = el._split.done.querySelector(".svg-fig");
+    if (cut >= text.length) break;
+  }
+  const doneFigs = el._split.done.querySelectorAll(".svg-fig").length;
+  const ratio = el._split.raw.length / text.length;
+  ok("带 7 张图的回答边写边定稿：已定稿那截越过了第一张图（" + doneFigs + " 张已定稿）", doneFigs >= 2,
+    "已定稿 " + doneFigs + " 张图、" + el._split.raw.length + "/" + text.length + " 字");
+  ok("定稿到了全文的大半（" + Math.round(ratio * 100) + "%），每帧只重画尾巴", ratio > 0.5, el._split.raw.length + "/" + text.length);
+  ok("第一张定稿的图全程没被重建过", !!firstDone && firstDone.isConnected && el._split.done.contains(firstDone));
+  ref.innerHTML = renderMd(el._raw);
+  ok("边写边渲的结果跟一次渲染一模一样", el._split.done.innerHTML + el._split.live.innerHTML === ref.innerHTML);
+  const ids = [...el.querySelectorAll(".svg-fig svg")].map((s) => s.id);
+  ok("7 张图各有各的 id", ids.length === 7 && new Set(ids).size === 7, ids.join(","));
+  return { names, fails };
+})()
+`;
+
+const IMPANE_HTML ="<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
 const IMPANE_STUBS = `
   ${IC_STUB}
 var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -7331,6 +7502,28 @@ const TRAIL_CHECKS = `
   u6.handleEvent({ type: "tool_result", name: "web_search", isError: true, preview: "超时" });
   ok("没 id 的结果也标到徽章上", chips(u6.turn)[0].classList.contains("err") && !chips(u6.turn)[0].classList.contains("run"));
 
+  // ---- 6b. 后台对话的产出不许刷掉眼前这个对话的成果区 ----
+  //          出过的事：几个对话一起跑，成果区一会儿是这个对话的、一会儿是那个的
+  {
+    const RF = [];
+    const keep = [window.renderFiles, window.renderTurnOutputs, window.outputArrivalPlan, window.applyOutputArrival];
+    window.renderFiles = (f) => RF.push(f);
+    window.renderTurnOutputs = () => {};
+    window.outputArrivalPlan = () => ({ snapshot: false, badge: 0, refresh: null });
+    window.applyOutputArrival = () => {};
+    const F = (name) => ({ name, size: 1, mtime: "2026-09-28T08:00:00.000Z" });
+    const bgT = createTurnUI("后台那条", "craft", "s_other");
+    bgT.handleEvent({ type: "files", files: [F("任务_别的/博物馆.png")], changed: ["任务_别的/博物馆.png"] });
+    ok("后台对话的产出不重画眼前的成果区", RF.length === 0, JSON.stringify(RF));
+    ok("  └ 清单缓存照样跟上（切过去时是新的）", filesCache.length === 1 && filesCache[0].name === "任务_别的/博物馆.png", JSON.stringify(filesCache));
+    const fgT = createTurnUI("眼前这条", "craft", sessionId);
+    fgT.handleEvent({ type: "files", files: [F("任务_本/图.png")], changed: ["任务_本/图.png"] });
+    ok("反向对照：眼前这个对话的产出照常刷新成果区", RF.length === 1 && RF[0][0].name === "任务_本/图.png", JSON.stringify(RF));
+    bgT.finish(); fgT.finish();
+    [window.renderFiles, window.renderTurnOutputs, window.outputArrivalPlan, window.applyOutputArrival] = keep;
+    filesCache = [];
+  }
+
   // ---- 7. 跑完这一趟：正文里的文件名能点开，成品自动摊在右边 ----
   //          「不仅结束了没有预览，还看到这个文件夹」
   // ARRIVAL 那块验的是 fileLinkTargets / finishPreviewPlan 这几个纯函数本身；
@@ -8397,6 +8590,201 @@ const PREVIEW_CHECKS = `
     ok("源码里的标签被转义，不许真进 DOM", evil.indexOf("&lt;script&gt;") >= 0 && !body.querySelector("script"), evil.slice(0, 240));
   }
 
+  // ---- 迟到的内容不许盖屏 ----
+  // 出过的事：几个对话一起跑、请求排队，在 A 对话点开的文件等了半天才回来，
+  // 这时人已经在 B 对话了——面板被重新亮出来，B 对话里冒出 A 对话的网页
+  {
+    const realFetch = window.fetch;
+    const hold = () => { let go; const p = new Promise((r) => { go = r; }); return { p, go }; };
+    let g = hold();
+    window.fetch = async (url, init) => { if (String(url).includes("慢的.md")) await g.p; return realFetch(url, init); };
+    window.PV_FILES["慢的.md"] = { body: "A 对话的内容", total: 20 };
+    window.PV_FILES["快的.md"] = { body: "B 对话的内容", total: 20 };
+    const slow = previewFile("慢的.md");
+    await previewFile("快的.md");
+    g.go(); await slow;
+    ok("先点的慢、后点的快：慢的回来不许盖掉后点的那份", /B 对话的内容/.test(body.innerHTML) && !/A 对话的内容/.test(body.innerHTML), body.innerHTML.slice(0, 160));
+    ok("  └ 标题栏也还是后点的那个", document.getElementById("pv-name").textContent === "快的.md", document.getElementById("pv-name").textContent);
+    g = hold();
+    const slow2 = previewFile("慢的.md");
+    pvPanel.classList.remove("show"); pvCurrent = null; // 切对话（openSession）做的就是这两步
+    g.go(); await slow2;
+    ok("面板已经收了（切到别的对话）：迟到的内容不许把它再亮出来", !pvPanel.classList.contains("show"), pvPanel.className);
+    g = hold();
+    const slow3 = previewFile("慢的.md");
+    g.go(); await slow3;
+    ok("反向对照：没人打断时照常显示", pvPanel.classList.contains("show") && /A 对话的内容/.test(body.innerHTML), body.innerHTML.slice(0, 160));
+    window.fetch = realFetch;
+  }
+
+  // ---- 收面板 = 里面在跑的网页/音视频当场拆掉（FE-3 / FE-8） ----
+  // 2026-09-28 实测：关掉一个小游戏网页的预览后，2 秒里它照样跑了 125 次 setInterval、242 帧 rAF——
+  // 面板收起只是 CSS 把宽度收成 0，iframe 一点没停。切对话、开新任务也只是收面板。
+  {
+    window.PV_FILES["小游戏.html"] = { body: "<p>游戏</p>", total: 12 };
+    await previewFile("小游戏.html");
+    const fr = body.querySelector("iframe"), ac = body._fitAbort;
+    ok("网页预览开着：iframe 在、量高度的监听挂着", !!fr && fr.isConnected && !!ac && !ac.signal.aborted);
+    // ★反向对照★ 老的收法（切对话时 openSession 以前就做这两步）：iframe 还挂在树上接着跑，监听也没撤
+    pvPanel.classList.remove("show"); pvCurrent = null;
+    ok("反向对照：只把面板收起来，iframe 还挂在树上、监听还挂着", fr.isConnected && !!body.querySelector("iframe") && !ac.signal.aborted);
+    await previewFile("小游戏.html");
+    ok("换一份预览：上一份先指到 about:blank 再摘掉，它的监听一起撤", !fr.isConnected && fr.getAttribute("src") === "about:blank" && ac.signal.aborted,
+      fr.getAttribute("src"));
+    const fr2 = body.querySelector("iframe"), ac2 = body._fitAbort;
+    document.getElementById("pv-close").click();
+    ok("点 × 关面板：iframe 当场卸掉，面板里什么都不剩", !body.querySelector("iframe") && !fr2.isConnected && fr2.getAttribute("src") === "about:blank" && body.innerHTML === "",
+      body.innerHTML.slice(0, 120));
+    ok("  └ 量高度的监听跟着撤了（message 监听、ResizeObserver 不再挂在 window 上）", !!ac2 && ac2.signal.aborted && !body._fitAbort);
+    ok("  └ 面板收了、没在看任何文件", !pvPanel.classList.contains("show") && pvCurrent === null);
+
+    window.PV_FILES["口播.mp3"] = { body: "", total: 0 };
+    await previewFile("口播.mp3");
+    const au = body.querySelector("audio");
+    let paused = 0;
+    au.pause = () => { paused++; };
+    closePreview(); // 切对话 / 开新任务走的是这个
+    ok("切对话收面板：音频先停、撤掉 src，节点摘掉", !!au && paused === 1 && !au.hasAttribute("src") && !au.isConnected, JSON.stringify({ paused, src: au && au.getAttribute("src") }));
+    await new Promise((r) => setTimeout(r, 80)); // 媒体的 error 是异步派发的，等它一拍
+    ok("  └ 撤 src 不会把「解不了这个编码」的提示翻出来", body.innerHTML === "", body.innerHTML.slice(0, 120));
+
+    await previewFile("小游戏.html");
+    ok("关过之后再点开：照常显示", pvPanel.classList.contains("show") && !!body.querySelector("iframe") && body.querySelector("iframe").isConnected);
+    closePreview();
+  }
+
+  // ---- 预览地址按「这一版文件」定（DG-2） ----
+  // 2026-09-28 实测：340MB 的浏览器缓存里 178MB 是 ?t= 副本，同一个 mp3 存了 10 份、一张 png 9 份——
+  // 以前每点一次预览就用 Date.now() 造一个新地址。现在同一版文件同一个地址，改过了地址跟着变。
+  {
+    const MT0 = "2026-09-28T01:02:03.000Z", MT1 = "2026-09-28T02:00:00.000Z";
+    window.filesRoot = "";
+    window.filesCache = [{ name: "图.png", mtime: MT0, size: 10 }, { name: "说明.txt", mtime: MT0, size: 5 }];
+    window.PV_FILES["说明.txt"] = { body: "hello", total: 5 };
+    const imgSrc = async (root) => { await previewFile("图.png", root); return body.querySelector("img").getAttribute("src"); };
+    const txtUrl = async () => {
+      const n0 = window.reqs.length;
+      await previewFile("说明.txt");
+      return (window.reqs.slice(n0).find((r) => String(r.url).includes("/api/files/view/")) || {}).url;
+    };
+    const a1 = await imgSrc(), a2 = await imgSrc();
+    ok("同一版文件点两次：地址一字不差（浏览器缓存里只存一份）", a1 === a2 && /[?&]v=/.test(a1) && !/[?&]t=\\d/.test(a1), a1 + " / " + a2);
+    ok("  └ 版本号 = mtime~大小：跟服务端「v 正好等于 mtime 才给 7 天强缓存」对不上，每次回去核对一次", decodeURIComponent(a1).includes(MT0 + "~10"), a1);
+    const t1 = await txtUrl(), t2 = await txtUrl();
+    ok("文本预览：同一版文件请求地址也不变", !!t1 && t1 === t2 && /[?&]v=/.test(t1), t1 + " / " + t2);
+    window.filesCache[0] = { name: "图.png", mtime: MT1, size: 10 };
+    const a3 = await imgSrc();
+    ok("文件改过（mtime 变了）：地址跟着变，拿到的是新的", a3 !== a1 && decodeURIComponent(a3).includes(MT1), a3);
+    window.filesCache[0] = { name: "图.png", mtime: MT1, size: 11 };
+    ok("同一秒里改了大小：地址也跟着变", (await imgSrc()) !== a3);
+    window.filesRoot = "/别的工作目录";
+    const a5 = await imgSrc("/这个工作目录");
+    ok("清单是别的工作目录的：不拿它的版本号，老老实实给 v=0", /[?&]v=0(&|$)/.test(a5), a5);
+    window.filesRoot = "";
+    // ★反向对照★ 版本号换回每次现取的时间戳（修之前的 ?t=Date.now() 就是这样）：同一版文件两次地址不一样
+    const realVer = pvVer;
+    pvVer = () => String(Date.now()) + "." + Math.random();
+    const b1 = await imgSrc(), b2 = await imgSrc();
+    pvVer = realVer;
+    ok("反向对照：版本号每次现取，同一版文件两次地址就不一样了", b1 !== b2, b1 + " / " + b2);
+    delete window.filesCache; delete window.filesRoot;
+    ok("没有清单（老页面、还没拉回来）：v=0，照样打得开", /[?&]v=0(&|$)/.test(await imgSrc()));
+    closePreview();
+  }
+
+  // ---- 图片、音视频重开拿的是盘上这一版（S5） ----
+  // 2026-09-29 复审：同一页面里同地址的 <img>/<audio> 浏览器直接用内存那份、一个请求都不发；
+  // 清单慢一拍（IM、定时任务改了文件；换过工作目录 v 恒为 0）时重开预览一直是改之前那张图。
+  // 现在先 HEAD 问一句这一版（ETag），拼进地址
+  {
+    const realFetch = window.fetch;
+    const tags = {}; // 文件名 → 服务端此刻答的 ETag
+    let headMode = "ok", gate = null;
+    window.fetch = async (url, init) => {
+      if (!init || init.method !== "HEAD") return realFetch(url, init);
+      window.reqs.push({ url, init });
+      if (headMode === "throw") throw new TypeError("Failed to fetch");
+      if (headMode === "404") return { ok: false, status: 404, headers: { get: () => null } };
+      if (headMode === "slow") await gate;
+      const n = decodeURIComponent((String(url).split("/api/files/view/")[1] || "").split("?")[0]);
+      return { ok: true, status: 200, headers: { get: (h) => {
+        h = h.toLowerCase();
+        return h === "etag" ? tags[n] || null : h === "last-modified" ? window.PV_LM || null : null;
+      } } };
+    };
+    const heads = () => window.reqs.filter((r) => r.init && r.init.method === "HEAD");
+    const src = async (n, sel, root) => { await previewFile(n, root); const el = body.querySelector(sel); return el ? el.getAttribute("src") : null; };
+    const MT = "2026-09-29T01:00:00.000Z";
+    window.filesRoot = "";
+    window.filesCache = [{ name: "封面.png", mtime: MT, size: 10 }, { name: "旁白.mp3", mtime: MT, size: 20 }];
+    tags["封面.png"] = 'W/"a-1"'; tags["旁白.mp3"] = 'W/"b-1"';
+
+    const h0 = heads().length;
+    const i1 = await src("封面.png", "img"), i2 = await src("封面.png", "img");
+    ok("同一版点两次：地址一字不差，带着这一版的 e=（缓存里照样只存一份）", !!i1 && i1 === i2 && /&e=/.test(i1) && decodeURIComponent(i1).includes('W/"a-1"'), i1 + " / " + i2);
+    const hs = heads().slice(h0);
+    ok("  └ 每次点开都问一句，问的是同一个 view 地址，而且绕开缓存（no-store）",
+      hs.length === 2 && hs.every((r) => r.init.cache === "no-store" && String(r.url).includes("/api/files/view/")), JSON.stringify(hs.map((r) => r.init)));
+    tags["封面.png"] = 'W/"a-2"'; // 盘上改了，清单还是老的（mtime、大小都没跟上）
+    const i3 = await src("封面.png", "img");
+    ok("★盘上改了、清单还没跟上：地址照样换，看到的是新图★", i3 !== i1 && decodeURIComponent(i3).includes('W/"a-2"'), i1 + " → " + i3);
+    // ★反向对照★ 不问服务端（修之前就是这样）：清单没变，盘上改了地址也一字不差，浏览器拿内存里那张旧的
+    const realTag = pvFreshTag;
+    pvFreshTag = async () => "";
+    const r1 = await src("封面.png", "img");
+    tags["封面.png"] = 'W/"a-3"';
+    const r2 = await src("封面.png", "img");
+    pvFreshTag = realTag;
+    ok("反向对照：不问服务端，盘上改了地址也一字不差（复审看到的旧图就是这么来的）", !!r1 && r1 === r2, r1 + " / " + r2);
+
+    window.filesRoot = "/别的工作目录";
+    const w1 = await src("封面.png", "img", "/这个工作目录");
+    tags["封面.png"] = 'W/"a-4"';
+    const w2 = await src("封面.png", "img", "/这个工作目录");
+    ok("换过工作目录（v 恒为 0）：盘上改了地址也跟着变", /[?&]v=0&/.test(w1) && /&e=/.test(w1) && w1 !== w2, w1 + " / " + w2);
+    window.filesRoot = "";
+    const a1 = await src("旁白.mp3", "audio");
+    tags["旁白.mp3"] = 'W/"b-2"';
+    const a2 = await src("旁白.mp3", "audio");
+    ok("音频同理：改过了地址跟着变", !!a1 && a1 !== a2 && decodeURIComponent(a2).includes('W/"b-2"'), a1 + " / " + a2);
+    delete tags["封面.png"]; window.PV_LM = "Tue, 29 Sep 2026 01:00:00 GMT";
+    ok("没有 ETag 就用 Last-Modified", decodeURIComponent(await src("封面.png", "img")).includes(window.PV_LM));
+    delete window.PV_LM;
+
+    headMode = "404";
+    const f1 = await src("封面.png", "img");
+    headMode = "throw";
+    const f2 = await src("封面.png", "img");
+    headMode = "ok";
+    ok("问不到（老服务端 404、断网）：退回原来的地址，照样打得开", !!f1 && f1 === f2 && /[?&]v=/.test(f1) && !/&e=/.test(f1), f1 + " / " + f2);
+
+    const h1 = heads().length;
+    await previewFile("小游戏.html");
+    await previewFile("说明.txt");
+    ok("网页、文本不问：它们本来就每次回去核对", heads().length === h1 && !!body.textContent);
+
+    // 问的这一下慢，用户已经点了别的：慢回来的那张图不许盖掉现在这份
+    tags["封面.png"] = 'W/"a-5"';
+    let open = null;
+    gate = new Promise((r) => { open = r; });
+    headMode = "slow";
+    const late = previewFile("封面.png");
+    headMode = "ok";
+    await previewFile("说明.txt");
+    open(); await late;
+    ok("问的时候已经换成别的文件：慢回来的图不上屏", !body.querySelector("img") && document.getElementById("pv-name").textContent === "说明.txt", body.innerHTML.slice(0, 120));
+    gate = new Promise((r) => { open = r; });
+    headMode = "slow";
+    const alone = previewFile("封面.png");
+    headMode = "ok";
+    open(); await alone;
+    ok("★反向对照★ 同样慢、中间没换别的：图照常上屏", !!body.querySelector("img") && /&e=/.test(body.querySelector("img").getAttribute("src")));
+
+    window.fetch = realFetch;
+    delete window.filesCache; delete window.filesRoot;
+    closePreview();
+  }
+
   return names;
 })()`;
 
@@ -9273,6 +9661,19 @@ const ARRIVAL_CHECKS = `
   CALLS.pv.length = 0;
   tC.querySelector(".file-ln").click();
   ok("点补上的链接照样在右边打开", CALLS.pv.length === 1 && CALLS.pv[0] === "架构层次定位.png", CALLS.pv.join("|"));
+  // 清单没变就连扫都不扫（FE-5）：renderFiles 一趟任务里要走好多次，
+  // 2026-09-28 实测 40 轮的对话每来一条 files 事件这里要 17ms，名字表每次重算、每张回答每次重对
+  {
+    const realLink = linkTurn;
+    let scanned = 0;
+    linkTurn = (t, m, r) => { if (m && m.size) scanned++; return realLink(t, m, r); };
+    relinkAnswers(scope);
+    ok("清单没变：名字表只算一次，已经对过的回答连扫都不扫", scanned === 0 && listingTargets(filesCache) === listingTargets(filesCache), "扫了 " + scanned + " 张");
+    filesCache = filesCache.slice(); // renderFiles 每次拉回来都是一份新数组
+    relinkAnswers(scope);
+    ok("反向对照：清单换了一份，同一个工作目录的两张回答重新对一遍", scanned === 2, "扫了 " + scanned + " 张");
+    linkTurn = realLink;
+  }
   scope.remove();
   filesCache = []; filesRoot = "";
 
@@ -10059,6 +10460,98 @@ const LANE_CHECKS = `
   attnForget("t6");
   runningSessions = new Set();
   return names;
+})()
+`;
+// ================= 侧栏按行改，不整片重铺（CF-6） =================
+// attnChanged、标题回填、切会话都走 renderHistory。以前每次整片 innerHTML：
+// 6 路并跑时每轮开头结尾各重铺一遍，每颗「在跑」脉冲点（.hrun）被拆了重建、动画从头闪，
+// Tab 停在某一行上的焦点也被冲掉。这组验：改一行只动那一行，别的行还是原来那个节点；
+// 同时每一步的 DOM 必须跟老的整片重铺一字不差（顺序、空态、搜索那一版都不许走样）。
+// ★反向对照★ 把 patchHistRows 换回整片 innerHTML，「别的行还是原节点」那几条必须当场红。
+const HIST_KEYED_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const hist = document.getElementById("history");
+  if (window.__histMutant) patchHistRows = function (host, rows, fb) { host.innerHTML = rows.map((r) => r[1]).join("") || fb; };
+  // 每一步都拿「老办法会铺出来的样子」对一遍：同一个序列化器出来的两份 innerHTML 必须相等
+  const realPatch = patchHistRows;
+  let want = "";
+  patchHistRows = function (host, rows, fb) {
+    const d = document.createElement("div");
+    d.innerHTML = rows.map((r) => r[1]).join("") || fb;
+    want = d.innerHTML;
+    return realPatch(host, rows, fb);
+  };
+  const same = () => hist.innerHTML === want;
+  const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
+  const order = () => [...hist.querySelectorAll(".hist-item")].map((e) => e.dataset.id).join(",");
+  activeLane = "office"; activeProject = "默认项目"; projectsLocked = false; sessionId = "a";
+  histQuery = ""; histHits = null;
+  sessions = ["a", "b", "c", "d"].map((id, i) => ({ id, title: "任务" + id, at: 10 - i, project: "默认项目", lane: "office" }));
+  runningSessions = new Set(["a"]);
+  renderHistory();
+  ok("按行改·首铺跟整片重铺一字不差", same() && order() === "a,b,c,d", order());
+  const A = row("a"), B = row("b"), C = row("c"), D = row("d"), RUN = A.querySelector(".hrun");
+  // 焦点落在 c 行自己的删除键上（真 Tab 走得到的那颗），不给行加 tabindex——加了 DOM 就跟重铺那份对不上了
+  const CX = C.querySelector(".hx");
+  CX.focus();
+  const focused0 = document.activeElement === CX;
+
+  // ① 只改 b 的标题：a/c/d 还是原节点，a 那颗在跑的点没被重建，c 上的焦点还在
+  sessions[1].title = "任务b改了名";
+  renderHistory();
+  ok("按行改·改一条标题：DOM 跟整片重铺一字不差", same() && order() === "a,b,c,d", order());
+  ok("按行改·改一条标题：只有那一行换了", row("b") !== B && row("b").textContent.includes("任务b改了名"));
+  ok("按行改·改一条标题：别的行还是原来那个节点", row("a") === A && row("c") === C && row("d") === D);
+  ok("按行改·在跑那颗点没被拆了重建（动画不从头闪）", row("a").querySelector(".hrun") === RUN && RUN.isConnected);
+  ok("按行改·焦点停在别的行上没被冲掉", focused0 && document.activeElement === CX,
+    "起手" + (focused0 ? "聚上了" : "没聚上") + "·现在在 " + (document.activeElement ? document.activeElement.tagName + "." + document.activeElement.className : "无"));
+
+  // ② d 来了一道题：它顶到最上面，其余照原顺序，a/b/c 节点不换
+  const B2 = row("b");
+  attnAsk("d", "q1", { text: "选哪个？" });
+  renderHistory();
+  ok("按行改·有题要答的顶到最上：顺序对、DOM 一字不差", same() && order() === "d,a,b,c", order());
+  ok("按行改·挪位置不重建：a/b/c 还是原节点", row("a") === A && row("b") === B2 && row("c") === C);
+  attnForget("d");
+
+  // ③ 删掉 b：b 没了，其余不换
+  sessions = sessions.filter((s) => s.id !== "b");
+  renderHistory();
+  ok("按行改·删一条：DOM 一字不差", same() && order() === "a,c,d", order());
+  ok("按行改·删一条：剩下的还是原节点", row("a") === A && row("c") === C && !row("b"));
+
+  // ④ 切会话（active 换人）：只有新旧两行换，其余不动
+  sessionId = "c";
+  renderHistory();
+  ok("按行改·切会话：高亮跟着换、DOM 一字不差", same() && row("c").classList.contains("active") && !row("a").classList.contains("active"));
+
+  // ⑤ 搜索那一版照旧整片铺，退回来行都回得来、没有搜索行残留
+  histQuery = "任务"; histHits = [{ id: "a", title: "任务a", why: "标题" }];
+  renderHistory();
+  ok("按行改·搜索命中那一版照旧", hist.querySelectorAll(".hist-item.found").length === 1);
+  histQuery = ""; histHits = null;
+  renderHistory();
+  ok("按行改·退出搜索：行全回来、没留搜索行", same() && order() === "a,c,d" && !hist.querySelector(".found"), hist.innerHTML.slice(0, 200));
+
+  // ⑥ 一条都没有：空态；再来一条：空态消失
+  const keep = sessions; sessions = [];
+  renderHistory();
+  ok("按行改·空了显示空态", same() && !!hist.querySelector(".hist-empty"));
+  sessions = keep;
+  renderHistory();
+  ok("按行改·又有了：空态收走", same() && !hist.querySelector(".hist-empty") && order() === "a,c,d", order());
+
+  // ⑦ 同一个 id 重复出现（坏数据）：两行都画，别把一个节点挪来挪去只剩一行
+  sessions = keep.concat([{ id: "a", title: "任务a", at: 0, project: "默认项目", lane: "office" }]);
+  renderHistory();
+  ok("按行改·同一 id 出现两次也画两行", same() && order() === "a,c,d,a", order());
+  sessions = keep;
+  renderHistory();
+  runningSessions = new Set();
+  patchHistRows = realPatch;
+  return { names, fails };
 })()
 `;
 // 手机上侧栏是一层抽屉（窗口 ≤900px 时 aside 整个收起来，点汉堡才滑出来），拖到底只有 180px。
@@ -12649,6 +13142,16 @@ app.whenReady().then(async () => {
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
     }
+    const winRN = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winRN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
+      const namesRN = await winRN.webContents.executeJavaScript(IC_BOOT + TURNOUT_STUBS_REALRV + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + REPLAY_NOHOST_CHECKS, true)
+        .catch((e) => { throw new Error("[打不开本机文件夹时回放] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesRN) console.log("  ✓ " + n);
+      console.log(`✅ 前端：打不开本机文件夹的人回放历史（成员/设置没回来都一轮不落·不画点不动的按钮·★反向对照★修之前第一轮就断）${namesRN.length} 项通过`);
+    } finally {
+      if (!winRN.isDestroyed()) winRN.destroy();
+    }
     const winEng = mkWin({ show: false, width: 760, height: 900, webPreferences: { offscreen: true } });
     try {
       await winEng.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ENG_HTML));
@@ -12934,6 +13437,27 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：侧栏拖到底（180px）时的工作线标签（一行放得下·名字没被挤没·徽标也塞得下）${namesLN2.length} 项通过`);
     } finally { if (!winLN2.isDestroyed()) winLN2.destroy(); }
 
+    for (const mutant of [false, true]) {
+      const winHK = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+      try {
+        await winHK.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+        const hk = await winHK.webContents.executeJavaScript(IC_BOOT + (mutant ? "window.__histMutant = 1;\n" : "")
+          + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + HIST_KEYED_CHECKS, true)
+          .catch((e) => { throw new Error("[侧栏按行改" + (mutant ? "·反向对照" : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (hk.fails.length) throw new Error("[侧栏按行改]\n" + hk.fails.join("\n"));
+          for (const n of hk.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：侧栏按行改不整片重铺（别的行还是原节点·在跑的点不重闪·焦点不丢·DOM 跟老办法一字不差）${hk.names.length} 项通过`);
+        } else {
+          const id = hk.fails.filter((f) => /节点|重建|焦点/.test(f));
+          if (id.length !== 5 || id.length !== hk.fails.length) {
+            throw new Error("★反向对照★ 换回整片 innerHTML 后，「节点不换」那几条应当红 5 条且只红这几条，实际：\n" + (hk.fails.join("\n") || "一条没红"));
+          }
+          console.log(`✅ 前端：★反向对照★ 换回整片 innerHTML，「别的行还是原节点 / 点不重建 / 焦点不丢」当场红 ${id.length} 条（DOM 一字不差那几条照过 ${hk.names.length} 条）`);
+        }
+      } finally { if (!winHK.isDestroyed()) winHK.destroy(); }
+    }
+
     const winGC = mkWin({ show: false, width: 760, height: 600, webPreferences: { offscreen: true } });
     try {
       await winGC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GOAL_HTML));
@@ -13071,6 +13595,27 @@ app.whenReady().then(async () => {
       for (const n of namesSTM) console.log("  ✓ " + n);
       console.log(`✅ 前端：流式正文分段渲染（已定稿那截不重建·结果跟一次渲染一致·停笔合回整块）${namesSTM.length} 项通过`);
     } finally { if (!winSTM.isDestroyed()) winSTM.destroy(); }
+
+    for (const mutant of [false, true]) {
+      const winSF = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
+      try {
+        await winSF.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(STREAM_HTML));
+        // 真 svgfig.js 放在 STREAM_STUBS 后面，把那份空壳 SvgFig 盖掉
+        const sf = await winSF.webContents.executeJavaScript(IC_BOOT + STREAM_STUBS + "\n;" + (mutant ? SVGFIG_SEQ_MUTANT : SVGFIG)
+          + "\n" + STREAM_SRC + "\n" + SVG_STREAM_CHECKS, true)
+          .catch((e) => { throw new Error("[带图的流式定稿" + (mutant ? "·反向对照" : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (sf.fails.length) throw new Error("[带图的流式定稿]\n" + sf.fails.join("\n"));
+          for (const n of sf.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：带图的回答边写边定稿（图 id 按源码定·定稿越过第一张图·结果跟一次渲染一致）${sf.names.length} 项通过`);
+        } else {
+          const need = [/渲两遍一字不差/, /越过了第一张图/];
+          const miss = need.filter((re) => !sf.fails.some((f) => re.test(f)));
+          if (miss.length) throw new Error("★反向对照★ 图 id 退回自增号后，这几条本该红却过了：" + miss.join(" ") + "\n实际红的：\n" + (sf.fails.join("\n") || "一条没红"));
+          console.log(`✅ 前端：★反向对照★ 图 id 退回全局自增，「渲两遍一字不差 / 定稿越过第一张图」当场红（共红 ${sf.fails.length} 条）`);
+        }
+      } finally { if (!winSF.isDestroyed()) winSF.destroy(); }
+    }
 
     const winEP = mkWin({ show: false, width: 520, height: 600, webPreferences: { offscreen: true } });
     try {

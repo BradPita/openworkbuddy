@@ -2173,7 +2173,7 @@
       "主模型卡住或持续报错时自动切到这条并提示，每个任务最多切一次。不选则如实报错。": "If the main model stalls or keeps failing, switch to this one (announced; once per task). Unset = report the error.",
       "web_search 用哪家。没配 Key 或不通会顺延下一家，最后用免费通道。": "Provider for web_search. Falls back to the next configured one, then a free keyless channel.",
       "每分钟存一份快照到": "A snapshot every minute to",
-      "，保留 6 个月，计数为每分钟增量。": ", kept 6 months; counts are per-minute deltas.",
+      "，闲着时十分钟一份，保留 3 个月，计数为每分钟增量。": ", every 10 min when idle, kept 3 months; counts are per-minute deltas.",
       "命中阈值推送到企业微信 / 钉钉（在「助理设置」配机器人）。同一条 30 分钟只报一次，恢复也通知。": "Alerts go to WeCom / DingTalk (bot set in Assistant settings). Once per 30 min per alert; recovery is announced too.",
       "当前没有告警。": "No active alerts.",
       "执行记录默认只存本地（": "Run traces stay local by default (",

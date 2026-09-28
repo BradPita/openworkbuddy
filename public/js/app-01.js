@@ -471,7 +471,7 @@ function joinRel(base, rel) {
 /**
  * 一个文件**现在**这一版的版本号（右侧文件清单里记的 mtime），拿不到就返回空串。
  *
- * 对话里的图和右侧面板看的必须是同一份字节。面板每次点开都带 ?t=当前时间，永远是最新的；
+ * 对话里的图和右侧面板看的必须是同一份字节。面板每次点开都回服务端核对一次（见 pvVer、pvFreshTag），永远是最新的；
  * 对话里的卡片和 Markdown 内嵌图要是拿「事件里记的那一版」或者干脆不带版本号，
  * 文件被 agent 原地改写一次之后，浏览器就把七天前那张缓存图一直摆在对话里——
  * 用户看到的就是「对话里预览的图和右边打开的不一样」。所以版本号一律先问当前清单，
@@ -1148,8 +1148,9 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     document.getElementById("empty")?.remove();
     chatCol.appendChild(turn);
   }
-  // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）
-  chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
+  // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）。
+  // 只管眼前这条对话：后台那条开跑或刷新后接回时，chatCol 里是别的对话，撤的就是人家最后一轮的按钮
+  if (turnSid === sessionId) chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
   const body = turn.querySelector(".body");
   turn._userText = userText;
   turn._shown = shown || "";
@@ -1207,6 +1208,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       // 追加（不是 prepend）：开场白留在折叠区上方可见，仿官方「先说在做什么 → 过程收起 → 结论在外」
       body.appendChild(procWrap);
       procTimer = setInterval(() => {
+        if (!turn.isConnected) return; // 后台对话的回合没挂在页面上：秒数不用走，挂回来下一秒就对上了
         const pt = procWrap.querySelector(".pt");
         if (pt) pt.textContent = `运行中 ${fmtDur(Date.now() - t0)}` + liveBadge();
         // 还没回来的卡自己也走秒。一个 setInterval 管全部，不给每张卡各开一个；
@@ -1411,6 +1413,9 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     el._pend = true;
     el._timer = setTimeout(() => {
       el._pend = false; el._timer = null;
+      // 后台对话的回合不在页面上（切走了），画了也没人看：只记一笔「欠一帧」，切回来时 flush 一次画完。
+      // 2026-09-28 实测：6 个对话同时出字，每 100ms 一帧里 5/6 的排版花在看不见的 DOM 上，对话越多越卡
+      if (!el.isConnected) { el._dirty = true; return; }
       promoteTail(el); // 挪位置跟着渲染帧走，不在逐 chunk 的路上判
       paintStream(el);
       if (turnSid === sessionId) scrollBottom(); // 后台并行会话的增量不许滚动当前看的对话
@@ -1773,7 +1778,10 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       if (ev.root) outRoot = ev.root;
       renderTurnOutputs(body, turnOut, pool, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
-      if (!isReplaying) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }
+      // 后台在跑的别的对话：只悄悄更新清单，不重画右侧——以前这里不分是谁的回合，
+      // 几个对话同时跑时，成果区被别的对话的产出一遍遍刷掉，看着像文件串了
+      if (!isReplaying && turnSid === sessionId) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }
+      else if (!isReplaying && Array.isArray(ev.files) && (!ev.root || ev.root === filesRoot)) filesCache = ev.files;
       // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，又抢版面又难看。
       // 现在结论在正文里、产出是一排 chip，右侧只在用户本来就开着预览看这个文件时原地刷新。
       // 该做什么由 outputArrivalPlan 这个纯函数决定，前端 harness 直接验它的输入输出
@@ -2109,7 +2117,18 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     rounds: liveRound,
     outs: liveOuts,
   });
-  return { handleEvent, finish, turn, body, sid: turnSid, markPendingInterject, stats };
+  /** 回合刚挂回页面（点回这条对话、刷新后接回）：后台期间欠下的那几帧一次画完。
+   *  已经合回整块的段落 sealStream 当时就按全文画好了，这里只补还在长、又没排上帧的那一段 */
+  const flush = () => {
+    for (const el of turn.querySelectorAll(".a-text")) {
+      if (!el._dirty) continue;
+      el._dirty = false;
+      if (el._sealed || el._pend) continue; // 已定稿的不用画；已经排上帧的等那一帧自己画
+      promoteTail(el);
+      paintStream(el);
+    }
+  };
+  return { handleEvent, finish, turn, body, sid: turnSid, markPendingInterject, stats, flush };
 }
 
 // ---- 折叠条上那行「此刻在干什么」 ----------------------------------------
@@ -2641,7 +2660,7 @@ function makeSweepCard(ev) {
     try {
       const r = await fetch("/api/files/sweep", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths, since: ev.since }),
+        body: JSON.stringify({ paths, since: ev.since, task: ev.task || undefined }),
       }).then((x) => x.json());
       card.classList.remove("busy");
       card.classList.add("done");
@@ -2873,6 +2892,19 @@ const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
 let onlyResults = (() => { try { return localStorage.getItem("owb-files-only") === "1"; } catch { return false; } })();
 // 搜索词不落盘：刷新之后该看到的是全部文件，不是上次搜了一半的残影
 let fileQuery = "";
+// 「本对话 / 全部对话」：默认工作空间里每个对话各有一个成果文件夹，默认只摆本对话那一格。
+// 以前整个工作空间一锅端，几个对话一起跑，打开成果区满眼是别的对话的文件。
+// 不落盘：换一个对话就回到「本对话」（openSession / 新任务里清掉）
+let filesAllScope = false;
+/** 成果区此刻该摆哪些：{ list, scoped, outside }。scoped=true 时 list 只含本对话文件夹里的 */
+function filesInScope(all) {
+  const files = all || [];
+  const curDir = sessionDirs.get(sessionId);
+  const own = !!curDir || !!(settingsCache && settingsCache.workspace_is_default);
+  if (!own || filesAllScope) return { list: files, scoped: false, outside: 0, all: files.length };
+  const list = curDir ? files.filter((f) => String(f.name || "").startsWith(curDir + "/")) : [];
+  return { list, scoped: true, outside: files.length - list.length, all: files.length };
+}
 const FIND_MIN = 8; // 文件少的时候一眼扫得完，搜索框纯占地方
 /**
  * 这个文件算不算「交到用户手上的成果」。
@@ -2886,7 +2918,7 @@ const FIND_MIN = 8; // 文件少的时候一眼扫得完，搜索框纯占地方
  */
 function isResultFile(name) {
   const base = String(name || "").split("/").pop();
-  return isDeliverable(base) || /\.(png|jpe?g|gif|webp|svg|bmp|ico|html?)$/i.test(base);
+  return !isDebugDraft(base) && (isDeliverable(base) || /\.(png|jpe?g|gif|webp|svg|bmp|ico|html?)$/i.test(base));
 }
 // 时间段记的是**收起过的**那些，不是展开的：默认全展开，所以空集合就是正确的初始状态
 const closedBuckets = new Set();
@@ -2960,16 +2992,33 @@ function renderFileFilter() {
   const box = document.getElementById("fp-filter");
   if (!box) return;
   const segs = document.getElementById("fp-segs");
+  const scope = document.getElementById("fp-scope");
   const find = document.getElementById("fp-q");
-  const nres = filesCache.filter((f) => isResultFile(f.name)).length;
-  const showSeg = filesCache.length > 0 && nres > 0 && nres < filesCache.length;
-  const showFind = filesCache.length >= FIND_MIN || !!fileQuery; // 搜空了也得留着框，不然没法清
-  box.hidden = !showSeg && !showFind;
+  const sc = filesInScope(filesCache);
+  const pool = sc.list;
+  const nres = pool.filter((f) => isResultFile(f.name)).length;
+  const showSeg = pool.length > 0 && nres > 0 && nres < pool.length;
+  const showFind = pool.length >= FIND_MIN || !!fileQuery; // 搜空了也得留着框，不然没法清
+  // 本对话之外一个文件都没有时不摆：切了看不出差别
+  const showScope = filesAllScope || (sc.scoped && sc.outside > 0);
+  box.hidden = !showSeg && !showFind && !showScope;
   if (find) find.hidden = !showFind;
+  if (scope) {
+    scope.hidden = !showScope;
+    const mine = sessionDirs.get(sessionId);
+    const nMine = mine ? filesCache.filter((f) => String(f.name || "").startsWith(mine + "/")).length : 0;
+    scope.innerHTML = !showScope ? "" :
+      `<button class="fp-seg${filesAllScope ? "" : " on"}" data-all="0" title="只看这个对话自己文件夹里的">本对话 ${nMine}</button>` +
+      `<button class="fp-seg${filesAllScope ? " on" : ""}" data-all="1" title="整个工作空间，含别的对话的产出">全部对话 ${filesCache.length}</button>`;
+    scope.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
+      filesAllScope = b.dataset.all === "1";
+      renderFiles(filesCache);
+    }; });
+  }
   if (segs) {
     segs.hidden = !showSeg;
     segs.innerHTML = !showSeg ? "" :
-      `<button class="fp-seg${onlyResults ? "" : " on"}" data-only="0">全部 ${filesCache.length}</button>` +
+      `<button class="fp-seg${onlyResults ? "" : " on"}" data-only="0">全部 ${pool.length}</button>` +
       `<button class="fp-seg${onlyResults ? " on" : ""}" data-only="1">只看成果 ${nres}</button>`;
     segs.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
       onlyResults = b.dataset.only === "1";
@@ -2990,17 +3039,22 @@ function renderFiles(files) {
   relinkAnswers(chatCol); // 已经收尾的回答里提到、这份清单里真有的文件名，补成链接
   const el = document.getElementById("file-list");
   renderFileFilter();
+  const sc = filesInScope(filesCache);
+  const pool = sc.list;
   // 「只看成果」是个视图开关，不是删除：藏了多少条要如实写在底下，别让人以为文件没了
-  const hiddenN = onlyResults ? filesCache.filter((f) => !isResultFile(f.name)).length : 0;
-  files = onlyResults ? filesCache.filter((f) => isResultFile(f.name)) : filesCache;
+  const hiddenN = onlyResults ? pool.filter((f) => !isResultFile(f.name)).length : 0;
+  files = onlyResults ? pool.filter((f) => isResultFile(f.name)) : pool;
   const q = String(fileQuery || "").trim();
   const hits = q ? matchFiles(files, q) : files;
   if (!hits.length) {
+    const tip = (t) => `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">${t}</div>`;
     el.innerHTML = q
-      ? `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">没有名字里带「${esc(q)}」的文件${onlyResults ? "。「只看成果」开着，切回「全部」再找找" : ""}</div>`
-      : onlyResults && filesCache.length
-      ? `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">这个工作目录里还没有成果文件（${hiddenN} 个中间材料已折起）</div>`
-      : '<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">暂无成果文件</div>';
+      ? tip(`没有名字里带「${esc(q)}」的文件${onlyResults ? "。「只看成果」开着，切回「全部」再找找" : sc.scoped && sc.outside ? "。只找了本对话的，切到「全部对话」再找找" : ""}`)
+      : onlyResults && pool.length
+      ? tip(`这个${sc.scoped ? "对话" : "工作目录"}里还没有成果文件（${hiddenN} 个中间材料已折起）`)
+      : sc.scoped
+      ? tip("这个对话还没产出文件，做出来就在这里")
+      : tip("暂无成果文件");
     return;
   }
   // 搜出来的行要带上它在哪个文件夹——同名的 index.html 一个任务能有好几份
@@ -3078,6 +3132,15 @@ function renderFiles(files) {
   const demoteRoot = !!curDir && rootFiles.length > 0;
   // 根目录这堆本来按 mtime 倒序（服务端就是这么排的），成果提到前面、各档内保持最近优先
   let html = demoteRoot ? "" : rootFiles.slice().sort(resFirst()).map(f => fileRow(f, false)).join("");
+  // 只看本对话：就一个文件夹（加它自己的子文件夹），按时间分段纯属多一层。本对话那格置顶，子文件夹按名字
+  if (sc.scoped) {
+    for (const dir of Object.keys(groups).sort((x, y) => (x === curDir ? -1 : y === curDir ? 1 : x.localeCompare(y, "zh")))) {
+      const label = dir === curDir ? dir : dir.slice(curDir.length + 1);
+      html += dirHead(dir, label, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹", resCount(groups[dir]));
+      if (openDirs.has(dir)) html += groups[dir].sort(resFirst((a, b2) => a.name.localeCompare(b2.name, "zh"))).map(f => fileRow(f, true)).join("");
+    }
+    buckets.clear();
+  }
   for (const b of [...buckets.values()].sort((a, b2) => a.order - b2.order)) {
     const n = b.dirs.reduce((s, d) => s + groups[d].length, 0);
     const open = !closedBuckets.has(b.key); // 时间段默认展开，文件夹默认收着——展开的是"有哪些成果"这一层
@@ -3143,9 +3206,14 @@ fetch("/api/files").then(r => r.json()).then(f => { if (Array.isArray(f)) { rend
 
 // ================= 助理模式（IM 通道状态 + 最近消息） =================
 const WS_STATE_TXT = { connected: "已连接", connecting: "连接中…", reconnecting: "重连中…", failed: "连接失败", idle: "已断开", off: "未启动", unknown: "未知" };
+// 上一问还没回来就别再问：连接被占满时（2026-09-28，同时跑 6 个对话）每 15 秒的这一问全在浏览器里排着，
+// 一腾出连接就一齐砸到服务端，每一问都要扫一遍 IM 会话目录。10 秒没回话就当这一问作废
+let imStatusBusy = false;
 async function refreshImStatus() {
+  if (imStatusBusy) return;
+  imStatusBusy = true;
   try {
-    const s = await fetch("/im/status").then(r => r.json());
+    const s = await fetch("/im/status", { signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(10000) : undefined }).then(r => r.json());
     // 只数真在线的：飞书/QQ/微信长连接 connected，企微应用/公众号回调配置齐，企微群推送已配
     let n = 0;
     if (s.feishu.configured && s.feishu.ws.state === "connected") n++;
@@ -3156,7 +3224,7 @@ async function refreshImStatus() {
     if (s.wecom.configured) n++;
     const sub = document.getElementById("ab-sub");
     if (sub) sub.textContent = n ? `${n} 个通道在线` : "IM 远程指挥";
-  } catch {}
+  } catch {} finally { imStatusBusy = false; }
 }
 document.getElementById("ab-head").onclick = () => openAssistView();
 refreshImStatus();
@@ -3184,8 +3252,85 @@ const OFFICE_RE = /\.(doc|ppt|xls)$/i;
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
 let pvRoot = "";   // pvCurrent 那份文件所属的工作目录指纹，见 withRoot
+// 第几次 previewFile。拉内容要等网络，等回来时用户可能已经换了文件、关了面板、切到别的对话——
+// 以前等回来照样把面板亮出来、把旧内容写进去，于是在 B 对话里冒出 A 对话的网页
+let pvSeq = 0;
 // 用户自己把预览关掉的时刻。收尾时的自动预览要看它：这一趟里他亲手关过，就别再给他弹回来
 let pvClosedAt = 0;
+
+/**
+ * 预览面板链接上的版本参数：文件清单里这份文件的「mtime~大小」，清单里没有就是 "0"。
+ *
+ * 以前是 ?t=当前时间，每点开一次都是一个新地址。服务端对这类地址回 private, no-cache——
+ * 浏览器照样把整份字节存进磁盘缓存，只是下次不直接用。地址永远不重样，存了就再也用不上：
+ * 2026-09-28 实测，应用的 HTTP 缓存 340MB 里有 178MB 是 ?t= 这种一次性副本，
+ * 同一个 mp3 存了 10 份、同一张 png 存了 9 份，全是本机磁盘上本来就有的文件。
+ * 现在同一版文件永远同一个地址，缓存里只留一份；文件改了（mtime 或大小变了）地址跟着换。
+ *
+ * 故意不写成服务端认的那种「v 正好等于 mtime」：那样会被给 7 天强缓存，而清单可能比盘上慢一拍
+ * （agent 刚改完文件、files 事件还没到），7 天里都拿旧字节。带上 ~大小就永远对不上，
+ * 服务端回 no-cache，每次回去核对一次 ETag，没变是 304、不传正文，变了当场拿新的——
+ * 老服务端也是这么回的，不依赖任何新接口。（图片、音视频例外：浏览器压根不回去核对，见下面 pvFreshTag）
+ * 根对不上（清单是另一个工作目录的）一律当不知道，理由同 curStamp。
+ */
+function pvVer(name, root) {
+  if (typeof filesCache === "undefined" || !Array.isArray(filesCache)) return "0";
+  const fr = typeof filesRoot === "undefined" ? "" : String(filesRoot || "");
+  const r = String(root || "");
+  if (r && fr && r !== fr) return "0";
+  const f = filesCache.find((x) => x && x.name === name);
+  return f && (f.mtime || f.size) ? String(f.mtime || "") + "~" + String(f.size || 0) : "0";
+}
+
+/**
+ * 图片、音视频预览专用：问服务端这份文件现在是哪一版（ETag，没有就 Last-Modified），问不到返回空串。
+ *
+ * 上面「每次回去核对一次 ETag」对网页、PDF（整页导航）和文本（fetch）成立，对 <img>、<audio>、<video> 不成立：
+ * 2026-09-29 复审实测，同一个页面里再放一个同地址的 <img> / <audio>，浏览器直接用内存里那份，一个请求都不发，
+ * no-cache 管不到这一层。清单慢一拍的时候（IM、定时任务、别的程序改了文件；换过工作目录 pvVer 恒为 "0"），
+ * 重开预览看到的一直是改之前那张图、那段音频。
+ * 所以先问一句，把答案拼进地址：同一版还是同一个地址（缓存里照样只存一份），改过了地址跟着变。
+ * HEAD 是 express 给 GET 路由自带的，老服务端一样答；问不到就用原来的地址，不比以前差。
+ */
+async function pvFreshTag(url) {
+  try {
+    const r = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if (!r || !r.ok || !r.headers) return "";
+    return String(r.headers.get("etag") || r.headers.get("last-modified") || "");
+  } catch { return ""; }
+}
+
+/**
+ * 把预览面板里正在跑的东西停掉、拆掉。
+ *
+ * 面板收起只是 CSS 把宽度收成 0、visibility:hidden，里面的 iframe 一点没停：
+ * 2026-09-28 实测，关掉一个小游戏网页的预览之后，2 秒里它照样跑了 125 次 setInterval、242 帧 rAF，
+ * 跟开着的时候一模一样；声音、canvas 显存也都还占着。换对话、开新任务也是只收面板不拆内容。
+ * 所以收面板的每一条路都走 closePreview，内容当场拆掉：iframe 先指到 about:blank 再摘掉，
+ * 音视频先停再撤掉 src（光摘掉节点，解码器要等垃圾回收才放）。
+ * 再次打开照常走 previewFile，它本来就每次重建这一块。
+ */
+function unloadPreview() {
+  const body = document.getElementById("pv-body");
+  if (!body) return;
+  if (body._fitAbort) { body._fitAbort.abort(); body._fitAbort = null; }
+  body.querySelectorAll("audio,video").forEach((m) => {
+    try { m.onerror = null; m.pause(); m.removeAttribute("src"); m.load(); } catch {}
+  });
+  body.querySelectorAll("iframe").forEach((f) => {
+    try { f.src = "about:blank"; } catch {}
+    f.remove();
+  });
+  body.innerHTML = "";
+}
+
+/** 收起预览面板。byUser=true 是用户亲手点了关闭：记下时刻，收尾时的自动预览就不再弹回来 */
+function closePreview(byUser) {
+  pvPanel.classList.remove("show");
+  pvCurrent = null;
+  if (byUser) { pvRoot = ""; pvClosedAt = Date.now(); }
+  unloadPreview();
+}
 
 // 有专门看法的四类：网页/图/音/视频。其余一律先当纯文本试着打开。
 // 以前这里是一张"文本扩展名白名单"（txt|csv|json|js|cjs|css|xml|log|yml|yaml），
@@ -3775,6 +3920,11 @@ function bindPvCode(body, truncHtml) {
  *   - 页面里的图片是后到的，图一到高度就变。报尺寸那段脚本在 load 之后还会补报两次。
  */
 function fitPreviewFrame(host) {
+  // 同一块地方上一张框挂的监听当场撤掉。以前 window 上的 message 监听要等下一条消息来了、
+  // 发现框已经不在了才自己摘，ResizeObserver 要等下一次尺寸变化——等不来就一直攥着旧 iframe 和整套闭包。
+  // 收面板（closePreview）也走这个开关
+  if (host._fitAbort) host._fitAbort.abort();
+  const ac = host._fitAbort = new AbortController();
   const wrap = host.querySelector(".pv-fit");
   const fr = wrap && wrap.querySelector("iframe");
   const zoomBtn = wrap && wrap.querySelector(".pv-zoom");
@@ -3837,7 +3987,7 @@ function fitPreviewFrame(host) {
   };
 
   const onMsg = (e) => {
-    if (!fr.isConnected) { window.removeEventListener("message", onMsg); return; }
+    if (!fr.isConnected) { ac.abort(); return; }
     // 认 source 不认 origin：sandbox 页面的 origin 是 "null"，对不上任何白名单
     if (e.source !== fr.contentWindow || !e.data || e.data.__wbFit !== 1) return;
     lastReportAt = Date.now();
@@ -3860,7 +4010,7 @@ function fitPreviewFrame(host) {
     if (v && baseW && Math.abs(v - baseW) > 1 && w > cur + 1 && ++grows > 2) { layout(cur, h); return; }
     layout(w, h);
   };
-  window.addEventListener("message", onMsg);
+  window.addEventListener("message", onMsg, { signal: ac.signal });
 
   if (zoomBtn) zoomBtn.onclick = () => { real = !real; if (last) layout(last.w, last.h); };
   fr.addEventListener("load", () => {
@@ -3874,11 +4024,12 @@ function fitPreviewFrame(host) {
   // 预览栏本身可以拖宽，宽度一变就得重新算
   if (window.ResizeObserver) {
     const ro = new ResizeObserver(() => {
-      if (!fr.isConnected) return ro.disconnect();
+      if (!fr.isConnected) return ac.abort();
       if (fell) fallback();
       else if (availOf() !== laidAt) reset();
     });
     ro.observe(host);
+    ac.signal.addEventListener("abort", () => ro.disconnect(), { once: true });
   }
   reset();
 }
@@ -3900,11 +4051,14 @@ async function previewFile(name, root) {
     return;
   }
   pvCurrent = name;
+  const seq = ++pvSeq;
+  const stale = () => seq !== pvSeq || pvCurrent !== name; // 关面板 / 切对话都会把 pvCurrent 清掉
   pvRoot = String(root || ""); // 这份预览是从哪个工作目录的成果点进来的，面板里的下载/定位都跟着它
   document.getElementById("files-panel").classList.remove("show"); // 预览时收起文件列表，给聊天区留空间
   // 立刻亮预览面板再去异步拉内容：晚亮的话，自动预览的调用方同步检查时以为预览没开，
   // 会把成果文件面板弹回来，右侧双开互相盖字（用户反馈过）
   pvPanel.classList.add("show");
+  unloadPreview(); // 上一份（网页/音视频）先停掉再换，别在后台接着跑到被垃圾回收
   document.getElementById("pv-body").innerHTML = pvNotice("loader-circle", "正在打开…");
   document.getElementById("pv-name").textContent = name;
   document.getElementById("pv-dl").href = withRoot("/api/files/download/" + fpath(name), pvRoot);
@@ -3913,8 +4067,17 @@ async function previewFile(name, root) {
   // overflow 容器的旧 scrollTop；Markdown、HTML 和纯文本共用这一层，统一在这里归零。
   body.scrollTop = 0;
   body.scrollLeft = 0;
-  const url = withRoot("/api/files/view/" + fpath(name) + "?t=" + Date.now(), pvRoot);
+  // 版本参数见 pvVer：同一版文件同一个地址，缓存里只存一份
+  const ver = encodeURIComponent(pvVer(name, pvRoot));
+  const url = withRoot("/api/files/view/" + fpath(name) + "?v=" + ver, pvRoot);
   const kind = previewKind(name);
+  // 图和音视频：同地址的元素浏览器不回去核对（见 pvFreshTag），先问一句这一版，拼进地址
+  let elUrl = url;
+  if (kind === "image" || kind === "audio" || kind === "video") {
+    const tag = await pvFreshTag(url);
+    if (stale()) return;
+    if (tag) elUrl = url + "&e=" + encodeURIComponent(tag);
+  }
   // 「复制」只对图片有意义。别的类型藏起来——摆一个按下去没反应的按钮比没有这个按钮更糟
   const pvCopyBtn = document.getElementById("pv-copy");
   if (pvCopyBtn) pvCopyBtn.hidden = kind !== "image";
@@ -3936,9 +4099,21 @@ async function previewFile(name, root) {
     // fit=1 让服务端在页面尾巴挂上报尺寸的脚本（外面读不到 contentDocument 了，只能等它自己报）
     body.innerHTML = `<div class="pv-fit${kind === "svg" ? " pv-fit-mid" : ""}"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
     fitPreviewFrame(body);
+    // 页面没到之前白框一块，看着像坏了。2026-09-28 实测：6 个对话同时在跑时连接被占满，
+    // 这个框排队排了半分钟，点了没反应。load 之前先写一句「在载」，load 了就拿掉
+    const pvWrap = body.querySelector(".pv-fit");
+    const pvFr = pvWrap && pvWrap.querySelector("iframe");
+    if (pvFr) {
+      const note = document.createElement("div");
+      note.className = "pv-loading";
+      note.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#888780;font-size:13px;background:#fff;pointer-events:none";
+      note.textContent = "正在载入页面…";
+      pvWrap.appendChild(note);
+      pvFr.addEventListener("load", () => note.remove(), { once: true });
+    }
   } else if (kind === "image") {
     // title 写出来是因为这事儿不写没人知道：双击复制、Ctrl/Cmd+C 也复制
-    body.innerHTML = `<img class="pv-img" src="${url}" alt="${esc(name)}" title="双击复制这张图">`;
+    body.innerHTML = `<img class="pv-img" src="${elUrl}" alt="${esc(name)}" title="双击复制这张图">`;
     const im = body.querySelector(".pv-img");
     if (im) im.ondblclick = () => copyPreviewImage();
   } else if (kind === "audio" || kind === "video") {
@@ -3948,8 +4123,8 @@ async function previewFile(name, root) {
     // 这一屏才算有东西可看（音频本来也没有画面可给）。
     body.innerHTML = kind === "audio"
       ? `<div class="pv-audio">${ic("file-audio", "pv-audio-ico")}<div class="pv-audio-name">${esc(name)}</div>` +
-        `<audio class="pv-media" src="${url}" controls preload="metadata"></audio></div>`
-      : `<video class="pv-media" src="${url}" controls preload="metadata" playsinline></video>`;
+        `<audio class="pv-media" src="${elUrl}" controls preload="metadata"></audio></div>`
+      : `<video class="pv-media" src="${elUrl}" controls preload="metadata" playsinline></video>`;
     // 能不能解码这一关是浏览器说了算：iPhone 拍的 HEVC .mov、mkv/avi 这类容器，Chromium 多半解不了。
     // 解不了的时候它不吭声，只留一个纹丝不动的黑框——用户从黑框里只能得出「这软件不支持看视频」。
     // 所以这儿必须自己说一句实话，并把「用系统播放器打开 / 下载」这两条真出路摆出来。
@@ -3964,7 +4139,8 @@ async function previewFile(name, root) {
       bindPvFallback(body, name);
     };
   } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
-    const d = await fetch(withRoot("/api/files/preview/" + fpath(name) + "?t=" + Date.now(), pvRoot)).then(r => r.json()).catch(() => null);
+    const d = await fetch(withRoot("/api/files/preview/" + fpath(name) + "?v=" + ver, pvRoot)).then(r => r.json()).catch(() => null);
+    if (stale()) return;
     if (!d || d.error) body.innerHTML = pvFallback(d && d.error ? d.error : "读不出这个文件的内容");
     else body.innerHTML = kind === "doc" ? docHtml(d) : kind === "sheet" ? sheetHtml(d) : kind === "slides" ? slidesHtml(d) : archiveHtml(d);
     body.querySelectorAll(".ov-tab").forEach((t) => { t.onclick = () => {
@@ -3975,6 +4151,7 @@ async function previewFile(name, root) {
     body.innerHTML = pvFallback("这是二进制文件");
   } else {
     const r = await fetchTextHead(url);
+    if (stale()) return;
     if (!r) body.innerHTML = pvNotice("circle-x", "这个文件没读出来，可能刚刚被移走或删掉了");
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
     else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name), false, pvRoot)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
@@ -3998,7 +4175,7 @@ async function previewFile(name, root) {
   pvPanel.classList.add("show");
   renderDeployBar();
 }
-document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; pvRoot = ""; pvClosedAt = Date.now(); };
+document.getElementById("pv-close").onclick = () => closePreview(true);
 /**
  * 把正在预览的这张图放进系统剪贴板，好让人直接粘到微信 / Word / PPT 里。
  *
@@ -4036,7 +4213,11 @@ async function copyImageFromUrl(url) {
     if (src.type !== "image/png") {
       png = await new Promise((ok, no) => {
         const im = new Image();
+        // 这张图解码完就把 blob 地址还回去。以前从不 revoke，每复制一次，整张原图就在渲染进程里多压一份，直到窗口关掉
+        const obj = URL.createObjectURL(src);
+        const done = () => { try { URL.revokeObjectURL(obj); } catch {} };
         im.onload = () => {
+          done();
           const c = document.createElement("canvas");
           // naturalWidth 为 0 的情况有：SVG 没写 width/height、图已经被换掉。给个兜底尺寸，
           // 免得 toBlob 出来是一张 0×0 的透明图——粘过去是个看不见的东西，比报错更难查
@@ -4045,8 +4226,8 @@ async function copyImageFromUrl(url) {
           c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
           c.toBlob((b) => (b ? ok(b) : no(new Error("encode"))), "image/png");
         };
-        im.onerror = () => no(new Error("decode"));
-        im.src = URL.createObjectURL(src);
+        im.onerror = () => { done(); no(new Error("decode")); };
+        im.src = obj;
       });
     }
     await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
@@ -4094,7 +4275,7 @@ async function renderDeployBar() {
     bar.querySelector("#pv-serve").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "启动中…";
       previewSrv = await startPreview(false); // 默认只听本机，要给手机看再单独放开
-      if (!previewSrv.running) { toast("本地预览服务启动失败"); }
+      if (!previewSrv.running) { toast(previewSrv.error || "本地预览服务启动失败"); } // 服务端回了原因就照它说
       renderDeployBar();
     };
     return;
@@ -4135,10 +4316,17 @@ async function renderDeployBar() {
   };
 }
 function startPreview(lan, open) {
+  // 20 秒没回就当没起来：不掐的话按钮一直写着「启动中…」，点不了也没个说法
   return fetch("/api/preview/start", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lan: !!lan, open: open || undefined }),
-  }).then(r => r.json()).catch(() => ({ running: false }));
+    signal: AbortSignal.timeout(20000),
+  }).then(r => r.json()).catch((e) => ({
+    running: false,
+    // 只说知道的：超时是这一问 20 秒没回来（2026-09-28 那次其实根本没发出去，排在占满的连接后面），
+    // 不是「预览服务启动失败」——服务端那头压根没收到，谈不上失败
+    error: e && e.name === "TimeoutError" ? "20 秒没等到应用回话，这次没启动" : "这次没启动：" + String((e && e.message) || e).slice(0, 40),
+  }));
 }
 fetch("/api/preview/status").then(r => r.json()).then(s => { previewSrv = s; }).catch(() => {});
 
@@ -4334,7 +4522,7 @@ function renderTurnOutputs(body, changed, live, ev) {
   const bundles = bundleDirs(block, changed);   // 这一回合被整包倒进东西的目录，见下面 OUT_BUNDLE_MIN
   for (const f of changed) {
     const isHtml = /\.html?$/i.test(f.name);
-    const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
+    const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name) && !isDebugDraft(f.name);
     // 网页/图有缩略图；PPT/Word/Excel/PDF 这些要交到用户手上的成果出图标卡。
     // 以前它们只在收起的「查看所有变更」里躺着一行，做完一个 PPT，用户在对话里压根看不见它，
     // 只能自己去右侧面板翻。途中的脚手架（脚本、日志、PROGRESS.md）仍然只进清单，别把对话挡成一屏方框
@@ -4380,7 +4568,10 @@ function renderTurnOutputs(body, changed, live, ev) {
       // 「任务_0909_怎么推广我这个项目啊/PROGRESS.md」被截在中间，最该看的文件名反而没了
       const dir = f.name.slice(0, f.name.length - base.length);
       row.innerHTML = `<span class="ic">${ic(fileIcon(f.name))}</span><span class="nm">${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="bs">${esc(base)}</span></span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="${withRoot("/api/files/download/" + fpath(f.name), blkRoot)}" download title="下载">${ic("download")}</a>`;
-      row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e, blkRoot);
+      // revealBtn 在打不开本机文件夹时（多人服务器的成员、设置还没拉回来）返回空串，这里就没有按钮。
+      // 以前直接 .onclick 抛错，回放整段中断：历史只画了一半，正在跑的那一轮也没接回来
+      const rv = row.querySelector("[data-rv]");
+      if (rv) rv.onclick = (e) => revealFile(f.name, e, blkRoot);
       row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name, blkRoot); };
       // 计划/说明这类脚手架沉到底、压暗：PROGRESS.md 在长任务里每几步就重写一次，
       // 它是过程账本不是交付物，却总占着清单第一行——过程要看去上面那张里程碑卡
@@ -4449,8 +4640,14 @@ const DELIVER_RE = /\.(pdf|pptx?|docx?|xlsx?|csv|md|txt|mp4|mov|webm|m4v|zip)$/i
 const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)(\.[a-z]{2}(-[A-Za-z]{2,4})?)?\.(md|txt)$/i;
 function isDeliverable(name) {
   const base = String(name || "").split("/").pop();
-  return DELIVER_RE.test(base) && !SCAFFOLD_RE.test(base);
+  return DELIVER_RE.test(base) && !SCAFFOLD_RE.test(base) && !isDebugDraft(base);
 }
+// 调试草稿：_pose.js、check_02.png 这类模型给自己起的「用完即弃」名字，跟 sweep.js 的 DEBUG_NAME_RE 同一套。
+// 不上产出卡、面板里不算成果——2026-09-28 一个小游戏任务的成果区摆了 21 个文件，成品只有一个 html，
+// 其余是 _probe.js/_diag.js/check_02.png，用户看到的是「怎么给我一个文件夹」。
+// 不收 html：_final.html 万一就是成品，宁可多摆一张卡
+const DEBUG_NAME_RE = /^(?:_|(?:check|debug|probe|diag|tmp|temp)[_-]).+\.(?:m?js|cjs|ts|py|sh|png|jpe?g|webp|json|txt|log)$/i;
+function isDebugDraft(name) { return DEBUG_NAME_RE.test(String(name || "").split("/").pop()); }
 
 function pathDepth(n) { return String(n || "").split("/").length; }
 
@@ -4476,7 +4673,7 @@ const OUT_IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 // 带尾斜杠的目录（"a/b/c.png" → "a/b/"）：成果包的键和卡片的 data-bundle 前缀都长这样。
 // 以前它也叫 dirOf，跟路径助手里那个不带尾斜杠的同名——函数声明会提升，后写的这个把前一个整个顶掉了
 function dirWithSlash(n) { const i = String(n || "").lastIndexOf("/"); return i < 0 ? "" : String(n).slice(0, i + 1); }
-function cardWorthy(n) { return OUT_HTML_RE.test(n) || OUT_IMG_RE.test(n) || isDeliverable(n); }
+function cardWorthy(n) { return OUT_HTML_RE.test(n) || (OUT_IMG_RE.test(n) && !isDebugDraft(n)) || isDeliverable(n); }
 
 /** @returns {Map<string, number>} 目录（带尾斜杠）→ 这一回合它收了几个文件 */
 function bundleDirs(block, changed) {
@@ -4803,9 +5000,27 @@ function relinkAnswers(scope) {
   let n = 0;
   for (const turn of scope.querySelectorAll(".turn[data-out-root]")) {
     const root = turn.dataset.outRoot;
-    n += linkTurn(turn, fileLinkTargets([], listingFor(root)), root);
+    const targets = listingTargets(listingFor(root));
+    // 这张回答已经拿这份名字表试过一遍：再试每个名字也都在 _linkTried 里，结果必然是 0，整张跳过
+    if (turn._linkTargets === targets) continue;
+    n += linkTurn(turn, targets, root);
+    turn._linkTargets = targets;
   }
   return n;
+}
+/**
+ * 同一份清单只建一次名字表。以前 relinkAnswers 给每张回答各建一遍：500 个文件的清单、40 轮的对话，
+ * 一个 files 事件就是 40 次建表——2026-09-28 实测每个事件 17ms（2 轮时 5.8ms），
+ * 几个对话往同一个目录里写的时候，眼前这条对话几乎每次工具调用都来一次。
+ * 清单是整份换的（files 事件带来的是新数组，从不原地改），所以按数组本身认就够了：换了清单就重建。
+ */
+// 缓存挂在函数自己身上而不是顶层 let：函数声明会提升，页面加载途中谁先调到它都不会撞上还没初始化的变量
+function listingTargets(listing) {
+  if (!listing || !listing.length) return new Map(); // 空清单每次给个新的空表：linkTurn 见空表直接回 0，也不会被当成「试过了」
+  const m = listingTargets.memo;
+  if (m && m.listing === listing) return m.map;
+  listingTargets.memo = { listing, map: fileLinkTargets([], listing) };
+  return listingTargets.memo.map;
 }
 function linkifyOutputs(root, targets, fileRoot) {
   if (!root || !targets || !targets.size) return 0;
@@ -5002,11 +5217,9 @@ function clearFilesBadge() {
 document.getElementById("toggle-files").onclick = () => {
   const fp = document.getElementById("files-panel");
   fp.classList.toggle("show");
-  if (fp.classList.contains("show")) clearFilesBadge(); // 看过了，「没看过的新产出」就归零
+  if (fp.classList.contains("show")) { clearFilesBadge(); renderFiles(filesCache); } // 看过了，「没看过的新产出」就归零；清单按此刻这个对话重画
   // 预览和成果文件面板互斥：右侧只留一个。双开把聊天区挤没，窄窗下两个浮层还互相盖字
-  if (fp.classList.contains("show") && pvPanel.classList.contains("show")) {
-    pvPanel.classList.remove("show"); pvCurrent = null;
-  }
+  if (fp.classList.contains("show") && pvPanel.classList.contains("show")) closePreview(); // 收起就连里面的网页/音视频一起停掉
 };
 document.getElementById("fp-close").onclick = () => document.getElementById("files-panel").classList.remove("show");
 // 侧栏开关：窄窗（≤900px）走浮层抽屉 side-open，宽窗走常规折叠 side-collapsed

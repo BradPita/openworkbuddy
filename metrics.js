@@ -31,14 +31,20 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const perfHooks = require("perf_hooks");
 const { dataPath } = require("./paths");
 const log = require("./log");
 
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const DIR = path.join(DATA_DIR, "metrics");
 const STATE_FILE = path.join(DATA_DIR, "metrics-alerts.json");
-const KEEP_MONTHS = 6;
+// 三个月而不是半年：2026-09 那片 11569 行 6.1MB，一个月 23MB 上下，留半年就是 137MB 的折线图。
+// 看板只画最近那一段，告警只看当下这一行，三个月前的一分钟粒度没人会回头翻
+const KEEP_MONTHS = 3;
 const INTERVAL_MS = 60 * 1000;
+// 闲着（这一分钟什么都没发生、也没有任务在跑）的行最多十分钟落一行。
+// 实测一个月里绝大多数行是全 0：人不在电脑前，这台后台观察者照样每分钟记一行「没事」
+const IDLE_EVERY_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 30 * 60 * 1000;
 
 // ---------- 这一分钟发生了什么（进程内计数，每写一次快照清零） ----------
@@ -113,6 +119,56 @@ function auditBlocked(sinceMs) {
   } catch { return 0; }
 }
 
+/**
+ * 主线程卡了多久。
+ *
+ * 2026-09-28 实测：六条对话同时跑、整个应用一顿一顿的那天，指标里 load1 到了 14-23，
+ * 服务进程 rss 却平平的——看不出是服务端这条线程被同步活儿堵住了，还是它起的子进程在烧核，
+ * 每次都得现场 ps/top 翻。这里补上「这一分钟里主线程最多被堵了多久」：
+ *   · loop_p99_ms / loop_max_ms：定时器按 50ms 一拍打点，晚到多少就是被堵了多少（去掉了那 50ms 本身）。
+ *     50ms 而不是 20ms：实测空转时 20ms 一拍每秒吃 1.4ms CPU、50ms 一拍 0.6ms，而要抓的是
+ *     几百毫秒那种卡顿，更细的刻度用不上。
+ *   · loop_util：事件循环忙的比例。**只在纯 node 跑的服务端才有**——Electron 主进程里
+ *     eventLoopUtilization 实测恒为 0（它的循环不是 node 自己在转），记个 0 会被读成「一点都不忙」，不如不记。
+ * 只在 start() 之后才开，测试里单调 snapshot() 的不受影响。
+ */
+const LOOP_RES_MS = 50;
+let loopHist = null;
+let eluPrev = null;
+function loopArm() {
+  if (loopHist) return;
+  try { loopHist = perfHooks.monitorEventLoopDelay({ resolution: LOOP_RES_MS }); loopHist.enable(); } catch { loopHist = null; }
+  eluPrev = null;
+  if (!process.versions.electron) {
+    try { eluPrev = perfHooks.performance.eventLoopUtilization(); } catch { eluPrev = null; }
+  }
+}
+function loopDisarm() {
+  try { if (loopHist) loopHist.disable(); } catch {}
+  loopHist = null; eluPrev = null;
+}
+/** 读完就清零：每一行记的是「这一分钟」，跟上面的计数器一个口径 */
+function loopRead() {
+  const out = {};
+  if (loopHist) {
+    const n = Number(loopHist.count) || 0;
+    // 直方图里是纳秒；一拍都没打上（刚开）就不写，0 会被读成「一点没卡」
+    if (n > 0) {
+      out.loop_p99_ms = +(loopHist.percentile(99) / 1e6).toFixed(1);
+      out.loop_max_ms = +(loopHist.max / 1e6).toFixed(1);
+    }
+    loopHist.reset();
+  }
+  if (eluPrev) {
+    try {
+      const now = perfHooks.performance.eventLoopUtilization();
+      out.loop_util = +perfHooks.performance.eventLoopUtilization(now, eluPrev).utilization.toFixed(3);
+      eluPrev = now;
+    } catch {}
+  }
+  return out;
+}
+
 // ---------- 快照 ----------
 let lastAt = Date.now();
 /** 额外的「当下是多少」由调用方提供（正在跑几趟任务之类，只有 server.js 知道） */
@@ -148,6 +204,7 @@ function snapshot() {
     rss_mb: Math.round(process.memoryUsage().rss / 1048576),
     load1: +(os.loadavg()[0] || 0).toFixed(2),
     uptime_s: Math.round(process.uptime()),
+    ...loopRead(),
     ...extra,
   };
   lastAt = now;
@@ -255,6 +312,27 @@ function evaluate(row, now = Date.now()) {
   return out;
 }
 
+// ---------- 闲行合并 ----------
+// 这几格有一个不是 0，这一分钟就算「有事」。磁盘、内存、负载这类读数不算：它们每分钟都有值，
+// 拿它们判的话永远不闲。十分钟一行照样看得见它们的走势
+const ACTIVITY = ["tasks", "tasks_failed", "model_calls", "model_fail", "tokens", "credits", "http_5xx", "audit_blocked", "active_runs"];
+/** @param {Record<string, any>} row */
+function isIdle(row) {
+  return ACTIVITY.every((k) => !Number(row && row[k]));
+}
+/**
+ * 这一行要不要落盘。有事的行一行不落；闲行离上一次落盘满十分钟才落；
+ * 忙转闲的头一行照落——少了它，折线图上看到的是最后一格忙着的数一直拖到下一次有事，看不见「降回 0」。
+ * @param {Record<string, any>} row
+ * @param {{ at: number, idle: boolean }} last  上一次真落盘的时间、那一行闲不闲
+ * @param {number} now
+ */
+function shouldWrite(row, last, now) {
+  if (!isIdle(row)) return true;
+  if (!last.idle) return true;
+  return now - last.at >= IDLE_EVERY_MS;
+}
+
 // ---------- 定时跑 ----------
 let timer = null;
 /**
@@ -267,10 +345,18 @@ function start({ getConfig = () => ({}), gauges = () => ({}), notifyFn = null, i
   if (timer) return timer;
   gaugeFn = gauges;
   lastAt = Date.now();
+  loopArm();
   const push = notifyFn || ((cfg, text) => require("./notify").pushBots(cfg, text));
+  // idle:false 起步：开机头一行总要落，看板上才知道进程起来过
+  let last = { at: 0, idle: false };
   timer = setInterval(async () => {
     let row;
-    try { row = snapshot(); write(row); } catch (e) { log.warn("metrics", "滚快照出错", { err: e }); return; }
+    try {
+      row = snapshot();
+      const now = Date.now();
+      // 闲行不落盘，但告警照样每分钟判：磁盘快满这种事不等十分钟
+      if (shouldWrite(row, last, now)) { write(row); last = { at: now, idle: isIdle(row) }; }
+    } catch (e) { log.warn("metrics", "滚快照出错", { err: e }); return; }
     let alerts = [];
     try { alerts = evaluate(row); } catch (e) { log.warn("metrics", "规则判断出错", { err: e }); return; }
     if (!alerts.length) return;
@@ -286,9 +372,10 @@ function start({ getConfig = () => ({}), gauges = () => ({}), notifyFn = null, i
 }
 function stop() {
   if (timer) { clearInterval(timer); timer = null; }
+  loopDisarm();
 }
 
 module.exports = {
   bump, observe, snapshot, write, read, evaluate, start, stop,
-  _internals: { RULES, DIR, STATE_FILE, COOLDOWN_MS, KEEP_MONTHS, loadState, saveState, shards, fileOf, diskFreePct, channelStreaks, auditBlocked, pct },
+  _internals: { RULES, DIR, STATE_FILE, COOLDOWN_MS, KEEP_MONTHS, IDLE_EVERY_MS, isIdle, shouldWrite, loadState, saveState, shards, fileOf, diskFreePct, channelStreaks, auditBlocked, pct, loopArm, loopDisarm, loopRead, LOOP_RES_MS },
 };

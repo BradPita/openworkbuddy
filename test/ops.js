@@ -247,7 +247,7 @@ console.log("\n【7】指标：按月分片写读，老片自己滚掉");
   }
   metrics.write({ ts: "2026-09-03T10:00:00.000Z", tasks: 4 });
   const left = metrics._internals.shards();
-  eq(left.length, metrics._internals.KEEP_MONTHS, "只留最近 6 片");
+  eq(left.length, metrics._internals.KEEP_MONTHS, `只留最近 ${metrics._internals.KEEP_MONTHS} 片`);
   ok(!left.includes("2025-01"), "最老的那几片滚掉了", left);
   ok(left.includes("2026-09"), "当月这片当然还在");
 
@@ -456,6 +456,43 @@ console.log("\n【13】指标：每分钟那个循环真的会滚 + 会推");
   await new Promise((r) => setTimeout(r, 1400));
   metrics.stop();
   ok(true, "推送函数抛错也没把进程带走");
+
+  console.log("\n【14】指标：主线程被堵了多久（卡顿要能归因）");
+  {
+    const I = metrics._internals;
+    const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+    const s0 = metrics.snapshot();
+    ok(!("loop_p99_ms" in s0) && !("loop_max_ms" in s0) && !("loop_util" in s0), "没 start 的时候不开表，行里也没这几格（单调 snapshot 的不受影响）");
+    I.loopArm();
+    await nap(300);
+    const t = Date.now(); while (Date.now() - t < 800) {} // 故意把主线程堵 800ms，跟六条对话同跑时那种卡法一样
+    await nap(300);
+    const a = metrics.snapshot();
+    ok(a.loop_max_ms >= 600, "★主线程堵了 800ms，loop_max_ms 抓得到★", a.loop_max_ms);
+    ok(a.loop_p99_ms > 0 && a.loop_p99_ms <= a.loop_max_ms, "p99 有值、不超过 max", JSON.stringify(a));
+    ok(typeof a.loop_util === "number" && a.loop_util > 0.3 && a.loop_util <= 1, "纯 node 下记得出忙的比例（这段一大半时间在堵）", a.loop_util);
+    await nap(800);
+    const b = metrics.snapshot();
+    ok(typeof b.loop_max_ms === "number" && b.loop_max_ms < 300, "反向对照：下一段没堵，max 回落了——读完就清零，不是一直挂着上一分钟的尖峰", b.loop_max_ms);
+    ok(b.loop_util < a.loop_util, "反向对照：忙的比例也降下来了", `${b.loop_util} vs ${a.loop_util}`);
+    // Electron 主进程里 eventLoopUtilization 恒为 0，记下来会被读成「一点都不忙」
+    let faked = false;
+    try { Object.defineProperty(process.versions, "electron", { value: "43.2.0", configurable: true }); faked = process.versions.electron === "43.2.0"; } catch {}
+    if (faked) {
+      I.loopDisarm(); I.loopArm();
+      await nap(200);
+      const e = metrics.snapshot();
+      ok(!("loop_util" in e) && typeof e.loop_max_ms === "number", "★Electron 里不记 loop_util（那里恒为 0），卡顿读数照记★", JSON.stringify(e));
+      try { delete process.versions.electron; } catch {}
+    } else console.log("  - 跳过：这版 node 不让往 process.versions 上加字段");
+    I.loopDisarm();
+    await nap(100);
+    const c = metrics.snapshot();
+    ok(!("loop_max_ms" in c) && !("loop_util" in c), "stop 之后表关了，行里不再有这几格");
+    const src = fs.readFileSync(path.join(__dirname, "..", "metrics.js"), "utf8");
+    ok(/function start\([\s\S]{0,300}loopArm\(\)/.test(src) && /function stop\(\)[\s\S]{0,120}loopDisarm\(\)/.test(src), "★start 开表、stop 关表★ 服务端只调 start/stop，漏一头就是永远没数或者关不掉");
+    ok(!/function stop\(\)[\s\S]{0,120}loopDisarm\(\)/.test("function stop() {\n  if (timer) { clearInterval(timer); timer = null; }\n}"), "反向对照：没关表的 stop 会被认出来");
+  }
 
   console.log(`\n通过 ${pass}，失败 ${fail}`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}

@@ -31,7 +31,13 @@ if (E2E_OWN_HOME) {
   require("../paths").seedDataDir();
   // 放在 exit 里收：审计、记忆命中数是防抖写盘，收早了会被它们再建出来
   process.on("exit", (code) => {
-    if (code) { console.log("留着现场（数据目录）：" + E2E_OWN_HOME); return; }
+    if (code) {
+      // 红了留现场，但铺进来的 skills/ 不留：那是从仓库原样拷的（2026-09-28 实测一份 188MB），
+      // 查问题用不上，留下来红几次临时目录就堆到几个 G
+      try { require("fs").rmSync(require("path").join(E2E_OWN_HOME, "skills"), { recursive: true, force: true }); } catch {}
+      console.log("留着现场（数据目录，铺进来的 skills/ 已删）：" + E2E_OWN_HOME);
+      return;
+    }
     try { require("fs").rmSync(E2E_OWN_HOME, { recursive: true, force: true }); } catch {}
   });
 }
@@ -2511,6 +2517,25 @@ async function testLookAtImage() {
     assert.strictEqual(pickEye(V, { base_url: "https://main/v1", model: "deepseek-chat" }, false).cfg.model, "vision-model", "老配置没 caps：deepseek-chat 按名字就是不会看图");
     assert.strictEqual(mainCanSee({ model: "gpt-5", caps: [] }), false, "caps 明说了不会看图，就不许再按名字猜一个「会」出来");
     assert.strictEqual(mainCanSee({ model: "deepseek-chat", caps: ["vision"] }), true, "caps 明说了会看图，就不许按名字否掉");
+
+    // 「主模型」是这个对话此刻用的那个。全局默认是纯文本的 DeepSeek、这个对话单独选了会看图的模型时，
+    // 以前拿的是全局那条，于是明明自己会看图还被绕到单配的看图模型上
+    {
+      const { activeChannel } = require("../agent.js");
+      const cfg = { active_model: "DeepSeek", models: [
+        { name: "DeepSeek", base_url: "https://ds/v1", api_key: "k", model: "deepseek-chat" },
+        { name: "兔子", base_url: "https://or/v1", api_key: "k", model: "stealth/bunny", caps: ["tools", "vision"] },
+      ] };
+      const own = activeChannel(cfg, { provider: "兔子", model: "stealth/bunny" });
+      assert.strictEqual(own.model, "stealth/bunny", "对话自己选的模型没被当成主模型：" + own.model);
+      assert.strictEqual(pickEye(V, own, false).cfg.model, "stealth/bunny", "对话的模型会看图，还是绕去了单配的看图模型");
+      assert.strictEqual(activeChannel(cfg).model, "deepseek-chat", "没单独选模型的对话该跟全局默认");
+      assert.strictEqual(activeChannel(cfg, { provider: "已删掉的", model: "x" }).model, "deepseek-chat", "对话选的模型不在列表里了，该退回全局默认");
+      // 接线也得在：工具那层拿到的是这个对话的模型，不是全局那个
+      const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+      assert.ok(/visionFallback: activeChannel\(config, llmOverride\)/.test(src), "看图的「主模型」又变回了全局默认");
+      assert.ok(/execOpts\(\{[^}]*callId: tc\.id[^}]*llmOverride \}\)/.test(src), "agent 调工具时没把这个对话的模型传下去");
+    }
 
     // 端到端：真发出去的那一发，打的是哪条渠道
     let hits = [];
@@ -7538,6 +7563,26 @@ async function testLibraryTurnAnchor() {
  * 只删这次也算得出来的。这个性质只有从外面打才算验过：单元测试里我是直接调函数的，
  * 而真正会构造恶意路径的人是从这个 POST 打进来的。
  */
+/**
+ * 回合收尾那张「要不要清掉」卡片的接线。规则在 test/sweep.js 里测，这里只钉三件事：
+ * ① 有成果文件夹时只看这一格——几条对话同时跑，按整个工作区算会把 B 对话刚造的文件端到 A 的卡片上，
+ *    用户在 A 里点「清掉」删的是 B 手上正在用的东西；
+ * ② 调试草稿单开一道门槛（小文件攒不到 20 MB，老门槛下永远问不出来——2026-09-28 那 21 个就是这么留下的）；
+ * ③ 事件带着 task，前端点「清掉」时服务端按同一格重算，不回退成整个工作区。
+ */
+function testSweepEndOfRunScope() {
+  const srv = srcLib.src("server");
+  const a01 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
+  const m = /const sw = sweep\.plan\(getWorkspaceDir\(\), \{([^}]*)\}\)/.exec(srv);
+  assert(m, "server.js 收尾处找不到算清单的那一行");
+  assert(/task:\s*taskBaseDir/.test(m[1]), "★收尾清单没圈到本对话的成果文件夹★ 几条对话同时跑时会端出别的对话的文件：" + m[0]);
+  assert(/g\.key === "debug"/.test(srv) && /dbg >= 3/.test(srv), "调试草稿没有单独的门槛：_pose.js 这种小文件攒不到 20 MB，永远问不出来");
+  assert(/send\(\{ type: "sweep",[^}]*task: taskBaseDir/.test(srv), "sweep 事件没带 task：前端点清掉时服务端会按整个工作区重算");
+  assert(/JSON\.stringify\(\{ paths, since: ev\.since, task: ev\.task/.test(a01), "前端点「清掉」没把 task 送回去");
+  assert(/pruneTaskTmp\(path\.join\(getWorkspaceDir\(\), taskBaseDir\)\)/.test(srv), "成果文件夹的 .tmp/ 草稿区收尾没清过期的——一轮一轮只进不出");
+  console.log("✅ 收尾清理卡：只看本对话 · 调试草稿单开门槛 · task 一路带回 · 草稿区会过期 5 项通过");
+}
+
 async function testSweepApi() {
   const crypto = require("crypto");
   const http = require("http");
@@ -9645,6 +9690,7 @@ testCanvasEdgeVersion();
   await testChatShownLive();
   await testConfigExternalEdit();
   await testSweepApi();
+  testSweepEndOfRunScope();
   await testKeyGuard();
   await testDesktopPet();
   testPetSprites();

@@ -33,13 +33,14 @@
    * 清洗并作用域化一段 SVG。返回 null 表示这段根本不是 SVG。
    * 三件事：① 砍掉能跑代码/发外链的东西；② 把 <style> 限死在这张图里；③ 强制自适应宽度。
    */
-  function sanitizeSvg(code) {
+  function sanitizeSvg(code, fixedUid) {
     const holder = document.createElement("div");
     holder.innerHTML = String(code || ""); // HTML 解析器很宽容，缺闭合标签会自动补
     const svg = holder.querySelector("svg");
     if (!svg) return null;
     svg.querySelectorAll("script,foreignObject,iframe,object,embed,link,meta,audio,video,handler,animation").forEach((n) => n.remove());
-    const uid = "svgfig" + ++seq;
+    // 正文里的图由 extractSvgFigures 按内容给定 id（见 figUid）；放大看那种一次性的才走自增号
+    const uid = fixedUid || "svgfig" + ++seq;
     for (const n of [svg, ...svg.querySelectorAll("*")]) {
       for (const a of [...n.attributes]) {
         const name = a.name.toLowerCase();
@@ -72,8 +73,8 @@
    * 他以为整个 agent 卡死了。
    * 停笔之后它就是一张没画完的图：静静说一句实话，别再装作还在动。
    */
-  function svgFigureHtml(code, growing, live) {
-    const clean = sanitizeSvg(growing ? repairPartialSvg(code) : code);
+  function svgFigureHtml(code, growing, live, uid) {
+    const clean = sanitizeSvg(growing ? repairPartialSvg(code) : code, uid);
     if (!clean) return null;
     const note = !growing ? ""
       : live ? '<span class="growing">绘制中</span>'
@@ -103,6 +104,29 @@
   const SKIP = "```[\\s\\S]*?```|```[\\s\\S]*$|``[^\\n]*?``|`[^`\\n]*`";
 
   /**
+   * 正文里一张图的 id：只看这张图的源码，同一段源码永远同一个 id。
+   *
+   * 以前是全局自增（svgfig1、svgfig2…），同一段正文渲两遍 id 就不一样。流式那边定稿的判据是
+   * 「整份重渲的结果以已定稿那段为前缀」（paintStream），id 一变这条永远不成立——
+   * 2026-09-28 实测：data 里最长那条带 7 张图的回答（2 万字）从头到尾定稿 0 字，
+   * 每 100ms 把整篇连图带字推倒重建，写到 2 万字时一帧 22.8ms，越写越卡。
+   * 也不能按「第几张图」编号：四条正则是分趟替换的，围栏里的图总是先被数到，
+   * 后面新吐出一张围栏图，前面那张裸 <svg> 的编号就跟着变了。
+   * 两段一模一样的源码共用一个 id 没关系：限定作用域后的 CSS 本来就一字不差，谁吃到谁的都一样。
+   * 两个独立的 32 位散列拼起来，不同的图撞上同一个 id 的机会可以不计。只用数字，保持 svgfig<数字> 的老形状。
+   */
+  function figUid(code) {
+    const s = String(code || "");
+    let a = 5381, b = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      a = ((a << 5) + a + c) | 0;
+      b = Math.imul(b ^ c, 0x01000193);
+    }
+    return "svgfig" + (a >>> 0) + (b >>> 0);
+  }
+
+  /**
    * 把正文里的 SVG 换成占位符 \x00SVG<n>\x00，返回 { text, figs }。
    * 三种形态都认：完整 ```svg 围栏、裸 <svg>…</svg>、以及流式还没闭合的那一段。
    * 带 skip 分组的两条是为了跳过代码块和行内代码——讲解 SVG 语法的例子不该被画出来。
@@ -111,7 +135,7 @@
     const figs = [];
     const push = (code, growing) => {
       if (!hasFigureBody(code)) return null;
-      const html = svgFigureHtml(code, growing, live);
+      const html = svgFigureHtml(code, growing, live, figUid(code));
       if (!html) return null;
       figs.push(html);
       return `\n\x00SVG${figs.length - 1}\x00\n`;
@@ -163,5 +187,5 @@
     });
   }
 
-  root.SvgFig = { repairPartialSvg, scopeCss, sanitizeSvg, svgFigureHtml, extractSvgFigures, hasFigureBody, svgToPngDataUrl };
+  root.SvgFig = { repairPartialSvg, scopeCss, sanitizeSvg, svgFigureHtml, extractSvgFigures, hasFigureBody, svgToPngDataUrl, figUid };
 })(window);

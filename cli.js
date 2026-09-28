@@ -1762,6 +1762,8 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
     // workflow 面板那一行会画 ✗ 和原因，收尾再完整说一遍；这儿再印就是一件事说三遍
     if (!wfp.st) inkRaw(red(`\n出错了：${e.message}\n`));
   }
+  // 跟网页对话同一个收尾：这一轮开的标签页、没说 keep 的后台命令、`&` 甩出去的进程组一起收（tools.releaseRun）
+  try { await require("./tools").releaseRun(sessionId); } catch {}
   process.removeListener("SIGINT", onSigint);
   process.removeListener("SIGHUP", onHup);
   process.removeListener("SIGTERM", onTerm);

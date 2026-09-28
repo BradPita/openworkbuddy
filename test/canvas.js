@@ -2649,7 +2649,17 @@ app.whenReady().then(async () => {
       };
       push({ type: "text", delta: "好的，这就重新生成" });
       await 等(300); // 正文每 100ms 渲一次
-      const 直播 = (runningSessions.get(sid) && runningSessions.get(sid).ui.turn.textContent) || "";
+      // 后台回合不在页面上时只攒字不排版（app-01 appendText 那道门），挂回页面时 flush 一次画齐：
+      // 这里照「点回这条对话」那样挂上去、flush 了再读，读完放回原处
+      const 直播 = (() => {
+        const r = runningSessions.get(sid);
+        if (!r) return "";
+        const t = r.ui.turn, home = t.parentNode, next = t.nextSibling;
+        if (!t.isConnected) { document.body.appendChild(t); if (r.ui.flush) r.ui.flush(); }
+        const s = t.textContent || "";
+        if (home) home.insertBefore(t, next); else t.remove();
+        return s;
+      })();
       push({ type: "done" }); ctl.close();
       await p; await 等(100);
       const 跑完 = { 登记了: runningSessions.has(sid), 圆点: 圆点() };
