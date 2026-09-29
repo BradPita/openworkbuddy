@@ -239,7 +239,17 @@ async function thumbFileAsync(abs, w, cacheDir) {
       return out;
     }
 
-    if (!/\.png$/i.test(abs)) return null;
+    // 独立服务进程里没有 nativeImage（2026-09-29 起桌面版默认）：PNG 照样走下面的线程池，
+    // jpg / webp 线程池缩不了，问主进程要（它有 nativeImage），拿回来照样落缓存
+    if (!/\.png$/i.test(abs)) {
+      const bridge = require("./electron-bridge");
+      if (!bridge.isRemote()) return null;
+      const buf = bridge.toBuf(await bridge.call("image.thumb", { abs, w }, { timeoutMs: 10000 }));
+      if (!buf || !buf.length) return null;
+      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.writeFileSync(out, buf);
+      return out;
+    }
     const pending = inflight.get(out);
     if (pending) return await pending;                 // 同一张图同时被点了两下
     const task = enqueueShrink(abs, w, out).finally(() => inflight.delete(out));

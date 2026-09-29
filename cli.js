@@ -473,13 +473,15 @@ if (sub === "owner") {
 // 这条就是那个找法：列出来，说清每根分支合回去的命令，顺手把白跑的那些收掉。
 if (sub === "worktree") {
   const wt = require("./worktree");
-  const STORE = dataPath("data", "worktrees");
+  // 默认位置在应用仓库里时挪到家目录下（worktree.defaultStore，2026-09-29）；挪之前开在老位置的一起列
+  const LEGACY = dataPath("data", "worktrees");
+  const STORES = [...new Set([wt.defaultStore(LEGACY), LEGACY])];
   const want = String((words.filter((w) => !w.startsWith("-"))[0] || "")).trim();
-  const rows = wt.list(STORE);
+  const rows = STORES.flatMap((s) => wt.list(s));
   if (want === "清理" || want === "clean") {
     // 只收白跑的那些。有改动、有提交的一个不碰——那是还没合回去的活，删了就真没了
-    const done = wt.sweep(STORE, { alive: [], days: 0 });
-    const left = wt.list(STORE);
+    const done = STORES.flatMap((s) => wt.sweep(s, { alive: [], days: 0 }));
+    const left = STORES.flatMap((s) => wt.list(s));
     process.stdout.write(done.length ? green(`\u2713 收掉了 ${done.length} 个没产出的分身\n`) : dim("没有可收的分身（有改动的一个都不碰）。\n"));
     if (left.length) process.stderr.write(dim(`还剩 ${left.length} 个有改动的，合回去或者自己删：git worktree remove <目录>\n`));
     process.exit(0);
@@ -1537,15 +1539,16 @@ function makeAskUser(readLine, pick) {
  */
 async function runOnce(runtime, text, mode, interactive, shown) {
   const wt = require("./worktree");
-  const STORE = dataPath("data", "worktrees");
   let opened = null;
+  let STORE = "";
   try {
     const busy = cliLive.list({ prune: false })
       .filter((r) => r.live && r.cwd && r.id !== sessionId)
       .map((r) => ({ session: r.id, dir: r.cwd }));
     const p = wt.plan(getWorkspaceDir(), { session: sessionId, busy });
     if (p.need) {
-      const o = wt.open(STORE, { repo: p.repo, session: sessionId });
+      STORE = wt.defaultStore(dataPath("data", "worktrees")); // 撞上了才问：挪不挪要多问一趟 git
+      const o = wt.open(STORE, { repo: p.repo, session: sessionId, legacy: [dataPath("data", "worktrees")] });
       if (o && o.dir) opened = o;
       else if (o && o.error) process.stderr.write(dim("（分身没开成，照旧在原工作区跑：" + o.error + "）\n"));
     }

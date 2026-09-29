@@ -269,6 +269,82 @@ function fakeChild() {
     ok(rs.input_schema.properties.keep && rs.input_schema.properties.keep.type === "boolean" && /结束/.test(rs.input_schema.properties.background.description), "run_shell 有 keep 参数，background 的说明里写了会被收");
   }
 
+  console.log("\n⑨ 后台命令也记账：服务进程被直接杀掉（不走 exit 收尾），下一个进程开机认得回来收掉");
+  {
+    // 2026-09-29 复审：服务端在独立进程里，那个进程被 SIGKILL / 崩掉时 hookBgExit、reapStraysAtExit 都不跑。
+    // background:true 起的是 detached 的一组，父进程一没就挂到 1 号底下，以前只记在内存里的 bg 表上——
+    // 重启出来的进程不认得它，退出应用时扫的进程树里也没有它
+    const idOf = (r) => (/(bg\d+)/.exec(r.content) || [])[1];
+    const entryOf = (id) => [...I.strays.values()].find((e) => e.bg === id);
+    const job = (id) => CT.bgList().find((j) => j.id === id);
+    const r = I.startBackground("sleep 30", WS, { sessionId: "T9", actor: "t" }, true);
+    const id = idOf(r);
+    const j = job(id);
+    if (j && j.child && j.child.pid) spawned.add(j.child.pid);
+    ok(await until(() => !!entryOf(id), 3000), "后台命令一起来就进了账本", [...I.strays.values()]);
+    const e = entryOf(id) || {};
+    ok(e.pgid === j.child.pid && e.session === "" && e.members.some((m) => m.pid === j.child.pid && /\d{4}$/.test(m.lstart)), "记的是它自己那一组（pgid = 它的 pid）、会话记空串、成员带启动时刻", e);
+    const onDisk = () => { try { return JSON.parse(fs.readFileSync(I.strayFile(), "utf8")).strays.some((s) => s.bg === id); } catch { return false; } };
+    ok(await until(onDisk, 2000), "账本落了盘");
+    const rr = await tools.releaseRun("T9", { browser: false });
+    await wait(200);
+    ok(j.exit === undefined && entryOf(id) && !rr.strays.includes(e.pgid), "★反向对照★ keep 的这一条：这一轮收尾不收它，账也还在（会话记空串，reapStrays 认不到）", rr);
+    CT.bgKill(id, (c) => { try { process.kill(-c.pid, "SIGTERM"); } catch {} });
+    ok(await until(() => j.exit !== undefined && !entryOf(id) && !onDisk(), 3000), "shell_kill 停掉以后账销掉了、盘上也没了", { exit: j.exit, e: entryOf(id) });
+    const quick = I.startBackground("true", WS, { sessionId: "T9" }, false);
+    const qid = idOf(quick);
+    await until(() => job(qid) && job(qid).exit !== undefined, 3000);
+    await wait(400);
+    ok(!entryOf(qid), "一下就跑完的命令：不留账（ps 那一趟里它就结束了也认得出来）", [...I.strays.values()]);
+
+    // 真崩一次：另起一个 node 当「服务进程」，让它起后台命令、账落盘，然后 SIGKILL 它
+    const fake = path.join(TMP, "fake-host.js");
+    fs.writeFileSync(fake, `
+const tools = require(${JSON.stringify(path.join(ROOT, "tools"))});
+const I = tools._internals;
+(async () => {
+  const r = I.startBackground("sleep " + process.env.MK, ${JSON.stringify(WS)}, { sessionId: "crash" }, true);
+  const id = (/(bg\\d+)/.exec(r.content) || [])[1];
+  for (let i = 0; i < 100; i++) { if ([...I.strays.values()].some((e) => e.bg === id)) break; await new Promise((res) => setTimeout(res, 50)); }
+  const e = [...I.strays.values()].find((x) => x.bg === id);
+  // 反向对照那一趟：把账抹掉，就是改之前的样子（后台命令只在内存里）
+  if (process.env.DROP && e) I.strays.delete(e.pgid);
+  await I.saveStrays();
+  console.log(JSON.stringify({ pgid: e ? e.pgid : 0 }));
+  setInterval(() => {}, 1000);
+})();
+`);
+    const crash = async (drop) => {
+      const mk = String(3000 + Math.floor(Math.random() * 999));
+      const c = spawn(process.execPath, [fake], { env: { ...process.env, MK: mk, DROP: drop ? "1" : "" }, stdio: ["ignore", "pipe", "inherit"] });
+      let out = "";
+      c.stdout.on("data", (d) => { out += d; });
+      await until(() => /\{"pgid":\d+\}/.test(out), 15000);
+      const pgid = Number((/"pgid":(\d+)/.exec(out) || [])[1] || 0);
+      if (pgid) spawned.add(pgid);
+      const hostFile = path.join(path.dirname(I.strayFile()), `${c.pid}.json`);
+      const listed = (() => { try { return JSON.parse(fs.readFileSync(hostFile, "utf8")).strays.some((s) => s.pgid === pgid); } catch { return false; } })();
+      c.kill("SIGKILL");
+      await new Promise((res) => c.once("exit", res));
+      await wait(300);
+      const ppid = pgid && pidAlive(pgid) ? Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pgid)], { encoding: "utf8" }).trim()) : -1;
+      return { pgid, listed, ppid, hostFile, mk };
+    };
+
+    const bad = await crash(true);
+    ok(bad.pgid > 0 && !bad.listed && alive(bad.pgid) && bad.ppid === 1, `★反向对照★ 账上没它（改之前）：服务进程一被 SIGKILL，sleep ${bad.mk} 挂到 1 号底下接着活`, bad);
+    const kb = await tools.reapLeftoverStrays();
+    await wait(400);
+    ok(alive(bad.pgid) && !kb.some((x) => x.pgid === bad.pgid), "★反向对照★ 开机收账也收不到它（这就是那个洞）", kb);
+    try { process.kill(-bad.pgid, "SIGKILL"); } catch {}
+
+    const good = await crash(false);
+    ok(good.pgid > 0 && good.listed && alive(good.pgid) && good.ppid === 1, `账上有它：服务进程被 SIGKILL 的那一刻 sleep ${good.mk} 同样成了孤儿（exit 收尾确实没跑）`, good);
+    const kg = await tools.reapLeftoverStrays();
+    ok(await until(() => !alive(good.pgid), 3000) && kg.some((x) => x.pgid === good.pgid), "下一个进程开机收账：按账本认回来，整组送走", { kg, alive: alive(good.pgid) });
+    ok(!fs.existsSync(good.hostFile), "那份账本核过就删");
+  }
+
   // 兜底：测试起过的都收干净
   for (const g of spawned) { try { process.kill(-g, "SIGKILL"); } catch {} try { process.kill(g, "SIGKILL"); } catch {} }
   for (const j of CT.bgList()) if (j.exit === undefined && j.child && j.child.pid) { try { process.kill(-j.child.pid, "SIGKILL"); } catch {} }

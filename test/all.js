@@ -167,9 +167,11 @@ const SUITES = [
   ["web-partition", "agent 打开的网页进内存分区、静音、8 帧：外站 SW 不再往应用 profile 里攒", ELECTRON],
   ["busy-adopt", "服务端还在跑、这一页不知道的那趟：发「继续」接上它插进去，不甩 409 红字", ELECTRON],
   ["conn-pool", "同时跑 8 个对话：这一页只占一两条连接，点开别的对话、停止、预览照样秒回", ELECTRON],
+  ["chat-isolation", "几条对话一起跑：成果、预览、截图、收尾清理、后台进程和标签页各归各的", ELECTRON],
   ["confirm-dialogs", "全站确认框：撤不回来的那一步，字得翻得了、取消得真管用、清单长了框不能顶出屏幕", ELECTRON],
   ["canvas", "无限画布：反复加载和同步之后，节点、连线、选中的那一片都得还在", ELECTRON],
   ["worktree", "两条任务撞一个仓库：后来那条进分身改，你的工作区一个字不动"],
+  ["deps-guard", "任务里装依赖（npm/pnpm/yarn）：装在任务文件夹里，应用自己的 package.json 和 node_modules 一个字节不动"],
   ["memory", "运行时内存：会话缓存有上限，清掉的必须原样读得回来（四道闸门一道不漏）"],
   ["eval", "评测题库：每道题的判分在空目录上一条都不许绿（不调模型，不花钱）"],
   ["search-providers", "联网搜索八家：请求发得对不对、200 里写着错认不认得出来（不联网，不花钱）"],
@@ -182,7 +184,10 @@ const SUITES = [
   ["backup-auto", "自动备份：默认关、到点才打、只清自己打的、恢复中不打、失败留痕"],
   ["retention", "派生数据保留：.bak / 压缩归档 / 缩略图 / Codex 缓存该删的删得掉，用户的一个不碰"],
   ["live-abort", "直播请求没轮到处理就被掐：25 秒心跳和任务上的订阅不许留下"],
-  ["e2e", "端到端（含 frontend.js、admin-ui.js）", ELECTRON],
+  ["electron-bridge", "服务进程 ↔ 桌面主进程的桥：每个操作来回一趟、超时和断线写明哪个操作、三种模式判得对"],
+  ["server-supervisor", "服务进程起不来退回主进程之前，先等不要的那个真退掉：不跟它抢同一个端口"],
+  ["server-process", "服务端挪进独立进程：两种跑法都能用、主进程不再被对话卡住、崩了重启或退回、退出不留孤儿", ELECTRON],
+  ["e2e","端到端（含 frontend.js、admin-ui.js）", ELECTRON],
 ];
 
 // 这几个套件自己起临时家（单独 `node test/xxx.js` 也不碰真目录）。挂着护栏时 all.js 故意不给它们

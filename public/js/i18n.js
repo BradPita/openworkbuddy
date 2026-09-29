@@ -2794,6 +2794,45 @@
     [/^(.+) · 默认工作目录$/, "$1 · default working folder"],
     [/^(.+) · (\d+) 次 · (.+) 到期$/, "$1 · $2 uses · expires $3"],
   );
+  // ---------- 多开对话那两波（2026-09-28/29）：打开对话的等待和失败、预览页载入、成果区分格、侧栏行上的「停」 ----------
+  // 这几句大多是 textContent / toast / title 直接写的，e2e 那道覆盖率闸门只扫模板里的 >文字<，扫不到它们，
+  // 漏翻了没人报，英文界面上就冒一句中文。test/frontend.js「多开那两波的英文」逐句过一遍，别再漏
+  for (const [zh, en] of Object.entries({
+    "正在载入这段对话…": "Loading this conversation…",
+    "正在载入页面…": "Loading the page…",
+    "20 秒没等到应用回话，这次没启动": "No reply from the app in 20 s, so it didn't start",
+    "只看这个对话自己文件夹里的": "Only this conversation's own folder",
+    "整个工作空间，含别的对话的产出": "The whole workspace, including other conversations' outputs",
+    "这个对话还没产出文件，做出来就在这里": "No files from this conversation yet. They'll show up here",
+    "在 Finder 中打开这个文件夹": "Open this folder in Finder",
+    "60 秒没收到任何数据": "no data for 60 s",
+    "直播连接被关掉了": "the live connection was closed",
+    "双击复制这张图": "Double-click to copy this image",
+    "停下这个任务": "Stop this task",
+    "正在停…": "Stopping…",
+    "没连上服务端，停止的指令没送出去": "Couldn't reach the server, so the stop wasn't sent",
+    "这条任务已经不在跑了": "This task isn't running anymore",
+    "没停下来，服务端没说原因": "Didn't stop, and the server gave no reason",
+    "该会话没有正在运行的任务": "Nothing is running in this conversation",
+  })) if (!(zh in DICT.en)) DICT.en[zh] = en;
+  PATTERNS.en.push(
+    [/^等了 (\d+) 秒没等到这段对话的记录$/, "Waited $1 s and this conversation's history didn't arrive"],
+    [/^这段对话的记录没取回来：(.+)$/, "Couldn't load this conversation's history: $1"],
+    [/^这次没启动：(.+)$/, "Didn't start this time: $1"],
+    [/^本对话 (\d+)$/, "This chat $1"],
+    [/^全部对话 (\d+)$/, "All chats $1"],
+    [/^没有名字里带「(.+)」的文件。只找了本对话的，切到「全部对话」再找找$/,
+      "No file name contains “$1”. Only this chat was searched — switch to All chats and try again"],
+    [/^这个对话里还没有成果文件（(\d+) 个中间材料已折起）$/, "No result files in this chat yet ($1 working files folded)"],
+    // 断线原因是前端自己写的那两句（见 app-02 liveConnect），查得到就一起翻，查不到（浏览器给的英文原因）原样留着
+    [/^连接中断：(.+)。任务可能仍在后台运行，刷新即可接回；别点重新生成，会重复执行$/,
+      (m) => `Connection lost: ${lookup(m[1], "en") || m[1]}. The task may still be running; refresh to reattach. Don't regenerate, it would run twice`],
+    [/^停下「(.+)」$/, "Stop “$1”"],
+    [/^正在停「(.+)」$/, "Stopping “$1”"],
+    [/^已停下「(.+)」，别的任务照常跑$/, "Stopped “$1”. Other tasks keep running"],
+    // 11 轮的对话收着的正好 1 轮：「Show 1 earlier rounds」读着别扭
+    [/^显示更早的 (\d+) 轮$/, (m) => `Show ${m[1]} earlier round${m[1] === "1" ? "" : "s"}`],
+  );
   // 套餐名在句首，$ 回填不了字典，只能一档一条
   for (const [zh, en] of [["免费版", "Free"], ["团队版", "Team"], ["专业版", "Pro"], ["旗舰版", "Enterprise"]])
     PATTERNS.en.push([new RegExp("^" + zh + " · (\\d+)/(\\d+) 席 · 建于 (.+)$"), en + " · $1/$2 seats · created $3"]);

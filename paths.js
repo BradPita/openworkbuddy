@@ -26,6 +26,9 @@ const APP_DIR = __dirname;
 
 /** @returns {boolean} 是不是装机态（.dmg / .exe 装出来的那份） */
 function isPackaged() {
+  // 独立服务进程（utilityProcess，2026-09-29 起桌面版默认）里没有 electron.app，由主进程
+  // 用 OWB_PACKAGED 告诉它。放最前面：答错了装机版会拿应用包当数据根，账号、会话全对不上
+  if (/** @type {any} */ (process).type === "utility") return process.env.OWB_PACKAGED === "1";
   // ELECTRON_RUN_AS_NODE：run_node 派生出去的子进程也带 electron 版本号，但它不是应用本体
   if (!process.versions.electron || process.env.ELECTRON_RUN_AS_NODE) return false;
   try {

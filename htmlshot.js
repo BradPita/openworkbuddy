@@ -25,6 +25,13 @@ function renderHtmlToPng(htmlPath, opts = {}) {
 }
 
 async function doRender(htmlPath, { width = 1242, height = 1656, fullPage = false, waitMs = 500 } = {}) {
+  // 服务端在独立服务进程里（2026-09-29 起桌面版默认）：窗口归主进程开，这边只收 PNG
+  const bridge = require("./electron-bridge");
+  if (bridge.isRemote()) {
+    const buf = bridge.toBuf(await bridge.call("shot.html", { htmlPath: path.resolve(htmlPath), opts: { width, height, fullPage, waitMs } }, { timeoutMs: 60000 }));
+    if (!buf || buf.length < 100) throw new Error("截图结果为空，页面可能没有渲染出来");
+    return buf;
+  }
   let electron = null;
   try { electron = require("electron"); } catch {}
   const { BrowserWindow, app } = electron || {};
@@ -75,6 +82,8 @@ async function doRender(htmlPath, { width = 1242, height = 1656, fullPage = fals
 
 /** 纯 node 里 require("electron") 拿到的是可执行文件路径（一个字符串），解构出来全是 undefined */
 function electronReady() {
+  const bridge = require("./electron-bridge");
+  if (bridge.isRemote()) return !!bridge.caps().windows; // 服务进程里：主进程能开窗口就算
   try {
     const { BrowserWindow, app } = require("electron");
     return !!(BrowserWindow && app && typeof app.isReady === "function" && app.isReady());

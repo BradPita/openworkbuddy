@@ -31,7 +31,8 @@ const SERVER_NAME = "openworkbuddy";
 /** 起 bridge 用哪个 node：Electron 打包版里 process.execPath 是应用本体，得让它以 node 模式跑 */
 function nodeLauncher() {
   if (process.versions.electron) {
-    return { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+    // 服务端在独立服务进程里时 execPath 是 Helper，nodeExec 换回应用本体
+    return { command: require("../electron-bridge").nodeExec(), env: { ELECTRON_RUN_AS_NODE: "1" } };
   }
   return { command: process.execPath, env: {} };
 }

@@ -323,8 +323,12 @@ try { require("./cdp").setActivePredicate((sid) => activeRuns.has(sid) || requir
 // 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
 // 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
 const RUNNING_FILE = dataPath("data", "running.json");
-// git worktree 分身放这儿。放在用户仓库外面：放里面等于让 git 观察自己，清理时手一滑就删到人家代码上
-const WORKTREE_DIR = dataPath("data", "worktrees");
+// git worktree 分身放这儿。放在用户仓库外面：放里面等于让 git 观察自己，清理时手一滑就删到人家代码上。
+// 开发态数据根就是应用仓库，dataPath 那个默认值落在仓库里，由 worktree.defaultStore 挪出去（2026-09-29，见那里）。
+// 用到才算：要问一趟 git，别压在 require 这一步上
+const WORKTREE_LEGACY = dataPath("data", "worktrees");
+let worktreeDir = "";
+const worktreeStore = () => worktreeDir || (worktreeDir = worktree.defaultStore(WORKTREE_LEGACY));
 function persistRunning() {
   try { store.writeJsonAtomic(RUNNING_FILE, [...activeRuns.keys()]); } catch {}
 }
@@ -4025,6 +4029,17 @@ app.post("/api/evolve/rule/:id/retire", (req, res) => {
 
 // ---------- 工作空间：原生文件夹选择（桌面版）与打开文件夹 ----------
 app.post("/api/pick-folder", async (_req, res) => {
+  const bridge = require("./electron-bridge");
+  if (bridge.isRemote()) {
+    // 独立服务进程里（2026-09-29 起桌面版默认）没有 dialog：弹框归主进程，人选文件夹给足 15 分钟
+    try {
+      const result = await bridge.call("dialog.openDirectory", { title: "选择工作空间文件夹" }, { timeoutMs: 15 * 60 * 1000 });
+      if (!result || result.canceled || !result.filePaths || !result.filePaths.length) return res.json({ canceled: true });
+      return res.json({ path: result.filePaths[0] });
+    } catch (e) {
+      return res.status(502).json({ error: `没能打开文件夹选择框：${e.message}` });
+    }
+  }
   try {
     const { dialog } = require("electron");
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "选择工作空间文件夹" });
@@ -4269,6 +4284,8 @@ app.post("/api/feishu/qr/cancel", (_req, res) => {
 // ---- 缓存清理：界面缓存(Electron chromium) + 各项目 .tmp 临时脚本；不动会话记录/工作区文件/登录态 ----
 const CHROMIUM_CACHE_DIRS = ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "blob_storage", "Shared Dictionary"];
 function appUserDataDir() {
+  // 独立服务进程里没有 electron.app：主进程把 userData 放在 OWB_USER_DATA 里递过来
+  if (require("./electron-bridge").isRemote() && process.env.OWB_USER_DATA) return process.env.OWB_USER_DATA;
   if (process.versions.electron) {
     try { return require("electron").app.getPath("userData"); } catch {}
   }
@@ -4620,6 +4637,9 @@ app.post("/api/backup/restart", (req, res) => {
   // 先把响应发出去再重启，不然前端只看到断线
   setTimeout(() => {
     try {
+      // 独立服务进程里没有 app：让主进程先收掉服务进程，再整个重启
+      const bridge = require("./electron-bridge");
+      if (bridge.isRemote()) { bridge.notify("app.relaunch"); return; }
       const { app: eApp } = require("electron");
       eApp.relaunch();
       eApp.exit(0);
@@ -4728,10 +4748,15 @@ app.post("/api/cache/clear", async (_req, res) => {
   if (process.versions.electron) {
     // 桌面版走官方 API：HTTP 缓存/代码缓存/着色器缓存；Cookie 与 localStorage（登录态、主题）不动
     try {
-      const ses = require("electron").session.defaultSession;
-      await ses.clearCache();
-      try { await ses.clearCodeCaches({}); } catch {}
-      try { await ses.clearStorageData({ storages: ["shadercache", "cachestorage"] }); } catch {}
+      // 独立服务进程里没有 session：界面那份由主进程清（同样三样，同样不动 Cookie）
+      const bridge = require("./electron-bridge");
+      const ses = bridge.isRemote() ? null : require("electron").session.defaultSession;
+      if (!ses) await bridge.call("session.clearCaches", null, { timeoutMs: 30000 });
+      else {
+        await ses.clearCache();
+        try { await ses.clearCodeCaches({}); } catch {}
+        try { await ses.clearStorageData({ storages: ["shadercache", "cachestorage"] }); } catch {}
+      }
     } catch (e) { console.warn("[缓存] Electron 清理失败:", e.message); }
   }
   const ud = appUserDataDir();
@@ -5195,7 +5220,19 @@ global.__openworkbuddyPetTool = {
     if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(abs)) return { content: `「${path.basename(abs)}」看着不是图片。支持 png / jpg / webp / gif / bmp。`, isError: true };
 
     let buf, note = "";
-    try {
+    const bridge = require("./electron-bridge");
+    if (bridge.isRemote()) {
+      // 独立服务进程里（2026-09-29 起桌面版默认）没有 nativeImage：裁方、缩 320 交给主进程，口径跟下面一样
+      try {
+        const r = await bridge.call("image.petPhoto", { abs }, { timeoutMs: 15000 });
+        if (r && r.empty) return { content: `「${path.basename(abs)}」解码失败，可能是文件损坏或者根本不是图片。`, isError: true };
+        buf = bridge.toBuf(r && r.png);
+        note = String((r && r.note) || "");
+        if (!buf || !buf.length) throw new Error("编码 PNG 失败");
+      } catch (e) {
+        return { content: "处理图片失败：" + e.message, isError: true };
+      }
+    } else try {
       // 用 Electron 自带的 nativeImage 裁切缩放，不引任何图像库。GIF 只取第一帧（宠物本来就自带动效，
       // 再叠一层 GIF 动画会打架），这点必须跟用户说清楚，不能让他以为动图没生效是 bug。
       const { nativeImage } = require("electron");
@@ -5342,12 +5379,15 @@ function hostFileOf(req) {
   return String(b.src || "") === "lib" ? libPath(libRel(name)) : rootedPath(req, name); // root 提示 rootedPath 自己从 body 里取
 }
 
-app.post("/api/files/reveal", (req, res) => {
+app.post("/api/files/reveal", async (req, res) => {
   try {
     const p = hostFileOf(req); // 越界一律抛错，跟下载走同一道门
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     let revealed = false;
-    try {
+    const bridge = require("./electron-bridge");
+    // 独立服务进程里（2026-09-29 起桌面版默认）没有 shell：让主进程在访达里选中；它没回应就退回打开文件夹
+    if (bridge.isRemote()) revealed = await bridge.call("shell.showItemInFolder", { path: p }).then(() => true, () => false);
+    else try {
       const { shell } = require("electron");
       if (shell && shell.showItemInFolder) { shell.showItemInFolder(p); revealed = true; }
     } catch {}
@@ -5364,11 +5404,19 @@ app.post("/api/files/reveal", (req, res) => {
  * 两条路都不通时兜底把**绝对路径**当文字放进去，并且如实告诉前端放进去的是哪一种——
  * 「我以为复制了文件，粘出来是一行字」比直接说清楚更糟。
  */
-app.post("/api/files/copy", (req, res) => {
+app.post("/api/files/copy", async (req, res) => {
   try {
     const p = hostFileOf(req);
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
-    try {
+    const bridge = require("./electron-bridge");
+    // 独立服务进程里没有 clipboard：macOS 那段 plist 交给主进程写；主进程没回应就走下面命令行那条
+    if (bridge.isRemote() && process.platform === "darwin") {
+      const plist = '<?xml version="1.0" encoding="UTF-8"?>\n'
+        + '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        + '<plist version="1.0"><array><string>' + p.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</string></array></plist>";
+      const done = await bridge.call("clipboard.writeBuffer", { format: "NSFilenamesPboardType", data: Buffer.from(plist, "utf8") }).then(() => true, () => false);
+      if (done) return res.json({ ok: true, kind: "file", name: path.basename(p) });
+    } else if (!bridge.isRemote()) try {
       const { clipboard } = require("electron");
       // macOS 的文件剪贴板口味叫 NSFilenamesPboardType，内容是一段 plist；Windows/Linux 上
       // Electron 没给对应的写法，所以那两边照旧走命令行那条。
@@ -5838,6 +5886,9 @@ function saveErrorText(e, p) {
 }
 /** 桌面端才有系统保存框。纯 node 起的网页端返回 null，由前端退回浏览器下载 */
 function electronDialog() {
+  const bridge = require("./electron-bridge");
+  // 独立服务进程里（2026-09-29 起桌面版默认）没有 dialog：保存框由主进程开在主窗口上，人挑位置给足 15 分钟
+  if (bridge.isRemote()) return { dialog: { showSaveDialog: (_win, opts) => bridge.call("dialog.saveAs", opts, { timeoutMs: 15 * 60 * 1000 }) }, win: null };
   if (!process.versions || !process.versions.electron) return null;
   try {
     const e = require("electron");
@@ -6318,7 +6369,8 @@ app.post("/api/chat", async (req, res) => {
     runState.root = getWorkspaceDir();
     const p = await worktree.planAsync(getWorkspaceDir(), { session: sessionId, busy });
     if (p.need) {
-      const opened = worktree.open(WORKTREE_DIR, { repo: p.repo, session: sessionId });
+      // legacy：挪走之前老地方开着的那个分身，同一条对话接着用（见 worktree.open）
+      const opened = worktree.open(worktreeStore(), { repo: p.repo, session: sessionId, legacy: [WORKTREE_LEGACY] });
       if (opened && opened.dir) {
         enterWorkspace(opened.dir); // 从这行往后，这条请求里的 getWorkspaceDir() 都是分身
         wtInfo = opened;
@@ -6539,6 +6591,7 @@ app.post("/api/chat", async (req, res) => {
   if (taskBaseDir && sess.dir && !(sess.pending_uploads || []).length) {
     const full = path.join(getWorkspaceDir(), sess.dir);
     try {
+      require("./lib/deps-guard").dropLoneFence(full); // 只剩一个装依赖的围栏（没装成）也算空的，见 deps-guard.js
       if (fs.existsSync(full) ? !fs.readdirSync(full).length : true) {
         if (fs.existsSync(full)) fs.rmdirSync(full); // 非空会抛，抛了就什么都不动
         assignedDirs.delete(sess.dir);
@@ -6578,7 +6631,7 @@ app.post("/api/chat", async (req, res) => {
   // 干了活的替它提交一笔——没提交的改动是合不回来的，用户照着提示敲 git merge 会发现什么都没有
   if (wtInfo) {
     try {
-      const rel = worktree.release(WORKTREE_DIR, wtInfo.dir, { title: sess.title || "" });
+      const rel = worktree.release(worktreeStore(), wtInfo.dir, { title: sess.title || "" });
       if (rel && rel.removed) emitFn({ type: "worktree", phase: "done", empty: true, branch: wtInfo.branch, text: "这条任务在独立分身里跑，没留下改动，分身已经收掉了。" });
       else if (rel) emitFn({ type: "worktree", phase: "done", branch: rel.branch, repo: rel.repo, dir: rel.dir, touched: rel.touched, commits: rel.commits, text: worktree.hint(rel) });
     } catch (e) { log.warn("worktree", "分身收尾出错（东西还在，没丢）", { session: sessionId, err: e.message }); }
@@ -6941,7 +6994,8 @@ app.post("/api/eval/start", (req, res) => {
   const repeat = Math.max(1, Math.min(5, Math.round(+(req.body || {}).repeat) || 1));
   if (repeat > 1) args.push("--repeat", String(repeat));
   evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null;
-  const child = require("child_process").spawn(process.execPath, args, {
+  // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体
+  const child = require("child_process").spawn(require("./electron-bridge").nodeExec(), args, {
     cwd: appPath(),
     env: { ...process.env, OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
   });
@@ -7460,7 +7514,8 @@ async function main() {
   // 分身打扫：什么都没产出的收掉，放了两周没人管的只删目录留分支（提交都在 git 里，删的是磁盘不是成果）。
   // 开机扫一次就够——分身只在任务撞车时才生，不会一天冒出几百个
   try {
-    const done = worktree.sweep(WORKTREE_DIR, {});
+    // 老位置也扫一遍：挪之前开在那儿的分身（工作目录是别的仓库时那里是开得出来的）不能从此没人管
+    const done = [...new Set([worktreeStore(), WORKTREE_LEGACY])].flatMap((s) => worktree.sweep(s, {}));
     if (done.length) log.info("worktree", `收掉了 ${done.length} 个没人管的分身`, { dirs: done.map((d) => d.branch).filter(Boolean) });
   } catch (e) { log.warn("worktree", "分身打扫没做成", { err: e.message }); }
   // 派生数据的保留规则（缩略图、会话 .bak、压缩归档、Codex 引擎缓存），规则和绝不碰的东西见 retention.js。

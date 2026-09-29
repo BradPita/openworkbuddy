@@ -32,6 +32,9 @@ const ASSISTANT_MARK = "@cat";
 let assistant = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK }; // 助理的名字/头像，可在设置里改；登录后拉真值
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 let replayFeedback = null; // 回放时：turn 下标 → 之前点过的 👍👎，操作条据此把高亮亮回来
+// 往前补画更早的几轮时（showOlderTurns）为真。那几轮比屏幕上的旧，却是后画的：
+// 全界面只有一份的东西（上下文余量条、积分余额）不许被旧值盖掉，滚动条也不许被它拽到底
+let replayingOlder = false;
 // 轨迹条上的工具短名：一枚小徽章顶一行字，扫一眼就知道这轮走了哪几步
 const TOOL_SHORT = { read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", multi_edit: "改", list_files: "列", search_files: "找", find_files: "找文件", run_shell: "命令", shell_output: "后台输出", shell_kill: "停后台", todo_write: "进度", run_node: "node", web_search: "搜", fetch_url: "抓", render_page: "渲染", check_page: "查页", html_to_image: "截图", render_motion: "出片", record_web_demo: "录屏", compose_video: "成片", delivery_page: "交付页", look_at_image: "看图", generate_image: "生图", generate_video: "视频", gen_diagram: "图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记", forget: "忘", library_list: "库", library_read: "读库", library_import: "取素材", save_skill: "存技能", desktop_pet: "宠物", notify_user: "推群", schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件", explore: "探索", brand_kit_read: "品牌", brand_kit_save: "存品牌" };
 // 图标跟短名分家，各归各的表：短名要进翻译字典（英文界面得是 "Read"），图标是 sprite 里的 symbol id。
@@ -570,6 +573,9 @@ function syncScrollGuides() {
 chatScroll.addEventListener("scroll", syncScrollGuides);
 let scrollRaf = 0;
 function scrollBottom(force) {
+  // 2026-09-29 复审：往前补画时，每个旧事件都来叫一声「有新内容」。人在底下时会排一帧滚到底，
+  // 把 ⌘F 刚要滚过去的那处命中拽回来；人在上面看历史时右下角亮一个假的「有新内容」。补画的全是旧东西
+  if (replayingOlder) return;
   if (force) chatStick = true;
   if (!chatStick) {
     // 人在上面看历史，新内容到了：不拽他，但让他知道
@@ -1050,7 +1056,8 @@ document.addEventListener("selectionchange", () => {
 // ================= 回合渲染（实时流式与历史回放共用） =================
 // shown：气泡里该显示的「人说的那句」。画布发起的任务，发给模型的 userText 前面拼着一大段操作说明，
 // 气泡、复制都用 shown；重新生成、反馈仍用完整的 userText，模型那边一个字不能少
-function createTurnUI(userText, turnMode, forSid, shown) {
+// into：长对话往前补画那几轮时挂进去的盒子（app-02 showOlderTurns）。不给就照旧接在对话末尾
+function createTurnUI(userText, turnMode, forSid, shown, into) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
   const turn = document.createElement("div");
   turn.className = "turn";
@@ -1146,11 +1153,12 @@ function createTurnUI(userText, turnMode, forSid, shown) {
   // 只有"正在看的会话"的回合才上屏；后台会话的回合先游离着更新，切回来时再接上
   if (turnSid === sessionId) {
     document.getElementById("empty")?.remove();
-    chatCol.appendChild(turn);
+    (into || chatCol).appendChild(turn);
   }
   // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）。
-  // 只管眼前这条对话：后台那条开跑或刷新后接回时，chatCol 里是别的对话，撤的就是人家最后一轮的按钮
-  if (turnSid === sessionId) chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
+  // 只管眼前这条对话：后台那条开跑或刷新后接回时，chatCol 里是别的对话，撤的就是人家最后一轮的按钮。
+  // 往前补画的那几轮（into）排在最后一轮前面：只撤这一批自己的，真正的最后一轮那颗不动
+  if (turnSid === sessionId) chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b) && (!into || into.contains(b))) b.remove(); });
   const body = turn.querySelector(".body");
   turn._userText = userText;
   turn._shown = shown || "";
@@ -1694,8 +1702,9 @@ function createTurnUI(userText, turnMode, forSid, shown) {
         : `已把早前 ${ev.removed || 0} 条消息压成摘要（原文存 data/compact-archive）`;
       if (ev.failed) note.classList.add("err");
     } else if (ev.type === "context") {
-      // 后台并行会话的余量不许画到当前这条对话头上：这根条全界面就一根
-      if (turnSid === sessionId) renderCtxMeter(ev);
+      // 后台并行会话的余量不许画到当前这条对话头上：这根条全界面就一根。
+      // 往前补画的旧轮也不许：它们后画，最后一轮的余量会被第几轮的旧数盖掉（2026-09-29 复审）
+      if (turnSid === sessionId && !replayingOlder) renderCtxMeter(ev);
     } else if (ev.type === "usage") {
       // 插队会触发多轮 runTask、发多个 usage 事件 → 累加而不是覆盖
       if (!turn._usage) turn._usage = { ...ev };
@@ -1765,7 +1774,8 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       else if (card) card.classList.add("done");
     } else if (ev.type === "credits") {
       turn._credits = ev; // 结束时由操作条展示「扣 X 积分 · 余额 Y」
-      if (currentUser) { currentUser.credits = ev.balance; renderUserChip(); }
+      // 往前补画的旧轮带的是当时的余额：写回去，头像旁边的余额就退回到几轮之前（2026-09-29 复审）
+      if (currentUser && !replayingOlder) { currentUser.credits = ev.balance; renderUserChip(); }
     } else if (ev.type === "files") {
       // ev.changed 是服务端在任务开头打的快照上算出来的，历史回放也还原得出来；
       // 老版本存下来的记录里没有这个字段，退回本地 mtime 差异
@@ -2002,7 +2012,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     const sendFeedback = (verdict, note) => fetch("/api/feedback", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session: turnSid, turn: [...chatCol.querySelectorAll(".turn")].indexOf(turn),
+        session: turnSid, turn: turnOrdinal(turn),
         verdict, note: note || "",
         task: turn._userText || "",
         reply: [...body.querySelectorAll(".a-text")].map(t => t.innerText).join("\n").slice(0, 800),
@@ -2018,7 +2028,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     }).catch(() => {});
     const clearNote = () => bar.parentNode && bar.parentNode.querySelectorAll(".fb-note").forEach(n => n.remove());
     // 回放时把之前点过的 👍👎 亮回来：反馈早落库了，重开对话不该看着像没点过
-    const prior = typeof replayFeedback !== "undefined" && replayFeedback && replayFeedback.get([...chatCol.querySelectorAll(".turn")].indexOf(turn));
+    const prior = typeof replayFeedback !== "undefined" && replayFeedback && replayFeedback.get(turnOrdinal(turn));
     if (prior && (prior.verdict === "up" || prior.verdict === "down")) {
       bar.querySelector(`[data-a=${prior.verdict}]`).classList.add("on");
       if (prior.note) bar.querySelector("[data-a=down]").title = `没帮助：${prior.note}`;
@@ -2207,6 +2217,20 @@ function liveActivity(ev, narr) {
     case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : ev.retry && (ev.retry.kind == null || ev.retry.kind === "retry") ? "refresh-cw" : "loader-circle", cut(ev.text)) : keep;
     default: return keep;
   }
+}
+
+/** 长对话顶上还收着几轮没画（app-02 openSession 只先画最后 TURN_WINDOW 轮，其余挂在「显示更早的 N 轮」上） */
+function turnsHidden() {
+  const more = chatCol.querySelector(":scope > .turns-more");
+  return more && more._older ? more._older.turns.length : 0;
+}
+/**
+ * 这一轮是整段对话里的第几轮（从 0 数）。👍👎 落库、回放时亮回来、从资料库跳过来，对的都是这个号。
+ * 顶上收着没画的那几轮也得数上：只数屏幕上的话，收着 10 轮时第 15 轮会被当成第 5 轮
+ */
+function turnOrdinal(turn) {
+  const i = [...chatCol.querySelectorAll(".turn")].indexOf(turn);
+  return i < 0 ? i : i + turnsHidden();
 }
 
 // ================= 空状态（场景 tab + 分类胶囊） =================
@@ -3311,6 +3335,7 @@ async function pvFreshTag(url) {
  * 再次打开照常走 previewFile，它本来就每次重建这一块。
  */
 function unloadPreview() {
+  cancelPvUnload(); // 当场拆了，排着的那次就不用了
   const body = document.getElementById("pv-body");
   if (!body) return;
   if (body._fitAbort) { body._fitAbort.abort(); body._fitAbort = null; }
@@ -3324,12 +3349,34 @@ function unloadPreview() {
   body.innerHTML = "";
 }
 
-/** 收起预览面板。byUser=true 是用户亲手点了关闭：记下时刻，收尾时的自动预览就不再弹回来 */
-function closePreview(byUser) {
+/**
+ * 收起预览面板。byUser=true 是用户亲手点了关闭：记下时刻，收尾时的自动预览就不再弹回来。
+ *
+ * 拆内容等面板滑完再拆（transitionend，最多等 400ms）：2026-09-28 改成当场拆以后，
+ * 面板往右收的那 0.28 秒里滑走的是一块空白。声音不等：音视频当场先停，人点了关就该安静。
+ * opts.now：换对话、开新任务走这条，当场拆——上一个对话的网页一帧都不许留到下一个对话里跑。
+ */
+let pvUnloadTimer = 0, pvUnloadOff = null;
+function cancelPvUnload() {
+  clearTimeout(pvUnloadTimer);
+  pvUnloadTimer = 0;
+  if (pvUnloadOff) { pvUnloadOff(); pvUnloadOff = null; }
+}
+function closePreview(byUser, opts) {
   pvPanel.classList.remove("show");
   pvCurrent = null;
   if (byUser) { pvRoot = ""; pvClosedAt = Date.now(); }
-  unloadPreview();
+  if (opts && opts.now) { unloadPreview(); return; }
+  cancelPvUnload();
+  const body = document.getElementById("pv-body");
+  if (body) body.querySelectorAll("audio,video").forEach((m) => { try { m.pause(); } catch {} });
+  // 滑完了、而且这期间没人又点开一份（点开走 previewFile，它自己会当场拆旧的）才拆
+  const done = () => { cancelPvUnload(); if (!pvPanel.classList.contains("show")) unloadPreview(); };
+  const onEnd = (e) => { if (e.target === pvPanel && e.propertyName === "width") done(); };
+  pvPanel.addEventListener("transitionend", onEnd);
+  pvUnloadOff = () => pvPanel.removeEventListener("transitionend", onEnd);
+  // 减弱动效、面板没画出来、宽度没变（窄窗全屏那种）时 transitionend 不会来，靠这个兜底
+  pvUnloadTimer = setTimeout(done, 400);
 }
 
 // 有专门看法的四类：网页/图/音/视频。其余一律先当纯文本试着打开。

@@ -80,8 +80,13 @@ let holdCount = 0;
 let blockerId = null; // Electron powerSaveBlocker 的 id
 let caffProc = null;  // 纯 node 模式下的 caffeinate 子进程
 let warnedOnce = false;
+let remoteHeld = false; // 独立服务进程里：断言由主进程按着
 
 function acquireAssertion() {
+  // 独立服务进程里没有 powerSaveBlocker（2026-09-29 起桌面版默认），让主进程按一个；
+  // 服务进程崩了主进程那边自己松手（bridge-main.reset），不会按住不放
+  const bridge = require("./electron-bridge");
+  if (bridge.isRemote() && bridge.notify("power.hold")) { remoteHeld = true; return; }
   try {
     const electron = require("electron");
     if (electron && electron.powerSaveBlocker) {
@@ -103,6 +108,10 @@ function acquireAssertion() {
 }
 
 function releaseAssertion() {
+  if (remoteHeld) {
+    remoteHeld = false;
+    try { require("./electron-bridge").notify("power.release"); } catch {}
+  }
   if (blockerId !== null) {
     try {
       const electron = require("electron");

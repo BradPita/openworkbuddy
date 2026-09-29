@@ -23,6 +23,7 @@ const memGate = require("./memory-gate"); // 名单外那条命令跑之前先�
 const jev = require("./jev"); // 判断模型：上面那一问就是它答的
 const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
+const depsGuard = require("./lib/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
 const MEDIA = require("./src/tools/media");
@@ -1087,7 +1088,8 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
   const file = path.join(tmpDir(), `script_${Date.now()}_${Math.floor(Math.random() * 1e6)}.cjs`);
   fs.writeFileSync(file, code, "utf8");
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [file], {
+    // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体（行为和以前一样）
+    const child = spawn(require("./electron-bridge").nodeExec(), [file], {
       cwd: cwd || ws(),
       // 自成进程组，好让 killTree 能连着孙子进程一起收（脚本里再 spawn 是常事）
       detached: process.platform !== "win32",
@@ -1095,7 +1097,7 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
       // 就弹一个新的 Electron 应用实例（Dock 图标狂蹦）；加了就纯当 node 用
       // OPENWORKBUDDY_HOME：装机态下代码在只读的应用包里、数据在 ~/OpenWorkBuddy，
       // 子进程要用同一个数据根才不会各写各的
-      env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" },
+      env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", ...depsGuardEnv(cwd, code, process.env.PATH) },
       // 同 runShell：脚本里读 stdin 就当场读到结尾，别空等到超时
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1138,6 +1140,19 @@ function shellPath() {
   const extra = ["/opt/homebrew/bin", "/usr/local/bin", path.join(require("os").homedir(), ".local", "bin")];
   const cur = (process.env.PATH || "").split(path.delimiter);
   return cur.concat(extra.filter((p) => p && !cur.includes(p))).join(path.delimiter);
+}
+
+/**
+ * 装依赖的护栏（2026-09-28 真实会话里 agent 在任务文件夹的 .tmp 底下反复 npm init + npm install；
+ * 少了 init 那一步，npm 往上找项目根就找到应用自己的 package.json，来龙去脉见 lib/deps-guard.js）。
+ * run_shell / 后台命令 / run_node 起子进程之前都过一遍：立围栏、PATH 前面垫拦截脚本。
+ * 护栏自己出错不许拦住命令：退回老样子跑。depsAppDir 测试里换成临时的假应用目录
+ */
+let depsAppDir = __dirname;
+function depsGuardEnv(cwd, text, basePath) {
+  try {
+    return depsGuard.prepare({ appDir: depsAppDir, wsDir: ws(), cwd: cwd || ws(), text: String(text || ""), shimDir: dataPath("data", "pm-guard"), path: basePath }).env;
+  } catch { return {}; }
 }
 
 /** 按平台挑 shell：macOS zsh；Linux bash（没有就 sh）；Windows cmd（ComSpec） */
@@ -1210,7 +1225,7 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
       cwd: cwd || ws(),
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
-      env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
+      env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()) },
       // stdin 不给：留着一根没人写的管道，`read`、python 的 input()、npm init 这种等输入的命令
       // 会一直等到超时才回来。给 /dev/null，它当场读到结尾，要么走默认值要么报错退出
       stdio: ["ignore", "pipe", "pipe"],
@@ -2040,12 +2055,13 @@ function startBackground(cmd, cwd, opts, keep = false) {
         cwd: cwd || ws(),
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
+        env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()) },
         ...sh.opts,
       });
     },
   });
   if (r.error) return { content: r.error, isError: true };
+  trackBgGroup(r.job).catch(() => {});
   const life = r.job.keep
     ? "这一轮结束后也留着，用户不要了再 shell_kill 停掉。"
     : r.job.session ? "这一轮结束时会被收掉（要交给用户接着用，起的时候加 keep:true）。" : "";
@@ -2160,6 +2176,35 @@ function killGroup(pgid, grace = 2000) {
   if (t.unref) t.unref();
 }
 
+/**
+ * 后台命令（background:true）也记进这本账，session 记空串：reapStrays(某一轮) 永远认不到它，
+ * 这一轮收不收它照旧由 bg 那边的 keep / releaseRun 说了算，这里只管「记账的进程没了以后谁来收」。
+ *
+ * 2026-09-29 复审：服务端挪进独立进程以后，这个进程会崩、会被系统直接杀（SIGKILL / 内存爆），
+ * 这时 process.on("exit") 那两道收尾（hookBgExit、reapStraysAtExit）一道都不跑。后台命令是 detached 起的、
+ * 自成一组，父进程一没就挂到 1 号底下：重启出来的服务进程不认得它（bg 表在内存里，跟着旧进程没了），
+ * 用户退出应用时主进程扫的进程树里也没有它——一个 npm run dev 占着端口一直活到重开机。
+ * 记了账，重启出来的进程（或者退回主进程跑的那一份、下次开的应用）开机收账时按 pid + 启动时刻认回来收掉。
+ * 命令自己结束、被 shell_kill / 收尾停掉，就把账销掉，账本不越攒越长。
+ */
+async function trackBgGroup(job) {
+  const child = job && job.child;
+  const pgid = child && child.pid;
+  if (process.platform === "win32" || !(pgid > 0)) return false;
+  const drop = () => { if (strays.has(pgid) && strays.get(pgid).bg === job.id) { strays.delete(pgid); saveStrays(); } };
+  child.once("close", drop);
+  const rows = await psList();
+  // ps 这一趟里命令可能已经跑完了（close 先到）：那就不记，不然记下一个已经不存在的组
+  if (!rows || job.exit !== undefined || job.endedAt) return false;
+  const self = rows.find((r) => r.pid === process.pid);
+  if (self) hostStart = self.lstart;
+  const members = rows.filter((r) => r.pgid === pgid).map(({ pid, lstart, command: c }) => ({ pid, lstart, command: c }));
+  if (!members.length) return false;
+  strays.set(pgid, { pgid, session: "", bg: job.id, command: String(job.command || "").slice(0, 300), at: Date.now(), members });
+  saveStrays();
+  return true;
+}
+
 /** 收某一轮的散户。session 为空不动。返回真送走的那几组 */
 async function reapStrays(session) {
   const sid = String(session || "");
@@ -2212,7 +2257,12 @@ function reapStraysAtExit() {
 }
 process.on("exit", reapStraysAtExit);
 {
-  const t = setTimeout(() => { reapLeftoverStrays().catch(() => {}); }, 2000);
+  // 收到了就在日志里留一行：服务进程崩过一次、后台命令被这里收掉，事后查「我的开发服务器怎么停了」得有地方看
+  const t = setTimeout(() => {
+    reapLeftoverStrays().then((k) => {
+      if (k.length) console.log(`[收尾] 上次没收干净的后台进程组 ${k.length} 个已收掉：${k.map((e) => String(e.command || "").slice(0, 60)).join("；")}`);
+    }).catch(() => {});
+  }, 2000);
   if (t.unref) t.unref();
 }
 
@@ -2367,7 +2417,7 @@ async function selfCheck(file, rel, partial = false) {
   if ([".js", ".cjs", ".mjs"].includes(ext)) {
     // ELECTRON_RUN_AS_NODE 必须带上：桌面版里 execPath 是 Electron 二进制，不带的话每检查一个 .js
     // 就真的启动一个 Electron 实例去加载用户的文件——满屏弹 JavaScript error 弹窗，还把合法代码误判成语法错误
-    const esmCheck = (f) => execCheck(process.execPath, ["--check", f], { timeout: 15000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+    const esmCheck = (f) => execCheck(require("./electron-bridge").nodeExec(), ["--check", f], { timeout: 15000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
     // .mjs 本来就按 ESM 解析（严格模式等规则跟 CJS 不同），直接交给 node --check
     let err = ext === ".mjs" ? "" : cjsSyntaxError(src, file);
     if (ext === ".mjs") {
@@ -2583,91 +2633,12 @@ function auditHtml(src, baseDir, opts = {}) {
   return out;
 }
 
-/**
- * 隐藏窗口用完的收尾。要不要顺手退掉整个应用，只看主窗口还在不在。
- *
- * 老写法是「当前一个窗口都不剩就 app.quit()」。可我们刚刚亲手销毁了自己那个隐藏窗口，
- * 这个条件在「主窗口没开着」的任何时刻都成立——于是一个验收网页的工具会顺手把整个进程
- * 结束掉。桌面版正常开着主窗口时碰不到，但服务端跑在 Electron 里而没有主窗口的形态
- * （评测、脚本、自动化宿主）一验页面就自杀，而且是静默的：调用方只看到任务没了。
- * 真正要防的是「渲染期间用户把主窗口关了，window-all-closed 触发那会儿这个隐藏窗口还
- * 活着，于是没退成」，所以判据改成**主窗口曾经存在且已经没了**；从来就没有过主窗口 =
- * 有意的无头宿主，不许动它。
- */
-// ---- agent 打开网页用的隐藏窗口：独立的内存分区、静音、低帧率 ----
-// 2026-09-28 实测：renderPage/checkPage 原来用默认会话，跟应用界面是同一个 profile。agent 读过的
-// youtube、小红书、抖音、头条、百度文库各自装了 Service Worker、预缓存了一堆脚本，
-// Application Support/openworkbuddy/Service Worker 涨到 46M，界面自己一个都没用过，也没人会去清。
-// 改成固定名字的内存分区（不带 persist: 前缀，退出就没，不碰界面那份）。不用每次一个新名字：
-// Electron 按名字把会话留到退出，每抓一次网页就漏一个会话。最后一个窗口关掉时把 SW 和 CacheStorage
-// 清一下，内存分区在一次开好几天的应用里也不能越攒越多。
-// 静音：视频站打开就自动播，隐藏窗口里的声音会从用户音箱里冒出来。帧率压到 8：离屏窗口没人看，
-// 默认 60 帧白白烧一个核（带动画的首页尤其明显）。
-const WEB_PARTITION = "owb-web";
-const hiddenWeb = { open: 0 };
-function openHiddenWeb(electron) {
-  const win = new electron.BrowserWindow({
-    show: false,
-    width: 1440,
-    height: 1000,
-    webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true, partition: WEB_PARTITION },
-  });
-  hiddenWeb.open++;
-  try { win.webContents.setAudioMuted(true); } catch {}
-  try { win.webContents.setFrameRate(8); } catch {}
-  win.once("closed", () => {
-    hiddenWeb.open--;
-    if (hiddenWeb.open > 0) return;
-    try {
-      const p = electron.session.fromPartition(WEB_PARTITION).clearStorageData({ storages: ["serviceworkers", "cachestorage"] });
-      if (p && p.catch) p.catch(() => {});
-    } catch {}
-  });
-  return win;
-}
-
-function closeHiddenWindow(win, electron) {
-  try {
-    if (win && !win.isDestroyed()) win.destroy();
-  } catch {}
-  const main = global.__wbWin;
-  if (main && main.isDestroyed() && !electron.BrowserWindow.getAllWindows().length) electron.app.quit();
-}
-
-/**
- * 页面自己打的日志才算数。Electron 会往每一个 file:// 页面注入它自己的
- * 「Insecure Content-Security-Policy」安全警告（sourceId = node:electron/…），
- * 真实数据里 check_page 的 8 次「控制台报错」有 7 次就是它——一张完全干净的
- * 页面也照报，模型于是掉头去改一张本来没病的页面。它是开发期提示，跟交付出去
- * 的 HTML 无关，必须在这一层滤掉。
- */
-function isRuntimeNoise(sourceId, message) {
-  return (
-    /^(node:electron|devtools:|chrome-extension:)/.test(String(sourceId || "")) ||
-    /Electron Security Warning/.test(String(message || ""))
-  );
-}
-
-/**
- * console-message 有两套签名：Electron 36 起是单个事件对象（level 是
- * 'error'/'warning' 字符串），老的位置参数（level 0-3）虽然还在但已标 deprecated。
- * 两套都认——哪天上游把老参数删了，这里静默瞎掉比报错更糟：check_page 的
- * 主要价值就是抓控制台报错，抓不到却回「控制台没有报错」是假绿。
- */
-function readConsoleEvent(args) {
-  const ev = args[0] || {};
-  const level = typeof ev.level === "string" ? ev.level
-    : ["debug", "info", "warning", "error"][Number(args[1])] || "info";
-  const message = typeof ev.message === "string" ? ev.message
-    : typeof args[2] === "string" ? args[2] : "";
-  const sourceId = ev.sourceId || (typeof args[4] === "string" ? args[4] : "");
-  return { level, message, sourceId };
-}
-
-/** 控制台里 %c 是给样式用的，取出来只会让报错更难读 */
-function cleanConsoleText(msg) {
-  return String(msg).replace(/%c/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
-}
+// ---- agent 打开网页用的隐藏窗口（内存分区、静音、8 帧）：整段搬进了 web-window.js ----
+// 2026-09-29 服务端能挪进独立服务进程了，那边开不了窗口，窗口改由主进程开；主进程不能
+// require 整个 tools.js，所以开窗口的那几件事单拎成一个文件，两边共用同一份。
+const {
+  WEB_PARTITION, hiddenWeb, openHiddenWeb, isRuntimeNoise, readConsoleEvent, cleanConsoleText, probePage, readRendered,
+} = require("./web-window");
 
 /** 验收网页：静态体检 + 真浏览器打开一遍（拿控制台报错） */
 async function checkPage(file, rel) {
@@ -2676,30 +2647,21 @@ async function checkPage(file, rel) {
   const lines = [`【静态体检】${rel}（${Buffer.byteLength(src)} 字节）`];
   lines.push(issues.length ? issues.map((x) => `- [${x.level}] ${x.msg}`).join("\n") : "- 没发现结构问题");
 
+  // 服务端在独立服务进程里（2026-09-29 起桌面版默认）：窗口由主进程开，这边只收结果
+  const bridge = require("./electron-bridge");
+  const remote = bridge.isRemote();
   let electron = null;
-  try {
+  if (!remote) try {
     electron = require("electron");
   } catch {}
-  if (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady()) {
+  if (remote ? !bridge.caps().windows : (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady())) {
     lines.push("\n【浏览器实测】跳过（当前是命令行模式，没有内置浏览器）。交付前请在桌面版里再跑一次。");
     return lines.join("\n");
   }
-  const win = openHiddenWeb(electron);
-  const errs = [], warns = [];
   try {
-    // 控制台报错是白屏的头号原因，光看源码看不出来
-    win.webContents.on("console-message", (...args) => {
-      const { level, message, sourceId } = readConsoleEvent(args);
-      if (level !== "error" && level !== "warning") return;
-      if (isRuntimeNoise(sourceId, message)) return;
-      (level === "error" ? errs : warns).push(cleanConsoleText(message));
-    });
-    win.webContents.on("did-fail-load", (_e, code, desc, url) => errs.push(`资源加载失败 ${desc}（${String(url).slice(0, 80)}）`));
-    await win.loadURL("file://" + file);
-    await new Promise((r) => setTimeout(r, 1200));
-    const info = await win.webContents.executeJavaScript(
-      "({ t: document.title || '', n: (document.body ? document.body.innerText : '').trim().length, h: document.body ? document.body.scrollHeight : 0 })"
-    );
+    const { info, errs, warns } = remote
+      ? await bridge.call("page.check", { file }, { timeoutMs: 20000 })
+      : await probePage(electron, file);
     lines.push(`\n【浏览器实测】标题「${info.t}」· 可见正文 ${info.n} 字 · 页面高 ${info.h}px`);
     if (info.n < 20) lines.push("- [错] 打开后几乎没有可见内容（白屏）。多半是 JS 报错或 CSS 把内容藏了。");
     if (errs.length) lines.push(`- [错] 控制台报错 ${errs.length} 条：\n  ${errs.slice(0, 5).join("\n  ")}`);
@@ -2707,8 +2669,6 @@ async function checkPage(file, rel) {
     if (!errs.length && !warns.length) lines.push("- 控制台没有报错");
   } catch (e) {
     lines.push(`\n【浏览器实测】打开失败：${e.message}`);
-  } finally {
-    closeHiddenWindow(win, electron);
   }
   return lines.join("\n");
 }
@@ -3156,6 +3116,11 @@ function tagsToText(html) {
  * CLI 模式下没有 Electron，如实抛错让上层换路子，不要假装读到了。
  */
 async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
+  // 服务端在独立服务进程里：窗口归主进程开，超时按「最长等多久 + 开窗/关窗余量」算
+  const bridge = require("./electron-bridge");
+  if (bridge.isRemote()) {
+    return bridge.call("page.render", { url, waitMs, maxWaitMs, ua: BROWSER_UA }, { timeoutMs: maxWaitMs + waitMs + 30000 });
+  }
   let electron;
   try {
     electron = require("electron");
@@ -3165,24 +3130,7 @@ async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
   if (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady()) {
     throw new Error("内置浏览器不可用（命令行模式）");
   }
-  const win = openHiddenWeb(electron);
-  try {
-    win.webContents.setUserAgent(BROWSER_UA);
-    await win.loadURL(url);
-    let text = "";
-    const deadline = Date.now() + maxWaitMs;
-    // 首屏挂上以后正文还在异步请求，等到内容不再变长（或超时）为止
-    for (let last = -1; Date.now() < deadline; ) {
-      await new Promise((r) => setTimeout(r, waitMs));
-      text = await win.webContents.executeJavaScript("document.body ? document.body.innerText : ''");
-      if (text.length > 400 && text.length === last) break;
-      last = text.length;
-    }
-    const title = await win.webContents.executeJavaScript("document.title || ''").catch(() => "");
-    return { text: (text || "").replace(/\n{3,}/g, "\n\n").trim(), title: String(title || "").trim().slice(0, 80) };
-  } finally {
-    closeHiddenWindow(win, electron);
-  }
+  return readRendered(electron, url, { waitMs, maxWaitMs, ua: BROWSER_UA });
 }
 
 function stripTags(s) {
@@ -3653,7 +3601,7 @@ async function executeToolCore(name, input, opts = {}) {
   }
   // 文件工具统一走策略解析：workspace 内默认放行、黑名单硬拦、workspace 外仅白名单
   const baseName = fileBase === ws() ? "" : path.basename(fileBase);
-  const resolveFile = (rel) => {
+  const resolveFile = (rel, mode) => {
     // 少给 path 是模型真会犯的错（本机 96 段会话里 7 次：write_file 2 次、edit_file 5 次，
     // 多半是参数 JSON 太长被截断，或者干脆漏了这一项）。老写法把空路径解析成工作目录本身，
     // 下游抛一句 `EISDIR: illegal operation on a directory, open '/Users/…/workbuddy-clone-master'`——
@@ -3685,11 +3633,22 @@ async function executeToolCore(name, input, opts = {}) {
     if (fileBase !== ws() && !fs.existsSync(r.path)) {
       const r2 = security.resolvePathWithPolicy(sec, rel, ws());
       try {
-        if (r2.allowed && fs.statSync(r2.path).isFile()) return r2.path;
+        if (r2.allowed && fs.statSync(r2.path).isFile() && (mode !== "write" || seenHere(r2.path))) return r2.path;
       } catch {}
     }
     return r.path;
   };
+  // 写的时候不能照读的规矩兜到根下去。2026-09-29 几条对话并排跑（test/chat-isolation.js）：
+  // 工作空间根下留着一张更早的 chrome-screenshot.png、一个 index.html，每条对话 chrome_cdp 截图不给 path、
+  // write_file 写 index.html，全被兜到根下那一份上——几条对话轮流盖同一个文件，谁的成果卡点开都是最后写的那家。
+  // 只有这条对话自己读过根下那份（read_file / edit_file 登记过），才算「接着改那个旧文件」照旧写回去；
+  // 否则就是新产物，落在自己的任务文件夹里
+  const seenHere = (abs) => {
+    const m = opts.sessionId ? CT._internals.seen.get(opts.sessionId) : null;
+    return !!(m && m.has(abs));
+  };
+  /** @param {string} rel */
+  const resolveWrite = (rel) => resolveFile(rel, "write");
   // 档位是「只看不动 / 每步都问」时跑命令、跑代码也得照档办：安全闸门总开关关掉的是名单那套规则，
   // 不是用户当场选的档。原来只有写文件那几个工具传了 force，关了闸门以后 plan 档照样能 rm
   const modeGated = () => ["plan", "ask"].includes(security.permissionMode(sec));
@@ -3909,12 +3868,12 @@ async function executeToolCore(name, input, opts = {}) {
         const r = await renderDiagram({
           kind: input.kind, source: String(input.source || ""), width: input.width, height: input.height, theme: input.theme,
         });
-        const svgPath = resolveFile(rel + ".svg");
+        const svgPath = resolveWrite(rel + ".svg");
         fs.mkdirSync(path.dirname(svgPath), { recursive: true });
         fs.writeFileSync(svgPath, r.svg);
         let msg = `已生成 ${rel}.svg（${(Buffer.byteLength(r.svg) / 1024).toFixed(1)}KB）`;
         if (r.png) {
-          fs.writeFileSync(resolveFile(rel + ".png"), r.png);
+          fs.writeFileSync(resolveWrite(rel + ".png"), r.png);
           msg += `、${rel}.png（${(r.png.length / 1024).toFixed(1)}KB，插飞书/Word 用这个）`;
         }
         if (r.note) msg += `。${r.note}`;
@@ -3922,7 +3881,7 @@ async function executeToolCore(name, input, opts = {}) {
       }
       case "write_file": {
         const rel = String(input.path || "");
-        const p = resolveFile(rel);
+        const p = resolveWrite(rel);
         // 没给 content 跟没给 path 一样是真会犯的错（参数名写成 file_text/contents、或者漏了）。
         // 老写法当空串写下去，回一句「已覆盖（原 72 字节 → 现 0 字节）」算成功——文件清空了，模型还以为写好了
         if (input.content == null) return { content: `这次 write_file 没给 content，一个字节都没写。要写的内容放在 content 里；真要建空文件或清空文件就显式传 content:""。`, isError: true };
@@ -4113,7 +4072,7 @@ async function executeToolCore(name, input, opts = {}) {
         const r = await cdp.run({ ...input, owner: opts.sessionId || "" });
         if (action === "screenshot") {
           const rel = String(input.path || "chrome-screenshot.png").replace(/^[/\\]+/, "");
-          const p = resolveFile(rel);
+          const p = resolveWrite(rel);
           const blocked = await passGate(security.checkWrite(sec, rel), "写截图", rel, { force: true });
           if (blocked) return blocked;
           fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(r.data, "base64"));
@@ -4140,7 +4099,7 @@ async function executeToolCore(name, input, opts = {}) {
           return { ok: true };
         };
         return await withStop(opts, (stop) => wd.runTool(input, {
-          outRel, outAbs: resolveFile(outRel), resolveFile, checkNav, stop, deadline: opts.deadline, onProgress: opts.onProgress,
+          outRel, outAbs: resolveWrite(outRel), resolveFile, checkNav, stop, deadline: opts.deadline, onProgress: opts.onProgress,
         }));
       }
       case "remember": {
@@ -4595,4 +4554,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };
