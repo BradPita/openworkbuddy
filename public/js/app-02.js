@@ -1353,7 +1353,13 @@ function renderQueueBar() {
 function bindComposer() {
   sendBtn.onclick = () => (!cliBusy() && curBusy() && !hasDraft() ? stopTask() : send());
   inputEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && !e.shiftKey) {
+      // 输入法正处合成态（中文选词／候选），这一下回车是「确认字」不是「发送」。
+      // isComposing/229 只在合成中才真，普通输入下恒假，不影响英文直接回车发出。
+      if (e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      send();
+    }
   });
   inputEl.addEventListener("input", syncSendBtn);
 }
