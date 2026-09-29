@@ -90,19 +90,30 @@ function diskFreePct() {
     return total > 0 ? +(st.bavail * st.bsize / total).toFixed(4) : 1;
   } catch { return 1; }   // 读不出来就当没事，不能因为读不到磁盘信息就发一条假告警
 }
-/** 每条模型渠道当前连挂了几次。data/model_health.json 是 server.js 在维护的 */
-function channelStreaks() {
+/** 每条模型渠道当前连挂了几次，以及最近一次挂的原话。data/model_health.json 是 server.js 在维护的。
+ *  只算最近 24 小时里挂过的：2026-09-29 日志里「~typesafe/jev-latest 已连续失败 5 次」隔一阵就报一遍，
+ *  可那 5 次全是 9 月 22 日的，之后这条渠道再没被调过——recent 里的 0 一直留着，告警就一直回响，
+ *  看着像还在花钱调它。没人再用的渠道不算「正在挂」。没记时间的老记录照旧算（0 是「没记过」，不是「很久以前」） */
+const STREAK_FRESH_MS = 24 * 3600e3;
+function channelHealth(now = Date.now()) {
   let h = {};
-  try { h = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "model_health.json"), "utf8")) || {}; } catch { return {}; }
-  const out = {};
+  try { h = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "model_health.json"), "utf8")) || {}; } catch { return { streak: {}, last: {} }; }
+  const streak = {}, last = {};
   for (const [name, v] of Object.entries(h)) {
     const recent = Array.isArray(v && v.recent) ? v.recent : [];
-    let streak = 0;
-    for (let i = recent.length - 1; i >= 0 && !recent[i]; i--) streak++;
-    if (streak) out[name] = streak;
+    let n = 0;
+    for (let i = recent.length - 1; i >= 0 && !recent[i]; i--) n++;
+    if (!n) continue;
+    const at = Number(v.last_fail_t) || 0;
+    if (at && now - at > STREAK_FRESH_MS) continue;
+    streak[name] = n;
+    // 告警里带上原话的头一句，不替人猜是欠费还是限流——原话里写了什么就是什么
+    const said = String(v.last_fail || "").split(/\n|——/)[0].trim();
+    if (said) last[name] = said.length > 80 ? said.slice(0, 80) + "…" : said;
   }
-  return out;
+  return { streak, last };
 }
+function channelStreaks(now) { return channelHealth(now).streak; }
 /** 审计里最近这段时间拦下了几条。拦截突然变多，通常意味着有人（或某个技能）在撞墙 */
 function auditBlocked(sinceMs) {
   try {
@@ -199,7 +210,7 @@ function snapshot() {
     credits: +(c.credits || 0).toFixed(2),
     http_5xx: c.http_5xx || 0,
     audit_blocked: auditBlocked(lastAt),
-    channel_fail_streak: channelStreaks(),
+    ...(() => { const ch = channelHealth(now); return { channel_fail_streak: ch.streak, channel_fail_last: ch.last }; })(),
     disk_free_pct: diskFreePct(),
     rss_mb: Math.round(process.memoryUsage().rss / 1048576),
     load1: +(os.loadavg()[0] || 0).toFixed(2),
@@ -258,7 +269,10 @@ const RULES = [
   {
     id: (m, k) => "channel:" + k,
     each: (m) => Object.entries(m.channel_fail_streak || {}).filter(([, n]) => n >= 5).map(([k]) => k),
-    msg: (m, k) => `模型渠道「${k}」已连续失败 ${m.channel_fail_streak[k]} 次，多半是这条渠道本身不可用（欠费 / 被限流 / 网络不通）。去 设置 → 模型 换一条，或给它配个备用渠道`,
+    msg: (m, k) => {
+      const said = m.channel_fail_last && m.channel_fail_last[k];
+      return `模型渠道「${k}」已连续失败 ${m.channel_fail_streak[k]} 次${said ? `，最近一次：${said}` : ""}。去 设置 → 模型 换一条，或给它配个备用渠道`;
+    },
   },
   {
     id: () => "disk",
@@ -377,5 +391,5 @@ function stop() {
 
 module.exports = {
   bump, observe, snapshot, write, read, evaluate, start, stop,
-  _internals: { RULES, DIR, STATE_FILE, COOLDOWN_MS, KEEP_MONTHS, IDLE_EVERY_MS, isIdle, shouldWrite, loadState, saveState, shards, fileOf, diskFreePct, channelStreaks, auditBlocked, pct, loopArm, loopDisarm, loopRead, LOOP_RES_MS },
+  _internals: { RULES, DIR, STATE_FILE, COOLDOWN_MS, KEEP_MONTHS, IDLE_EVERY_MS, isIdle, shouldWrite, loadState, saveState, shards, fileOf, diskFreePct, channelStreaks, channelHealth, STREAK_FRESH_MS, auditBlocked, pct, loopArm, loopDisarm, loopRead, LOOP_RES_MS },
 };

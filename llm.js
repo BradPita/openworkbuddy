@@ -268,8 +268,8 @@ function cleanKey(raw, cfg) {
   const who = (cfg && (cfg.name || cfg.label || cfg.model)) || "未命名";
   const e = new Error(
     `渠道「${who}」的 Key 第 ${at + 1} 个字符是 ${JSON.stringify(chars[at])}，这样的 Key 发不出去：` +
-      "API Key 只会由半角的字母、数字和 - _ 这类符号组成，出现中文、全角标点、空格或换行，" +
-      "多半是从网页或聊天记录里复制时多框了一段。到 设置 → 模型 里把这条渠道的 Key 重新粘一次就好。"
+      "API Key 只会由半角的字母、数字和 - _ 这类符号组成，不会有中文、全角标点、空格或换行。" +
+      "到 设置 → 模型 里把这条渠道的 Key 重新粘一次，粘之前看一眼首尾有没有多出来的字。"
   );
   e.fatalForChannel = true;
   throw e;

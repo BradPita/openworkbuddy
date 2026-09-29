@@ -6532,7 +6532,7 @@ app.post("/api/chat", async (req, res) => {
     modelFailStreak.set(ranLLM.provider, streak);
     let emsg = e.message;
     if (streak >= 2) {
-      emsg += `\n\n模型「${ranLLM.provider}」已连续失败 ${streak} 次，多半是这个模型/渠道本身不可用：可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
+      emsg += `\n\n模型「${ranLLM.provider}」已连续失败 ${streak} 次。可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
     }
     send({ type: "error", message: emsg });
     asstEvents.push({ type: "error", message: emsg });

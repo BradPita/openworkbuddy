@@ -315,6 +315,33 @@ console.log("\n【9】告警：一条渠道正在响，不许把另一条刚挂�
   eq(metrics.evaluate({ ...base, channel_fail_streak: { C: 4 } }, t0 + 180000).filter((x) => x.level === "alert").length,
      0, "连挂 4 次够不到门槛（5 次），不报——偶发失败不该叫人");
 
+  // 2026-09-29：告警文案不替人猜原因，只附原话；好几天没再被调过的渠道不算「正在挂」
+  fs.rmSync(metrics._internals.STATE_FILE, { force: true });
+  a = metrics.evaluate({ ...base, channel_fail_streak: { D: 5 }, channel_fail_last: { D: "渠道「D」余额不足，模型不给跑了" } }, t0);
+  ok(a[0].text.includes("最近一次：渠道「D」余额不足"), "告警里带上最近一次挂的原话", a[0].text);
+  ok(!/多半|欠费 \/ 被限流/.test(a[0].text), "不再替人猜「多半是欠费/限流/网络」", a[0].text);
+  fs.rmSync(metrics._internals.STATE_FILE, { force: true });
+  a = metrics.evaluate({ ...base, channel_fail_streak: { D: 5 } }, t0);
+  ok(/已连续失败 5 次。去 设置/.test(a[0].text), "没记原话时照样说清几次、去哪换", a[0].text);
+
+  const HEALTH = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "model_health.json");
+  const nowT = Date.parse("2026-09-29T08:00:00.000Z");
+  fs.writeFileSync(HEALTH, JSON.stringify({
+    old: { recent: [1, 0, 0, 0, 0, 0], last_fail_t: nowT - 7 * 86400e3, last_fail: "LLM 接口错误 400: 旧的\n原始报错：……" },
+    fresh: { recent: [1, 0, 0, 0, 0, 0], last_fail_t: nowT - 3600e3, last_fail: "渠道「fresh」余额不足，模型不给跑了——这不是软件出错\n原始报错：……" },
+    untimed: { recent: [0, 0, 0, 0, 0] },
+    healed: { recent: [0, 0, 0, 1], last_fail_t: nowT - 60e3 },
+  }));
+  const ch = metrics._internals.channelHealth(nowT);
+  eq(ch.streak.old, undefined, "7 天前挂的、之后再没调过的渠道不算正在挂（jev 那 5 次就是这么回响了一周）");
+  eq(ch.streak.fresh, 5, "1 小时前还在挂的照报");
+  eq(ch.last.fresh, "渠道「fresh」余额不足，模型不给跑了", "原话只取头一句，后面的说明和原始报错不带");
+  eq(ch.streak.untimed, 5, "没记时间的老记录照旧算——0 是「没记过」，不是「很久以前」");
+  eq(ch.streak.healed, undefined, "最后一次成功了就不算连挂");
+  // ★反向对照★：同一条记录，站在它刚挂完 1 小时的那一刻看，是算的——证明上面剔掉它靠的是时间，不是别的
+  eq(metrics._internals.channelHealth(nowT - 7 * 86400e3 + 3600e3).streak.old, 5, "★反向对照★：同一条记录在它还新鲜时照报");
+  fs.rmSync(HEALTH, { force: true });
+
   fs.rmSync(metrics._internals.STATE_FILE, { force: true });
   a = metrics.evaluate({ ...base, channel_fail_streak: {}, disk_free_pct: 0.05 }, t0);
   eq(a.length, 1, "磁盘只剩 5%：报");
