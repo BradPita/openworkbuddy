@@ -13134,6 +13134,18 @@ app.whenReady().then(async () => {
     } finally {
       if (!win6.isDestroyed()) win6.destroy();
     }
+    // 输入框 IME 合成态回归：选词那个 Enter 不该发消息。跑 app-02.js 里 bindComposer 的真源。
+    // isComposing 是现代合成态信号；keyCode=229 是老 WebKit 兜底——两条都得认，漏一条旧浏览器就退。
+    const winIME = mkWin({ show: false, width: 400, height: 200, webPreferences: { offscreen: true } });
+    try {
+      await winIME.loadURL("data:text/html;charset=utf-8," + encodeURIComponent("<body>"));
+      const namesIME = await winIME.webContents.executeJavaScript("window.__sendCount = 0;\nwindow.send = function(){ window.__sendCount++; };\nwindow.stopTask = function(){};\nwindow.cliBusy = function(){ return false; };\nwindow.curBusy = function(){ return false; };\nwindow.hasDraft = function(){ return false; };\nwindow.syncSendBtn = function(){};\n\n(async () => {\n  const names = [];\n  const ok = (name, cond, msg) => {\n    if (!cond) throw new Error(name + \"：\" + (msg || \"断言失败\"));\n    names.push(name);\n  };\n  const inp = document.createElement(\"textarea\");\n  document.body.appendChild(inp);\n  const btn = document.createElement(\"button\");\n  document.body.appendChild(btn);\n  window.inputEl = inp;\n  window.sendBtn = btn;\nfunction bindComposer() {\n  sendBtn.onclick = () => (!cliBusy() && curBusy() && !hasDraft() ? stopTask() : send());\n  inputEl.addEventListener(\"keydown\", (e) => {\n    if (e.key === \"Enter\" && !e.shiftKey) {\n      // 输入法正处合成态（中文选词／候选），这一下回车是「确认字」不是「发送」。\n      // isComposing/229 只在合成中才真，普通输入下恒假，不影响英文直接回车发出。\n      if (e.isComposing || e.keyCode === 229) return;\n      e.preventDefault();\n      send();\n    }\n  });\n  inputEl.addEventListener(\"input\", syncSendBtn);\n}\n  bindComposer();\n  const mkEnter = (composing, keyCode) => {\n    const e = new KeyboardEvent(\"keydown\", { key: \"Enter\", cancelable: true, bubbles: true });\n    Object.defineProperty(e, \"isComposing\", { value: !!composing });\n    Object.defineProperty(e, \"keyCode\", { value: keyCode });\n    return e;\n  };\n  window.__sendCount = 0;\n  inp.dispatchEvent(mkEnter(true, 229));\n  ok(\"中文选词 Enter 未发送\", window.__sendCount === 0, \"count=\" + window.__sendCount);\n  window.__sendCount = 0;\n  inp.dispatchEvent(mkEnter(false, 13));\n  ok(\"英文 Enter 已发送\", window.__sendCount === 1, \"count=\" + window.__sendCount);\n  window.__sendCount = 0;\n  inp.dispatchEvent(mkEnter(false, 229));\n  ok(\"老 WebKit 只报 229 未发送\", window.__sendCount === 0, \"count=\" + window.__sendCount);\n  for (const n of names) console.log(\"  \\u2713 \" + n);\n  console.log(\"\\u2705 前端：主输入框 Enter 在中文选词时不误触发（isComposing / keyCode=229 两条兜底均验过）\" + names.length + \" 项通过\");\n  return names;\n})()\n", true)
+        .catch((e) => { throw new Error("[输入框 IME] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesIME) console.log("  ✓ " + n);
+      console.log(`✅ 前端：输入框 Enter 中文选词不误发（isComposing/229 双兜底）${namesIME.length} 项通过`);
+    } finally {
+      if (!winIME.isDestroyed()) winIME.destroy();
+    }
     const winSave = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await winSave.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SAVE_HTML));
