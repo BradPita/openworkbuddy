@@ -394,6 +394,27 @@ console.log("\n【8】离职回执：能整段贴进交接单");
 }
 
 // ==========================================================================
+console.log("\n【8b】交接人：动手之前查，必须是本组织在用的人");
+// ==========================================================================
+{
+  account.createMember(boss, { username: "xiaozhou", dept: "销售部" });
+  const t8 = sched.add({ name: "周的周报", cron: "0 8 * * 1", task: "周报", user: "xiaozhou", org: "default" });
+  const o8 = org.createOrg({ name: "别家公司", actor: "laoban" });
+  account._internals.register("biejia", "pw-biejia-123", { org: o8.id, role: "member", status: "active" });
+  const tryOff = (handover) => { try { lifecycle.offboard(boss, "xiaozhou", { handover, stopRuns: () => 0 }); return ""; } catch (e) { return e.message; } };
+
+  ok(/不是这个组织的成员/.test(tryOff("xiaozhouu")), "★交接人名字打错一个字：拒绝★ 不然排期交给了一个不存在的人，到点被当成负责人已删除关掉");
+  eq(U("xiaozhou").status, "active", "而且什么都没动：人还在用（查在动手之前，不是停用完才发现）");
+  eq(sched.get(t8.id).enabled, true, "排期也还开着");
+  ok(/不是这个组织的成员/.test(tryOff("biejia")), "★交接给别家公司的人：拒绝★ 不然这家的任务跑进别家的工作目录、记在别家账上");
+  eq(tryOff("biejia").replace("biejia", "某人"), tryOff("meiyouzheren").replace("meiyouzheren", "某人"), "别家的人和查无此人报同一句，不替别家确认有这个人");
+  ok(/用不了/.test(tryOff("xiaozhang")), "交接给已经停用的人：拒绝");
+  ok(/他自己/.test(tryOff("xiaozhou")), "交接给他自己：拒绝");
+  eq(tryOff("xiaoli"), "", "反向对照：交接给本组织在用的小李，照常办完");
+  eq(sched.get(t8.id).user, "xiaoli", "排期到了小李手上");
+}
+
+// ==========================================================================
 console.log("\n【9】HTTP 层：这几个口子普通成员打不开");
 // ==========================================================================
 const app = express();
