@@ -16,9 +16,18 @@
 const fs = require("fs");
 const path = require("path");
 const { parentPort } = require("worker_threads");
-const { shrinkPng } = require("./thumb-png");
+const { shrinkPng, encodeRaw } = require("./thumb-png");
 
 parentPort.on("message", (job) => {
+  // 主进程截完图送来的原始像素（htmlshot.js）：编成 PNG 原路送回，不落盘。
+  // 送回用转交（transfer）不复制：一张 2 倍屏整页的 PNG 能有几 MB，复制那一下又落回界面线程
+  if (job && job.kind === "raw") {
+    let png = null;
+    try { png = encodeRaw(job.px, job.w, job.h, job.o || {}); } catch { png = null; }
+    const whole = png && png.byteOffset === 0 && png.buffer.byteLength === png.length;
+    parentPort.postMessage({ id: job.id, ok: !!png, png }, whole ? [/** @type {ArrayBuffer} */ (png.buffer)] : []);
+    return;
+  }
   let ok = false;
   try {
     const png = shrinkPng(fs.readFileSync(job.file), job.w);

@@ -267,6 +267,38 @@ function buildSess(body = SLICE) {
     thumb.cacheHit(hitFile, NOW + 3600 * 1000);
     ok(fs.statSync(hitFile).mtimeMs === t1, "★反向对照★ 一小时后再命中：不再摸（一天最多一次，翻聊天记录不往盘上写一串元数据）");
     ok(thumb.cacheHit(path.join(dir, "nope.png"), NOW) === false, "没有这张：照实说没命中");
+
+    // 资料库封面（lib-cover.js）：同一个目录、自己一本账。一个月没用到的 .png 和 .fail 都走
+    const cdir = fresh("covers");
+    const C = (n) => path.join(cdir, n);
+    put(C("cover-" + sha(1) + ".png"), "p", 31 * DAY);
+    put(C("cover-" + sha(2) + ".fail"), "", 31 * DAY);
+    put(C("cover-" + sha(3) + ".png"), "p", 29 * DAY);
+    put(C("cover-" + sha(4) + ".fail"), "", 2 * DAY);
+    put(C("cover-" + sha(5) + ".png.123.9.part"), "p", 2 * DAY);
+    put(C("cover-photo.png"), "用户的", 400 * DAY); put(C("cover-" + sha(6) + ".jpg"), "x", 400 * DAY);
+    const cdry = await R.pruneThumbs(cdir, { now: NOW, dryRun: true });
+    ok(base(cdry.removed).join() === ["cover-" + sha(1) + ".png", "cover-" + sha(2) + ".fail", "cover-" + sha(5) + ".png.123.9.part"].sort().join(),
+      "封面：31 天的 .png、31 天的 .fail、两天的 .part 都数到", base(cdry.removed));
+    const creal = await R.pruneThumbs(cdir, { now: NOW });
+    ok(base(creal.removed).join() === base(cdry.removed).join() && !exists(C("cover-" + sha(1) + ".png")) && !exists(C("cover-" + sha(2) + ".fail")), "真删的就是那三份");
+    ok(exists(C("cover-" + sha(3) + ".png")) && exists(C("cover-" + sha(4) + ".fail")), "★反向对照★ 29 天的封面、两天的 .fail 留着");
+    ok(exists(C("cover-photo.png")) && exists(C("cover-" + sha(6) + ".jpg")), "★反向对照★ cover- 开头但名字对不上的不碰");
+    ok(R.THUMB_RE.test("cover-" + sha(1) + ".png") && R.THUMB_RE.test("cover-" + sha(1) + ".fail") && R.THUMB_RE.test(sha(1) + ".png") && !R.THUMB_RE.test("cover-" + sha(1) + ".jpg"),
+      "THUMB_RE 认普通缩略图和两种封面，别的不认");
+
+    // 超了封面自己的线：从最久没用到的那头删；普通缩略图不算进封面的账，也不被连带
+    const cdir2 = fresh("covers-cap");
+    for (let i = 0; i < 4; i++) put(path.join(cdir2, "cover-" + sha(i + 1) + ".png"), "z".repeat(1000), (4 - i) * DAY);
+    for (let i = 0; i < 3; i++) put(path.join(cdir2, sha(i + 1) + ".png"), "t".repeat(5000), (20 - i) * DAY);
+    const ccap = await R.pruneThumbs(cdir2, { now: NOW, coverMaxBytes: 2000 });
+    ok(base(ccap.removed).join() === ["cover-" + sha(1) + ".png", "cover-" + sha(2) + ".png"].sort().join(), "封面超 2000 字节：删最老的两张", base(ccap.removed));
+    ok(exists(path.join(cdir2, "cover-" + sha(3) + ".png")) && exists(path.join(cdir2, "cover-" + sha(4) + ".png")), "★反向对照★ 新的两张封面留着");
+    ok([1, 2, 3].every((i) => exists(path.join(cdir2, sha(i) + ".png"))), "★反向对照★ 更老更大的普通缩略图（15KB，在它自己 100MB 线下）一张没动");
+    const tcap = await R.pruneThumbs(cdir2, { now: NOW, maxBytes: 6000 });
+    ok(base(tcap.removed).join() === [sha(1) + ".png", sha(2) + ".png"].sort().join(), "反过来：普通缩略图超线只删普通缩略图", base(tcap.removed));
+    ok(exists(path.join(cdir2, "cover-" + sha(3) + ".png")), "★反向对照★ 封面不被普通缩略图的线连带");
+    ok(R.RULES.COVER_MAX_BYTES === 100 * 1024 * 1024 && R.RULES.COVER_MAX_AGE_MS === 30 * DAY, "封面的默认线：100MB、30 天");
   }
 
   console.log("\n【8】Codex 引擎的家：只清没人记得的旧线程、旧快照、旧缓存");

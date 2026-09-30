@@ -32,6 +32,7 @@ const ok = (cond, name, extra) => {
   console.log("  ✅ " + name);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const same = (a, b) => { try { assert.deepStrictEqual(a, b); return true; } catch { return false; } };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const until = async (fn, ms = 10000) => { const end = Date.now() + ms; while (Date.now() < end) { if (fn()) return true; await sleep(30); } return false; };
 
@@ -76,6 +77,28 @@ async function partResultErrors() {
     const { r, e } = await tryRun(bin);
     ok(!e && /最大步数/.test(r.stopped || ""), "反向对照：跑满步数还是「撞上限」，不当报错抛", e ? e.message : r);
   }
+}
+
+async function partWriteHints() {
+  console.log("\n— ⑤ 点名写的文件报上去（几条对话共用一趟扫描时靠它认主）—");
+  const claude = require(path.join(ROOT, "engines", "claude-code"));
+  const codex = require(path.join(ROOT, "engines", "codex"));
+  const tool = (name, input) => line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t-" + name, name, input }] } });
+  const bin = fakeBin("cc-write",
+    tool("Write", { file_path: "汇总.csv", content: "a" }) +
+    tool("Edit", { file_path: path.join(home, "任务_x", "报告.md"), old_string: "a", new_string: "b" }) +
+    tool("Bash", { command: "echo hi > 顺手.txt" }) +
+    tool("Read", { file_path: "别的.md" }) +
+    line({ type: "result", subtype: "success", is_error: false, result: "好了" }));
+  const got = [];
+  const r = await claude.run({ prompt: "hi", cwd: home, bin, onWrite: (p) => got.push(p) });
+  ok(r.finalText === "好了" && same(got, [path.join(home, "汇总.csv"), path.join(home, "任务_x", "报告.md")]),
+    "claude：Write / Edit 点名的文件按工作目录解析成绝对路径报上来，Bash、Read 不算", got);
+  const none = await claude.run({ prompt: "hi", cwd: home, bin });
+  ok(none.finalText === "好了", "不传 onWrite 照常跑（不是每个调用方都要）");
+  ok(same(codex.changedPaths({ type: "file_change", changes: [{ path: "a.md", kind: "add" }, { path: "/abs/b.md" }, {}] }, home), [path.join(home, "a.md"), "/abs/b.md"]),
+    "codex：file_change 里改的文件按工作目录解析，缺路径的跳过");
+  ok(same(codex.changedPaths({ type: "command_execution", command: "touch c.md" }, home), []), "codex：跑命令这种不算点名写");
 }
 
 async function partKill() {
@@ -246,6 +269,7 @@ async function partStaleResume() {
 (async () => {
   try {
     await partResultErrors();
+    await partWriteHints();
     await partKill();
     partTempDirs();
     await partStaleResume();

@@ -183,4 +183,97 @@ function shrinkPng(buf, w) {
   return Buffer.concat([SIG, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0))]);
 }
 
-module.exports = { shrinkPng, pngInfo, crc32 };
+/**
+ * 截图的原始像素（NativeImage.toBitmap() 那份）编成 PNG。htmlshot.js 截完交给缩图线程做，不在界面线程上。
+ *
+ * 2026-09-29 量过：1242×1656 的截图（2 倍屏就是 2484×3312）在界面线程上 toPNG 同步 285–291ms，
+ * 整页拉到 6000 高的 611ms——这期间窗口拖不动，五个对话的字一起停住。toBitmap 只是拷一份，同一张 3–4ms。
+ *
+ * 无损：像素一个不改。全不透明就写 RGB（截图几乎都是），每行按 libpng 的老办法挑滤波器（五种里绝对值和最小的）。
+ * @param {Uint8Array} px 每像素 4 字节
+ * @param {number} w @param {number} h
+ * @param {{order?: string, premul?: boolean, level?: number, filter?: number}} [o]
+ *   order：四个字节依次是哪个通道，缺省 "bgra"（跟 motion-clock 喂 ffmpeg 的那份一样）；
+ *   premul：颜色已经乘过透明度（Skia 的位图是这样），半透明处要除回来；filter：测试用，钉死一种滤波器
+ * @returns {Buffer|null}
+ */
+function encodeRaw(px, w, h, o = {}) {
+  const order = String(o.order || "bgra");
+  const R = order.indexOf("r"), G = order.indexOf("g"), B = order.indexOf("b"), A = order.indexOf("a");
+  if (order.length !== 4 || R < 0 || G < 0 || B < 0 || A < 0) return null;
+  if (!(Number.isInteger(w) && Number.isInteger(h) && w > 0 && h > 0) || w * h > MAX_PIXELS) return null;
+  if (!px || px.length !== w * h * 4) return null;
+  let opaque = true;
+  for (let i = A; i < px.length; i += 4) if (px[i] !== 255) { opaque = false; break; }
+  const ch = opaque ? 3 : 4, stride = w * ch, premul = !!o.premul;
+  const out = Buffer.allocUnsafe(h * (stride + 1));
+  let prev = Buffer.alloc(stride), cur = Buffer.alloc(stride);
+  const fixed = o.filter == null ? -1 : Number(o.filter);
+  for (let y = 0, s = 0, q = 0; y < h; y++) {
+    let k = 0;
+    if (opaque) {
+      for (let x = 0; x < w; x++, s += 4) { cur[k++] = px[s + R]; cur[k++] = px[s + G]; cur[k++] = px[s + B]; }
+    } else {
+      for (let x = 0; x < w; x++, s += 4) {
+        const a = px[s + A];
+        let r = px[s + R], g = px[s + G], b = px[s + B];
+        if (premul && a < 255) {
+          if (a === 0) r = g = b = 0;
+          else { r = Math.min(255, Math.round(r * 255 / a)); g = Math.min(255, Math.round(g * 255 / a)); b = Math.min(255, Math.round(b * 255 / a)); }
+        }
+        cur[k++] = r; cur[k++] = g; cur[k++] = b; cur[k++] = a;
+      }
+    }
+    // 跟上一行一模一样（截图里大片的底色）：「减上一行」整行是 0，不用挑
+    const f = fixed >= 0 ? fixed : y > 0 && cur.equals(prev) ? 2 : pickFilter(cur, prev, ch);
+    out[q++] = f;
+    q = filterRow(f, cur, prev, ch, out, q);
+    const t = prev; prev = cur; cur = t;
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = opaque ? 2 : 6;
+  let idat;
+  try { idat = zlib.deflateSync(out, { level: o.level == null ? 6 : o.level }); } catch { return null; }
+  return Buffer.concat([SIG, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0))]);
+}
+
+function paeth(a, b, c) {
+  const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+  return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+}
+
+/** 按滤波器 f 把一行写进 out（每种一个循环：一个循环里判五次分支，8MP 的图要慢一倍） */
+function filterRow(f, cur, prev, ch, out, q) {
+  const n = cur.length;
+  if (f === 0) { cur.copy(out, q); return q + n; }
+  if (f === 2) { for (let i = 0; i < n; i++) out[q++] = cur[i] - prev[i]; return q; }
+  for (let i = 0; i < ch; i++) out[q++] = f === 1 ? cur[i] : f === 3 ? cur[i] - (prev[i] >> 1) : cur[i] - prev[i];
+  if (f === 1) for (let i = ch; i < n; i++) out[q++] = cur[i] - cur[i - ch];
+  else if (f === 3) for (let i = ch; i < n; i++) out[q++] = cur[i] - ((cur[i - ch] + prev[i]) >> 1);
+  else for (let i = ch; i < n; i++) out[q++] = cur[i] - paeth(cur[i - ch], prev[i], prev[i - ch]);
+  return q;
+}
+
+/** 五种滤波各算一遍「按有符号看的绝对值和」，取最小的 */
+function pickFilter(cur, prev, ch) {
+  let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0;
+  for (let i = 0; i < cur.length; i++) {
+    const v = cur[i], l = i >= ch ? cur[i - ch] : 0, u = prev[i], ul = i >= ch ? prev[i - ch] : 0;
+    let d = v; s0 += d < 128 ? d : 256 - d;
+    d = (v - l) & 255; s1 += d < 128 ? d : 256 - d;
+    d = (v - u) & 255; s2 += d < 128 ? d : 256 - d;
+    d = (v - ((l + u) >> 1)) & 255; s3 += d < 128 ? d : 256 - d;
+    d = (v - paeth(l, u, ul)) & 255; s4 += d < 128 ? d : 256 - d;
+  }
+  let f = 0, m = s0;
+  if (s1 < m) { f = 1; m = s1; }
+  if (s2 < m) { f = 2; m = s2; }
+  if (s3 < m) { f = 3; m = s3; }
+  if (s4 < m) { f = 4; }
+  return f;
+}
+
+module.exports = { shrinkPng, pngInfo, crc32, encodeRaw, MAX_PIXELS };

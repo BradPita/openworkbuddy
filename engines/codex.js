@@ -159,6 +159,12 @@ function openWorkBuddyCodexHome(env = process.env) {
   return { env: { ...env, CODEX_HOME: home }, defaultModel: defaults[0] || "" };
 }
 
+/** file_change 这条改了哪些文件（绝对路径）；别的 item 一个都不算 */
+function changedPaths(item, cwd) {
+  if (!item || item.type !== "file_change") return [];
+  return (item.changes || []).filter((c) => c && typeof c.path === "string" && c.path).map((c) => path.resolve(cwd, c.path));
+}
+
 /** 把 Codex 的 item 归成 (工具名, 目的说明)；认不出的原样带过去，不假装认识 */
 function toolOf(item) {
   switch (item.type) {
@@ -204,6 +210,7 @@ async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, resumeId, bin, sandbox, network = true, guard = {}, mcpArgs = [], writableRoots = [], env, extraArgs = [],
   thinking: thinkingLevel,
+  onWrite = null,
 }) {
   const found = await resolveBin("codex", bin);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
@@ -314,6 +321,8 @@ async function run({
         emit({ type: "tool_use", id: item.id, name: t.name, purpose: t.purpose, depth: 0 });
       }
       const bad = item.status === "failed" || (item.exit_code != null && item.exit_code !== 0);
+      // 改过的文件报上去：几条对话共用一趟扫描时，产出卡靠这个认主，不靠谁先比对
+      if (onWrite && !bad) for (const p of changedPaths(item, cwd)) { try { onWrite(p); } catch {} }
       const out = item.aggregated_output || item.output || item.result || "";
       // 命令输出留着换行（shorten 会把它压成一行，终端就只剩头一句），截没截、一共几行一并报上去
       let text = "";
@@ -336,6 +345,7 @@ async function run({
 }
 
 module.exports = {
+  changedPaths,
   id: ID,
   label: "本机 Codex",
   bin: "codex",

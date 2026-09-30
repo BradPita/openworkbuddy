@@ -50,6 +50,11 @@ const RULES = {
   THUMB_MAX_AGE_MS: 30 * DAY,
   THUMB_MAX_BYTES: 100 * MB,
   THUMB_PART_MS: DAY,
+  // 资料库封面（lib-cover.js 出的 cover-*.png，以及渲染器明确报错留下的 cover-*.fail）单独一本账：
+  // 一张 PDF / 视频封面要起一趟 qlmanage / ffmpeg，比普通缩略图贵得多，别让几千张图片缩略图把它挤掉；
+  // 反过来封面也别吃掉缩略图的 100MB。同样命中就摸，一个月没用到的走人
+  COVER_MAX_AGE_MS: 30 * DAY,
+  COVER_MAX_BYTES: 100 * MB,
   // Codex 引擎：线程记录一个月没动、而且没有任何一条会话还记着它的 id，才清
   CODEX_ROLLOUT_MS: 30 * DAY,
   CODEX_SNAPSHOT_MS: 7 * DAY,
@@ -59,8 +64,12 @@ const RULES = {
 const SESS_BAK_RE = /\.json\.bak$/;
 // 压缩归档：老的叫 <毫秒>.json，新的叫 <会话 id>-<毫秒>.json（会话 id 走过 sessFile 同一道替换，只剩 \w 和 -）
 const ARCHIVE_RE = /^(?:[\w-]+-)?\d{13}\.json$/;
-const THUMB_RE = /^[0-9a-f]{40}\.png$/;
-const THUMB_PART_RE = /^[0-9a-f]{40}\.png\.\d+\.\d+\.part$/;
+// data/thumbs 里所有归我们管的名字：普通缩略图 <sha1>.png，资料库封面 cover-<sha1>.png / .fail
+const THUMB_RE = /^(cover-)?[0-9a-f]{40}\.(png|fail)$/;
+// 两本账各数各的：普通缩略图只认不带前缀的，封面只认 cover- 开头的
+const PLAIN_THUMB_RE = /^[0-9a-f]{40}\.(png|fail)$/;
+const COVER_RE = /^cover-[0-9a-f]{40}\.(png|fail)$/;
+const THUMB_PART_RE = /^(cover-)?[0-9a-f]{40}\.png\.\d+\.\d+\.part$/;
 const ROLLOUT_RE = /^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
@@ -183,13 +192,17 @@ function pruneArchive(dir, opt = {}) {
 /**
  * 缩略图：名字是 sha1(路径:mtime:体积:宽).png，原图一改、一挪，老的那张就再也没人认领。
  * 没人认领的不会再被「摸」，一个月后按年龄走掉；总量超 100MB 再从最久没用的那头删。
- * 写到一半崩掉的 .part（thumb-worker.js 先写临时名再改名）放一天就清。
- * @param {string} dir @param {{ now?: number, dryRun?: boolean, maxAgeMs?: number, maxBytes?: number }} [opt]
+ * 写到一半崩掉的 .part（thumb-worker.js、lib-cover.js 都先写临时名再改名）放一天就清。
+ * 资料库封面 cover-*.png / .fail 同一个目录、另一本账（COVER_MAX_BYTES），两边互不挤占。
+ * @param {string} dir
+ * @param {{ now?: number, dryRun?: boolean, maxAgeMs?: number, maxBytes?: number, coverMaxAgeMs?: number, coverMaxBytes?: number }} [opt]
  */
 async function pruneThumbs(dir, opt = {}) {
-  const a = await pruneDir(dir, { match: THUMB_RE, maxAgeMs: RULES.THUMB_MAX_AGE_MS, maxBytes: RULES.THUMB_MAX_BYTES, ...opt });
+  const { coverMaxAgeMs = RULES.COVER_MAX_AGE_MS, coverMaxBytes = RULES.COVER_MAX_BYTES, ...rest } = opt;
+  const a = await pruneDir(dir, { match: PLAIN_THUMB_RE, maxAgeMs: RULES.THUMB_MAX_AGE_MS, maxBytes: RULES.THUMB_MAX_BYTES, ...rest });
+  const c = await pruneDir(dir, { match: COVER_RE, maxAgeMs: coverMaxAgeMs, maxBytes: coverMaxBytes, now: opt.now, dryRun: opt.dryRun });
   const b = await pruneDir(dir, { match: THUMB_PART_RE, maxAgeMs: RULES.THUMB_PART_MS, now: opt.now, dryRun: opt.dryRun });
-  return { removed: [...a.removed, ...b.removed], bytes: a.bytes + b.bytes };
+  return { removed: [...a.removed, ...c.removed, ...b.removed], bytes: a.bytes + c.bytes + b.bytes };
 }
 
 /**
@@ -296,5 +309,5 @@ async function sweepAll({ dataDir, dryRun = false, now = Date.now(), log = (m) =
 
 module.exports = {
   sweepBaks, pruneDir, pruneArchive, pruneThumbs, pruneCodexHome, referencedIds, sweepAll,
-  RULES, ARCHIVE_RE, THUMB_RE, ROLLOUT_RE,
+  RULES, ARCHIVE_RE, THUMB_RE, COVER_RE, ROLLOUT_RE,
 };

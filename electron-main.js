@@ -136,6 +136,52 @@ function bootLog(...parts) {
 }
 bootLog(`—— OpenWorkBuddy ${require("./package.json").version} 启动 · ${process.platform}/${process.arch} · Electron ${process.versions.electron} ——`);
 
+// ---------- 主线程卡顿记录（常开，见 bridge-main.js createStallWatch） ----------
+// 这个进程就是界面线程。卡过 250ms 记一行：卡了多久、桥上那会儿有哪几件活（只有名字，没有路径和内容）。
+// 行打到控制台（开发壳把它接进 ~/Library/Logs/OpenWorkBuddy.log），同时追加进启动日志；追加走异步，
+// 记卡顿这件事自己不许再卡界面。OWB_MAIN_STALL_MS 给测试调门槛（浸泡测试用 100）
+const MAIN_OPS = require("./bridge-main").createOpTracker();
+const MAIN_STALL = require("./bridge-main").createStallWatch({
+  thresholdMs: Number(process.env.OWB_MAIN_STALL_MS) > 0 ? Number(process.env.OWB_MAIN_STALL_MS) : 250,
+  ops: MAIN_OPS,
+  write: (line) => {
+    console.warn(line);
+    if (BOOT_LOG) fs.appendFile(BOOT_LOG, `[${new Date().toISOString()}] ${line}\n`, () => {});
+  },
+});
+MAIN_STALL.start();
+global.__owbMainStall = MAIN_STALL;   // 浸泡测试跟 electron-main 同一个进程，从这儿读卡顿记录
+global.__owbMainOps = MAIN_OPS;
+
+// ---------- 主进程 CPU 采样（只给测试：OWB_MAIN_PROFILE=要写的 .cpuprofile 路径） ----------
+// 卡顿记录说得出「那会儿有哪几件活」，说不出「卡在哪一帧」。测试宿主要点名到函数时开这个，
+// 退出前（或者 global.__owbMainProfile.stop()）落一份 Chrome DevTools 能直接打开的 .cpuprofile。平时不开：采样本身有开销
+const MAIN_PROFILE = (() => {
+  const out = String(process.env.OWB_MAIN_PROFILE || "");
+  if (!out) return null;
+  try {
+    const s = new (require("inspector").Session)();
+    s.connect();
+    s.post("Profiler.enable");
+    s.post("Profiler.setSamplingInterval", { interval: 500 }); // 0.5ms 一采：100ms 的卡顿能落 200 个样本
+    s.post("Profiler.start");
+    let stopping = null;
+    const stop = () => stopping || (stopping = new Promise((resolve) => {
+      s.post("Profiler.stop", (err, r) => {
+        try { if (!err && r && r.profile) fs.writeFileSync(out, JSON.stringify(r.profile)); } catch {}
+        try { s.disconnect(); } catch {}
+        resolve(err ? "" : out);
+      });
+    }));
+    bootLog(`[采样] 主进程 CPU 采样已开，退出时写到 ${out}`);
+    return { stop };
+  } catch (e) {
+    bootLog("▲ 主进程 CPU 采样没开起来：" + String((e && e.message) || e));
+    return null;
+  }
+})();
+global.__owbMainProfile = MAIN_PROFILE;
+
 // 端口优先级跟服务端共用一份实现（paths.js），各写各的必然漂——漂了的症状是窗口永远等不到人。
 // 端口要在 fatal 之前就位：报错文案里要用它，而异常可能发生在模块还没读完的时候
 let PORT;
@@ -463,6 +509,9 @@ app.whenReady().then(async () => {
   };
   win.on("query-session-end", letSystemQuit); // Windows
   try { powerMonitor.on("shutdown", letSystemQuit); } catch {} // macOS / Linux
+  // 刚醒来那几十秒系统还压着 CPU（DarkWake），计时器迟到是系统干的，不记成界面卡顿
+  try { powerMonitor.on("resume", () => MAIN_STALL.pause(30000)); } catch {}
+  try { powerMonitor.on("suspend", () => MAIN_STALL.pause(30000)); } catch {}
 
   // 首绘打磨：正常流程 ready-to-show 在 ~0.7s 内到，一次干净的整页亮相；
   // 服务端起不来时它可能永远不触发，3 秒兜底强制亮窗，让用户看到报错而不是什么都没有。
@@ -1220,6 +1269,9 @@ function createTray() {
 }
 
 app.on("will-quit", () => {
+  MAIN_STALL.stop();
+  if (MAIN_PROFILE) MAIN_PROFILE.stop(); // 同一线程上的调试会话是同步回话的：这一行返回时文件已经写好
+  try { if (SHELL_BRIDGE && SHELL_BRIDGE.pixels) SHELL_BRIDGE.pixels.close(); } catch {} // 缩图的临时目录
   // 系统关机那条路不走 shutdown（不拦它），子进程至少发一声 SIGTERM，别留在后台
   if (!SHUTDOWN) killChildren("SIGTERM");
   if (SUPERVISOR) SUPERVISOR.kill(); // 独立服务进程：收尾那条路已经请它退过了，这里只是兜底
@@ -1271,7 +1323,13 @@ async function startServerProcess() {
     onApproval: (m) => { if (approvalNudge) approvalNudge(m); },
     bootLog,
     hidden: HIDDEN,
+    ops: MAIN_OPS,
+    // 缩图三件活挪出界面线程（为什么见 thumb-sips.js）。OWB_MAIN_PIXELS=native 走回主线程 nativeImage，浸泡测试做反向对照用
+    pixels: process.platform === "darwin" && process.env.OWB_MAIN_PIXELS !== "native"
+      ? require("./thumb-sips").createSipsPixels() : null,
   });
+  // 网页截图的 PNG 编码同理（见 htmlshot.js pngOf）：反向对照时一起退回界面线程上的 toPNG
+  if (process.env.OWB_MAIN_PIXELS === "native") require("./htmlshot")._internals.setEncoder({ native: true });
   const nice = Number(process.env.OWB_SERVER_NICE);
   SUPERVISOR = require("./server-supervisor").createServerSupervisor({
     fork: (env) => electron.utilityProcess.fork(path.join(__dirname, "server-host.js"), [], {
@@ -1376,11 +1434,16 @@ function relaunchApp() {
  */
 if (HIDDEN) {
   const step = 10;
-  let samples = [], max = 0, last = Date.now();
+  // 量迟到用单调钟，另拿墙钟对一下：2026-09-29 浸泡测试里那个 2000ms 是合盖睡了 181 秒（Date.now 睡着也走），
+  // 不是主线程卡住。两个钟差出一秒以上 = 这一拍跨过了睡眠，记进 slept、不算迟到——测试据此判这一轮作废
+  const mono = () => require("perf_hooks").performance.now();
+  let samples = [], max = 0, last = mono(), lastWall = Date.now(), slept = 0;
   const tick = setInterval(() => {
-    const now = Date.now();
-    const d = Math.max(0, now - last - step);
-    last = now;
+    const now = mono(), wallNow = Date.now();
+    const gap = now - last, wallGap = wallNow - lastWall;
+    last = now; lastWall = wallNow;
+    if (wallGap - gap > 1000) { slept++; return; }
+    const d = Math.max(0, Math.round(gap - step));
     samples.push(d);
     if (d > max) max = d;
     if (samples.length > 200000) samples = samples.slice(-100000);
@@ -1389,7 +1452,7 @@ if (HIDDEN) {
   const lag = () => {
     const s = samples.slice().sort((a, b) => a - b);
     const q = (p) => (s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : 0);
-    return { n: s.length, p50: q(0.5), p99: q(0.99), max };
+    return { n: s.length, p50: q(0.5), p99: q(0.99), max, slept };
   };
   let buf = "";
   try {
@@ -1400,13 +1463,20 @@ if (HIDDEN) {
         const cmd = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
         if (cmd === "quit") requestQuit();
-        else if (cmd === "lag-reset") { samples = []; max = 0; last = Date.now(); }
+        else if (cmd === "lag-reset") { samples = []; max = 0; slept = 0; last = mono(); lastWall = Date.now(); }
         else if (cmd === "status") {
           console.log("OWB_CTL " + JSON.stringify({
             lag: lag(), remote: SERVER_REMOTE, port: PORT, pageUp: PAGE_UP,
             serverPid: SUPERVISOR ? SUPERVISOR.pid() : 0, starts: SUPERVISOR ? SUPERVISOR.starts : 0,
             bridge: SHELL_BRIDGE ? { ...SHELL_BRIDGE.counts } : null,
+            stall: { ...MAIN_STALL.counts, max: MAIN_STALL.maxMs, last: MAIN_STALL.stalls.slice(-5) },
+            ops: MAIN_OPS.stats(),
+            pixels: SHELL_BRIDGE && SHELL_BRIDGE.pixels ? { ...SHELL_BRIDGE.pixels.counts } : null,
+            shot: (() => { try { return { ...require("./htmlshot")._internals.state().stats }; } catch { return null; } })(),
           }));
+        }
+        else if (cmd === "profile-stop" && MAIN_PROFILE) {
+          MAIN_PROFILE.stop().then((f) => console.log("OWB_CTL " + JSON.stringify({ profile: f })));
         }
       }
     });
