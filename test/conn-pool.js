@@ -580,10 +580,21 @@ app.whenReady().then(async () => {
   ok(c.had && c.oldPaints > 0, "反向对照：去掉那道门，看不见的回合照样一帧帧排版", { had: c.had, oldPaints: c.oldPaints });
 
   // 刷新接回叠两遍（开机那次 + 撞 409 那次）：只接一份、只挂一条订阅、只收尾一次
+  // 叠不叠得上不能靠时间差：以前第二次晚 20ms 发、记录 150ms 才回，CI 机器一卡第二次就晚到，
+  // 看见第一次已经接上了，修之前那份也只接一份，反向对照平白红。现在第一次取记录先卡着，
+  // 等第二次拿到「在跑的有哪些」、走过「有没有人在接」那一步才放行——快机器慢机器都是同一个次序
   const d = await S.js(`(async () => {
     (0, eval)(${J(OLD_REATTACH)});
-    __stubs["/api/chat/running"] = (u, i) => __json(["RZ"], 0, i.signal);
-    __stubs["/api/session/RZ"] = (u, i) => __json({ transcript: [{ type: "user", text: "接回测试", mode: "craft" }, { type: "assistant", events: [{ type: "text", delta: "进行中" }] }] }, 150, i.signal);
+    let release = () => {}, gate = null, asks = 0;
+    __stubs["/api/chat/running"] = () => {
+      const second = ++asks === 2;
+      // json() 回来以后，接回那一圈是同步走到下一个 await 的；排一个 0ms 定时器放行，一定排在它后面
+      return Promise.resolve({ ok: true, json: async () => { if (second) setTimeout(release, 0); return ["RZ"]; } });
+    };
+    __stubs["/api/session/RZ"] = async (u, i) => {
+      await gate;
+      return __json({ transcript: [{ type: "user", text: "接回测试", mode: "craft" }, { type: "assistant", events: [{ type: "text", delta: "进行中" }] }] }, 0, i.signal);
+    };
     __stubs["/api/chat/live"] = __liveEnd;
     const oCT = window.createTurnUI, oER = window.endRun, oLF = window.liveFollow;
     const cnt = { turns: 0, ends: 0, follows: 0 };
@@ -592,15 +603,22 @@ app.whenReady().then(async () => {
     window.liveFollow = function (sid) { if (sid === "RZ") cnt.follows++; return oLF.apply(this, arguments); };
     const twice = async (fn) => {
       cnt.turns = cnt.ends = cnt.follows = 0;
-      await Promise.all([fn(), __sleep(20).then(fn)]);
-      await __sleep(1000);
+      asks = 0;
+      gate = new Promise((r) => { release = r; setTimeout(r, 5000); }); // 5 秒兜底：脚本写坏了也不至于挂死
+      await Promise.all([fn(), fn()]);
+      // 等收尾：接了几份就该收尾几遍。最多等 5 秒，再多留 200ms 看有没有晚到的第二遍
+      for (let k = 0; k < 100 && (runningSessions.has("RZ") || cnt.ends < cnt.turns); k++) await __sleep(50);
+      await __sleep(200);
       return { ...cnt, left: runningSessions.has("RZ") };
     };
     try {
       const fixed = await twice(reattachRunning);
       const old = await twice(reattachRunningOld);
       return { fixed, old };
-    } finally { window.createTurnUI = oCT; window.endRun = oER; window.liveFollow = oLF; delete __stubs["/api/chat/running"]; }
+    } finally {
+      window.createTurnUI = oCT; window.endRun = oER; window.liveFollow = oLF;
+      delete __stubs["/api/chat/running"]; delete __stubs["/api/session/RZ"];
+    }
   })()`);
   ok(d.fixed.turns === 1 && d.fixed.follows === 1 && d.fixed.ends === 1 && !d.fixed.left, "两次接回叠在一起：只接一份、只挂一条订阅、只收尾一次", d.fixed);
   ok(d.old.turns === 2 && d.old.ends === 2, "反向对照：修之前那份，同样叠两次就接了两份、收尾两遍", d.old);
