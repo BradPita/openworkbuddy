@@ -655,7 +655,7 @@ PAGES.sub = {
           [
             "到期时间",
             `<span class="v ad-mono">${p.expires_at ? esc(fmtTs(p.expires_at)) : "长期有效"}</span>
-             <div class="fd">${p.expires_at ? "到期后不影响已有数据，只是不能再新建成员。" : "没设到期时间，等于长期有效。"}</div>`,
+             <div class="fd">${!p.expires_at ? "没设到期时间，等于长期有效。" : d.org.id === "default" ? "平台自己的组织，到期只在这里标红，不锁功能。" : "到期后照常登录、看历史、下载成果，但发不起新任务。"}</div>`,
           ],
           [
             "席位",

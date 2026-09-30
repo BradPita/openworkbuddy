@@ -527,6 +527,8 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
     config: () => config,
     orgSettings: () => ({ budget: { org_yuan: 0 } }),
     user: (name) => people8[name] || null,
+    // 租户组织到期：只有这一家算停了。真判据在 org.expiredProblem，这里只验中转站认不认这句话
+    orgProblem: (id) => (id === "o_daoqi" ? "「到期的公司」已于 2026-09-01 到期，续期后才能发起新任务" : ""),
     clientIp: () => "127.0.0.1",
   }));
   const s2 = srv2.listen(0, "127.0.0.1");
@@ -573,6 +575,28 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   const live = vkeys.create({ name: "在岗的", org: org.DEFAULT_ORG, user: "zaigang" });
   g = await hit("/v1/models", { authorization: "Bearer " + live.secret });
   ok(g.status === 200, "反向对照：归属账号好好的，Key 照常能用", g.json);
+
+  // 组织停了（租户到期）：Key 本身没毛病、人也在岗，是这家的服务停了。402，跟欠费同一类，
+  // 并且把到期那句原话带回去——对面拿着 SDK，看到 401 只会以为 Key 抄错了
+  const daoqiKey = vkeys.create({ name: "到期那家的", org: "o_daoqi", user: "zaigang" });
+  g = await hit("/v1/models", { authorization: "Bearer " + daoqiKey.secret });
+  ok(g.status === 402 && /到期/.test((g.json && g.json.error && g.json.error.message) || "") &&
+     g.json.error.code === "insufficient_quota",
+     "★组织到期了，他家的 Key 还能调★ 当场 402，说清楚是到期", g.json);
+  g = await new Promise((resolve) => {
+    const body = JSON.stringify({ model: "doubao-seed-1-6", messages: [{ role: "user", content: "hi" }] });
+    const rq = http.request({ host: "127.0.0.1", port: P2, path: "/v1/chat/completions", method: "POST",
+      headers: { authorization: "Bearer " + daoqiKey.secret, "content-type": "application/json" } }, (res) => {
+      let b = ""; res.on("data", (x) => (b += x));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ status: res.statusCode, json: j }); });
+    });
+    rq.on("error", () => resolve({ status: 0, json: null }));
+    rq.end(body);
+  });
+  ok(g.status === 402, "发对话一样拦（不是只拦了列模型那一个口子）", g.json);
+  const otherOrg = vkeys.create({ name: "别家的", org: "o_zhengchang" });
+  g = await hit("/v1/models", { authorization: "Bearer " + otherOrg.secret });
+  ok(g.status === 200, "反向对照：没到期的组织照常用", g.json);
 
   const narrow = vkeys.create({ name: "只给便宜的", org: org.DEFAULT_ORG, models: ["doubao-seed-1-6"] });
   g = await hit("/v1/models", { authorization: "Bearer " + narrow.secret });
@@ -945,6 +969,11 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
     return null;
   }
   const orgStub = { getOrg: () => ({ id: "default" }), orgIdOf: () => "default", settingsOf: () => ({}) };
+
+  // 上面【8】验的是中转站认 orgProblem；这里钉 server.js 真把到期判据接进来了——没接的话那段全白验
+  const relayWiring = blockAround(SRC9, "relay.createRouter({", "app.use(");
+  ok(relayWiring && /orgProblem:\s*\(id\)\s*=>\s*org\.expiredProblem\(id\)/.test(relayWiring),
+     "server.js 挂中转站时把「组织到期」接进去了", relayWiring && relayWiring.slice(0, 200));
 
   const chatGate = blockAround(SRC9, "const hit = budget.exhausted({ org: org.settingsOf(o), orgId: o.id, user });", "if (user) {");
   ok(chatGate && /402/.test(chatGate), "server.js 的 /api/chat 里真有这道闸", chatGate && chatGate.slice(0, 60));

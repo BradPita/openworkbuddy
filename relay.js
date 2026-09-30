@@ -302,6 +302,13 @@ function createRouter(deps = {}) {
         return null;
       }
     }
+    // Key 所在的组织停了（租户到期）。Key 本身没错，是这家的服务停了：402，跟欠费同一类
+    const orgWhy = deps.orgProblem ? String(deps.orgProblem(hit.key.org) || "") : "";
+    if (orgWhy) {
+      log.warn("relay", "停了服务的组织还在调中转", { key: hit.key.id, name: hit.key.name, org: hit.key.org, ip });
+      fail(res, 402, orgWhy, "insufficient_quota", "insufficient_quota");
+      return null;
+    }
     return hit.key;
   }
 

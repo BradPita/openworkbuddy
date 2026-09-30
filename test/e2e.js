@@ -6753,17 +6753,26 @@ async function testScheduleRunsAsOwner() {
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg, null, 2));
 
   const now = Date.now();
+  const tok = (who) => who + crypto.randomBytes(12).toString("hex");
+  const TK = { boss: tok("boss"), xiaoli: tok("xiaoli"), daoqi: tok("daoqi") };
+  const yesterday = new Date(now - 86400000).toISOString();
   fs.mkdirSync(path.join(home, "data"), { recursive: true });
   fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
     users: [
       { username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: now },
       { username: "xiaoli", salt: "x", hash: "x", role: "member", org: "o_acme", credits: 0, created_at: now },
       { username: "tuiguo", salt: "x", hash: "x", role: "member", status: "disabled", credits: 0, created_at: now },
+      { username: "daoqi", salt: "x", hash: "x", role: "member", org: "o_gone", credits: 0, created_at: now },
     ],
-    tokens: { ["t" + crypto.randomBytes(12).toString("hex")]: { user: "boss", at: now } },
+    tokens: Object.fromEntries(Object.entries(TK).map(([u, t]) => [t, { user: u, at: now }])),
   }));
   fs.writeFileSync(path.join(home, "data", "orgs.json"), JSON.stringify({
-    orgs: [{ id: "o_acme", name: "Acme", plan: "team", seats: 10, root_dir: "", created_at: new Date(now).toISOString(), settings: {} }],
+    orgs: [
+      // 默认组织也写成过期了：它是这台机器主人自己，过期只亮红，什么都不许锁
+      { id: "default", name: "总部", plan: "team", seats: 10, expires_at: yesterday, root_dir: "", created_at: new Date(now).toISOString(), settings: {} },
+      { id: "o_acme", name: "Acme", plan: "team", seats: 10, root_dir: "", created_at: new Date(now).toISOString(), settings: {} },
+      { id: "o_gone", name: "到期的公司", plan: "team", seats: 10, expires_at: yesterday, root_dir: "", created_at: new Date(now).toISOString(), settings: {} },
+    ],
     depts: [], invites: [],
   }));
   // 两条都是「刚过点的一次性任务」：排期表起来后第一轮 tick（约 20 秒）就会把它们叫起来。
@@ -6771,7 +6780,8 @@ async function testScheduleRunsAsOwner() {
   const due = new Date(now - 1000).toISOString();
   const task = (id, user) => ({ id, name: id, cron: "", at: due, task: "写一份 定时产物.md", enabled: true, catch_up: true,
     user, org: "", created_at: new Date(now).toISOString(), last_run: null, last_result: null });
-  fs.writeFileSync(path.join(home, "schedules.json"), JSON.stringify({ tasks: [task("sch_acme", "xiaoli"), task("sch_gone", "tuiguo")], runs: [] }));
+  fs.writeFileSync(path.join(home, "schedules.json"), JSON.stringify({
+    tasks: [task("sch_acme", "xiaoli"), task("sch_gone", "tuiguo"), task("sch_expired", "daoqi")], runs: [] }));
 
   const readStore = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "schedules.json"), "utf8")); } catch { return null; } };
   const findAll = (dir, name, out = []) => {
@@ -6794,8 +6804,9 @@ async function testScheduleRunsAsOwner() {
       st = readStore();
       const run = st && (st.runs || []).find((r) => r.task_id === "sch_acme" && r.ended_at);
       const gone = st && (st.tasks || []).find((t) => t.id === "sch_gone");
-      if (run && gone && gone.disabled_reason) break;
-      assert(Date.now() - t0 < 75000, "等了 75 秒排期表还没把两条任务都处理完：" + JSON.stringify(st).slice(0, 600));
+      const lapsed = st && (st.tasks || []).find((t) => t.id === "sch_expired");
+      if (run && gone && gone.disabled_reason && lapsed && lapsed.disabled_reason) break;
+      assert(Date.now() - t0 < 75000, "等了 75 秒排期表还没把这几条任务都处理完：" + JSON.stringify(st).slice(0, 600));
       await new Promise((r) => setTimeout(r, 500));
     }
 
@@ -6822,13 +6833,46 @@ async function testScheduleRunsAsOwner() {
       "★负责人停用了，他排的任务照样跑★ 应当当场关掉并写明原因：" + JSON.stringify(gone).slice(0, 300));
     assert(!st.runs.some((r) => r.task_id === "sch_gone"),
       "停用的人的任务连一趟都不该开跑（开跑就要花钱、要动文件）：" + JSON.stringify(st.runs).slice(0, 300));
+
+    // ---- 租户组织到期：新任务发不起（定时任务、对话、单跑工具），登录和看成果照常；默认组织永远不锁 ----
+    const lapsed = st.tasks.find((t) => t.id === "sch_expired");
+    assert(/到期/.test(lapsed.disabled_reason) && lapsed.enabled === false,
+      "★组织到期了，他家的定时任务照样跑★ 应当关掉并写明是到期：" + JSON.stringify(lapsed).slice(0, 300));
+    assert(!st.runs.some((r) => r.task_id === "sch_expired"), "到期那家的任务一趟都不该开跑：" + JSON.stringify(st.runs).slice(0, 300));
+    const { port } = await boot.wait();
+    const call = (who, method, p, body) => new Promise((resolve) => {
+      const data = body ? JSON.stringify(body) : null;
+      const rq = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+        Cookie: "openworkbuddy_token=" + TK[who],
+        ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      } }, (res) => {
+        let b = ""; res.on("data", (c) => (b += c));
+        res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+      });
+      rq.on("error", (e) => resolve({ code: 0, body: e.message }));
+      rq.end(data || undefined);
+    });
+    let r = await call("daoqi", "POST", "/api/chat", { sessionId: "s_daoqi", message: "写个东西" });
+    assert(r.code === 402 && /到期/.test((r.json && r.json.error) || ""), "★组织到期了还能在对话里发起任务★ HTTP " + r.code + "：" + r.body.slice(0, 200));
+    r = await call("daoqi", "POST", "/api/tool/run", { tool: "没有这个工具" });
+    assert(r.code === 402 && /到期/.test((r.json && r.json.error) || ""), "★组织到期了还能单跑工具★ HTTP " + r.code + "：" + r.body.slice(0, 200));
+    r = await call("daoqi", "POST", "/im/local", { message: "写个东西" });
+    assert(r.code !== 200 && /到期/.test((r.json && r.json.error) || ""),
+      "★组织到期了还能在助理页发起任务★ 那条路钱记管理员头上，人却是租户的：HTTP " + r.code + "：" + r.body.slice(0, 200));
+    r = await call("daoqi", "GET", "/api/files");
+    assert(r.code === 200, "到期了成果还得看得到、下得了（数据是人家的）：HTTP " + r.code + " " + r.body.slice(0, 200));
+    r = await call("xiaoli", "POST", "/api/tool/run", { tool: "没有这个工具" });
+    assert(r.code !== 402, "反向对照：没到期的租户不该被拦：HTTP " + r.code + " " + r.body.slice(0, 200));
+    r = await call("boss", "POST", "/api/tool/run", { tool: "没有这个工具" });
+    assert(r.code !== 402, "★默认组织写成过期也不许锁★ 那是这台机器主人自己：HTTP " + r.code + " " + r.body.slice(0, 200));
     passed = true;
   } finally {
     boot.child.kill("SIGKILL");
     llm.close();
     await dropTempHome(home, passed, boot.child);
   }
-  console.log("  ✓ 定时任务替负责人本人跑：落在他组织的目录、记他的账；人停用了任务当场关掉");
+  console.log("  ✓ 定时任务替负责人本人跑：落在他组织的目录、记他的账；人停用了、组织到期了任务当场关掉");
+  console.log("  ✓ 租户组织到期：对话、助理页、单跑工具都发不起，成果照常看；默认组织过期不锁");
 }
 
 async function testMcpFailureReason() {

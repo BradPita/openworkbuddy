@@ -351,7 +351,10 @@ function updateOrg(id, patch, actor) {
   return org;
 }
 
-/** 套餐信息 + 有没有过期。过期不锁死功能，只在后台亮红——自建部署里锁死等于自己砸自己的服务 */
+/**
+ * 套餐信息 + 有没有过期。默认组织过期只在后台亮红、不锁任何东西——那是这台机器的主人自己，
+ * 自建部署里锁死等于自己砸自己的服务。租户组织过期之后发不起新任务，见 expiredProblem
+ */
 function planInfo(org) {
   const o = org || getOrg(DEFAULT_ORG);
   const plan = PLANS[o.plan] ? o.plan : "free";
@@ -364,6 +367,20 @@ function planInfo(org) {
     expired: !!(exp && exp < Date.now()),
     days_left: exp ? Math.ceil((exp - Date.now()) / 86400000) : null,
   };
+}
+
+/**
+ * 租户组织到期了：不能再发起新任务——界面、飞书、定时任务、中转 Key 四条路一起停。
+ * 登录、翻历史、下载成果照常：数据是人家的，没续费也不能扣着不给。
+ * 默认组织永远不算（理由见 planInfo）。平台要立刻停掉一家，把到期时间改成今天之前就是。
+ * 返回一句话（后半句按场合换，默认说新任务），没到期返回空串
+ */
+function expiredProblem(orgId, then = "续期后才能发起新任务") {
+  const id = orgId || DEFAULT_ORG;
+  if (id === DEFAULT_ORG) return "";
+  const o = load().orgs.find((x) => x.id === id);
+  if (!o || !planInfo(o).expired) return "";
+  return `「${o.name}」已于 ${String(o.expires_at).slice(0, 10)} 到期，${then}`;
 }
 
 // ---------- 部门 ----------
@@ -654,7 +671,7 @@ function listAudit(orgId, opts) {
 
 module.exports = {
   DEFAULT_ORG, PLANS, PLAN_ORDER, ORG_DEFAULTS,
-  listOrgs, getOrg, createOrg, updateOrg, multiTenant, orgIdOf, rootDirOf, settingsOf, planInfo,
+  listOrgs, getOrg, createOrg, updateOrg, multiTenant, orgIdOf, rootDirOf, settingsOf, planInfo, expiredProblem,
   normalizeBudget, normalizeDeptTemplates, tenantHeld,
   listDepts, addDept, removeDept,
   createInvite, listInvites, peekInvite, consumeInvite, revokeInvite,

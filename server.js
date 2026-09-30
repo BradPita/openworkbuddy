@@ -1135,6 +1135,7 @@ app.use(relay.createRouter({
   config: () => config,
   orgSettings: (id) => org.settingsOf(org.getOrg(id)),
   user: account.billingUser,
+  orgProblem: (id) => org.expiredProblem(id),
   clientIp: account.clientIp,
   limiter: relayLimiter,
 }));
@@ -6337,6 +6338,8 @@ app.post("/api/tool/run", async (req, res) => {
   if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
     return res.status(402).json({ error: "用量不足，跑不了。生图生视频每跑一次都是真花钱——找管理员在企业后台充值，或者把「用量限额」关掉。" });
   }
+  const expiredTool = user ? org.expiredProblem(org.orgIdOf(user)) : "";
+  if (expiredTool) return res.status(402).json({ error: expiredTool });
   // 产物落在这条对话自己的成果目录里：跟对话里生成的那一批待在一起，交付时才是完整一包。
   // 自选工作目录 / 项目目录下没有这个概念，照旧就地读写（跟 /api/chat 同一条口径）。
   let baseDir = null;
@@ -6460,6 +6463,9 @@ app.post("/api/chat", async (req, res) => {
   if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
     return res.status(402).json({ error: "用量不足，无法执行任务。本月固定用量已用完、加油包也见底了——找管理员在企业后台充值，或者把「用量限额」关掉。" });
   }
+  // 租户组织到期：新任务发不起，历史和成果照常能看能下（org.expiredProblem）
+  const expiredChat = user ? org.expiredProblem(org.orgIdOf(user)) : "";
+  if (expiredChat) return res.status(402).json({ error: expiredChat });
   // 钱闸。跟上面那道是两件事：积分是「所有模型一个价」的字数折算，
   // 这一道算的是真金白银——而 Opus 的输出价是 gpt-5-nano 的一百多倍，
   // 两个数经常是反的。中转站发出去的 Key 开头就在 budget 下面过，
@@ -7463,6 +7469,18 @@ function scheduleOwnerProblem(name) {
 }
 
 /**
+ * 任务所在的租户组织到期了：跟负责人停用一样当场关掉、写明原因，不然每到点失败一次、推一条通知。
+ * 续期不会把它们自己打开：没人看着的任务重新跑起来，得有人点这一下。
+ * 组织按负责人算（到点就是进他那家跑的，见 accountedRuntime），没负责人的老任务才看任务上记的组织
+ */
+function scheduleOrgProblem(item) {
+  if (!item) return "";
+  const who = item.user ? account._internals.loadUsers().users.find((u) => u.username === item.user) : null;
+  const orgId = who ? org.orgIdOf(who) : item.org;
+  return orgId ? org.expiredProblem(orgId, "这条任务停了，续期后重新打开") : "";
+}
+
+/**
  * 给 IM / 定时任务的 runtime 包一层记账，开了积分闸门才在 0 分时拒跑。
  * 消耗记到管理员（首个用户）名下；定时任务报了负责人的例外，记在负责人自己头上
  */
@@ -7480,6 +7498,12 @@ function accountedRuntime(baseRuntime, source) {
         if (why) throw new Error(why);
       }
       const owner = runner || account.defaultUser();
+      // 到期看两个人：记账的那个，和顶着身份说话的那个（助理页里的成员，钱记管理员头上，人却是租户的）
+      const speaker = args && args.user && !runner
+        ? account._internals.loadUsers().users.find((u) => u.username === args.user) || null
+        : null;
+      const expired = [owner, speaker].map((u) => (u ? org.expiredProblem(org.orgIdOf(u)) : "")).find(Boolean);
+      if (expired) throw new Error(expired);
       if (owner && account.creditsEnabled(owner) && account.balanceOf(owner) <= 0) {
         throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
       }
@@ -7677,7 +7701,7 @@ async function main() {
     recorder: scheduleRecorder,
     secondOpinion,
     newsGate,
-    ownerProblem: (item) => scheduleOwnerProblem(item && item.user),
+    ownerProblem: (item) => scheduleOwnerProblem(item && item.user) || scheduleOrgProblem(item),
     orgOf: (name) => {
       const u = account._internals.loadUsers().users.find((x) => x.username === name);
       return u ? org.orgIdOf(u) : account.removedOrgOf(name);
