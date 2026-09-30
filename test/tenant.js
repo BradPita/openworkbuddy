@@ -844,7 +844,8 @@ async function login(username, password) {
   ok(writeTbl.includes("/api/skills"), "反向对照：技能还在写表里（那个才是真共用的）");
   ok(readTbl.includes("/api/schedules") && readTbl.includes("/api/eval"), "读表里还留着真该拦的那两个");
   // 光改表不改根就是把库直接敞开了。这两条钉住「根确实按人分」这件事本身
-  ok(/app\.use\(admin\.tenantScope\(\{[\s\S]{0,400}?withLibraryBase/.test(SERVER_SRC),
+  // 中间件先起了名字（定时任务那条没有请求的路要复用同一个），再 app.use 它
+  ok(/const (\w+) = admin\.tenantScope\(\{[\s\S]{0,400}?withLibraryBase[\s\S]{0,200}?\napp\.use\(\1\)/.test(SERVER_SRC),
      "server.js 真把资料库根接进了 tenantScope（不接就是所有人共用一个根，而写闸刚被拿掉）");
   const TL = srcLib.src("tools");
   ok(/function libBase\(\)/.test(TL) && /libBaseStore\.getStore\(\) \|\| LIB_DIR/.test(TL),

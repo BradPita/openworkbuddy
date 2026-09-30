@@ -283,7 +283,7 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
       if (anyCap || anyBudget)
         actor = {
           org: o.id, user: (req.user && req.user.username) || "",
-          dept: (req.user && req.user.dept) || "", source: "web",
+          dept: (req.user && req.user.dept) || "", source: req.quotaSource || "web",
           quota: anyCap ? qt : null,
           budget: anyBudget ? bctx : null,
           // 价目要跟着走：管理员改过的价、这个组织谈下来的折扣，都影响这一趟扣多少。

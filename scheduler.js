@@ -238,7 +238,7 @@ function cronMatches(cron, date) {
  *   - done 在这一趟收尾时调一次，成败都调，负责把会话落盘
  *   没插 recorder（CLI、测试）就跟以前一模一样：不录、不留 session_id、不影响执行本身。
  */
-function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion, newsGate, doubtTimeoutMs }) {
+function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion, newsGate, doubtTimeoutMs, ownerProblem, orgOf }) {
   /**
    * 「跑绿之后再看一眼」。给的是一个函数，不是一份配置——scheduler 不认 config、不发请求，
    * 要不要问、拿什么模型问、花不花钱，全归调用方（server.js）决定。测试里塞个假的就能跑。
@@ -333,7 +333,17 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
     if (!t.user) return true;                       // 老任务：没记过归属，不能凭空判给谁
     if (t.user === viewer.username) return true;
     if (!viewer.admin) return false;
-    return (t.org || "") === (viewer.org || "");     // 管理员也只看得到本组织的
+    return orgOfTask(t) === (viewer.org || "");     // 管理员也只看得到本组织的
+  }
+  /**
+   * 任务归哪个组织。对话里让模型排的那条路从来只记了 user 没记 org，
+   * 于是成员自己排的任务，他那家组织的管理员一条也看不到、停不了。
+   * 没记的按负责人现在所在的组织算（认账号归调用方，scheduler 不认账号体系）
+   */
+  function orgOfTask(t) {
+    if (t.org) return t.org;
+    if (!t.user || !orgOf) return "";
+    try { return String(orgOf(t.user) || ""); } catch { return ""; }
   }
 
   /** viewer 省略 = 全部（tick 循环 / 测试 / 离职清理要看全表）；传了就按归属过滤 */
@@ -371,7 +381,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       // 归属。单机个人版这两个字段是空的，一切照旧；多人装机里它们是上面 allowed 的唯一依据，
       // 也是「这个人离职了，他的定时任务要跟着停」能落地的前提（见 lifecycle.js）
       user: String(user || ""),
-      org: String(org || ""),
+      org: String(org || "") || orgOfTask({ user }),
       created_at: new Date().toISOString(),
       last_run: null,
       last_result: null,
@@ -427,6 +437,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
     const t = get(id, viewer);
     if (!t) return false;
     t.enabled = enabled;
+    if (enabled) delete t.disabled_reason; // 重新打开 = 管理员已经看过停掉的原因了
     saveStore(store, file);
     return true;
   }
@@ -470,6 +481,18 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
     // list() 出去的是副本，外面拿着副本回来跑的话，进度会写在副本上存不下来——一律换回本体
     const item = store.tasks.find((t) => t.id === (ref && ref.id ? ref.id : ref));
     if (!item) throw new Error("任务不存在");
+    // 负责人的账号还能不能用（删了、停用了、待审核）。用不了就当场关掉这条、写明原因：
+    // 不关的话每到点就失败一次、推一条通知，而且这件事原来根本没人拦——人停用了任务照跑。
+    // 判据归调用方（server.js 认账号），scheduler 不认账号体系
+    let why = "";
+    try { why = ownerProblem ? String(ownerProblem(item) || "") : ""; } catch (e) { console.warn(`[定时任务] ${item.name} 查负责人失败：${e.message}`); }
+    if (why) {
+      item.enabled = false;
+      item.disabled_reason = why;
+      item.last_result = why;
+      saveStore(store, file);
+      throw new Error(why);
+    }
     if (running.has(item.id)) {
       const since = new Date(running.get(item.id)).toTimeString().slice(0, 5);
       throw new Error(`这个任务正在跑（${since} 开始），等它跑完再说`);
@@ -539,7 +562,9 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       const history = [{ role: "user", content: item.task }];
       // stopped 是 runTask 自己报的「撞上限 / 模型挂死 / 手动停止」。以前这里把它解构掉了，
       // 于是一个跑满 25 步被强制收尾的任务，运行记录里照样是个 ✅——活没干完却显示干成了。
-      const { finalText, stopped } = await runtime.runTask({ history, ...((rec && rec.opts) || {}) });
+      // 替谁跑就报谁的名字：身份、账单、工作目录、命令行开关都跟着他走（见 server.js accountedRuntime）。
+      // 原来不报，一律顶着平台管理员跑——别家组织的成员排一条任务，到点就在总部的工作目录里执行
+      const { finalText, stopped } = await runtime.runTask({ history, ...(item.user ? { user: item.user } : {}), ...((rec && rec.opts) || {}) });
       const v = judgeRun({ result: finalText, stopped });
       if (v.ok) {
         // 判据放行了，但它从来没回答过「这件事到底办了没有」——正文一长它就主动让路。

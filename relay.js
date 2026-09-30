@@ -289,6 +289,19 @@ function createRouter(deps = {}) {
       fail(res, 401, hit.reason, "authentication_error", "invalid_api_key");
       return null;
     }
+    // 挂到人头上的 Key 跟着人走：人停用了、删了，Key 也就不能再用。
+    // 原来停用成员只踢掉了登录态，他拿走的 Key 照样能调、照样记在组织账上
+    if (hit.key.user && deps.user) {
+      const who = getUser(hit.key.user);
+      const why = !who ? "这把 Key 的归属账号已删除"
+        : who.status === "disabled" ? "这把 Key 的归属账号已停用"
+        : who.status === "pending" ? "这把 Key 的归属账号还没通过审核" : "";
+      if (why) {
+        log.warn("relay", "归属账号用不了的 Key 还在被调", { key: hit.key.id, name: hit.key.name, user: hit.key.user, ip, why });
+        fail(res, 401, why, "authentication_error", "invalid_api_key");
+        return null;
+      }
+    }
     return hit.key;
   }
 

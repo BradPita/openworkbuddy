@@ -1142,7 +1142,20 @@ app.use(relay.createRouter({
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
 
 // 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
-app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, libraryRootOf: (u) => libraryRootOf(u) }));
+const tenantScopeMw = admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, libraryRootOf: (u) => libraryRootOf(u) });
+app.use(tenantScopeMw);
+/**
+ * 没有 HTTP 请求的那几条路（定时任务）也要落进某个人的租户范围：
+ * 工作目录、命令行开关、联网白名单、额度，跟他本人在网页上发一句话时一模一样。
+ * 直接复用同一个中间件，不另写一份——另写的那份迟早跟这份漂开。
+ */
+function inTenantOf(user, source, fn) {
+  return new Promise((resolve, reject) => {
+    try {
+      tenantScopeMw({ user, quotaSource: source }, null, () => { Promise.resolve().then(fn).then(resolve, reject); });
+    } catch (e) { reject(e); }
+  });
+}
 app.use(admin.platformGuard);
 app.use(admin.redactGuard);
 const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
@@ -7436,12 +7449,37 @@ function assistModelOf(owner) {
   return name && Array.isArray(config.models) && config.models.some((m) => m.name === name) ? name : "";
 }
 
-/** 给 IM / 定时任务的 runtime 包一层记账：消耗记到管理员（首个用户）名下，开了积分闸门才在 0 分时拒跑 */
+/**
+ * 定时任务的负责人还能不能替他跑。空串 = 能跑。
+ * 删了、停用了、还没通过审核的，一律不跑——原来停用一个人只踢掉了登录态，他排的任务照样每天跑。
+ */
+function scheduleOwnerProblem(name) {
+  if (!name || !account.hasUsers()) return "";
+  const who = account.billingUser(name);
+  if (!who) return `负责人「${name}」的账号已删除，这条任务停了`;
+  if (who.status === "disabled") return `负责人「${name}」的账号已停用，这条任务停了`;
+  if (who.status === "pending") return `负责人「${name}」的账号还没通过审核，这条任务停了`;
+  return "";
+}
+
+/**
+ * 给 IM / 定时任务的 runtime 包一层记账，开了积分闸门才在 0 分时拒跑。
+ * 消耗记到管理员（首个用户）名下；定时任务报了负责人的例外，记在负责人自己头上
+ */
 function accountedRuntime(baseRuntime, source) {
   return {
     ...baseRuntime,
     runTask: async (args) => {
-      const owner = account.defaultUser();
+      // 定时任务报了负责人的，就替他本人跑：记他的账、过他那一档预算、用他那家组织的工作目录和规矩。
+      // 没报的（老任务、单机版）照旧退回管理员
+      const runner = source === "schedule" && args && args.user
+        ? account._internals.loadUsers().users.find((u) => u.username === args.user) || null
+        : null;
+      if (source === "schedule" && args && args.user) {
+        const why = scheduleOwnerProblem(args.user);
+        if (why) throw new Error(why);
+      }
+      const owner = runner || account.defaultUser();
       if (owner && account.creditsEnabled(owner) && account.balanceOf(owner) <= 0) {
         throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
       }
@@ -7463,9 +7501,9 @@ function accountedRuntime(baseRuntime, source) {
       // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）
       const want = modelName || (source === "im" ? assistModelOf(owner) : "");
       const runLLM = want ? llmForSession({ model: want }) : llm;
-      // 「记谁的账」和「用谁的记忆、替谁审批」是两件事：钱一律记在管理员头上（他才是掏 API 费的人），
+      // 「记谁的账」和「用谁的记忆、替谁审批」是两件事：钱记在管理员头上（他才是掏 API 费的人），
       // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
-      // 飞书 / 定时任务确实没有登录态，那才退回管理员。
+      // 飞书确实没有登录态，那才退回管理员。定时任务报了负责人的，钱和身份都归负责人（见上面 runner）。
       // 注意 user 必须从 rest 里摘出来单独判：留在 rest 里的话，调用方传了个 undefined 也会把兜底覆盖掉
       // IM 里每一条消息都是真人敲的，跟网页对话同一个判据（定时任务不算：那是 cron 在说话，
       // 一分钟一轮地把断掉的渠道重撞一遍，正是这道闸当初要拦的东西）
@@ -7477,8 +7515,7 @@ function accountedRuntime(baseRuntime, source) {
       try { letGo = require("./tools").holdRun(rest.sessionId); } catch {}
       const release = () => { try { letGo().catch(() => {}); } catch {} };
       let r;
-      try {
-      r = await baseRuntime.runTask({
+      const go = () => baseRuntime.runTask({
         user: caller || (owner ? owner.username : undefined),
         ...(reopened.length ? { mediaReopened: reopened } : {}),
         taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
@@ -7491,10 +7528,13 @@ function accountedRuntime(baseRuntime, source) {
         ...rest,
         ...(want ? { llmOverride: runLLM } : {}),
       });
+      try {
+        r = await (runner ? inTenantOf(runner, source, go) : go());
       } finally { release(); }
       if (owner && r && r.usage && r.usage.calls > 0) {
         const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;
-        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source });
+        // 带上会话：定时任务那一趟的用量要能对回运行记录上那段回放（不带的话账本里只剩一行没来由的数）
+        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source, sessionId: rest.sessionId || "" });
       }
       return r;
     },
@@ -7637,6 +7677,11 @@ async function main() {
     recorder: scheduleRecorder,
     secondOpinion,
     newsGate,
+    ownerProblem: (item) => scheduleOwnerProblem(item && item.user),
+    orgOf: (name) => {
+      const u = account._internals.loadUsers().users.find((x) => x.username === name);
+      return u ? org.orgIdOf(u) : account.removedOrgOf(name);
+    },
     onResult: (item, text) =>
       // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
       notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),

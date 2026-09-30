@@ -517,10 +517,16 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   console.log("\n【8】/v1/*：身份是 Authorization 头里的虚拟 Key，不是 cookie");
   const srv2 = express();
   srv2.use(express.json());
+  // 挂了人的 Key 按这张表认人：account.billingUser 那个形状，查无此人回 null
+  const people8 = {
+    zaigang: { username: "zaigang", org: org.DEFAULT_ORG, status: "active" },
+    tingyong: { username: "tingyong", org: org.DEFAULT_ORG, status: "disabled" },
+    daishen: { username: "daishen", org: org.DEFAULT_ORG, status: "pending" },
+  };
   srv2.use(relay.createRouter({
     config: () => config,
     orgSettings: () => ({ budget: { org_yuan: 0 } }),
-    user: () => null,
+    user: (name) => people8[name] || null,
     clientIp: () => "127.0.0.1",
   }));
   const s2 = srv2.listen(0, "127.0.0.1");
@@ -553,6 +559,20 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   g = await hit("/v1/models", { authorization: "Bearer " + dead.secret });
   ok(g.status === 401 && /停用/.test(g.json.error.message),
      "但**真有这把 Key**、只是不让用的时候要说清楚是哪一种：对面已经握着这把 Key 了，这时候含糊其辞只是让他多查两个钟头", g.json);
+
+  // Key 跟着人走：人停用了、删了、还没过审，他手里那把也就不能用了。
+  // 原来停用一个成员只踢掉了他的登录态，发给他的 Key 照样能调、照样记在组织账上
+  const ownerCase = async (user, re, why) => {
+    const k = vkeys.create({ name: "挂在" + user + "名下的", org: org.DEFAULT_ORG, user });
+    const res = await hit("/v1/models", { authorization: "Bearer " + k.secret });
+    ok(res.status === 401 && re.test((res.json && res.json.error && res.json.error.message) || ""), why, res.json);
+  };
+  await ownerCase("tingyong", /停用/, "归属账号停用了，他那把 Key 当场 401，并说清楚是账号停用");
+  await ownerCase("meiyouzheren", /删除/, "归属账号删了（查无此人），Key 也跟着失效");
+  await ownerCase("daishen", /审核/, "归属账号还没过审，Key 也不能先用上");
+  const live = vkeys.create({ name: "在岗的", org: org.DEFAULT_ORG, user: "zaigang" });
+  g = await hit("/v1/models", { authorization: "Bearer " + live.secret });
+  ok(g.status === 200, "反向对照：归属账号好好的，Key 照常能用", g.json);
 
   const narrow = vkeys.create({ name: "只给便宜的", org: org.DEFAULT_ORG, models: ["doubao-seed-1-6"] });
   g = await hit("/v1/models", { authorization: "Bearer " + narrow.secret });

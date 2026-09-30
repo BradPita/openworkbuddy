@@ -6667,6 +6667,170 @@ async function testScheduleRunTrace() {
   console.log("  ✓ 定时任务留下完整执行过程（运行记录点得进去看每一步）");
 }
 
+/**
+ * 定时任务替负责人本人跑，不再一律顶着平台管理员。
+ * 原来对话里让模型排的任务只记了负责人、执行时却不认他：别家组织的成员排一条，
+ * 到点就用总部的工作目录、总部的规矩跑，账也记在总部管理员头上；人停用了、删了，任务照跑。
+ * 平台管理员按规矩看不到别家组织的任务（点不了「立即跑」），所以这里走排期表自己到点触发那条路
+ */
+async function testScheduleRunsAsOwner() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+
+  // ---- 调度器这一层：负责人用不了就关掉并写明原因；替谁跑就把谁报给 runtime；组织按负责人算 ----
+  {
+    const { createScheduler } = require("../scheduler");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sched-who-"));
+    const seen = [];
+    const bad = new Set(["tuiguo"]);
+    const sched = createScheduler({
+      runtime: { runTask: async (o) => { seen.push(o); return { finalText: "好了" }; } },
+      storePath: path.join(dir, "schedules.json"),
+      ownerProblem: (item) => (bad.has(item.user) ? `负责人「${item.user}」的账号已停用` : ""),
+      orgOf: (name) => ({ xiaoli: "o_acme", tuiguo: "default" }[name] || ""),
+    });
+    const a = sched.add({ name: "小李的", cron: "0 9 * * *", task: "干活", user: "xiaoli" });
+    assert.strictEqual(a.org, "o_acme", "对话里排的那条只带了 user，组织要按负责人补上，不然他那家的管理员一条都看不到：" + a.org);
+    await sched.runOne(a.id, "手动");
+    assert.strictEqual(seen[0] && seen[0].user, "xiaoli", "★runtime 不知道这趟替谁跑★ 那就只能顶着平台管理员跑");
+
+    const old = sched.add({ name: "老数据", cron: "0 9 * * *", task: "干活", user: "xiaoli" });
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, "schedules.json"), "utf8"));
+    raw.tasks.find((t) => t.id === old.id).org = "";
+    fs.writeFileSync(path.join(dir, "schedules.json"), JSON.stringify(raw));
+    sched.stop();
+    const sched2 = createScheduler({
+      runtime: { runTask: async () => ({ finalText: "好了" }) },
+      storePath: path.join(dir, "schedules.json"),
+      ownerProblem: (item) => (bad.has(item.user) ? `负责人「${item.user}」的账号已停用` : ""),
+      orgOf: (name) => ({ xiaoli: "o_acme", tuiguo: "default" }[name] || ""),
+    });
+    assert(sched2.get(old.id, { username: "acmeboss", admin: true, org: "o_acme" }),
+      "盘上已有的、没记组织的老任务，负责人那家的管理员也要看得到");
+    assert(!sched2.get(old.id, { username: "boss", admin: true, org: "default" }),
+      "反向对照：别家的管理员照样看不到");
+
+    const g = sched2.add({ name: "退了的", cron: "0 9 * * *", task: "干活", user: "tuiguo" });
+    await sched2.runOne(g.id, "手动").then(() => assert(false, "负责人停用了还跑成了"), (e) => assert(/已停用/.test(e.message), e.message));
+    const g2 = sched2.get(g.id);
+    assert(g2.enabled === false && /已停用/.test(g2.disabled_reason || ""), "停下来要关掉并写明原因，不然每到点失败一次、推一条通知：" + JSON.stringify(g2));
+    bad.delete("tuiguo");
+    sched2.toggle(g.id, true);
+    assert(!("disabled_reason" in sched2.get(g.id)), "重新打开就是看过原因了，那行字不该还挂着");
+    sched2.stop(); fs.rmSync(dir, { recursive: true, force: true });
+  }
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sched-owner-"));
+  const llm = http.createServer((req, res) => {
+    let raw = ""; req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const j = (o) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (!req.url.includes("/chat/completions")) { res.writeHead(404); return res.end("{}"); }
+      let msgs = [];
+      try { msgs = JSON.parse(raw).messages || []; } catch {}
+      if (!msgs.some((m) => m.role === "tool")) {
+        return j({
+          choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{
+            id: "call_1", type: "function",
+            function: { name: "write_file", arguments: JSON.stringify({ path: "定时产物.md", content: "# 负责人的产物\n" }) },
+          }] } }],
+          usage: { prompt_tokens: 9, completion_tokens: 3 },
+        });
+      }
+      j({ choices: [{ message: { role: "assistant", content: "写好了。" }, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 3 } });
+    });
+  });
+  await new Promise((r) => llm.listen(0, "127.0.0.1", r));
+  const llmPort = llm.address().port;
+
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.example.json"), "utf8"));
+  cfg.provider = "openai";
+  cfg.openai = { base_url: `http://127.0.0.1:${llmPort}/v1`, api_key: "k", model: "mock", stream: false };
+  cfg.models = [{ name: "假模型", provider: "openai", base_url: `http://127.0.0.1:${llmPort}/v1`, api_key: "k", model: "mock", stream: false }];
+  cfg.active_model = "假模型";
+  cfg.agent = { ...(cfg.agent || {}), max_steps: 4, tool_timeout_ms: 8000, llm_timeout_ms: 20000 };
+  cfg.mcp_servers = [];
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg, null, 2));
+
+  const now = Date.now();
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [
+      { username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: now },
+      { username: "xiaoli", salt: "x", hash: "x", role: "member", org: "o_acme", credits: 0, created_at: now },
+      { username: "tuiguo", salt: "x", hash: "x", role: "member", status: "disabled", credits: 0, created_at: now },
+    ],
+    tokens: { ["t" + crypto.randomBytes(12).toString("hex")]: { user: "boss", at: now } },
+  }));
+  fs.writeFileSync(path.join(home, "data", "orgs.json"), JSON.stringify({
+    orgs: [{ id: "o_acme", name: "Acme", plan: "team", seats: 10, root_dir: "", created_at: new Date(now).toISOString(), settings: {} }],
+    depts: [], invites: [],
+  }));
+  // 两条都是「刚过点的一次性任务」：排期表起来后第一轮 tick（约 20 秒）就会把它们叫起来。
+  // 跟对话里排出来的那条长得一样：只记了 user，没记 org
+  const due = new Date(now - 1000).toISOString();
+  const task = (id, user) => ({ id, name: id, cron: "", at: due, task: "写一份 定时产物.md", enabled: true, catch_up: true,
+    user, org: "", created_at: new Date(now).toISOString(), last_run: null, last_result: null });
+  fs.writeFileSync(path.join(home, "schedules.json"), JSON.stringify({ tasks: [task("sch_acme", "xiaoli"), task("sch_gone", "tuiguo")], runs: [] }));
+
+  const readStore = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "schedules.json"), "utf8")); } catch { return null; } };
+  const findAll = (dir, name, out = []) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) findAll(p, name, out); else if (e.name === name) out.push(path.relative(home, p));
+    }
+    return out;
+  };
+
+  const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  let passed = false;
+  try {
+    const { up, why } = await boot.wait();
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+
+    let st = null;
+    const t0 = Date.now();
+    for (;;) {
+      st = readStore();
+      const run = st && (st.runs || []).find((r) => r.task_id === "sch_acme" && r.ended_at);
+      const gone = st && (st.tasks || []).find((t) => t.id === "sch_gone");
+      if (run && gone && gone.disabled_reason) break;
+      assert(Date.now() - t0 < 75000, "等了 75 秒排期表还没把两条任务都处理完：" + JSON.stringify(st).slice(0, 600));
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const run = st.runs.find((r) => r.task_id === "sch_acme");
+    assert(run.ok === true, "负责人好好的那条没跑成：" + JSON.stringify(run).slice(0, 300));
+    const hits = findAll(home, "定时产物.md");
+    assert.deepStrictEqual(hits, [path.join("data", "tenants", "o_acme", "定时产物.md")],
+      "★别家组织成员的定时任务没在他自己组织的目录里跑★ 产物落在：" + JSON.stringify(hits) +
+      "。落在总部工作目录里 = 他的任务拿着总部的文件、总部的命令行开关在跑");
+
+    const rows = [];
+    const udir = path.join(home, "data", "usage");
+    for (const f of fs.existsSync(udir) ? fs.readdirSync(udir) : []) {
+      if (!f.endsWith(".jsonl")) continue;
+      for (const line of fs.readFileSync(path.join(udir, f), "utf8").split("\n")) {
+        try { const r = JSON.parse(line); if (r.sessionId === run.session_id) rows.push(r); } catch {}
+      }
+    }
+    assert(rows.length && rows.every((r) => r.user === "xiaoli"),
+      "★定时任务的用量没记在负责人头上★ 记在：" + JSON.stringify(rows.map((r) => r.user)) + "（该是 xiaoli）");
+
+    const gone = st.tasks.find((t) => t.id === "sch_gone");
+    assert(/已停用/.test(gone.disabled_reason) && gone.enabled === false,
+      "★负责人停用了，他排的任务照样跑★ 应当当场关掉并写明原因：" + JSON.stringify(gone).slice(0, 300));
+    assert(!st.runs.some((r) => r.task_id === "sch_gone"),
+      "停用的人的任务连一趟都不该开跑（开跑就要花钱、要动文件）：" + JSON.stringify(st.runs).slice(0, 300));
+    passed = true;
+  } finally {
+    boot.child.kill("SIGKILL");
+    llm.close();
+    await dropTempHome(home, passed, boot.child);
+  }
+  console.log("  ✓ 定时任务替负责人本人跑：落在他组织的目录、记他的账；人停用了任务当场关掉");
+}
+
 async function testMcpFailureReason() {
   const { McpManager } = require("../mcp");
   const mgr = new McpManager();
@@ -9711,6 +9875,7 @@ testCanvasEdgeVersion();
   await testMcpFailureReason();
   await testConnectorToggleAndTools();
   await testScheduleRunTrace();
+  await testScheduleRunsAsOwner();
   await testThinkingSwitch();
   await testThinkingSettingsApi();
   await testOnboardingWizardApi();
