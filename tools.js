@@ -3601,6 +3601,8 @@ async function executeToolCore(name, input, opts = {}) {
   }
   // 文件工具统一走策略解析：workspace 内默认放行、黑名单硬拦、workspace 外仅白名单
   const baseName = fileBase === ws() ? "" : path.basename(fileBase);
+  // 成果目录可以是两层（IM_对话/0930_做海报、定时任务/每日简报），模型照抄全路径的也得认出来
+  const baseRel = fileBase === ws() ? "" : path.relative(ws(), fileBase).split(path.sep).join("/");
   const resolveFile = (rel, mode) => {
     // 少给 path 是模型真会犯的错（本机 96 段会话里 7 次：write_file 2 次、edit_file 5 次，
     // 多半是参数 JSON 太长被截断，或者干脆漏了这一项）。老写法把空路径解析成工作目录本身，
@@ -3617,8 +3619,12 @@ async function executeToolCore(name, input, opts = {}) {
     // "同名目录套同名目录"没有任何一种正当写法，直接剥掉这一层。
     if (baseName) {
       const s0 = String(rel || "").replace(/\\/g, "/");
-      if (!path.isAbsolute(s0) && (s0 === baseName || s0.startsWith(baseName + "/"))) {
-        const fixed = s0.slice(baseName.length).replace(/^\/+/, "");
+      // 光秃秃的末段名只在它是应用起的名字（任务_0930_…、0930_…）时才剥：定时任务/每日简报 是用户起的任务名，
+      // 里面真建一个同名子文件夹是正当的，剥了就跟 run_shell 在同一个 cwd 下看到的对不上
+      const stamped = /^(?:任务_)?\d{4}_/.test(baseName);
+      const pre = [baseRel, stamped ? baseName : ""].find((p) => p && (s0 === p || s0.startsWith(p + "/")));
+      if (!path.isAbsolute(s0) && pre) {
+        const fixed = s0.slice(pre.length).replace(/^\/+/, "");
         console.warn(`[tools] ${name}: 路径多套了一层成果目录，已纠正 ${s0} → ${fixed || "."}`);
         rel = fixed || ".";
       }
@@ -3630,11 +3636,16 @@ async function executeToolCore(name, input, opts = {}) {
     }
     // 成果子目录下没有、工作空间根下有 → 用根下那个（读旧对话的产物/共享素材不用写全路径）
     // 兜底只认文件：兜到一个同名目录上，下游就是一句莫名其妙的 EISDIR
+    // 两层的成果目录（定时任务/每日简报）先看上一层：分文件夹以前，那条任务的产物摊在 定时任务/ 下，
+    // 它每天接着往上追加的那份汇总不能因为换了落点就「找不到」
     if (fileBase !== ws() && !fs.existsSync(r.path)) {
-      const r2 = security.resolvePathWithPolicy(sec, rel, ws());
-      try {
-        if (r2.allowed && fs.statSync(r2.path).isFile() && (mode !== "write" || seenHere(r2.path))) return r2.path;
-      } catch {}
+      const up = path.dirname(fileBase);
+      for (const b of up !== ws() && up.startsWith(ws() + path.sep) ? [up, ws()] : [ws()]) {
+        const r2 = security.resolvePathWithPolicy(sec, rel, ws(), b);
+        try {
+          if (r2.allowed && fs.statSync(r2.path).isFile() && (mode !== "write" || seenHere(r2.path))) return r2.path;
+        } catch {}
+      }
     }
     return r.path;
   };
@@ -4422,7 +4433,8 @@ function outputFiles() {
   // （只排除「恰好等于 DATA_DIR/data」的那一个路径）。
   const APP_DATA_DIR = dataPath("data") + path.sep;
   (function walk(dir, rel, depth) {
-    if (depth > 3 || all.length >= WALK_CAP) return;
+    // IM_对话/、定时任务/ 下的成果文件夹本身占两层，多给一层（跟 agent.js scanTree 同一条规矩）
+    if (depth > (/^(IM_对话|定时任务)(\/|$)/.test(rel) ? 4 : 3) || all.length >= WALK_CAP) return;
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });

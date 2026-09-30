@@ -124,7 +124,10 @@ function compactNote(proc) {
 }
 
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
-const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
+const sessionDirs = new Map(); // sessionId -> 该对话在当前根下的成果子文件夹（成果面板标「本对话」）
+// sessionId -> 该对话最近用的那格，不管在不在当前根下。只拿来找历史里的附件：换过根以后 sessionDirs 清掉了，
+// 附件缩略图还得拼得出「任务_X/图.jpg」，服务端按这个名字挨个根去找
+const sessionAttachDirs = new Map();
 // 附件原名 -> /api/upload 回的工作区相对路径。这是最准的一份：上传那一刻服务端亲口说了
 // 「我把它放这儿了」，不用再靠 sessionDirs 去猜。只活在这一次开着的窗口里，
 // 刷新之后老回合走 attachRel 里后面两档兜底
@@ -942,7 +945,7 @@ const BUBBLE_PIC_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
 function attachRel(name, sid) {
   const memo = attachPaths.get(name);
   if (memo) return { rel: memo, alt: "" };
-  const dir = sessionDirs.get(sid);
+  const dir = sessionDirs.get(sid) || sessionAttachDirs.get(sid);
   return dir ? { rel: dir + "/" + name, alt: name } : { rel: name, alt: "" };
 }
 /** 缩略图地址。跟产出卡共用一套口径：一律 ?thumb=320，svg 除外（矢量栅格化反而更大更糊） */
@@ -1803,6 +1806,10 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       if (ev.dir && sessionDirs.get(turnSid) !== ev.dir) {
         sessionDirs.set(turnSid, ev.dir);
         openDirs.add(ev.dir); // 第一次知道就默认展开；用户手动折叠后不再打扰
+        if (turnSid === sessionId) renderFiles(filesCache);
+      } else if (!ev.dir && sessionDirs.has(turnSid)) {
+        // 空串 = 这一轮就在根上读写（中途换到了自选文件夹）。旧的那格留着，成果区就会摆「本对话 0」
+        sessionDirs.delete(turnSid);
         if (turnSid === sessionId) renderFiles(filesCache);
       }
     } else if (ev.type === "goal") {
@@ -3001,11 +3008,25 @@ let fileQuery = "";
 // 以前整个工作空间一锅端，几个对话一起跑，打开成果区满眼是别的对话的文件。
 // 不落盘：换一个对话就回到「本对话」（openSession / 新任务里清掉）
 let filesAllScope = false;
+/** 换过根之后重新认一遍这条对话的那格（服务端只给当前根下的，没有就是 null） */
+function resyncSessionDir(sid) {
+  if (sessionDirs.delete(sid) && sid === sessionId && filesCache) renderFiles(filesCache);
+  fetch("/api/session/" + encodeURIComponent(sid)).then((r) => r.json()).then((d) => {
+    if (!d || !d.dir || sessionDirs.has(sid)) return; // 等回来之前这一轮已经报过 dir 了，以那个为准
+    sessionDirs.set(sid, d.dir);
+    if (sid === sessionId && filesCache) renderFiles(filesCache);
+  }).catch(() => {});
+}
+/** 当前根是不是按对话分成果文件夹的那种（默认工作空间、应用替人建的项目/租户目录） */
+function wsPerChat() {
+  if (!settingsCache) return false;
+  return !!(settingsCache.workspace_per_chat ?? settingsCache.workspace_is_default);
+}
 /** 成果区此刻该摆哪些：{ list, scoped, outside }。scoped=true 时 list 只含本对话文件夹里的 */
 function filesInScope(all) {
   const files = all || [];
   const curDir = sessionDirs.get(sessionId);
-  const own = !!curDir || !!(settingsCache && settingsCache.workspace_is_default);
+  const own = !!curDir || wsPerChat();
   if (!own || filesAllScope) return { list: files, scoped: false, outside: 0, all: files.length };
   const list = curDir ? files.filter((f) => String(f.name || "").startsWith(curDir + "/")) : [];
   return { list, scoped: true, outside: files.length - list.length, all: files.length };
@@ -5384,8 +5405,15 @@ document.addEventListener("click", () => closeAllMenus());
 // ================= 模型选择（输入卡片右下角，仿官方 Auto ▾） =================
 const modelMenu = setupPicker("model-btn", "model-menu");
 async function refreshSettingsCache() {
+  const wasPerChat = wsPerChat();
+  const wasRoot = settingsCache && settingsCache.workspace_dir;
   settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
   if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
+  // 换了项目/工作空间，「本对话 / 全部」该不该出现跟着变；不重画的话要等下一次刷文件列表才对得上
+  if (settingsCache && wsPerChat() !== wasPerChat && filesCache) renderFiles(filesCache);
+  // 开着一条对话换了根：手里那格的名字是相对旧根的，拿去筛新根就是「本对话 0」，
+  // 行内「存一份」也会按这个名字在新根下建个空壳。先清掉，再问服务端这条对话在新根下有没有自己那格
+  if (settingsCache && wasRoot && settingsCache.workspace_dir !== wasRoot && sessionId) resyncSessionDir(sessionId);
   if (settingsCache) {
     // 首次拿到配置时给还没动过的新对话套上「沿用上次模型」；之后的刷新不再动，免得盖掉用户手动清掉的选择
     if (!refreshSettingsCache._inited) { refreshSettingsCache._inited = true; if (sessionId === null && !pendingModel) pendingModel = defaultPendingModel(); }

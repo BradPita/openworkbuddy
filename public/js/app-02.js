@@ -1382,6 +1382,8 @@ async function openSession(id, opts) {
   if (!s && data.title) document.getElementById("session-title").textContent = (data.kind === "schedule" ? "定时 · " : "") + stripSceneTag(data.title);
   // 下面这几张表一律按 sid 写：await 期间全局 sessionId 已经可能变过（上面的号挡住了，这里再兜一层）
   if (data.dir && sessionDirs.get(sid) !== data.dir) { sessionDirs.set(sid, data.dir); openDirs.add(data.dir); }
+  else if (data.dir === null) sessionDirs.delete(sid); // 服务端说这对话在当前根下没有自己的那格（换过根），别拿旧的去筛
+  if (data.att_dir) sessionAttachDirs.set(sid, data.att_dir); else sessionAttachDirs.delete(sid);
   filesAllScope = false; // 成果区跟着换到这个对话自己的那一格
   renderFiles(filesCache);
   if (data.model) sessionModels.set(sid, data.model); else sessionModels.delete(sid);
@@ -2056,6 +2058,8 @@ async function reattachOne(sid) {
   try { data = await fetch("/api/session/" + encodeURIComponent(sid), { signal: ctl.signal }).then((r) => r.json()); } catch {} finally { clearTimeout(tmo); }
   if (runningSessions.has(sid)) return; // 等记录那会儿这一趟已经从别处接上了（本页刚发的、另一次接回）
   if (data && data.dir) sessionDirs.set(sid, data.dir);
+  else if (data && data.dir === null) sessionDirs.delete(sid);
+  if (data && data.att_dir) sessionAttachDirs.set(sid, data.att_dir);
   if (data && data.model) sessionModels.set(sid, data.model);
   if (data && data.goal) sessionGoals.set(sid, data.goal);
   const t = (data && data.transcript) || [];

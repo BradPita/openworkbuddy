@@ -227,6 +227,11 @@ const FEV0 = APP02X.indexOf('} else if (ev.type === "files") {');
 const FEV1 = APP02X.indexOf('} else if (ev.type === "sweep")', FEV0);
 if (FEV0 < 0 || FEV1 <= FEV0) throw new Error("app-01.js 里 files 事件那一支找不到了，前端测试没法验接线");
 const FILES_EV_SRC = APP02X.slice(FEV0, FEV1);
+// dir 事件那一支：本对话的成果文件夹是哪一格。空串 = 这一轮在根上读写（中途换成了自选文件夹）
+const DEV0 = APP02X.indexOf('if (ev.type === "dir") {');
+const DEV1 = APP02X.indexOf('} else if (ev.type === "goal")', DEV0);
+if (DEV0 < 0 || DEV1 <= DEV0) throw new Error("app-01.js 里 dir 事件那一支找不到了，前端测试没法验接线");
+const DIR_EV_SRC = APP02X.slice(DEV0, DEV1) + "}";
 
 const TURNOUT_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body></body>";
 
@@ -1534,6 +1539,29 @@ const FILELIST_CHECKS = `
   renderFiles(data);
   ok("新对话还没产出：给一句人话，不摆别的对话的文件", /这个对话还没产出文件/.test(el.textContent) && !el.querySelector(".dir-head, .file-item"), el.textContent.slice(0, 80));
   ok("  └ 想看全部也有路：「全部对话」那档在", scopeSeg().length === 2 && scopeSeg()[0].textContent === "本对话 0", scopeSeg().map((b) => b.textContent).join("|"));
+  // 没填目录的项目（应用替人建在 projects/<名>）也按对话分：认的是服务端报的 workspace_per_chat，不只是「默认工作空间」
+  window.settingsCache = { platform_owner: true, workspace_is_default: false, workspace_per_chat: true };
+  renderFiles(data);
+  ok("应用替项目建的目录：新对话一样只摆本对话那一格", /这个对话还没产出文件/.test(el.textContent) && scopeSeg()[0].textContent === "本对话 0", el.textContent.slice(0, 80));
+  window.settingsCache = { platform_owner: true, workspace_is_default: false, workspace_per_chat: false };
+  renderFiles(data);
+  ok("反向对照：用户自选的文件夹不分对话，原样全摊开", document.getElementById("fp-scope").hidden && !/这个对话还没产出文件/.test(el.textContent), el.textContent.slice(0, 80));
+  // 对话中途换到自选文件夹：服务端那一轮发 dir ""。旧的那格不清掉，成果区就摆「本对话 0」，新产出全被筛掉
+  {
+    window.sessionId = "s_now"; window.settingsCache = { platform_owner: true, workspace_per_chat: false };
+    const wasOpen = openDirs.has("任务_0903_本对话"); // dir 事件会顺手把文件夹设成展开，测完放回原样，别影响后面几节
+    const onDir = new Function("ev", "turnSid", ${JSON.stringify(DIR_EV_SRC)});
+    onDir({ type: "dir", dir: "" }, "s_now");
+    ok("dir 空串：把这个对话记的旧文件夹清掉", !sessionDirs.has("s_now"), JSON.stringify([...sessionDirs]));
+    renderFiles(data);
+    ok("  └ 清掉之后成果区摊开根上的文件，不再摆「本对话 0」", document.getElementById("fp-scope").hidden && el.querySelectorAll(".dir-head, .file-item").length > 0, el.textContent.slice(0, 80));
+    onDir({ type: "dir", dir: "任务_0903_本对话" }, "s_now");
+    ok("换回来又发了文件夹名：照样记上", sessionDirs.get("s_now") === "任务_0903_本对话");
+    onDir({ type: "dir", dir: "" }, "s_bg");
+    ok("反向对照：别的对话发的空串不动这个对话的", sessionDirs.get("s_now") === "任务_0903_本对话");
+    if (!wasOpen) openDirs.delete("任务_0903_本对话");
+    window.sessionId = null; window.settingsCache = { platform_owner: true, workspace_is_default: true };
+  }
   // 反向对照：本对话之外一个文件都没有时不摆这组开关——切了看不出差别
   window.sessionId = "s_now"; window.settingsCache = { platform_owner: true };
   renderFiles(data.slice(0, 2));
@@ -2355,7 +2383,7 @@ const WIN_STUBS = TRAIL_STUBS + "\n" + [
   "var closeAssistView = () => {}, stopCliWatch = () => {}, attnSeen = () => {}, resetCtxMeter = () => {}, closePreview = () => {}, renderCtxMeter = () => {};",
   "var sessions = [], activeLane = 'work', laneOfSession = () => activeLane, renderLaneTabs = () => {}, renderHistory = () => {};",
   "var runningSessions = new Map(), updateSendUI = () => {}, planPlaceholder = '';",
-  "var sessionDirs = new Map(), openDirs = new Set(), filesAllScope = false, renderFiles = () => {};",
+  "var sessionDirs = new Map(), sessionAttachDirs = new Map(), openDirs = new Set(), filesAllScope = false, renderFiles = () => {};",
   "var sessionModels = new Map(), updateModelLabel = () => {}, sessionGoals = new Map(), renderGoalCard = () => {};",
   "var currentUser = null, renderUserChip = () => {};",
   "var SCROLL_REAL = " + scrollKit(WIN_SCROLL_SRC) + ";",
@@ -13485,10 +13513,10 @@ const BUBBLE_CHECKS = `
   const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON",
     "turnSid", "attachRel", "attachThumb", "previewFile", "BUBBLE_PIC_RE", "shown", window.__BUBBLE_SRC); // shown：画布那类入口的「人说的那句」，这一屏不传
   // 「这份素材躺在哪儿」那三档用真源码，不用测试自己编一份：编一份的话，线上拼错了这儿照样绿
-  const attachPaths = new Map(), sessionDirs = new Map();
+  const attachPaths = new Map(), sessionDirs = new Map(), sessionAttachDirs = new Map();
   const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
-  const RESOLVE = new Function("attachPaths", "sessionDirs", "fpath", "curStamp",
-    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, fpath, () => "");
+  const RESOLVE = new Function("attachPaths", "sessionDirs", "sessionAttachDirs", "fpath", "curStamp",
+    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, sessionAttachDirs, fpath, () => "");
   let pvOpened = [];
   const previewFile = (rel, root) => { pvOpened.push(rel); };
   const stage = document.createElement("div");
@@ -13610,6 +13638,17 @@ const BUBBLE_CHECKS = `
        btn.classList.contains("gone") && btn.querySelector(".bpic-nm").textContent.includes("截图.png"), btn.outerHTML.slice(0, 200));
     ok("退成名字条时把话说清楚，别让人以为整个功能坏了",
        /改名|移走|删掉/.test(btn.title) && !btn.title.includes("点击预览"), btn.title);
+  }
+  {
+    // 对话中途换了文件夹：成果区那格清空了（新根下还没有这条对话的文件夹），可素材是在老文件夹里传的
+    attachPaths.clear(); sessionDirs.clear();
+    sessionAttachDirs.set("s9", "任务_0930_看图");
+    const btn = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
+    ok("换了文件夹之后：素材照样按它上传时那个文件夹找", btn.dataset.rel === "任务_0930_看图/截图.png", btn.dataset.rel);
+    sessionDirs.set("s9", "任务_0930_新根");
+    const b2 = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
+    ok("反向对照：当前根下有这条对话的文件夹时仍以它为准", b2.dataset.rel === "任务_0930_新根/截图.png", b2.dataset.rel);
+    sessionAttachDirs.clear();
   }
   {
     attachPaths.clear(); sessionDirs.clear();

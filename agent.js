@@ -3927,13 +3927,16 @@ function scanTree(wsb, sweep, fs, path, m) {
   try { fs.mkdirSync(path.join(m.root, ".tmp"), { recursive: true }); } catch {}
   const opts = { appDataDir: m.appDataDir, maxDepth: Infinity };
   const full = wsb.walkAll(m.root, opts);
-  // 面板那份（outputFiles 口径）：最深 3 层。整树没撞上限时直接从整树里挑，不再多走一趟；
-  // 撞了上限才单走一趟 3 层的。3 层的也撞上限（浅层就两万个文件）时交回主线程按老办法走，这里不猜
+  // 面板那份（outputFiles 口径）：最深 3 层；IM_对话/、定时任务/ 下的成果文件夹本身就占了两层，放宽到 4 层，
+  // 不然那里面一个子文件夹（网站/index.html）整个从面板上消失。跟 tools.js outputFiles 同一条规矩。
+  // 整树没撞上限时直接从整树里挑，不再多走一趟；撞了上限才单走一趟浅的。
+  // 浅的也撞上限（浅层就两万个文件）时交回主线程按老办法走，这里不猜
+  const shallow = (f) => f.name.split("/").length <= (/^(IM_对话|定时任务)\//.test(f.name) ? 4 : 3);
   let three = null;
-  if (!full.capped) three = full.files.filter((f) => f.name.split("/").length <= 3);
+  if (!full.capped) three = full.files.filter(shallow);
   else {
-    const sh = wsb.walkAll(m.root, { appDataDir: m.appDataDir, maxDepth: 3 });
-    if (sh.files.length < wsb.WALK_CAP) three = sh.files.slice();
+    const sh = wsb.walkAll(m.root, { appDataDir: m.appDataDir, maxDepth: 4 });
+    if (sh.files.length < wsb.WALK_CAP) three = sh.files.filter(shallow);
   }
   const top = three ? three.sort((a, b) => b.mtime.localeCompare(a.mtime)).slice(0, m.filesCap) : null;
   // 整树撞了上限：每条对话自己的成果文件夹单独补走一趟（turnSnapshot 同一个做法）
@@ -4327,23 +4330,31 @@ function makeOwnership() {
   const dirOwners = new Map();  // 任务目录名 -> runToken
   const fileClaims = new Map(); // 文件名 -> { owner, mtime }
   const writes = new Map();     // 文件名 -> { owner, at }：工具点名写的
-  const topSeg = (n) => { const s = String(n || ""); const i = s.indexOf("/"); return i < 0 ? s : s.slice(0, i); };
+  const norm = (n) => String(n || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  // 按整条文件夹路径登记，不按头一段：IM_对话/0930_做海报 和 IM_对话/0930_查天气 是两段会话，
+  // 只看头一段它俩都是「IM_对话」，并排跑时互相把对方的产出认成自己的
+  const under = (name, dir) => { const d = norm(dir); return !!d && norm(name).startsWith(d + "/"); };
+  /** 文件所在的、已登记过的那个文件夹（有嵌套取最深的） */
+  const ownerDirOf = (name) => {
+    const segs = norm(name).split("/");
+    for (let i = segs.length - 1; i > 0; i--) { const d = segs.slice(0, i).join("/"); if (dirOwners.has(d)) return d; }
+    return "";
+  };
 
   /** 任务开跑时登记自己的文件夹 */
   function claimBaseDir(baseDir, runToken) {
-    const top = topSeg(baseDir);
-    if (!top) return;
+    const d = norm(baseDir);
+    if (!d) return;
     if (dirOwners.size > 500) dirOwners.clear();
-    dirOwners.set(top, runToken);
+    dirOwners.set(d, runToken);
   }
 
   /** 这个文件躺在「别的任务已登记的文件夹」里吗 */
   function inForeignDir(name, baseDir, runToken) {
-    const top = topSeg(name);
-    if (!top || top === String(name || "")) return false; // 根目录下的文件，没有文件夹归属可言
-    if (top === topSeg(baseDir)) return false;            // 自己的文件夹
-    const owner = dirOwners.get(top);
-    return owner !== undefined && owner !== runToken;
+    if (!norm(name).includes("/")) return false; // 根目录下的文件，没有文件夹归属可言
+    if (under(name, baseDir)) return false;      // 自己的文件夹
+    const d = ownerDirOf(name);
+    return !!d && dirOwners.get(d) !== runToken;
   }
 
   /**
@@ -4383,8 +4394,7 @@ function makeOwnership() {
       // 同一版本已被别的并行任务认领 → 是它的产出。仍有一个小窗口：对方写完文件但
       // 它那步工具还没跑完、没来得及认领——误报也只是多摆一张卡片，不丢文件
       if (claim && claim.owner !== runToken && claim.mtime === file.mtime) return false;
-      const top = topSeg(name);
-      const inMine = top !== name && top === topSeg(baseDir);
+      const inMine = under(name, baseDir);
       if (!inMine && cede && cede(file)) return false;
     }
     if (fileClaims.size > 1000) fileClaims.clear();

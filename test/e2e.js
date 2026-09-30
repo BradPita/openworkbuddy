@@ -4326,9 +4326,11 @@ function testTaskDirLifecycle() {
   const srv = srcLib.src("server");
 
   // ── 一、文件夹名从哪儿来 ──────────────────────────────────────
-  const sm = /const ANCHOR = [\s\S]*?const slug = [^\n]*\n/.exec(srv);
-  assert.ok(sm, "server.js 里找不到取文件夹名的那几行（assignSessionDir 被改过？）");
-  const slugOf = new Function("sess", "message", sm[0] + "; return slug;");
+  // 洗字的活在 lib/task-dirs.js，assignSessionDir 里只剩「拿哪句话、洗完是空的叫什么」这一行
+  const taskDirs = require(path.join(__dirname, "..", "lib", "task-dirs.js"));
+  const sm = /function assignSessionDir\([\s\S]*?(const slug = [^\n]*\n)/.exec(srv);
+  assert.ok(sm, "server.js 里找不到取文件夹名的那一行（assignSessionDir 被改过？）");
+  const slugOf = new Function("taskDirs", "sess", "message", sm[1] + "; return slug;").bind(null, taskDirs);
 
   // 【任务类型：X】是喂给模型的前缀，起标题时早就洗掉了，文件夹名这儿漏过一次——
   // 于是真实数据里躺着「任务_0826_任务类型数据分析及可视化_3」，用户看到的是分类词，
@@ -4371,8 +4373,14 @@ function testTaskDirLifecycle() {
     fs.mkdirSync(path.join(ws, "任务_0824_刚建的")); // 不改 mtime：模拟正在跑的那一轮
     fs.writeFileSync(path.join(ws, "任务_0825_其实是个文件"), "x");
 
-    const build = (dp) => new Function("fs", "path", "getWorkspaceDir", "dataPath", em[0] + "; return listEmptyTaskDirs;")(fs, path, () => ws, dp);
-    const list = build(() => ws);
+    // 「这个根分不分文件夹」也用 server.js 里那份真源码判，不在测试里另抄一份
+    const pm = /function perChatHere\(\) \{[\s\S]*?\n}/.exec(srv);
+    assert.ok(pm, "server.js 里找不到 perChatHere（被改名了？）");
+    const org = { tenantsDir: () => path.join(dir, "tenants") };
+    // dataPath("workspace") = ws、dataPath("projects") = dir/projects：跟真实数据根一样的摆法
+    const build = (wsNow) => new Function("fs", "path", "getWorkspaceDir", "dataPath", "taskDirs", "org",
+      pm[0] + "\n" + em[0] + "; return listEmptyTaskDirs;")(fs, path, () => wsNow, (...p) => path.join(dir, ...p), taskDirs, org);
+    const list = build(ws);
     const got = list().sort();
 
     assert.deepStrictEqual(got, ["任务_0821_空的", "任务_0823_只有访达垃圾"], "空文件夹认错了：" + JSON.stringify(got));
@@ -4387,7 +4395,15 @@ function testTaskDirLifecycle() {
     assert.strictEqual(list({ quietMs: 0, now: Date.now() + 1000 }).length, 3, "把静默期设成 0 之后刚建的那个也该进来（证明上一条不是靠别的原因绿的）");
 
     // 用户自选工作目录：压根不分配成果文件夹，一个都不许碰
-    assert.deepStrictEqual(build(() => path.join(dir, "别处"))(), [], "用户自选工作目录下还去扫成果文件夹");
+    fs.mkdirSync(path.join(dir, "别处"));
+    fs.mkdirSync(path.join(dir, "别处", "任务_0826_用户自己起的名"));
+    fs.utimesSync(path.join(dir, "别处", "任务_0826_用户自己起的名"), new Date(0), new Date(Date.now() - 3600e3));
+    assert.deepStrictEqual(build(path.join(dir, "别处"))(), [], "用户自选工作目录下还去扫成果文件夹");
+    // 没填目录时应用替项目建的 projects/<名>：那也是按对话分文件夹的根，空的一样要收
+    const proj = path.join(dir, "projects", "小红书");
+    fs.mkdirSync(path.join(proj, "任务_0827_空的"), { recursive: true });
+    fs.utimesSync(path.join(proj, "任务_0827_空的"), new Date(0), new Date(Date.now() - 3600e3));
+    assert.deepStrictEqual(build(proj)(), ["任务_0827_空的"], "应用替项目建的目录里，空成果文件夹没认出来");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -6813,7 +6829,8 @@ async function testScheduleRunsAsOwner() {
     const run = st.runs.find((r) => r.task_id === "sch_acme");
     assert(run.ok === true, "负责人好好的那条没跑成：" + JSON.stringify(run).slice(0, 300));
     const hits = findAll(home, "定时产物.md");
-    assert.deepStrictEqual(hits, [path.join("data", "tenants", "o_acme", "定时产物.md")],
+    // 租户根是应用替人建的，按任务名分一格（任务名 sch_acme 洗成 schacme）；要紧的是在 o_acme 底下，不在总部
+    assert.deepStrictEqual(hits, [path.join("data", "tenants", "o_acme", "定时任务", "schacme", "定时产物.md")],
       "★别家组织成员的定时任务没在他自己组织的目录里跑★ 产物落在：" + JSON.stringify(hits) +
       "。落在总部工作目录里 = 他的任务拿着总部的文件、总部的命令行开关在跑");
 
@@ -16103,7 +16120,7 @@ async function testRunOwnership() {
   // 成果目录——不查归属的话，随便一个登录用户都能把自己生成的图写进别人的交付文件夹里
   const direct = routeOf('app.post("/api/tool/run"');
   const iOwn = direct.indexOf("sessionAllowed(user, sess)");
-  const iDir = direct.indexOf("sess.dir");
+  const iDir = direct.search(/sessDirOf\(sess\)|sess\.dir\b/); // 现在经 sessDirOf 取（换过根的对话要认回自己那格）
   assert.ok(iOwn > 0, "POST /api/tool/run 没查会话归属 → 拿到别人的会话 id 就能往他的成果目录里写文件");
   assert.ok(iDir > 0 && iOwn < iDir, "POST /api/tool/run 的归属检查排在用 sess.dir 之后了，等于没查");
   // 白名单必须只有一份（agent.js 的 DIRECT_TOOLS）。路由自己去 require tools.executeTool 的话，

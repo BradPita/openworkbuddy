@@ -34,6 +34,7 @@ const { createComposeRouter } = require("./routes/compose"); // 一键合成的�
 const libraryRoutes = require("./routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createComposeJobs } = require("./lib/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
+const taskDirs = require("./lib/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
@@ -365,27 +366,51 @@ function sweepInterruptedRuns() {
 }
 const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件夹名：两个新对话同时起步不许撞同名
 
+/** 当前工作目录下要不要按对话分成果文件夹（口径见 lib/task-dirs.js 开头） */
+function perChatHere() {
+  return taskDirs.perChatRoot(getWorkspaceDir(), { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: org.tenantsDir() });
+}
+/** 会话记的成果文件夹还在不在「此刻这个根」下。老会话没记根的，那时只有默认工作空间会分文件夹 */
+function sessDirHere(sess) {
+  return !!(sess && sess.dir) && taskDirs.samePlace(sess.root || dataPath("workspace"), getWorkspaceDir());
+}
+/**
+ * 会话在「此刻这个根」下的成果文件夹：正用着的那格，或者以前在这个根下用过、盘上还在的那格；都没有给 null。
+ * 会话只有一个 dir 槽的时候，聊到一半去别的项目转一圈再回来，原来那格就被新根的名字盖掉了，
+ * 回来只能另起一个 任务_…_2，前后两半成果拆在两个文件夹里，「本对话」也只认后一半
+ */
+function sessDirOf(sess) {
+  if (sessDirHere(sess)) return sess.dir;
+  const d = sess && sess.dirs ? sess.dirs[taskDirs.canonDir(getWorkspaceDir())] : null;
+  return d && fs.existsSync(path.join(getWorkspaceDir(), d)) ? d : null;
+}
+/** 换走 dir 之前按根记一笔（最多记 20 个根，先进先出） */
+function stashSessionDir(sess) {
+  if (!sess || !sess.dir) return;
+  const dirs = sess.dirs || (sess.dirs = {});
+  const k = taskDirs.canonDir(sess.root || dataPath("workspace"));
+  delete dirs[k];
+  dirs[k] = sess.dir;
+  for (const old of Object.keys(dirs).slice(0, -20)) delete dirs[old];
+}
+/** 当前根下这个会话已经有自己的那格就接着用它；返回用上没有 */
+function useSessionDirHere(sess) {
+  if (sessDirHere(sess)) return true;
+  const d = sessDirOf(sess);
+  if (!d) return false;
+  stashSessionDir(sess);
+  sess.dir = d;
+  sess.root = getWorkspaceDir();
+  return true;
+}
+
 /** 给对话分配成果文件夹（任务_月日_标题），并把「消息发出前就传上来的」附件一起搬进去。
  *  搬运失败一概不抛：文件夹没建成事小，因为一个附件搬不动就让整条对话起不来事大。*/
 function assignSessionDir(sess, message) {
-  const d = new Date();
-  const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
-  // 【任务类型：X】是给模型看的前缀，起标题时早就洗掉了，文件夹名这儿漏了——
-  // 于是真实数据里躺着一个「任务_0826_任务类型数据分析及可视化_3」，
-  // 用户看到的是分类词，真正做的那件事（篮球减肥训练计划）一个字都没进名字。
-  // 素材锚点（【图片 1：IMG_8037.JPG】）是发送时自动补进正文的，不是用户写的字。
-  // 不洗掉就会得到「任务_0921_图片1IMG8037JP」——序号和被砍了一半的扩展名占满 12 个格，
-  // 用户真正问的那句「这是什么」一个字都没进去。
-  const ANCHOR = /【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/gu;
-  const raw = String(sess.title || message);
-  const src = raw.replace(/^\s*【任务类型：[^】]*】\s*/, "").replace(ANCHOR, " ");
-  const clean = (t) => String(t).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12);
-  // 拖张图进来、一个字没写：拿文件名（去掉扩展名）兜底，比清一色的「对话」认得出来
-  const firstName = ((raw.match(/【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/u) || [])[1] || "").replace(/\.[^.]+$/, "");
-  const slug = clean(src) || clean(firstName) || "对话";
-  let dir = `任务_${stamp}_${slug}`;
-  for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
+  const slug = taskDirs.taskSlug(sess.title || message) || "对话";
+  const dir = taskDirs.freeDir(getWorkspaceDir(), `任务_${taskDirs.dayStamp()}_${slug}`, assignedDirs);
   assignedDirs.add(dir);
+  stashSessionDir(sess); // 上一个根下的那格记着，回那边时接着用
   sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
   // 连**哪个根**下的这个文件夹也一起记住。只记相对名的后果就是用户换一次工作目录，
   // 这条对话的成果全部变成「文件不存在」——文件没丢，是坐标系换了而没人记得旧的那套。
@@ -1705,6 +1730,7 @@ app.get("/api/settings", (req, res) => {
     workspace_dir: getWorkspaceDir(),
     // 默认工作空间里每个对话各有一个成果文件夹：成果区据此默认只摆「本对话」那一格
     workspace_is_default: path.resolve(getWorkspaceDir()) === dataPath("workspace"),
+    workspace_per_chat: perChatHere(), // 成果面板靠它决定新对话先摆「本对话」那一格，还是整个目录摊开
     // Key 从不发原文，谁来问都一样：回一串八颗星（= 「没改」的暗号）+ has_key（配没配）。
     // 平台管理员多拿一个 key_hint（sk-…4f2a）用来认「我装的是哪一把」；普通成员连这截也没有——
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手。
@@ -5165,14 +5191,18 @@ app.post("/api/upload", (req, res) => {
     // 归属必须查：这个接口是拿请求体里的 sessionId 直接取会话的，不查就等于
     // 「知道一个会话 id 就能往别人的成果文件夹里写文件」。会话 id 会出现在链接和截图里，不是秘密。
     if (sess && !sessionAllowed(req.user, sess)) return res.status(403).json({ error: "这条对话不属于你" });
-    const rel = sess && sess.dir ? path.join(sess.dir, base) : base;
+    // 跟对话那条路同一个判据：这个根分不分文件夹、这条对话在这个根下有没有自己那格。
+    // 光看 sess.dir 的话，换过根以后拿旧根下的名字在新根里建出一个没人认的同名文件夹，附件就丢在那儿了
+    const perChat = !!sess && perChatHere();
+    const own = perChat ? sessDirOf(sess) : null;
+    const rel = own ? path.join(own, base) : base;
     const p = safePath(rel);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, Buffer.from(data_b64, "base64"));
     // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
     // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
     noteUserInput(rel);
-    if (sess && !sess.dir) {
+    if (perChat && !own) {
       sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== base).concat(base);
     }
     // 连相对路径一起回：前端那枚 chip 要按这个路径把文件打开给用户看。
@@ -5495,7 +5525,7 @@ global.__openworkbuddyPetTool = {
 // 这时候把它搬走就等于把这一轮的产出打断。10 分钟的静默期换掉这个风险，很值。
 function listEmptyTaskDirs({ quietMs = 600000, now = Date.now() } = {}) {
   const ws = getWorkspaceDir();
-  if (path.resolve(ws) !== dataPath("workspace")) return []; // 用户自选目录不分配成果文件夹，也就没这回事
+  if (!perChatHere()) return []; // 用户自选目录不分配成果文件夹，也就没这回事
   let names = [];
   try { names = fs.readdirSync(ws); } catch { return []; }
   return names.filter((n) => {
@@ -6355,7 +6385,8 @@ app.post("/api/tool/run", async (req, res) => {
   if (sessionId) {
     const sess = getSession(sessionId);
     if (!sessionAllowed(user, sess)) return res.status(403).json({ error: "这条对话不属于你" });
-    if (path.resolve(getWorkspaceDir()) === dataPath("workspace")) baseDir = sess.dir || null;
+    const own = perChatHere() ? sessDirOf(sess) : null;
+    if (own) baseDir = own;
     if (sess.title) label = sess.title.slice(0, 24);
   }
   // 对话自己的成果目录优先；没有才用画布给的 subdir
@@ -6631,14 +6662,17 @@ app.post("/api/chat", async (req, res) => {
       })
       .catch(() => null);
   }
-  // 默认工作空间：每个对话固定一个成果子文件夹（任务_月日_标题），根目录不再越堆越乱；
-  // 用户自选的工作目录 / 项目目录保持原地读写不变（素材要在原文件夹里就地处理）
+  // 应用自己建的根（默认工作空间、没填目录的项目、租户根）：每个对话固定一个成果子文件夹（任务_月日_标题），
+  // 根目录不再越堆越乱；用户自选的现成文件夹保持原地读写（素材要在原文件夹里就地处理）。
+  // 聊到一半换了根：旧文件夹留在旧根下，这边另起一个。拿旧名字在新根下接着写，落点就成了一个没人认的同名新文件夹
   let taskBaseDir = null;
-  if (path.resolve(getWorkspaceDir()) === dataPath("workspace")) {
-    if (!sess.dir) assignSessionDir(sess, message);
+  if (perChatHere()) {
+    if (!useSessionDirHere(sess)) assignSessionDir(sess, message);
     taskBaseDir = sess.dir;
   }
-  if (taskBaseDir) send({ type: "dir", dir: taskBaseDir }); // 成果面板标「本对话」用；不进回放记录
+  // 成果面板标「本对话」用；不进回放记录。换到自选文件夹时发空串：面板手里还是上一个根里的文件夹名，
+  // 拿它去筛这边摊在根上的文件，永远是「本对话 0」
+  send({ type: "dir", dir: taskBaseDir || "" });
   // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
   const goalMode = modes.isGoalMode(mode);
   if (goalMode && (!sess.goal || sess.goal.status !== "active")) {
@@ -7147,7 +7181,10 @@ app.get("/api/session/:id", (req, res) => {
   // title/kind 是给「从别处点进来」的那几条路用的：定时任务的执行过程、搜索结果、评测页。
   // 这几段会话不在侧栏列表里（定时任务那种是故意不进的），前端就没地方取标题——
   // 于是点开「看执行过程」，顶上写的是光秃秃一个「任务」，看不出这是哪条定时任务跑的哪一趟。
-  res.json({ transcript: s.transcript, dir: s.dir || null, model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
+  // dir 只在这条对话的文件夹就在「此刻这个根」下时给：换了根还给旧名字，面板拿它去筛新根，只会筛出一片空
+  // dir 管「本对话」筛哪一格，只给当前根下的；att_dir 管历史里附件缩略图去哪找——换过根照样得看得见，
+  // 文件在旧根那格里，按名字找得回来（rootedPath 会挨个根试）
+  res.json({ transcript: s.transcript, dir: perChatHere() ? sessDirOf(s) : null, att_dir: s.dir || null, model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
 });
 
 // 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
@@ -7489,6 +7526,97 @@ function scheduleOrgProblem(item) {
 }
 
 /**
+ * IM 对话和定时任务的成果文件夹。以前两条路各挤一个：飞书/微信来的所有对话全进 IM_对话/，
+ * 所有定时任务全进 定时任务/，两个群各让做一份「周报.docx」，后到的那份就把先到的盖了。
+ *
+ * 现在 IM 按会话分：一段会话 = 头一回聊、或闲置超时被清空后重新聊起来的那一段，文件夹叫
+ * IM_对话/月日_头一句话；定时任务按任务名分：定时任务/任务名，同一条任务每次跑都回这里，
+ * 跟它上次的产出待在一起。只在应用自己建的根下分，口径跟网页对话同一条（perChatHere）。
+ *
+ * 「会话 / 任务 → 文件夹」那张表要落盘：不落的话重启一次，聊到一半的那段会话就换了个新文件夹。
+ * 定时任务也记在这张表里（按任务 id）：两条任务起了同一个名字时，后来的那条另起 _2，不跟前一条挤一格。
+ */
+const RUN_DIRS_FILE = dataPath("data", "run-dirs.json");
+const RUN_DIRS_MAX = 500; // 再多就是很久以前的会话了，它们下次再来会重新分一个
+const runDirs = (() => {
+  try { return new Map(Object.entries(JSON.parse(fs.readFileSync(RUN_DIRS_FILE, "utf8")) || {})); } catch { return new Map(); }
+})();
+function saveRunDirs() {
+  while (runDirs.size > RUN_DIRS_MAX) runDirs.delete(runDirs.keys().next().value); // Map 按插入序，先进先出
+  try { store.writeJsonAtomic(RUN_DIRS_FILE, Object.fromEntries(runDirs)); }
+  catch (e) { log.warn("files", "IM / 定时任务的成果文件夹记不下来（重启后会另起一个）", { err: e.message }); }
+}
+/** 历史里最后一句用户的话（IM 刚推进去的那句、定时任务的任务正文）。多模态消息只取文字那几段 */
+function lastUserText(history) {
+  const m = [...(history || [])].reverse().find((x) => x && x.role === "user");
+  if (!m) return "";
+  if (typeof m.content === "string") return m.content;
+  return Array.isArray(m.content) ? m.content.map((p) => (p && typeof p.text === "string" ? p.text : "")).join(" ") : "";
+}
+/** 这一趟 IM / 定时任务的成果文件夹（相对当前根）；不分文件夹的根下返回 null，照旧写在根上 */
+function runDirFor(source, rest) {
+  if (!perChatHere()) return null;
+  const root = getWorkspaceDir();
+  if (source === "schedule") {
+    // 录成会话的那一趟，文件夹也记进会话：运行记录上点「看执行过程」，成果面板才知道该摆哪一格
+    const s = rest.sessionId ? sessions.get(rest.sessionId) : null;
+    const key = s && s.schedule_id ? "schedule:" + s.schedule_id : "";
+    const had = key ? runDirs.get(key) : null;
+    let dir = had && taskDirs.samePlace(had.root, root) ? had.dir : "";
+    if (!dir) {
+      // 不用 freeDir：这条任务以前跑出来的那格本来就该接着用，盘上有不等于被别人占了。
+      // 要躲的只是「别的任务在这个根下已经记了这个名字」
+      const base = "定时任务/" + (taskDirs.taskSlug((s && s.title) || lastUserText(rest.history)) || "未命名任务");
+      const taken = new Set();
+      for (const [k, v] of runDirs) if (k.startsWith("schedule:") && k !== key && taskDirs.samePlace(v.root, root)) taken.add(v.dir);
+      dir = base;
+      for (let i = 2; taken.has(dir); i++) dir = `${base}_${i}`;
+      if (key) { runDirs.set(key, { dir, root }); saveRunDirs(); }
+    }
+    if (s) { s.dir = dir; s.root = root; }
+    return dir;
+  }
+  if (source === "im") {
+    const key = String(rest.sessionId || "");
+    const hist = rest.history || [];
+    const had = key ? runDirs.get(key) : null;
+    // 历史只剩刚推进去的这一句 = 新开的一段，另起一个文件夹；换过根的也另起（旧的留在旧根下）
+    if (had && hist.length > 1 && taskDirs.samePlace(had.root, root)) return had.dir;
+    const dir = taskDirs.freeDir(root, `IM_对话/${taskDirs.dayStamp()}_${taskDirs.taskSlug(lastUserText(hist)) || "对话"}`, assignedDirs);
+    assignedDirs.add(dir);
+    if (key) { runDirs.delete(key); runDirs.set(key, { dir, root }); saveRunDirs(); }
+    return dir;
+  }
+  return null;
+}
+// 同一格可能有几趟同时在用：飞书同一个会话键两条消息前后脚进来、两条同名定时任务撞在同一分钟。
+// 先跑完的那趟不许把别人还在用的空文件夹撤了（那边的命令还以它为工作目录），最后一个走的才收
+const runDirUse = new Map(); // 根 + 文件夹 -> 还在用的趟数
+function holdRunDir(root, dir) {
+  const k = root + "\0" + dir;
+  runDirUse.set(k, (runDirUse.get(k) || 0) + 1);
+}
+/** 跑完什么都没产出（纯聊天、只回了句话），撤掉刚建的空文件夹，下一趟有产出时再按那时的话起名 */
+function settleRunDir(source, rest, root, dir) {
+  const k = root + "\0" + dir;
+  const left = (runDirUse.get(k) || 1) - 1;
+  if (left > 0) { runDirUse.set(k, left); return; }
+  runDirUse.delete(k);
+  try { require("./lib/deps-guard").dropLoneFence(path.join(root, dir)); } catch {} // 只剩一个没装成的依赖围栏也算空的
+  if (!taskDirs.dropIfEmpty(root, dir)) return;
+  assignedDirs.delete(dir);
+  if (source === "im" && rest.sessionId && (runDirs.get(String(rest.sessionId)) || {}).dir === dir) {
+    runDirs.delete(String(rest.sessionId));
+    saveRunDirs();
+  }
+  // 定时任务表里那条不删：名字是这条任务占着的，下一趟有产出时还回这一格
+  if (source === "schedule" && rest.sessionId) {
+    const s = sessions.get(rest.sessionId);
+    if (s && s.dir === dir) s.dir = null;
+  }
+}
+
+/**
  * 给 IM / 定时任务的 runtime 包一层记账，开了积分闸门才在 0 分时拒跑。
  * 消耗记到管理员（首个用户）名下；定时任务报了负责人的例外，记在负责人自己头上
  */
@@ -7547,22 +7675,29 @@ function accountedRuntime(baseRuntime, source) {
       try { letGo = require("./tools").holdRun(rest.sessionId); } catch {}
       const release = () => { try { letGo().catch(() => {}); } catch {} };
       let r;
-      const go = () => baseRuntime.runTask({
-        user: caller || (owner ? owner.username : undefined),
-        ...(reopened.length ? { mediaReopened: reopened } : {}),
-        taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
-        // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
-        baseDir:
-          path.resolve(getWorkspaceDir()) === dataPath("workspace")
-            ? source === "im" ? "IM_对话" : source === "schedule" ? "定时任务" : null
-            : null,
-        projectContext: projectContextOf(activeProject()),
-        ...rest,
-        ...(want ? { llmOverride: runLLM } : {}),
-      });
+      // 文件夹在 go 里面算：定时任务报了负责人的，要进了负责人那个租户，getWorkspaceDir() 才是对的根
+      let runDir = null, runRoot = "";
+      const go = () => {
+        runRoot = getWorkspaceDir();
+        // IM / 定时任务的产物也各归各的文件夹（见 runDirFor；调用方在 args 里给了 baseDir 就听调用方的）
+        runDir = rest.baseDir === undefined ? runDirFor(source, rest) : null;
+        if (runDir) holdRunDir(runRoot, runDir);
+        return baseRuntime.runTask({
+          user: caller || (owner ? owner.username : undefined),
+          ...(reopened.length ? { mediaReopened: reopened } : {}),
+          taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
+          baseDir: runDir,
+          projectContext: projectContextOf(activeProject()),
+          ...rest,
+          ...(want ? { llmOverride: runLLM } : {}),
+        });
+      };
       try {
         r = await (runner ? inTenantOf(runner, source, go) : go());
-      } finally { release(); }
+      } finally {
+        release();
+        if (runDir) settleRunDir(source, rest, runRoot, runDir);
+      }
       if (owner && r && r.usage && r.usage.calls > 0) {
         const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;
         // 带上会话：定时任务那一趟的用量要能对回运行记录上那段回放（不带的话账本里只剩一行没来由的数）

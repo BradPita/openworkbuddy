@@ -260,6 +260,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 30** Outputs get a folder per conversation in more places: projects without a folder, Feishu/WeChat chats and schedules no longer overwrite each other
 - **Sep 30** Templates can be added, edited and deleted: "Mine" is private to you; "Company" is shared across the org and only admins can change it
 - **Sep 30** Many open conversations no longer slow the window: they share one live channel, and saving and screenshots moved off the main thread
 - **Sep 30** First-run setup accepts a custom endpoint; Enter no longer sends while an input method is still composing

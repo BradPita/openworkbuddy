@@ -258,6 +258,10 @@ function rootDirOf(org, baseWorkspace) {
   if (org.root_dir) return path.resolve(org.root_dir);
   return path.join(DATA_DIR, "tenants", org.id);
 }
+/** 没指定目录的租户根都建在这下面一层（应用自己建的，成果按对话分文件夹，见 lib/task-dirs.js） */
+function tenantsDir() {
+  return path.join(DATA_DIR, "tenants");
+}
 
 function createOrg({ name, plan, seats, expires_at, actor }) {
   const db = load();
@@ -671,7 +675,7 @@ function listAudit(orgId, opts) {
 
 module.exports = {
   DEFAULT_ORG, PLANS, PLAN_ORDER, ORG_DEFAULTS,
-  listOrgs, getOrg, createOrg, updateOrg, multiTenant, orgIdOf, rootDirOf, settingsOf, planInfo, expiredProblem,
+  listOrgs, getOrg, createOrg, updateOrg, multiTenant, orgIdOf, rootDirOf, tenantsDir, settingsOf, planInfo, expiredProblem,
   normalizeBudget, normalizeDeptTemplates, tenantHeld,
   listDepts, addDept, removeDept,
   createInvite, listInvites, peekInvite, consumeInvite, revokeInvite,
