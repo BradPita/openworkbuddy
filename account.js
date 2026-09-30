@@ -515,7 +515,7 @@ function register(username, password, opts = {}) {
   // 席位闸要放在建号**之前**：先建后查的话，报错弹出来的时候人已经躺在账本里了
   if (!first) {
     const full = seatsFull(st, orgId);
-    if (full) throw new Error(full + "，让管理员在企业设置里加席位");
+    if (full) throw new Error(full + "，请管理员加了席位再来");
   }
   // 这个组织有超管了没有。以前 owner 只给**全站**第一个人，于是分公司里一个超管都没有，
   // 两个管理员可以互相停用、互相降级——「管理员权限太大」这件事最狠的一处就在这儿。
