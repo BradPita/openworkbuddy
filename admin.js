@@ -41,6 +41,16 @@ function platformOnly(req, res, next) {
   if (!platformAdmin(req.user)) return res.status(403).json({ error: "只有平台管理员（默认组织的管理员）能做这个操作" });
   next();
 }
+/**
+ * 租户管理员改自己组织设置时，平台握着的那几格（org.tenantHeld）动了就整单拒掉，说清是哪几格。
+ * 不悄悄丢掉：丢掉的话界面提示「已保存」，下一次打开又变回去，管理员只会以为是 bug 再改一次
+ */
+function heldOrThrow(user, settings) {
+  if (platformAdmin(user)) return settings;
+  const r = org.tenantHeld(org.settingsOf(org.getOrg(org.orgIdOf(user))), settings);
+  if (r.refused.length) throw new Error(`「${r.refused.join("」「")}」由平台管理员设定，本组织改不了`);
+  return r.settings;
+}
 /** 开组织 / 改别人的套餐席位：只有机主。见文件头 */
 function platformOwnerOnly(req, res, next) {
   if (!account.platformOwner(req.user)) return res.status(403).json({ error: "只有平台超级管理员（默认组织的超级管理员）能做这个操作" });
@@ -552,6 +562,7 @@ function createAdminRouter(deps = {}) {
     const body = { ...(req.body || {}) };
     // 套餐 / 席位 / 到期时间是「卖出去的东西」，本组织管理员不能自己改大
     if (!platformAdmin(req.user)) { delete body.plan; delete body.seats; delete body.expires_at; delete body.root_dir; }
+    if (body.settings) body.settings = heldOrThrow(req.user, body.settings);
     const o = org.updateOrg(org.orgIdOf(req.user), body, req.user.username);
     return { ok: true, org: { ...o, settings: org.settingsOf(o) } };
   }));
@@ -814,7 +825,7 @@ function createAdminRouter(deps = {}) {
     if (b.budget !== undefined) patch.budget = b.budget;
     if (b.price_discount !== undefined) patch.price_discount = b.price_discount;
     if (!Object.keys(patch).length) throw new Error("没说要改什么");
-    const o = org.updateOrg(org.orgIdOf(req.user), { settings: patch }, req.user.username);
+    const o = org.updateOrg(org.orgIdOf(req.user), { settings: heldOrThrow(req.user, patch) }, req.user.username);
     const st = org.settingsOf(o);
     // 上限改了，「已用多少」的进程内缓存得扔掉。不扔的话，刚把上限从 100 提到 1000，
     // 下一个请求仍按旧数算「还差多远」——管理员会以为没生效，然后再改一次。

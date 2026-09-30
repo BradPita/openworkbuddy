@@ -1960,6 +1960,54 @@ async function login(username, password) {
     eq(org.listInvites(org2).length, 200, "分公司自己最多留 200 张");
   }
 
+  console.log("\n【31】平台握着的几格：租户管理员只能往紧了改，往松了改整单拒掉");
+  {
+    r = await call("POST", "/api/admin/orgs", { cookie: boss, body: { name: "新开的租户", plan: "team" } });
+    eq(org.settingsOf(org.getOrg(r.json.id)).allow_shell, false, "★新开的租户默认不给命令行★ 它跑在平台这台机器上，工作目录那道墙挡不住");
+    eq(org.settingsOf(org.getOrg("default")).allow_shell, true, "默认组织（平台自己）不受影响");
+
+    const s2 = () => org.settingsOf(org.getOrg(org2));
+    const bossSet = (settings) => call("POST", `/api/admin/orgs/${org2}`, { cookie: boss, body: { settings } });
+    r = await bossSet({ allow_shell: false, price_discount: 0.9, budget: { org_yuan: 300 } });
+    eq(r.status, 200, "平台管理员在组织列表里给分公司定：命令行关、九折、每月封顶 300");
+    eq(s2().budget.org_yuan, 300, "封顶存上了");
+
+    r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { allow_shell: true, session_days: 30 } } });
+    eq(r.status, 400, "★分公司超管自己打开命令行：拒绝★");
+    ok(/允许运行命令行/.test(r.json.error), "报错说清是哪一格", r.json.error);
+    eq(s2().allow_shell, false, "命令行还是关着");
+    ok(s2().session_days !== 30, "整单拒掉，同一单里别的格也没改（不悄悄丢一半）");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { price_discount: 0.1 } });
+    eq(r.status, 400, "★自己给自己打一折：拒绝★");
+    eq(s2().price_discount, 0.9, "折扣还是平台定的九折");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { budget: { org_yuan: 99999, default_user_yuan: 5 } } });
+    eq(r.status, 400, "★把组织封顶从 300 抬到 99999：拒绝★");
+    eq(s2().budget.org_yuan, 300, "封顶没动");
+
+    r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { api_quota: { image: { enabled: true, org_daily: 99999 } } } } });
+    eq(r.status, 400, "★自己改付费 API 额度（花的是平台的 Key）：拒绝★");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { budget: { org_yuan: "300", default_user_yuan: "5" }, price_discount: "0.9" } });
+    eq(r.status, 200, "整页表单原样带回平台定的值、只改人均：放行（不能因为带了现值就报错）");
+    eq(s2().budget.default_user_yuan, 5, "人均改上了");
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { budget: { default_user_yuan: 8 } } });
+    eq(r.status, 200, "只带人均一格：放行");
+    eq(s2().budget.org_yuan, 300, "★只带人均一格，组织封顶没被补成 0（= 不限）★");
+    eq(s2().budget.default_user_yuan, 8, "人均改上了");
+
+    r = await bossSet({ allow_shell: true, budget: { org_yuan: 500 } });
+    eq(s2().budget.default_user_yuan, 8, "平台只改封顶，租户设的人均没被清掉");
+    r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { allow_shell: false } } });
+    eq(r.status, 200, "平台开了命令行，租户自己关掉：放行（往紧了改随便）");
+    eq(s2().allow_shell, false, "关上了");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: boss, body: { price_discount: 0.7 } });
+    eq(r.status, 200, "反向对照：平台管理员改自己组织的折扣照常");
+    eq(org.settingsOf(org.getOrg("default")).price_discount, 0.7, "默认组织的折扣改上了");
+  }
+
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });

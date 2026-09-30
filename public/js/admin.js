@@ -613,7 +613,10 @@ PAGES.security = {
       ${note("以下开关<b>即时生效</b>：关命令行后模型不再拿到该工具；缩短登录有效期，已有登录立即作废。")}
       ${card(`${secT("命令行", "关闭后移除 run_shell / run_node，其他工具不受影响。")}
         <div style="margin-top:14px">
-          ${field("允许运行命令行", "允许任务在服务器上执行 shell 和 Node。安全要求高建议关。", sw("allow_shell", s.allow_shell !== false))}
+          ${!PLATFORM && s.allow_shell === false
+            // 租户组织：命令行跑在平台的机器上，关了之后只有平台管理员能再打开（org.tenantHeld）
+            ? field("允许运行命令行", "已关闭。要打开请找平台管理员。", `<label class="ui-switch"><input type="checkbox" data-k="allow_shell" disabled><i></i></label>`)
+            : field("允许运行命令行", PLATFORM ? "允许任务在服务器上执行 shell 和 Node。安全要求高建议关。" : "关掉后要平台管理员才能再打开。", sw("allow_shell", s.allow_shell !== false))}
           ${field("登录有效期", "天数，1 - 365。改小后超期的登录立即失效。", inp("session_days", s.session_days, 'type="number" min="1" max="365" style="width:120px"'))}
         </div>`)}
       ${card(`${secT("密码与二次验证", "只对之后设置的新密码生效。")}
@@ -1886,12 +1889,12 @@ PAGES.relay = {
       RO ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-mem="${esc(m.username)}" data-cur="${esc(m.budget_yuan || "")}">${ic("pencil")}</button>`,
     ]);
     const limits = card(`${secT("上限", "按 Key → 个人 → 组织三档判，超限返回 402。员工在界面上的调用同样受限。次数上限在「API 与额度」。")}
-      ${field("整个组织每月封顶", "0 = 不限。这是最后一道闸，谁都绕不过去。",
-        `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="org_yuan" value="${esc(d.budget.org_yuan || "")}" placeholder="不限"${RO ? " disabled" : ""}>`)}
+      ${field("整个组织每月封顶", PLATFORM ? "0 = 不限。这是最后一道闸，谁都绕不过去。" : "由平台管理员设定，这里只能看。",
+        `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="org_yuan" value="${esc(d.budget.org_yuan || "")}" placeholder="不限"${RO || !PLATFORM ? " disabled" : ""}>`)}
       ${field("没单独设过的人，每人每月封顶", "0 = 不限。部门模板有设置的以部门为准。",
         `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="default_user_yuan" value="${esc(d.budget.default_user_yuan || "")}" placeholder="不限"${RO ? " disabled" : ""}>`)}
-      ${field("跟上游谈下来的折扣", "0.8 = 八折，1 = 原价。只影响内部账本。",
-        `<input class="ui-input ad-mono" type="number" min="0.01" max="1" step="0.01" style="width:140px" data-b="price_discount" value="${esc(disc)}"${RO ? " disabled" : ""}>`)}
+      ${field("跟上游谈下来的折扣", PLATFORM ? "0.8 = 八折，1 = 原价。只影响内部账本。" : "由平台管理员设定，这里只能看。",
+        `<input class="ui-input ad-mono" type="number" min="0.01" max="1" step="0.01" style="width:140px" data-b="price_discount" value="${esc(disc)}"${RO || !PLATFORM ? " disabled" : ""}>`)}
       ${RO ? note("你是<b>审计员</b>：这页能看，改不了。", true)
            : `<div class="ad-actions"><button class="ui-btn ui-btn--default ui-btn--sm" id="rl-save-budget">保存上限</button></div>`}`);
     // 人多的时候才出筛选条：三个人的团队顶一条筛选栏在头上，纯属添乱
@@ -2324,7 +2327,7 @@ PAGES.orgs = {
   load: () => api("/api/admin/orgs"),
   render: (d) => {
     const rows = d.orgs.map((o) => [
-      `<div style="font-weight:500">${esc(o.name)}</div><div class="fd ad-mono">${esc(o.id)}</div>`,
+      `<div style="font-weight:500">${esc(o.name)}${o.id !== "default" && o.settings.allow_shell !== false ? " " + badge("命令行已开", "outline") : ""}</div><div class="fd ad-mono">${esc(o.id)}</div>`,
       badge(o.label, o.expired ? "destructive" : "secondary"),
       `${o.active} / ${o.seats}`,
       o.expires_at ? `<span class="ad-mono">${esc(fmtDate(o.expires_at))}</span>${o.expired ? " " + badge("已过期", "destructive") : ""}` : "长期",
@@ -2402,12 +2405,23 @@ PAGES.orgs = {
             { name: "plan", label: "套餐", type: "select", options: planOpts, value: o.plan },
             { name: "seats", label: "席位上限", type: "number", value: o.seats },
             { name: "expires_at", label: "到期时间", type: "date", value: o.expires_at ? o.expires_at.slice(0, 10) : "", desc: "留空 = 长期有效。" },
+            // 下面三格租户自己改不了（服务端 org.tenantHeld），只能在这儿设。默认组织的在它自己的设置页里改
+            ...(o.id === "default" ? [] : [
+              { name: "allow_shell", label: "允许运行命令行", type: "select", value: o.settings.allow_shell === false ? "0" : "1",
+                options: [{ value: "0", label: "不允许" }, { value: "1", label: "允许" }],
+                desc: "命令行跑在这台服务器上，<b>工作目录那道墙挡不住它</b>。只给信得过的组织开。" },
+              { name: "org_yuan", label: "中转每月封顶（元）", type: "number", value: (o.settings.budget || {}).org_yuan || "", placeholder: "不限" },
+              { name: "price_discount", label: "记账折扣", type: "number", value: o.settings.price_discount, desc: "0.8 = 八折，1 = 原价。" },
+            ]),
           ],
           ok: "保存",
           onOk: async (v) => {
             await post("/api/admin/orgs/" + encodeURIComponent(o.id), {
               name: v.name, plan: v.plan, seats: +v.seats || 1,
               expires_at: v.expires_at ? v.expires_at + "T23:59:59" : "",
+              ...(o.id === "default" ? {} : {
+                settings: { allow_shell: v.allow_shell === "1", budget: { org_yuan: +v.org_yuan || 0 }, price_discount: +v.price_discount || 1 },
+              }),
             });
             toast("已保存");
             route(true);
