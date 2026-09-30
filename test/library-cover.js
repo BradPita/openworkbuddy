@@ -870,7 +870,10 @@ function niced(call, prios) {
       const url = `/api/library/cover?src=lib&path=${encodeURIComponent("同名.pdf")}&w=320&v=${encodeURIComponent(libCover.coverVersion(st))}`;
 
       const mine = await covers(tokB, [{ id: "x", src: "lib", path: "同名.pdf" }]);
-      eq((mine.json.ready || {}).x, url, "bob 问自己的：ready，地址就是这个");
+      // PDF 走 Quick Look，只有 macOS 有这条车道；别的系统上 covers 直接回图标，不去翻缓存（⑨）。
+      // 那边隔离靠下面 GET 那几条证：GET 不看车道，只按请求人的根算键
+      if (process.platform === "darwin") eq((mine.json.ready || {}).x, url, "bob 问自己的：ready，地址就是这个");
+      else ok((mine.json.icon || []).includes("x"), "bob 问自己的：非 macOS 没有 Quick Look，给图标", mine.json);
       const bobGet = await call("GET", url, tokB);
       ok(bobGet.code === 200 && bobGet.buf.equals(PNG), "bob 拿自己的封面：200，就是那张", { code: bobGet.code });
       eq(bobGet.headers["content-type"], "image/png", "Content-Type 照文件头给");

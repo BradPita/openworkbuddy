@@ -11364,14 +11364,17 @@ async function testEmbeddingEndpointConfig() {
     assert.strictEqual(r.code, 200, r.body);
     ec = cfgOnDisk().embedding;
     assert(ec.api_key === "k-emb" && ec.model === "fake-embed-2", "掩码原样存回来把 Key 抹了，或模型没更新");
+    // 只数「测一下」发的探针（input 固定是 ["ping"]）。测通之后服务端会在后台按新模型把记忆重算一遍向量，
+    // 那几条请求什么时候到假服务器看机器快慢——CI 上慢，数全部请求就会把它们算进来，平白红一次
+    const probes = () => seen.filter((x) => JSON.stringify(x.input) === '["ping"]');
     r = await req("POST", "/api/embedding/test", { base_url: base, api_key: "********", model: "fake-embed-2" });
-    assert(r.json && r.json.ok === true && seen[seen.length - 1].auth === "Bearer k-emb", "测一下传八颗星没用已存的那把 Key：" + r.body);
-    const n0 = seen.length;
+    assert(r.json && r.json.ok === true && probes().at(-1).auth === "Bearer k-emb", "测一下传八颗星没用已存的那把 Key：" + r.body);
+    const n0 = probes().length;
     r = await req("POST", "/api/settings", { embedding: { base_url: "https://other.example.com/v1", api_key: "********", model: "x" } });
     assert(r.code === 400 && /重新填/.test(r.json.error), "换了地址还带着旧 Key 走了：" + r.body);
     assert.strictEqual(cfgOnDisk().embedding.base_url, base, "换地址被拒了，盘上的却变了");
     r = await req("POST", "/api/embedding/test", { base_url: "https://other.example.com/v1", api_key: "********", model: "x" });
-    assert(r.code === 400 && /重新填/.test(r.json.error) && seen.length === n0, "测一下拿旧 Key 去打新地址了：" + r.body);
+    assert(r.code === 400 && /重新填/.test(r.json.error) && probes().length === n0, "测一下拿旧 Key 去打新地址了：" + r.body);
 
     // 5. 半截的不收
     r = await req("POST", "/api/settings", { embedding: { base_url: base, api_key: "k", model: "" } });
