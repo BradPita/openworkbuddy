@@ -1151,7 +1151,7 @@ async function stopRowRun(sid) {
   };
   btn.addEventListener("click", () => open(q.hidden));
   q.addEventListener("input", () => { histQuery = q.value; renderHistory(); histSearchSoon(); });
-  q.addEventListener("keydown", (e) => { if (e.key === "Escape") { open(false); btn.focus(); } });
+  q.addEventListener("keydown", (e) => { if (e.key === "Escape" && !imeKey(e)) { open(false); btn.focus(); } });
 })();
 document.getElementById("history").addEventListener("click", async (e) => {
   const item = e.target.closest(".hist-item");
@@ -1551,11 +1551,23 @@ function syncSendBtn() {
   sendBtn.classList.toggle("stop", stopMode);
   sendBtn.classList.toggle("interject", (busy || cli) && draft && !queueMode);
   sendBtn.classList.toggle("queued", queueMode);
-  sendBtn.innerHTML = ic(stopMode ? "square" : queueMode ? "hourglass" : "arrow-up");
-  sendBtn.title = stopMode ? "让我停下（Esc）"
+  // 每敲一个字都走到这里，而图标和说法十有八九跟上一下一样。以前照样整颗 svg 拆了重建、title 重写：
+  // 2026-09-29 实测打 200 个字就是 200 次子树替换 + 200 次属性写，每次都得重算样式再排一遍版。
+  // 只在真变了的时候写（比的是我们上次写进去的那份，别拿 innerHTML 读回来比——序列化出来的字符串跟原文不一定一样）。
+  // 还得认一下那颗图标是不是还在：stopTask 会先把按钮换成「…」，那之后必须重画
+  const icon = stopMode ? "square" : queueMode ? "hourglass" : "arrow-up";
+  const touched = !sendBtn._iconEl || sendBtn.firstElementChild !== sendBtn._iconEl;
+  if (sendBtn._icon !== icon || touched) {
+    sendBtn.innerHTML = ic(icon);
+    sendBtn._icon = icon; sendBtn._iconEl = sendBtn.firstElementChild;
+  }
+  const title = stopMode ? "让我停下（Esc）"
     : cli ? "插一句给终端里的它（Enter）"
     : queueMode ? "排到队尾：不打断现在这件事，做完了自己开始（Enter）"
     : busy ? "插一句进去，我做完这一步就看（Enter）" : "发送（Enter）";
+  // title 也比我们上次写的那份：英文界面上词典会把它原地换成英文，拿 sendBtn.title 比就永远对不上、每个字照写。
+  // stopTask 换「正在停…」时连按钮内容一起换了（touched），那一下照样重写
+  if (sendBtn._title !== title || touched) { sendBtn.title = title; sendBtn._title = title; }
 }
 function updateSendUI() {
   syncSendBtn();
@@ -1596,7 +1608,10 @@ function renderQueueBar() {
 function bindComposer() {
   sendBtn.onclick = () => (!cliBusy() && curBusy() && !hasDraft() ? stopTask() : send());
   inputEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && !e.shiftKey) {
+      if (imeKey(e)) return; // 输入法选词上屏的那个回车，不是发送
+      e.preventDefault(); send();
+    }
   });
   inputEl.addEventListener("input", syncSendBtn);
 }
@@ -2352,6 +2367,10 @@ const SHORTCUT_ACTIONS = {
 };
 document.addEventListener("keydown", (e) => {
   if (window.__scRebinding) return; // 设置页改绑捕获中，不触发动作
+  // 中文/日文输入法正在拼字（候选框开着）：这一下是给输入法的，不是给我们的。
+  // 不拦的话拼音打一半按 Esc 想关候选框，Esc 落到「让我停下」把正在跑的任务叫停了；
+  // imeKey 三样都认：isComposing、keyCode 229（起头那一下 isComposing 还是 false），和 Safari 先发 compositionend 的那种顺序
+  if (imeKey(e)) return;
   const acc = accelFromEvent(e);
   if (!acc) return;
   const canon = canonAccel(acc);
@@ -2379,6 +2398,7 @@ function openChatSearch() {
     document.querySelector(".main").appendChild(bar);
     bar.querySelector("#cs-input").oninput = runChatSearch;
     bar.querySelector("#cs-input").addEventListener("keydown", (e) => {
+      if (imeKey(e)) return;
       if (e.key === "Enter") { e.preventDefault(); csNav(e.shiftKey ? -1 : 1); }
       if (e.key === "Escape") { e.stopPropagation(); closeChatSearch(); }
     });
@@ -3341,7 +3361,7 @@ const PLUS_RENDER = {
       box.focus();
       box.setSelectionRange(box.value.length, box.value.length);
       box.oninput = () => { plusSkillQ = box.value; PLUS_RENDER.skill(sub); };
-      box.onkeydown = (e) => { if (e.key === "Escape") { e.stopPropagation(); plusClose(); } };
+      box.onkeydown = (e) => { if (e.key === "Escape" && !imeKey(e)) { e.stopPropagation(); plusClose(); } };
     }
     sub.querySelectorAll(".pm-it").forEach((it) => (it.onclick = (e) => {
       e.stopPropagation();

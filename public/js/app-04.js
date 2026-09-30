@@ -983,7 +983,7 @@ async function renderLibPreview(prev, lib) {
       renderLibPage();
     };
     prev.querySelector("#lb-note-save").onclick = save;
-    prev.querySelector("#lb-note").onkeydown = (e) => { if (e.key === "Enter") save(); };
+    prev.querySelector("#lb-note").onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) save(); };
     prev.querySelectorAll("a[data-nid]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
       const r = await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" })

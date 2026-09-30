@@ -652,6 +652,10 @@ function mediaCfg(caps, extra = {}) {
       fetch: async () => ({ ok: false, json: async () => ({ error: "任务已经结束了" }) }),
     };
     vm.createContext(ctx);
+    // 回车认不认输入法，用 app-00-ui.js 里那份真判断，不自己另写一个桩
+    const ui00 = read("public/js/app-00-ui.js");
+    ctx.performance = performance;
+    vm.runInContext("var window = {};\n" + ui00.slice(ui00.indexOf("function imeKey(e)"), ui00.indexOf("if (!window.__imeEndWired)")), ctx);
     vm.runInContext(src, ctx, { filename: file });
     ok(typeof ctx.makeRecipeFormCard === "function", "全局有 makeRecipeFormCard（app-01 的 makeAskCard 转到它）");
 

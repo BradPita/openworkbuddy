@@ -1522,7 +1522,7 @@ function embedCandidates(config) {
 
   // 媒体渠道（图像/视频/语音）的 key 也算数：用户常把通义的 key 只填在视频那一栏
   const media = config.media || {};
-  for (const [key, mc] of [["图像", media.image], ["视频", media.video], ["语音", media.tts]]) {
+  for (const [key, mc] of [["图像", media.image], ["视频", media.video], ["语音", media.tts], ["看图", media.vision], ["听写", media.asr]]) {
     if (!mc || !mc.base_url || !mc.api_key) continue;
     const model = knownFor(String(mc.base_url).replace(/\/api\/v\d+$/i, "/compatible-mode/v1"));
     if (model) push(mc.base_url, mc.api_key, model, `${key}渠道的 key`);
@@ -1550,6 +1550,8 @@ const deadEmbedChannels = new Map();
 const DEAD_TTL_MS = 10 * 60 * 1000;
 const chanKey = (c) => `${c.base_url}|${c.model}|${String(c.api_key || "").length}:${String(c.api_key || "").slice(-4)}`;
 function markEmbedChannelDead(c, why) { deadEmbedChannels.set(chanKey(c), { at: Date.now(), why }); }
+// 人在设置里点「测一下」通了：这条路已经修好，不用等满十分钟
+function forgetEmbedChannelDead(c) { deadEmbedChannels.delete(chanKey(c)); }
 function embedChannelDead(c) {
   const d = deadEmbedChannels.get(chanKey(c));
   if (!d) return null;
@@ -1613,7 +1615,7 @@ function createEmbedder(config) {
       } else if (fails >= 3) {
         dead = true;
         console.warn(`[记忆向量] ${cfg.label} 也不行（${why}）。可用的嵌入渠道已用尽，记忆召回退回关键词匹配——` +
-          `想恢复语义召回，去 设置 → 模型 配一条支持 embeddings 的渠道（通义/智谱/OpenAI，或本机跑起 Ollama）`);
+          `想恢复语义召回，去 设置 → 记忆 填一个嵌入接口，或配一条通义/智谱/OpenAI 渠道、本机跑起 Ollama`);
       } else {
         console.warn(`[记忆向量] ${cfg.label} 调用失败（${fails}/3）：${why}`);
       }
@@ -1622,8 +1624,40 @@ function createEmbedder(config) {
   };
   embed.model = cands[0].model;
   embed.candidates = cands.map((c) => `${c.label} → ${c.model}`); // 供 /api/info 之类如实展示
+  // 记忆面板要说实话：现在走的是哪一条、是不是已经全挂了（全挂了还显示「已开」就是摆设）
+  embed.source = () => cands[idx].label;
+  embed.isDead = () => dead;
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, contextWindowOf, pingRequest, _internals: {
-  responsesChat, geminiChat, ollamaChat, chatFor, toResponsesInput, toGeminiContents, toOllamaMessages, geminiSchema, ollamaRoot, geminiRoot, ollamaCtx, chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, EMBED_BATCH_DEFAULT, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };
+/**
+ * 设置页「测一下」：拿这组地址/Key/模型真打一次 /embeddings。
+ * 跟 embedCandidates 用同一套地址改写（DashScope 原生 /api/v1 → 兼容层），测的就是真正会用的那条路。
+ * 失败原样回上游的状态码和原文，不替人猜原因。
+ */
+async function probeEmbedding({ base_url, api_key, model }) {
+  let b = String(base_url || "").trim().replace(/\/+$/, "");
+  if (/dashscope\.aliyuncs\.com/i.test(b)) b = b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1");
+  const cfg = { base_url: b, api_key: api_key || "", model: String(model || "").trim() };
+  let resp;
+  try {
+    resp = await fetch(`${b}/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cleanKey(cfg.api_key, cfg) || "ollama"}` },
+      body: JSON.stringify({ model: cfg.model, input: ["ping"] }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    return { ok: false, error: String((e && e.cause && e.cause.message) || (e && e.message) || e).slice(0, 200) };
+  }
+  const text = await resp.text();
+  if (!resp.ok) return { ok: false, status: resp.status, error: `${resp.status}：${text.slice(0, 200)}` };
+  let v = null;
+  try { v = (JSON.parse(text).data || [])[0]; } catch {}
+  if (!v || !Array.isArray(v.embedding) || !v.embedding.length) return { ok: false, status: resp.status, error: `接口回了 ${resp.status}，但里面没有向量：${text.slice(0, 160)}` };
+  forgetEmbedChannelDead(cfg);
+  return { ok: true, dims: v.embedding.length, base_url: b };
+}
+
+module.exports = { createLLM, createEmbedder, probeEmbedding, anthropicBase, cleanKey, contextWindowOf, pingRequest, _internals: {
+  responsesChat, geminiChat, ollamaChat, chatFor, toResponsesInput, toGeminiContents, toOllamaMessages, geminiSchema, ollamaRoot, geminiRoot, ollamaCtx, chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, forgetEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, EMBED_BATCH_DEFAULT, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };

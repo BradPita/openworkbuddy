@@ -23,6 +23,11 @@ const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ic = (name, cls) => `<svg class="i${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 const EN = () => typeof I18N !== "undefined" && I18N.getLang() === "en";
+/** 这一下回车/Esc 是给输入法的（拼音上屏、取消），不是给搜索框的。后台单独一页，没加载 app-00-ui.js，
+ *  所以这儿照抄一份：Chromium 看 isComposing / 229，Safari 先发 compositionend 再发回车，看「拼字刚结束」。 */
+let imeEndAt = -Infinity;
+document.addEventListener("compositionend", () => { imeEndAt = performance.now(); }, true);
+const imeKey = (e) => !!e && (e.isComposing || e.keyCode === 229 || performance.now() - imeEndAt < 50);
 const num = (n) => (+n || 0).toLocaleString(EN() ? "en-US" : "zh-CN");
 /** tokens 这类大数走「万」，一屏里塞得下也读得出量级。英文没有「万」这一档，换成 k / M / B */
 const big = (n) => {
@@ -175,7 +180,7 @@ function modal(opts) {
     sync();
   });
   const close = () => { document.removeEventListener("keydown", onKey); mask.remove(); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const onKey = (e) => { if (e.key === "Escape" && !imeKey(e)) close(); }; // 表单里拼音打一半按 Esc 是取消拼字，不是关掉整张表
   document.addEventListener("keydown", onKey);
   mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
   mask.querySelector("[data-x]").onclick = close;
@@ -322,7 +327,7 @@ function bindFilter(root, f, onChange) {
     // 防抖 300ms：不防的话打一个字发一次请求，一个词打完就是六七次
     let t = 0;
     q.oninput = () => { clearTimeout(t); t = setTimeout(() => onChange({ ...f, q: q.value, offset: 0 }), 300); };
-    q.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); onChange({ ...f, q: q.value, offset: 0 }); } };
+    q.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(t); onChange({ ...f, q: q.value, offset: 0 }); } };
   }
 }
 /**
@@ -619,7 +624,7 @@ PAGES.security = {
         </div>`)}
       ${card(`${secT("远程访问与远程操控", "默认都关，只能在本机使用。")}
         <div style="margin-top:14px">
-          ${field("允许远程设备接入", "可在「设置 → 设备」扫码连接手机等设备。<b>关闭后已连设备立即下线。</b>", sw("remote_devices", !!s.remote_devices))}
+          ${field("允许远程设备接入", `开了之后在工作台扫码连手机。<a class="ad-go" href="/#go=settings:security" target="_blank" rel="noopener">去配对${ic("arrow-up-right")}</a><br><b>关闭后已连设备立即下线。</b>`, sw("remote_devices", !!s.remote_devices))}
           ${field("允许远程操控终端任务", "可在网页和手机上查看、插话、审批终端里的任务。", sw("remote_control", !!s.remote_control))}
         </div>`)}
       ${saveBar()}
@@ -801,7 +806,7 @@ PAGES["usage-member"] = {
       // 防抖 250ms：搜的是**整个组织**，每个字发一趟请求，一个词打完就是六七趟
       let t = 0;
       q.oninput = () => { clearTimeout(t); t = setTimeout(() => go({ ...usageMQ, q: q.value, offset: 0 }), 250); };
-      q.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); go({ ...usageMQ, q: q.value, offset: 0 }); } };
+      q.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(t); go({ ...usageMQ, q: q.value, offset: 0 }); } };
     }
     const dry = root.querySelector("[data-dry]");
     if (dry) dry.onclick = () => go({ ...usageMQ, dry: !usageMQ.dry, offset: 0 });
@@ -1093,7 +1098,7 @@ PAGES.members = {
       // 防抖 250ms：搜的是**整个组织**，每个字发一趟请求，一个词打完就是六七趟
       let t = 0;
       mq.oninput = () => { clearTimeout(t); t = setTimeout(() => go({ ...memberQ, q: mq.value, offset: 0 }), 250); };
-      mq.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); go({ ...memberQ, q: mq.value, offset: 0 }); } };
+      mq.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(t); go({ ...memberQ, q: mq.value, offset: 0 }); } };
     }
     for (const k of ["role", "status"]) {
       const el = root.querySelector("[data-m" + k + "]");
@@ -1995,7 +2000,7 @@ PAGES.relay = {
       // 防抖 250ms：搜的是整个组织，每个字发一趟，一个词打完就是六七趟
       let rt = 0;
       rq.oninput = () => { clearTimeout(rt); rt = setTimeout(() => goMem({ ...relayMQ, q: rq.value, offset: 0 }), 250); };
-      rq.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(rt); goMem({ ...relayMQ, q: rq.value, offset: 0 }); } };
+      rq.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(rt); goMem({ ...relayMQ, q: rq.value, offset: 0 }); } };
     }
     bindPager(root, relayMQ, RELAY_MEM_PAGE, goMem);
     if (RO) return;
@@ -2711,6 +2716,8 @@ PAGES.models = {
     for (const p of provs) { const b = baseKey(p); if (b) baseCount.set(b, (baseCount.get(b) || 0) + 1); }
     const dupN = (p) => (baseKey(p) && baseCount.get(baseKey(p)) > 1 ? baseCount.get(baseKey(p)) - 1 : 0);
 
+    // 模型的增删在工作台那边——这儿写成一句「去工作台 → 设置 → 模型」，人得自己关页、回去、再翻三层；做成链接，点了直接开在那个面板上
+    const goModels = (text) => `<a class="ad-go" href="/#go=settings:models" target="_blank" rel="noopener">${esc(text)}${ic("arrow-up-right")}</a>`;
     const provRow = (p) => {
       const chat = models.filter((m) => m.channel === p.id).length;
       const media = medias.filter((m) => m.provider === p.id).length;
@@ -2734,7 +2741,8 @@ PAGES.models = {
              <button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-peek="${esc(p.id)}">显示</button>${link}</div>`
           : `<span class="fd">${p.has_key ? "已填（原文只有平台管理员看得到）" : "还空着"}</span>`,
         `${chanIdle(p) ? badge("还没填 Key", "outline") : badge("已填 Key", "success")}
-         <div class="fd" style="margin-top:4px">${chat} 个对话模型${media ? ` · ${media} 个媒体模型` : ""}</div>`,
+         <div class="fd" style="margin-top:4px">${chat || media ? `${chat} 个对话模型${media ? ` · ${media} 个媒体模型` : ""}`
+           : `<span>还没挂模型</span>${rw ? ` · ${goModels("去挂模型")}` : ""}`}</div>`,
       ];
       // 「改」连地址一起改：换了域名的私有部署、公司内网代理，都是改地址而不是重建一条。
       // 「删」是连坐的，所以放在最右边、走确认框，不做成一点就没。
@@ -2753,7 +2761,7 @@ PAGES.models = {
 
     return `<div class="ad-wrap">
       ${note("这几项配的是<b>整台服务器</b>，不是单个组织——一个部署一套 Key，所有组织的任务都花它。改完立刻生效，<b>已经在跑</b>的任务用的还是旧的那把。")}
-      ${!models.length ? note("<b>还没有对话模型</b>，请先在工作台 → 设置 → 模型 添加。", true)
+      ${!models.length ? note(`<b>还没有对话模型</b>。${rw ? goModels("去工作台添加") : ""}`, true)
         : noKeyNow ? note(`默认模型「<b>${esc(s.active_model)}</b>」的渠道<b>没填 Key</b>，任务会失败。`, true) : ""}
 
       ${cardT(headRow(secT("渠道与 Key", "每个渠道一把 Key，其下模型共用。自建网关点右上角添加。"),
@@ -2768,7 +2776,7 @@ PAGES.models = {
             `<select class="ui-input ui-select" data-sel="failover_model"${rw ? "" : " disabled"} style="min-width:260px">${opts((s.agent || {}).failover_model || "", "不换道（默认）")}</select>`)}
         </div>`)}
 
-      ${cardT(headRow(secT("这台服务器上的模型", "只读核对；增改在工作台 → 设置 → 模型。")),
+      ${cardT(headRow(secT("这台服务器上的模型", "只读核对，增改在工作台。"), rw ? goModels("去工作台增改") : ""),
         table([{ t: "名字" }, { t: "模型 id" }, { t: "挂在哪个渠道" }, { t: "状态" }],
           models.map((m) => {
             const p = provs.find((x) => x.id === m.channel);
@@ -2856,7 +2864,7 @@ PAGES.models = {
           if (i >= 0) list[i] = { ...list[i], ...entry }; else list.push(entry);
           body.providers = list;
           await post("/api/settings", body);
-          toast(p ? "已保存，立刻生效" : "渠道建好了，去工作台 → 设置 → 模型 给它挂模型");
+          toast(p ? "已保存，立刻生效" : "渠道建好了，点它那行的「去挂模型」挂上型号");
           route(true);
         },
       });
@@ -3011,6 +3019,7 @@ function bindNavSearch() {
     renderNav(location.hash.replace(/^#\/?/, "").split("?")[0] || "home");
   };
   box.onkeydown = (e) => {
+    if (imeKey(e)) return; // 拼音打一半：回车是上屏、Esc 是取消拼字，不是跳页、清空
     if (e.key === "Escape") {
       box.value = "";
       box.oninput();

@@ -163,6 +163,55 @@ console.log("\n【4】resolve 给工具链的那张表");
   eq(media.list.find((m) => m.cap === "tts").voice, "Cherry", "清单里带着音色");
 }
 
+// ---------------------------------------------------------------- 4b
+console.log("\n【4b】向导那种扁平写法落成真渠道 + 默认模型，而不是写进马上被重算掉的 config.media");
+{
+  // 反向对照：老路子就是直接写 config.media[cap]。迁移戳一盖，normalize 就把它原样抹掉
+  const old = { providers: [], media_models: [] };
+  mm.normalize(old);
+  old.media.image = { base_url: DASH, api_key: K2, model: "qwen-image" };
+  mm.normalize(old);
+  ok(!old.media.image.model && old.media_models.length === 0, "反向对照：只写 config.media，存完什么都不剩（向导第三步以前就是这样）", old.media.image);
+
+  const c = { providers: [], media_models: [] };
+  mm.normalize(c);
+  eq(mm.upsertLegacy(c, "image", { base_url: DASH, api_key: K2, model: "qwen-image" }), true, "地址 + Key + 型号齐了：落下");
+  mm.normalize(c);
+  eq(c.media.image.model, "qwen-image", "normalize 之后 config.media.image 还在");
+  eq(c.media.image.api_key, K2, "……Key 也在");
+  ok(c.providers.length === 1 && c.providers[0].kind === "dashscope", "建了一条百炼渠道", c.providers);
+  ok(c.media_models.length === 1 && c.media_models[0].default === true, "建了一条模型，是这一路的默认", c.media_models);
+
+  // 同一把 Key 同一个地址再配一路：不重复建渠道
+  mm.upsertLegacy(c, "tts", { base_url: DASH, api_key: K2, model: "qwen-tts", voice: "Cherry" });
+  mm.normalize(c);
+  eq(c.providers.length, 1, "同地址同 Key 的第二路复用那条渠道");
+  eq(c.media.tts.voice, "Cherry", "音色跟着落下");
+
+  // 这一路已经有别的默认：新填的那条顶上去，旧的留着但不再是默认
+  c.media_models.push({ cap: "image", name: "wanx", provider: c.providers[0].id, model: "wanx2.1-t2i-turbo" });
+  mm.normalize(c);
+  mm.upsertLegacy(c, "image", { base_url: DASH, api_key: "********", model: "wanx2.1-t2i-turbo" });
+  mm.normalize(c);
+  eq(c.media.image.model, "wanx2.1-t2i-turbo", "再填一次同一路：新填的成为默认");
+  eq(c.media_models.filter((m) => m.cap === "image" && m.default).length, 1, "……这一路仍然只有一个默认");
+  eq(c.providers.length, 1, "Key 是掩码 = 没改：沿用那条渠道，不多建一条");
+  eq(c.media.image.api_key, K2, "……真 Key 没被星号冲掉");
+
+  // 本机接口：不要 Key 也照样落
+  eq(mm.upsertLegacy(c, "asr", { base_url: "http://127.0.0.1:9000/v1", api_key: "", model: "whisper-large-v3" }), true, "本机转写服务不填 Key 也落下");
+  mm.normalize(c);
+  ok(c.media.asr.base_url === "http://127.0.0.1:9000/v1" && c.media.asr.model === "whisper-large-v3", "……config.media.asr 指着它", c.media.asr);
+  const asrProv = c.providers.find((p) => p.base_url === "http://127.0.0.1:9000/v1");
+  eq(asrProv && asrProv.name, "127.0.0.1:9000", "认不出是哪家的地址：渠道名用主机名，不是一整串网址");
+
+  // 缺东西就不落
+  eq(mm.upsertLegacy(c, "video", { base_url: ARK, api_key: K1, model: "" }), false, "没型号：不落");
+  eq(mm.upsertLegacy(c, "video", { base_url: "", api_key: K1, model: "x" }), false, "没地址：不落");
+  eq(mm.upsertLegacy(c, "music", { base_url: ARK, api_key: K1, model: "x" }), false, "不认识的能力：不落");
+  ok(!c.media_models.some((m) => m.cap === "video"), "……视频那一路一条都没多出来");
+}
+
 // ---------------------------------------------------------------- 5
 console.log("\n【5】工具派发：点名真的打到那个渠道");
 {

@@ -23,7 +23,7 @@ const migrate = require("./migrate");
 seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
-const { createLLM, createEmbedder, pingRequest } = require("./llm");
+const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./llm");
 const sessSearch = require("./session-search");
 const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
@@ -31,12 +31,13 @@ const worktree = require("./worktree"); // 两条任务同时改一个仓库时�
 const canvasRoutes = require("./routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
 const dramaRoutes = require("./routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
 const { createComposeRouter } = require("./routes/compose"); // 一键合成的两条接口
+const libraryRoutes = require("./routes/library"); // 资料库的封面、正文摘录、收藏
 const { createComposeJobs } = require("./lib/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
 const { McpManager } = require("./mcp");
-const { createAgentRuntime } = require("./agent");
+const { createAgentRuntime, scanOutputs, sweepPlanOffThread } = require("./agent");
 const { createImRouter } = require("./im");
 const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./scheduler");
 const account = require("./account");
@@ -271,8 +272,13 @@ function recordModelHealth(name, ok, failMsg) {
   if (h.recent.length > 20) h.recent = h.recent.slice(-20);
   if (ok) h.last_ok_t = Date.now();
   else { h.last_fail_t = Date.now(); h.last_fail = String(failMsg || "").slice(0, 200); }
-  try { store.writeJsonAtomic(HEALTH_FILE, modelHealth); } catch {}
+  healthWriter.request();
 }
+// 每跑完一轮记一笔，以前每笔都在主线程上 fsync（实测单次约 4.5ms，5 条对话并发时跟会话存盘挤在一起）。
+// 账本本身在内存里，盘上那份只是重启用的：后台写、一秒最多一次，进程退出时同步补一次（见 flushPendingWritesSync）
+const healthWriter = store.coalesce(() => store.writeJsonAtomicAsync(HEALTH_FILE, modelHealth), {
+  minGapMs: 1000, onError: (e) => console.warn(`[模型健康] 账本存盘失败：${e.message}`),
+});
 function healthSummary() {
   const out = {};
   for (const [name, h] of Object.entries(modelHealth)) {
@@ -329,8 +335,12 @@ const RUNNING_FILE = dataPath("data", "running.json");
 const WORKTREE_LEGACY = dataPath("data", "worktrees");
 let worktreeDir = "";
 const worktreeStore = () => worktreeDir || (worktreeDir = worktree.defaultStore(WORKTREE_LEGACY));
+// 每轮开跑、收尾各写一次。后台写，一次只在路上一份：名单在开写那一刻才取，所以落地的永远是最新的那份
+const runningWriter = store.coalesce(() => store.writeJsonAtomicAsync(RUNNING_FILE, [...activeRuns.keys()]), {
+  onError: (e) => console.warn(`[恢复] 正在跑的名单存盘失败：${e.message}`),
+});
 function persistRunning() {
-  try { store.writeJsonAtomic(RUNNING_FILE, [...activeRuns.keys()]); } catch {}
+  runningWriter.request();
 }
 function sweepInterruptedRuns() {
   const ids = store.readJson(RUNNING_FILE, []);
@@ -477,6 +487,10 @@ function forgetSession(id) {
   sessSaveAt.delete(id);
   sessUsedAt.delete(id);
   sessHold.delete(id);
+  // 排着的后台存盘一起作废：不作废的话，删会话之后一秒它又把整份写回盘上，等于没删
+  const w = sessWriters.get(id);
+  if (w) w.w.cancel();
+  sessWriters.delete(id);
 }
 /**
  * 删会话：盘上跟它有关的每一份一起删——正本、.bak、.corrupt / .corrupt-<时间戳>、写到一半的 .tmp，
@@ -488,7 +502,8 @@ function forgetSession(id) {
 function removeSessionFiles(id) {
   const base = path.basename(sessFile(id));
   const safe = base.slice(0, -".json".length);
-  const tail = /^(?:bak|corrupt(?:-\d+)?|\d+\.tmp|bak\.\d+\.tmp)$/;
+  // <pid>.<序号>.tmp 是后台存盘那条路的临时名（store.writeTextAtomicAsync）
+  const tail = /^(?:bak|corrupt(?:-\d+)?|\d+(?:\.\d+)?\.tmp|bak\.\d+\.tmp)$/;
   const sweep = (dir, hit) => {
     let names = [];
     try { names = fs.readdirSync(dir); } catch { return; }
@@ -520,12 +535,15 @@ function trimSessionCache(keepId) {
     looked++;
     if (id === keepId || activeRuns.has(id) || sessHold.has(id)) continue;
     if (now - (sessUsedAt.get(id) || 0) < SESS_CACHE_IDLE_MS) continue;
+    const w = sessWriters.get(id);
+    if (w && w.w.busy()) continue;   // 还有一趟后台存盘没落地：内存里这份就是还没上盘的改动
     if (!sessSynced(id)) continue;
     bytes -= ((sessStamp.get(id) || {}).size) || 0;
     sessions.delete(id);
     sessStamp.delete(id);     // 跟着一起清，不然这两个 Map 自己变成新的泄漏
     sessSaveAt.delete(id);
     sessUsedAt.delete(id);
+    sessWriters.delete(id);
     gone++;
   }
   // 只有「真挑过、一条都挑不动」才歇（全在用着、或者全都还没落盘）。
@@ -577,6 +595,9 @@ function saveSession(id, sess) {
   if (!s) return void console.warn(`[会话] 要存 ${id}，可内存里没有这份，也没人把对象递进来——这一次写盘跳过了`);
   if (!s.history) return;
   touchSession(id);
+  // 同步写了最新的一整份：后台排着的那趟作废，路上那趟也别晚到把这份盖回旧的（见 sessWriter 的 shouldCommit）
+  const rec = sessWriters.get(id);
+  if (rec) { rec.gen++; rec.w.cancel(); }
   s.updated_at = new Date().toISOString();
   // 盘上那份还是我们上回读 / 写下的样子（mtime+size 都对得上）：上一版不用再整份读回来 JSON.parse
   // 一遍才配当 .bak，直接硬链接过去（见 store.js linkBackup）。对不上——命令行写过、
@@ -597,11 +618,65 @@ function autosaveSession(id, minGapMs = 5000) {
   const now = Date.now();
   if (now - (sessSaveAt.get(id) || 0) < minGapMs) return;
   sessSaveAt.set(id, now);
-  try {
-    saveSession(id);
-  } catch (e) {
-    console.warn(`[会话] 中途存盘失败（${id}）：${e.message}`);
+  queueSessionSave(id);
+}
+/**
+ * 跑任务途中的存盘走后台，而且每条会话一秒最多写一次。
+ *
+ * 以前这里直接调 saveSession：整份 JSON.stringify + 写临时文件 + fsync 全在主线程上。
+ * 2026-09-29 实测 5 条对话并发、每条会话 1.4MB：540 秒里主线程 fsync 11426 次、合计 51.6 秒
+ * （单次约 4.5ms），这段时间所有对话的流式输出和所有接口一起停着。按 120 秒 CPU 采样分：
+ * 会话存盘 4.5 秒、running.json 4.5 秒、模型健康账本 2.2 秒，三处都改成了后台写。
+ *
+ * 现在：写临时文件和 fsync 交给线程池（store.writeJsonAtomicAsync），主线程只剩序列化和改名那一下；
+ * 同一条会话排着的几次并成一次（store.coalesce，一次只在路上一份，旧的不会晚到盖掉新的）。
+ * 丢不了：回合收尾 await flushSessionSave 落完盘才发 done；进程退出走 flushSessionSavesSync 同步补写。
+ */
+const SESS_SAVE_GAP_MS = 1000;
+const sessWriters = new Map(); // id -> { w: 排班, gen: 同步那条路写过几次 }
+function sessWriter(id) {
+  const had = sessWriters.get(id);
+  if (had) return had;
+  /** @type {{ gen: number, w: any }} */
+  const me = { gen: 0, w: null };
+  me.w = store.coalesce(() => {
+    if (sessWriters.get(id) !== me) return;   // 删了 / 清出缓存了：这一趟作废
+    const s = sessions.get(id);
+    if (!s) return void console.warn(`[会话] 要存 ${id}，可内存里没有这份——这一次写盘跳过了`);
+    if (!s.history) return;
+    const gen = me.gen;
+    s.updated_at = new Date().toISOString();
+    return store.writeJsonAtomicAsync(sessFile(id), s, {
+      // 跟 saveSession 同一个判据，只是挪到改名前那一刻才判
+      trustPrev: () => {
+        const mine = sessStamp.get(id), disk = mine ? sessStat(id) : null;
+        return !!(mine && disk && disk.size > 0 && disk.mtime === mine.mtime && disk.size === mine.size);
+      },
+      // 等线程池这几毫秒里同步那条路写过更新的一份（gen 变了），或者会话被删了：这份旧的不许落地
+      shouldCommit: () => me.gen === gen && sessWriters.get(id) === me,
+      onCommit: () => { if (sessions.has(id)) sessStamp.set(id, sessStat(id)); },
+    });
+  }, { minGapMs: SESS_SAVE_GAP_MS, onError: (e) => console.warn(`[会话] 中途存盘失败（${id}）：${e.message}`) });
+  sessWriters.set(id, me);
+  return me;
+}
+function queueSessionSave(id) {
+  touchSession(id);
+  sessWriter(id).w.request();
+}
+/** 不等间隔立刻存，落完盘才 resolve（回合收尾用：告诉界面「完成了」之前记录必须已经在盘上） */
+function flushSessionSave(id) {
+  touchSession(id);
+  return sessWriter(id).w.flush();
+}
+/** 进程要退了：还没落地的那些同步补写一遍（退出钩子里等不了线程池） */
+function flushSessionSavesSync() {
+  let n = 0;
+  for (const [id, rec] of [...sessWriters]) {
+    if (!rec.w.busy()) continue;
+    try { saveSession(id); n++; } catch (e) { console.warn(`[会话] 退出前补存失败（${id}）：${e.message}`); }
   }
+  return n;
 }
 
 /**
@@ -1260,7 +1335,9 @@ app.get("/api/update", async (req, res) => {
   res.json(await updater.checkUpdate({ force: req.query.force === "1" }));
 });
 
-app.get("/api/files", (_req, res) => res.json(outputFiles()));
+// 跟 files 事件同一份清单，走后台线程翻目录（见 agent.js scanOutputs）：输入框里敲 @ 就会拉它，
+// 在主线程上同步走整棵树，那一下所有对话的流式输出一起停
+app.get("/api/files", (_req, res, next) => { scanOutputs(getWorkspaceDir()).then((f) => res.json(f), next); });
 
 // 资料库「工作区」那一栏：一次列一层，像访达那样一层层点进去。/api/files 是「最近动过的 500 个、
 // 最深 3 层」，拿它当全集的话，第 4 层往下和第 501 个往后的文件哪儿都找不到（细账在 lib/ws-browse.js 开头）。
@@ -1295,6 +1372,7 @@ app.use(dramaRoutes.createDramaRouter({
   getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, addUsage, toolRunSubdir, toolRunSubdirReady,
   canvasAssetNear: canvasRoutes.canvasAssetNear,
 }));
+app.use(libraryRoutes.createLibraryRouter({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, thumbsDir: path.join(dataPath("data"), "thumbs"), busy: () => activeRuns.size > 0 }));
 
 // 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
 app.get("/api/assistant", (_req, res) => res.json(config.assistant));
@@ -1418,7 +1496,7 @@ app.post("/api/provider-test", async (req, res) => {
     return res.json({ ok: false, error: "这个渠道下面还没挂任何模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
   }
   const t0 = Date.now();
-  const why = await probeModel({ provider: api, base_url: base, api_key: key, model });
+  const why = await probeModel({ provider: api, base_url: base, api_key: key, model }, { custom: ownBase(kind, base) });
   res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
 });
 
@@ -1492,7 +1570,7 @@ app.post("/api/model-test", async (req, res) => {
       const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn });
       return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
     }
-    const why = await probeModel({ provider: mediaModels.protoOfChannel(p), base_url: p.base_url, api_key: p.api_key, model: m.model });
+    const why = await probeModel({ provider: mediaModels.protoOfChannel(p), base_url: p.base_url, api_key: p.api_key, model: m.model }, { custom: ownBase(p.kind, p.base_url) });
     res.json({
       ok: !why, ms: Date.now() - t0, model: m.model, error: why || "",
       note: why ? "" : `「${m.model}」在渠道「${p.name}」上答得上话`,
@@ -1581,6 +1659,16 @@ function maskMedia(media, owner) {
 // 升级整理做了什么。动过用户的文件就必须让他知道，而且要说清搬到哪儿了、原件还在。
 // 界面看过一次就记下 id，不再打扰；这里不存「看过没有」，那是每台机器自己的事
 app.get("/api/migrations", (_req, res) => res.json({ notes: global.__wbMigrationNotes || [] }));
+
+function embeddingView(req) {
+  const e = config.embedding || {};
+  return {
+    base_url: e.base_url || "", model: e.model || "",
+    api_key: e.api_key ? "********" : "",
+    key_hint: isPlatformOwner(req) ? keyHint(e.api_key) : "",
+    has_key: !!e.api_key,
+  };
+}
 
 app.get("/api/settings", (req, res) => {
   // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
@@ -1678,6 +1766,8 @@ app.get("/api/settings", (req, res) => {
       session_idle_hours: +(config.im || {}).session_idle_hours || 0,
     },
     media: maskMedia(config.media, isPlatformOwner(req)),
+    // 嵌入接口（语义召回）。Key 跟别的一样只回八颗星 + has_key
+    embedding: embeddingView(req),
     // 渠道表：一把 Key 一行，图/视频/语音/视觉都引用它。普通成员看得见有哪些渠道，但看不到 Key——
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手
     providers: (config.providers || []).map((p) => ({
@@ -2019,21 +2109,6 @@ app.post("/api/settings", (req, res) => {
       imAssign(config.im, b.im, ["wecom_bot_webhook", "dingtalk_webhook", "dingtalk_secret", "webhook_secret"], clear, "");
       if (b.im.session_idle_hours !== undefined) config.im.session_idle_hours = Math.max(0, Math.min(720, +b.im.session_idle_hours || 0));
     }
-    if (b.media) {
-      config.media = config.media || {};
-      for (const kind of mediaModels.CAPS) { // 单一真源：加一路能力只改 media-models.js 的 CAPS
-        if (b.media[kind]) {
-          const c = (config.media[kind] = config.media[kind] || {});
-          for (const k of ["base_url", "api_key", "model", "voice"]) {
-            if (b.media[kind][k] === undefined) continue;
-            const v = String(b.media[kind][k]).trim();
-            // 掩码原样存回来 = 用户没动这一栏，保留库里那把真的
-            if (k === "api_key" && /^\*+$/.test(v)) continue;
-            c[k] = v;
-          }
-        }
-      }
-    }
     if (Array.isArray(b.providers)) {
       const old = new Map((config.providers || []).map((p) => [p.id, p]));
       config.providers = b.providers.map((p) => {
@@ -2067,6 +2142,16 @@ app.post("/api/settings", (req, res) => {
         protocol: String(m.protocol || "").trim(),
         default: !!m.default,
       }));
+    }
+    if (b.media) {
+      // 扁平写法（向导第三步）：直接落成渠道 + 模型条目并设为默认。只写 config.media 的话，
+      // 下面 normalize 按 media_models 重算时会把它原样抹掉，界面却已经亮了「已配」。
+      // 排在两张表整表替换之后，同一次提交里带了 providers 也不会把刚建的渠道冲掉；先全验一遍再动手，免得存一半
+      const caps = mediaModels.CAPS.filter((k) => b.media[k]); // 单一真源：加一路能力只改 media-models.js 的 CAPS
+      for (const k of caps) {
+        if (!String(b.media[k].base_url || "").trim() || !String(b.media[k].model || "").trim()) throw new Error("接口地址和模型名都要填");
+      }
+      for (const k of caps) mediaModels.upsertLegacy(config, k, b.media[k]);
     }
     // 两张表任何一张动过，就重算 id、补默认项、把「默认那条」压平回 config.media，
     // 这样 tools.js 那边永远读到一份现成的扁平配置，不用关心多模型这套
@@ -2116,6 +2201,26 @@ app.post("/api/settings", (req, res) => {
         // 开着却没钥匙，等于以为在记其实一条都没发。这种"看起来成了"的状态最坑人，当场拦掉
         if (on && !(cur.public_key && cur.secret_key)) throw new Error("要开执行追踪，公钥和私钥都得填（在 Langfuse 项目设置里生成一对）");
         cur.enabled = on;
+      }
+    }
+    if (b.embedding !== undefined) {
+      // 语义召回用的嵌入接口。地址和模型都空 = 清掉，回到从已配渠道里自动找（llm.js embedCandidates）。
+      // 自动找只认得通义/智谱/OpenAI/Ollama，只接了 DeepSeek 或中转站的人全靠这一栏
+      const e = b.embedding || {};
+      const base = String(e.base_url || "").trim().replace(/\/+$/, "");
+      const model = String(e.model || "").trim();
+      if (!base && !model) delete config.embedding;
+      else {
+        if (!/^https?:\/\/[^\s/]+/i.test(base)) throw new Error("接口地址要以 http:// 或 https:// 开头");
+        if (!model) throw new Error("模型名要填，比如 text-embedding-3-small");
+        const old = config.embedding || {};
+        let key = String(e.api_key == null ? "" : e.api_key).trim();
+        if (/^\*+$/.test(key)) {
+          // 八颗星 = 没改。可地址换了还沿用旧 Key，等于把这家的 Key 发给了另一家
+          if (String(old.base_url || "").replace(/\/+$/, "") !== base) throw new Error("换了接口地址，Key 要重新填一遍");
+          key = String(old.api_key || "");
+        }
+        config.embedding = { base_url: base, api_key: key, model };
       }
     }
     if (b.shortcuts && typeof b.shortcuts === "object") {
@@ -2310,23 +2415,39 @@ function keyHint(k) {
 
 /** 发一条最小的真实请求验活。返回 null = 通过，返回字符串 = 人话版失败原因。
  *  刻意不走 createLLM：它会把工具 schema 一起发过去，这里只想知道"这个 key 认不认"。 */
-async function probeModel(m) {
+/** 地址是用户自己填的（中转 / 网关 / 改过官方地址）：404 时地址和模型名都可能是错的那一个 */
+function ownBase(kind, base) {
+  const k = mediaModels.PROVIDER_KINDS.find((x) => x.kind === kind);
+  if (!k || k.relay) return true;
+  const b = String(base || "").trim();
+  if (!b) return false;                          // 没填 = 用这家官方的默认地址
+  return mediaModels.guessKind(b) !== kind;      // 域名认得出就是这家自己的
+}
+async function probeModel(m, opts = {}) {
+  return (await probeModelRaw(m, opts)).error;
+}
+/** 同 probeModel，另带上游状态码（没连上是 0）：自填地址那条路要凭 404 决定补不补 /v1 */
+async function probeModelRaw(m, { custom = false } = {}) {
   // 每种接口格式的地址算法只有一份（llm.js 的 pingRequest），验活和真跑必须打同一个地址：
   // 否则填了中转的人验活验的是中转、跑起来打的是官方，绿勾骗人
   const { url, headers, body } = pingRequest(m);
   try {
     const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
-    if (r.ok) return null;
+    if (r.ok) return { status: r.status, error: null };
     const txt = (await r.text()).slice(0, 300);
-    if (r.status === 401 || r.status === 403) return "这个 Key 上游不认（HTTP " + r.status + "），检查有没有复制全、是不是这家服务商的 Key";
-    if (r.status === 402) return "Key 有效但余额不足 / 未开通付费，去服务商控制台充值后再试";
-    if (r.status === 404) return `模型名「${m.model}」在这家服务商不存在（HTTP 404），去 设置 → 模型 改成它支持的名字`;
-    if (r.status === 429) return "被限流了（429），等一会儿再试，或换个渠道";
-    return `上游返回 HTTP ${r.status}：${txt}`;
+    const out = (error) => ({ status: r.status, error });
+    if (r.status === 401 || r.status === 403) return out("这个 Key 上游不认（HTTP " + r.status + "），检查有没有复制全、是不是这家服务商的 Key");
+    if (r.status === 402) return out("Key 有效但余额不足 / 未开通付费，去服务商控制台充值后再试");
+    // 目录里的服务商地址是我们填的，404 只能是模型名；自己填的地址两样都可能错，不替他挑一个
+    if (r.status === 404) return out(custom
+      ? `HTTP 404：地址或模型名有一处对不上（打的是 ${url}），对照接口文档再看一眼`
+      : `模型名「${m.model}」在这家服务商不存在（HTTP 404），去 设置 → 模型 改成它支持的名字`);
+    if (r.status === 429) return out("被限流了（429），等一会儿再试，或换个渠道");
+    return out(`上游返回 HTTP ${r.status}：${txt}`);
   } catch (e) {
     const msg = String((e && e.message) || e);
-    if (/timeout|abort/i.test(msg)) return "连不上（30 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道";
-    return "连不上：" + msg.slice(0, 200);
+    if (/timeout|abort/i.test(msg)) return { status: 0, error: "连不上（30 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道" };
+    return { status: 0, error: "连不上：" + msg.slice(0, 200) };
   }
 }
 
@@ -2361,7 +2482,8 @@ app.get("/api/onboarding", async (req, res) => {
     try { found = await engines.detectAll(myAgent.engine_options || {}); } catch {}
   }
   const media = config.media || {};
-  const mediaOk = (kind) => { const c = media[kind] || {}; return !!(c.base_url && c.api_key); };
+  // 本机接口（Ollama、自建 whisper 之类）本来就不要 Key；只有地址没有型号的是半截，调不通，不算配好
+  const mediaOk = (kind) => { const c = media[kind] || {}; return !!(c.base_url && c.model && (c.api_key || chatModels.isLocalBase(c.base_url))); };
   const im = config.im || {};
   const pair = (o, ...ks) => !!(o && ks.every((k) => String(o[k] || "").trim()));
   const imConfigured = [
@@ -2396,10 +2518,13 @@ app.get("/api/onboarding", async (req, res) => {
     models,
     // 向导的「服务商」清单从目录来，不再靠 config 里那排没 Key 的模板行撑场面
     templates: chatModels.templates(),
+    // 「自己填地址」那一项的接口格式下拉：跟设置里渠道卡用的同一份
+    api_formats: mediaModels.API_FORMATS.map((f) => ({ id: f.id, label: f.label })),
     any_key: models.some((m) => m.has_key && !m.local),
     engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
     engine: engineId,
-    search: { provider: sp, has_key: !!searchProviderKey(config.search || {}, sp) },
+    // 「配好了」不等于「有 Key」：自定义那家认的是地址，不要鉴权的自建接口本来就没有 Key
+    search: { provider: sp, has_key: searchProviderReady(sc, sp, searchProviderKey(sc, sp)) },
     media: Object.fromEntries(mediaModels.CAPS.map((c) => [c, mediaOk(c)])),
     im: { configured: imConfigured },
   });
@@ -2410,6 +2535,27 @@ app.post("/api/onboarding", async (req, res) => {
   try {
     const b = req.body || {};
     const key = String(b.api_key || "").trim();
+    // 自己填地址：中转站、自建网关、本机 vLLM……跟模板那条一样先算、验活、验过了才落
+    if (b.custom && typeof b.custom === "object") {
+      let plan = chatModels.planCustom(config, b.custom);
+      if (plan.err) throw new Error(plan.err);
+      if (systemOne.isDecisionModel(plan.row.model)) throw new Error(`「${plan.row.model}」是判断模型（Jev），不能当对话模型用`);
+      if (!key && !plan.t.local) throw new Error("API Key 不能为空（本机接口可以不填）");
+      if (b.skip_test !== true) {
+        const keyOf = (p) => key || (p.prov ? p.prov.api_key : "");
+        let r = await probeModelRaw({ ...plan.row, api_key: keyOf(plan) }, { custom: true });
+        // 只填了域名、原样打回 404：换成带 /v1 的再验一次，通了就按通了的那个地址存
+        if (r.error && r.status === 404 && plan.alt) {
+          const alt = chatModels.planCustom(config, { ...b.custom, base_url: plan.alt });
+          const r2 = alt.err ? r : await probeModelRaw({ ...alt.row, api_key: keyOf(alt) }, { custom: true });
+          if (!r2.error) { plan = alt; r = r2; }
+        }
+        if (r.error) return res.json({ ok: false, error: r.error });
+      }
+      const row = chatModels.commitTemplate(config, plan, key);
+      chatModels.normalize(config);
+      return landBrain(row.name);
+    }
     // 按厂商模板新起一条：先算好、验活、验过了才落进 config——验不过的 Key 不该留下一个半成品渠道
     if (b.kind) {
       const plan = chatModels.planTemplate(config, b.kind, b.model_id);
@@ -2422,19 +2568,7 @@ app.post("/api/onboarding", async (req, res) => {
       }
       const row = chatModels.commitTemplate(config, plan, key);
       chatModels.normalize(config);
-      setGlobalModel(row.name);
-      if (b.workspace_dir) {
-        config.workspace_dir = setWorkspaceDir(b.workspace_dir);
-        ensureProjects();
-        const ap = config.projects.find((p) => p.name === config.active_project);
-        if (ap) ap.dir = config.workspace_dir;
-      }
-      llmInner = createLLM(config);
-      memory.setEmbedder(createEmbedder(config));
-      setSessEmbedder(createEmbedder(config));
-      memory.ensureVectors().catch(() => {});
-      saveConfig();
-      return res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
+      return landBrain(row.name);
     }
     const entry = (config.models || []).find((m) => m.name === b.model);
     if (!entry) throw new Error("没有这个模型：" + b.model);
@@ -2463,7 +2597,15 @@ app.post("/api/onboarding", async (req, res) => {
     // 规整一趟：认渠道、并掉重复的空壳行、再把渠道的地址和 Key 压平回模型条目。
     // 不跑这一趟，下面 createLLM 读到的还是旧的扁平字段，这一趟对话照样 401
     chatModels.normalize(config);
-    setGlobalModel(entry.name);
+    return landBrain(entry.name);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+
+  /** 三条路验过之后都一样：设成全局在用的模型、按需换工作目录、重建客户端、落盘 */
+  function landBrain(name) {
+    const b = req.body || {};
+    setGlobalModel(name);
     if (b.workspace_dir) {
       config.workspace_dir = setWorkspaceDir(b.workspace_dir);
       ensureProjects();
@@ -2475,9 +2617,7 @@ app.post("/api/onboarding", async (req, res) => {
     setSessEmbedder(createEmbedder(config));
     memory.ensureVectors().catch(() => {});
     saveConfig();
-    res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
-  } catch (e) {
-    res.status(400).json({ ok: false, error: e.message });
+    return res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
   }
 });
 
@@ -3430,6 +3570,8 @@ app.get("/api/library", (req, res) => {
   const dir = (() => { try { return libRel((req.query || {}).dir); } catch { return ""; } })();
   let files = [];
   let dirs = [];
+  // 收藏跟着资料库的根走（routes/library.js），列的时候逐个打上 fav，前端不用再单独问一趟
+  const favs = libraryRoutes.libFavKeys(libraryRootOf(req.user));
   try {
     for (const e of fs.readdirSync(libPath(dir), { withFileTypes: true })) {
       if (e.name.startsWith(".")) continue;
@@ -3438,7 +3580,7 @@ app.get("/api/library", (req, res) => {
       try { st = fs.statSync(abs); } catch { continue; }
       const row = { name: e.name, path: dir ? `${dir}/${e.name}` : e.name, size: st.size, mtime: st.mtime.toISOString() };
       if (e.isDirectory()) dirs.push({ ...row, count: libCount(abs) });
-      else if (e.isFile()) files.push(row);
+      else if (e.isFile()) files.push({ ...row, fav: favs.has("lib:" + row.path) });
     }
   } catch {}
   dirs.sort((a, b) => a.name.localeCompare(b.name, "zh"));
@@ -3722,6 +3864,14 @@ app.get("/api/library/outputs", (req, res) => {
   // 未归属回多少条：默认 200（文件夹视图、搜索只借这份数据反查「出自哪次任务」，用不着全量）；
   // 「按任务」视图要翻完全部，会自己带上一个大数
   const lim = Math.max(0, Math.min(wsBrowse.WALK_CAP, parseInt(String((req.query || {}).orphan_limit || ""), 10) || 200));
+  // 翻页：前端一页要 2000 条（2026-09-29 起，原来一口气要两万条，一条 JSON 就是几 MB），往后翻带 orphan_offset
+  const off = Math.max(0, parseInt(String((req.query || {}).orphan_offset || ""), 10) || 0);
+  const favs = libraryRoutes.libFavKeys(libraryRootOf(req.user));
+  const isFav = (n) => favs.has("ws:" + n);
+  // 网页幻灯片：同目录有 deck.json 的 html 标 deck:true，前端据此归到「幻灯片」页签。
+  // 只看这次遍历已经拿到的文件名，不读 html 正文、不多一次 stat——285 个 html 的工作区读一遍正文就是几十 MB
+  const deckDirs = new Set(walk.files.filter((f) => /(^|\/)deck\.json$/.test(f.name)).map((f) => path.posix.dirname(f.name)));
+  const deckOf = (n) => (deckDirs.size && /\.html?$/i.test(n) && deckDirs.has(path.posix.dirname(n)) ? { deck: true } : {});
   const statOf = statLookup(knownRoots().slice(0, 12)); // 根的条数不设限的话，一次请求能把 stat 乘成几万次
   const claimed = new Set();
   const tasks = [];
@@ -3734,12 +3884,12 @@ app.get("/api/library/outputs", (req, res) => {
       // -1 一路传到前端会被当成第 0 回合，所以查不到就写 undefined，让界面自己决定退回顶部
       const tn = row.turns && row.turns[i] >= 0 ? row.turns[i] : undefined;
       const f = meta.get(n);
-      if (f) { claimed.add(n); files.push({ name: n, size: f.size, mtime: f.mtime, gone: false, turn: tn }); continue; }
+      if (f) { claimed.add(n); files.push({ name: n, size: f.size, mtime: f.mtime, gone: false, turn: tn, fav: isFav(n), ...deckOf(n) }); continue; }
       const st = statOf(n);
       // 搬过家的按新地址报出去：名字给人看的那一截没变（前端只取最后一段），
       // 但地址是能打开的那个。顺带认领一下，免得同一个文件在「未归属」里再出现一遍
-      if (st) { const at = st.at || n; claimed.add(at); files.push({ name: at, size: st.size, mtime: st.mtime, gone: false, turn: tn }); continue; }
-      files.push({ name: n, size: 0, mtime: "", gone: st === false, turn: tn });
+      if (st) { const at = st.at || n; claimed.add(at); files.push({ name: at, size: st.size, mtime: st.mtime, gone: false, turn: tn, fav: isFav(at), ...deckOf(at) }); continue; }
+      files.push({ name: n, size: 0, mtime: "", gone: st === false, turn: tn, fav: isFav(n) });
     }
     files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
     const { names, turns, user, ...rest } = row;
@@ -3748,11 +3898,12 @@ app.get("/api/library/outputs", (req, res) => {
   }
   // 「未归属」：工作目录里确实有、但没有任何一条任务认领过的文件——手动拷进来的素材、
   // 更早版本产出的东西、别的工具写的。不列出来的话这一页就成了半份清单，用户会以为文件丢了。
-  const orphans = walk.files.filter((f) => !claimed.has(f.name))
-    .map((f) => ({ name: f.name, size: f.size, mtime: f.mtime, gone: false }));
+  const orphans = walk.files.filter((f) => !claimed.has(f.name));
   // ws_total / ws_capped：工作区里一共多少个文件、数没数全（撞了两万个或十二层的线就是没数全）。
   // 文件夹视图的「全部 N 个」和这里的 orphan_total 都照这个说，数不全就明说数不全
-  res.json({ tasks, orphans: orphans.slice(0, lim), orphan_total: orphans.length, ws_total: walk.files.length, ws_capped: walk.capped, ...scope });
+  // 只把要回的那一页拼成行：两万个文件逐个拼对象、再扔掉一万八，是白干
+  const page = orphans.slice(off, off + lim).map((f) => ({ name: f.name, size: f.size, mtime: f.mtime, gone: false, fav: isFav(f.name), ...deckOf(f.name) }));
+  res.json({ tasks, orphans: page, orphan_total: orphans.length, orphan_offset: off, ws_total: walk.files.length, ws_capped: walk.capped, ...scope });
 });
 
 // 能当正文搜的类型。二进制（图片/压缩包/PDF）只搜文件名——把 PDF 当 utf8 读进来
@@ -3935,7 +4086,33 @@ app.get("/api/memory", (req, res) => {
     // 界面照这两个决定要不要画那颗按钮：会 403 的按钮不该摆在那儿
     can_share: scopeTo === undefined,   // 能不能往共享区写、能不能删共享区的
     can_edit_manual: scopeTo === undefined, // 背景说明是全局一份，仍旧归平台管理员
+    // 嵌入接口是整台服务器一份的，只有平台管理员看得见那张表单
+    embedding: isPlatformOwner(req) ? embeddingView(req) : null,
   });
+});
+
+// 记忆面板「测一下」：拿表单里的地址/Key/模型真打一次。Key 传八颗星 = 用已存的那把（地址得没换）
+app.post("/api/embedding/test", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "嵌入接口是整台服务器一份的，归平台管理员配", platform_only: true });
+  const b = req.body || {};
+  const base = String(b.base_url || "").trim().replace(/\/+$/, "");
+  const model = String(b.model || "").trim();
+  if (!/^https?:\/\/[^\s/]+/i.test(base)) return res.status(400).json({ ok: false, error: "接口地址要以 http:// 或 https:// 开头" });
+  if (!model) return res.status(400).json({ ok: false, error: "模型名要填，比如 text-embedding-3-small" });
+  let key = String(b.api_key == null ? "" : b.api_key).trim();
+  if (/^\*+$/.test(key)) {
+    const old = config.embedding || {};
+    if (String(old.base_url || "").replace(/\/+$/, "") !== base) return res.status(400).json({ ok: false, error: "换了接口地址，Key 要重新填一遍" });
+    key = String(old.api_key || "");
+  }
+  const r = await probeEmbedding({ base_url: base, api_key: key, model });
+  if (r.ok) {
+    // 通了就把死渠道记号擦了、重建一次：先前全挂停用的 embedder 不会自己活过来
+    memory.setEmbedder(createEmbedder(config));
+    setSessEmbedder(createEmbedder(config));
+    memory.ensureVectors().catch(() => {});
+  }
+  res.json(r);
 });
 app.post("/api/memory", (req, res) => {
   memory.saveManual((req.body || {}).content || "");
@@ -6599,10 +6776,12 @@ app.post("/api/chat", async (req, res) => {
       }
     } catch {} // 删不动就留着，一个空文件夹远好过一次误删
   }
-  saveSession(sessionId);
+  // 这一轮的记录先排进后台存盘（跟下面翻目录并行），发 done 之前再等它落地
+  queueSessionSave(sessionId);
   // 收尾只是刷一遍完整文件列表，不是"本回合有产出"的通报：changed 明确给空，
-  // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来
-  const files0 = outputFiles();
+  // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来。
+  // 翻目录走后台线程（agent.js scanOutputs）：5 条对话并发时主线程上的全树遍历占了 CPU 的 42.6%
+  const files0 = await scanOutputs(getWorkspaceDir());
   send({ type: "files", files: files0, changed: [], ...filesScope(files0) });
   /**
    * 收尾问一句「这次顺手造的中间文件要不要清掉」。
@@ -6621,7 +6800,7 @@ app.post("/api/chat", async (req, res) => {
   // 但就躺在成品旁边，用户打开文件夹第一眼看到的是它们——3 个就值得问一句。
   if (taskBaseDir) pruneTaskTmp(path.join(getWorkspaceDir(), taskBaseDir)).catch(() => {}); // 异步翻，不拖收尾
   try {
-    const sw = sweep.plan(getWorkspaceDir(), { since: runStartedAt, task: taskBaseDir || undefined });
+    const sw = await sweepPlanOffThread(getWorkspaceDir(), { since: runStartedAt, task: taskBaseDir || undefined });
     const dbg = ((sw.groups || []).find((g) => g.key === "debug") || {}).count || 0;
     if (sw.count && (sw.bytes >= 20 * 1024 * 1024 || sw.count >= 30 || dbg >= 3)) {
       send({ type: "sweep", since: runStartedAt, task: taskBaseDir || "", ...sw });
@@ -6636,6 +6815,8 @@ app.post("/api/chat", async (req, res) => {
       else if (rel) emitFn({ type: "worktree", phase: "done", branch: rel.branch, repo: rel.repo, dir: rel.dir, touched: rel.touched, commits: rel.commits, text: worktree.hint(rel) });
     } catch (e) { log.warn("worktree", "分身收尾出错（东西还在，没丢）", { session: sessionId, err: e.message }); }
   }
+  // 说「完成了」之前这一轮必须已经在盘上（分身收尾那两条事件也一起落了——以前它们在存盘之后才记，下一轮才上盘）
+  await flushSessionSave(sessionId);
   send({ type: "done" });
   runState.finished = true; // 先标上再通知订阅者：/api/chat/live 在 end() 里、以及之后晚到的订阅都靠它判「这趟完了」
   if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
@@ -7690,5 +7871,30 @@ process.on("SIGINT", () => {
   mcpManager.stopAll();
   process.exit(0);
 });
+/**
+ * 会话、正在跑的名单、模型健康账本现在都是后台写（见 sessWriter / runningWriter / healthWriter），
+ * 进程在它们落地前退出就会少最后那一秒。退出钩子里等不了线程池，还没落地的一律同步补写一遍。
+ * 所有正常退出都走 process.exit（SIGINT 收尾、服务进程的 stop() 兜底），exit 事件一定到。
+ */
+function flushPendingWritesSync() {
+  flushSessionSavesSync();
+  if (runningWriter.busy()) {
+    runningWriter.cancel();
+    try { store.writeJsonAtomic(RUNNING_FILE, [...activeRuns.keys()]); } catch (e) { console.warn(`[恢复] 退出前补存正在跑的名单失败：${e.message}`); }
+  }
+  if (healthWriter.busy()) {
+    healthWriter.cancel();
+    try { store.writeJsonAtomic(HEALTH_FILE, modelHealth); } catch (e) { console.warn(`[模型健康] 退出前补存账本失败：${e.message}`); }
+  }
+}
+process.on("exit", flushPendingWritesSync);
+// 直接 node server.js 跑时没人接 SIGTERM（服务进程里 server-host.js 接了，会转成上面的 SIGINT）：
+// 默认处理不发 exit 事件。补写完再按原信号退，退出码照旧
+if (!process.listenerCount("SIGTERM") && !process.versions.electron) {
+  process.once("SIGTERM", () => {
+    try { flushPendingWritesSync(); } catch (e) { console.warn(`[退出] 补存没做完：${e.message}`); }
+    process.kill(process.pid, "SIGTERM");
+  });
+}
 
 main().catch(bootFailed);

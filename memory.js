@@ -397,7 +397,12 @@ function vectorStatus() {
   const items = load();
   const vs = vecLoad();
   const have = items.filter((x) => Array.isArray(vs.vecs[x.id])).length;
-  return { enabled: !!embedder, model: embedder ? String(embedder.model || vs.model || "") : "", have, total: items.length };
+  return {
+    enabled: !!embedder, model: embedder ? String(embedder.model || vs.model || "") : "", have, total: items.length,
+    // 走的是哪一条（「设置里显式指定的嵌入渠道」「模型渠道「通义」」…），全挂了就 failed——配了不等于通了
+    source: embedder && typeof embedder.source === "function" ? String(embedder.source() || "") : "",
+    failed: !!(embedder && typeof embedder.isDead === "function" && embedder.isDead()),
+  };
 }
 
 /**

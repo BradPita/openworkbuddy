@@ -120,8 +120,9 @@ async function renderCanvasPage() {
   const chatInput = page.querySelector("#canvas-chat-input"), chatFile = page.querySelector("[data-canvas-chat-file]");
   chatInput.addEventListener("input", () => { canvasRenderChatMentionMenu(); canvasSyncChatSendButton(); });
   chatInput.addEventListener("keydown", (evt) => {
-    if (evt.key === "Enter" && !evt.shiftKey && !evt.isComposing) { evt.preventDefault(); canvasChatSend(); }
-    else if (evt.key === "Escape") { page.querySelector("#canvas-chat-mention-menu").hidden = true; if (canvasState.chatBusy) canvasChatStop(); }
+    if (evt.key === "Enter" && !evt.shiftKey && !imeKey(evt)) { evt.preventDefault(); canvasChatSend(); }
+    // 拼字中按 Esc 是关候选框：以前直接落到这儿，把正在跑的那轮叫停了
+    else if (evt.key === "Escape" && !imeKey(evt)) { page.querySelector("#canvas-chat-mention-menu").hidden = true; if (canvasState.chatBusy) canvasChatStop(); }
   });
   page.querySelector("[data-canvas-chat-mention]").onclick = () => { chatInput.value += (chatInput.value && !/\s$/.test(chatInput.value) ? " " : "") + "@"; chatInput.focus(); canvasRenderChatMentionMenu(); };
   page.querySelector("[data-canvas-chat-attach]").onclick = () => chatFile.click();

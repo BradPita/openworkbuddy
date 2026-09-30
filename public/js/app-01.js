@@ -228,11 +228,11 @@ function askText(opts) {
       resolve(val);
     }
     function onKey(e) {
+      // 输入法正在选词时的回车不算提交、Esc 不算关——中文名字几乎每次都要选一次词，
+      // 认了的话用户刚打完拼音就被提交了一个半截的名字；按 Esc 想取消拼字，整个框没了
+      if (imeKey(e)) return;
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
       else if (e.key === "Enter") {
-        // 输入法正在选词时的那个回车不算提交——中文名字几乎每次都要选一次词，
-        // 认了的话用户刚打完拼音就被提交了一个半截的名字
-        if (e.isComposing || e.keyCode === 229) return;
         e.preventDefault(); e.stopPropagation();
         if (check()) done(input.value.trim());
       }
@@ -562,13 +562,24 @@ function applyAssistantIdentity() {
 // 长对话再补两样：往上翻远了给「回到最前」；人在上面看历史时下面来了新内容，「回到最新」上挂红点——
 // 不然几十轮的对话里，用户翻上去看一眼旧结论，回来根本不知道 agent 已经说完了。
 let chatStick = true;
+let toTopFlying = null, lastScrollTop = 0; // 「往上翻」连点用：正往顶上滚的是哪条对话，见 goTop
 function syncScrollGuides() {
   chatStick = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 80;
   const toBottom = document.getElementById("to-bottom");
   toBottom.classList.toggle("show", !chatStick);
-  if (chatStick) { toBottom.classList.remove("new"); toBottom.title = "回到最新"; }
-  // 翻过一屏半才算「远」——刚往上滚一点就冒出一个按钮，只会晃眼
-  document.getElementById("to-top").classList.toggle("show", chatScroll.scrollTop > chatScroll.clientHeight * 1.5);
+  // 只在红点亮着时才摘：贴底跟流的时候每帧都进来，每帧重写一遍 title 会惊动 i18n 的 MutationObserver
+  if (chatStick && toBottom.classList.contains("new")) { toBottom.classList.remove("new"); toBottom.title = "回到最新"; }
+  const st = chatScroll.scrollTop;
+  // 往顶上飞的半路上人自己往下滚了（或滚到了顶），这趟就不算「正往顶上去」了
+  if (toTopFlying && (st <= 0 || st > lastScrollTop)) toTopFlying = null;
+  lastScrollTop = st;
+  // 翻过一屏半才算「远」——刚往上滚一点就冒出一个按钮，只会晃眼。
+  // 顶上还收着没画的轮次时例外：上面还有东西，按钮就一直在，到了顶还能接着点
+  const older = turnsHidden() > 0;
+  const toTop = document.getElementById("to-top");
+  toTop.classList.toggle("show", older || st > chatScroll.clientHeight * 1.5);
+  const tip = older ? "往上翻" : "回到最前";
+  if (toTop._tip !== tip) { toTop._tip = tip; toTop.title = tip; } // 滚动每帧都进来，同一句不重写（i18n 盯着 title）
 }
 chatScroll.addEventListener("scroll", syncScrollGuides);
 let scrollRaf = 0;
@@ -590,8 +601,63 @@ function scrollBottom(force) {
     if (chatStick) chatScroll.scrollTop = chatScroll.scrollHeight;
   });
 }
+/**
+ * 右下角那颗 ↑。长对话顶上还收着几轮没画（app-02 showOlderTurns）时，滚到顶并不是真的最前：
+ * 以前点一下滚到顶按钮就收了，还得再去点顶上那颗「显示更早的 N 轮」。
+ * 现在已经在顶上、或正往顶上滚的半路上再点，先往前补一批再接着往上滚——连着点就一批批往上翻，
+ * 点得快也不丢：半路那一下同样算数。
+ * 离顶还远的第一下只滚到眼前这批的顶上，不补：不然一下跳过好几屏，人不知道自己翻过了什么
+ */
+function goTop() {
+  let added = false;
+  if (turnsHidden() > 0 && (chatScroll.scrollTop < 40 || toTopFlying === sessionId)) {
+    added = showOlderTurns(TURN_WINDOW) > 0;
+    lastScrollTop = chatScroll.scrollTop; // 补完视口被拨回原处（scrollTop 变大），这不是人往下滚
+  }
+  toTopFlying = chatScroll.scrollTop > 0 ? sessionId : null; // 记是哪条：半路换了对话，那边的第一下不跟着补
+  chatScroll.scrollTo({ top: 0, behavior: "smooth" });
+  if (added) keepGoingTop(sessionId);
+}
+/** 半路补的那一下是直接改 scrollTop 把视口拨回原处，这会掐掉正在走的那趟平滑滚动；紧接着再要一次「平滑滚到 0」，
+ *  Chromium 常把它当成刚掐掉的那趟、不理——停在半路一动不动（隔一帧再要也不总认，看合成线程那边掐完没有）。
+ *  所以盯几帧：原地没动就再要一次；动了、被人或别的跳转挪走了、换了对话，就撒手 */
+function keepGoingTop(sid) {
+  const y = chatScroll.scrollTop;
+  let n = 0;
+  const check = () => {
+    if (sessionId !== sid || chatScroll.scrollTop !== y || y <= 0 || ++n > 20) return;
+    if (performance.now() - userScrollAt < 300) return; // 人手接过去了
+    chatScroll.scrollTo({ top: 0, behavior: "smooth" });
+    requestAnimationFrame(check);
+  };
+  requestAnimationFrame(check);
+}
 document.getElementById("to-bottom").onclick = () => scrollBottom(true);
-document.getElementById("to-top").onclick = () => { chatScroll.scrollTo({ top: 0, behavior: "smooth" }); };
+document.getElementById("to-top").onclick = goTop;
+
+// 人手往上滚到离顶不到一屏，就把收着的更早几轮补上来：翻历史不该撞墙，再去点「显示更早的 N 轮」。
+// 只认人手在滚（滚轮/触控板、方向键翻页键、拖滚动条）：从资料库跳第几轮、⌘F 跳命中、点 ↑ 都是程序发起的平滑滚动，
+// 半路补画要拨一下滚动条，会把它们掐断在半路，落不到该落的地方
+let userScrollAt = 0, scrollBarDrag = false, autoPrevTop = 0;
+const markUserScroll = () => { userScrollAt = performance.now(); };
+chatScroll.addEventListener("wheel", markUserScroll, { passive: true });
+chatScroll.addEventListener("touchmove", markUserScroll, { passive: true });
+chatScroll.addEventListener("keydown", (e) => { if (/^(ArrowUp|PageUp|Home| )$/.test(e.key)) markUserScroll(); });
+// 点在滚动条上时事件的 target 就是滚动容器本身；点在内容上是里面的元素
+chatScroll.addEventListener("pointerdown", (e) => { if (e.target === chatScroll) scrollBarDrag = true; });
+addEventListener("pointerup", () => { scrollBarDrag = false; });
+addEventListener("pointercancel", () => { scrollBarDrag = false; });
+function autoLoadOlder() {
+  const st = chatScroll.scrollTop, up = st < autoPrevTop;
+  autoPrevTop = st;
+  if (!up || st > chatScroll.clientHeight || replayingOlder) return;
+  if (!scrollBarDrag && performance.now() - userScrollAt > 300) return;
+  if (!(turnsHidden() > 0)) return;
+  showOlderTurns(TURN_WINDOW);
+  autoPrevTop = chatScroll.scrollTop; // 补完被拨下去一截，下一帧别当成往下滚
+  lastScrollTop = autoPrevTop;
+}
+chatScroll.addEventListener("scroll", autoLoadOlder);
 
 // 执行过程里出错的步骤：以前每张出错卡都自动摊开，一个任务错个七八步整片全是红色长日志，
 // 用户找不到结论。现在出错卡也收起，只在标题挂「N 步出错」；点角标 → 展开过程区、只摊开出错的那几张、滚到第一张。
@@ -1160,6 +1226,8 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   // 往前补画的那几轮（into）排在最后一轮前面：只撤这一批自己的，真正的最后一轮那颗不动
   if (turnSid === sessionId) chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b) && (!into || into.contains(b))) b.remove(); });
   const body = turn.querySelector(".body");
+  // 跟 body.querySelector(".thinking-hint") 找到的是同一个（文档顺序第一个），但它是活的：DOM 没变就直接用上次的结果
+  const thinkHints = body.getElementsByClassName("thinking-hint");
   turn._userText = userText;
   turn._shown = shown || "";
   turn._mode = turnMode;
@@ -1449,7 +1517,10 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   let retryMuted = false; // 用户点了 ×：同一段重试里后面几次也不再弹，等上游回话才作废
   const dropRetryBar = () => {
     if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
-    body.querySelector(":scope > .retry-bar")?.remove();
+    // 每个 token 都走到这里（endRetry）。以前是 body.querySelector(":scope > .retry-bar")：
+    // 选择器带 :scope > 也得把整轮子树逐个比一遍，重回合（二十几张工具卡）一次就是上千个节点。
+    // 条只会挂在 body 的直接子节点上，挨个看直接子节点就够了，找到的还是同一个
+    for (const c of body.children) if (c.classList.contains("retry-bar")) { c.remove(); break; }
   };
   /** 上游回话了（正文 / 工具调用）或这一轮收尾：倒计时条撤掉，「关掉」也就此作废——下回再重试是另一件事 */
   const endRetry = () => { dropRetryBar(); retryMuted = false; };
@@ -1555,8 +1626,16 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     } else if (ev.type === "text") {
       endRetry(); // 上游开口了就不用再等：专家内层的正文也算
       if (ev.depth > 0) return;
-      body.querySelector(".thinking-hint")?.remove();
+      // 活的集合：两次落屏之间 DOM 没动，再问一遍是缓存里直接拿，不用每个 token 把整轮子树走一遍
+      const hint = thinkHints[0];
+      if (hint) hint.remove();
       appendText(ev.delta);
+      // 字只进 _raw，100ms 一帧才落到 DOM，落的那一下 appendText 自己会 scrollBottom（人在上面看历史时也是那一下亮「有新内容」）。
+      // 以前这里还会走到函数末尾那句 scrollBottom：每个 token 排一次 rAF，DOM 没变也得跑一整帧。
+      // 2026-09-29 实测 5 路并跑、眼前这条每秒 60 个 token：rAF 每秒 38~42 次，主线程每秒 72~78 帧（不出字时 10 帧），
+      // 每一帧还要把侧栏那几颗一直在闪的点、转圈重新算一遍样式、重提合成层，光这两项每秒 80ms。
+      // 这一下真把思考提示摘掉了才要滚（内容变矮），其余交给落屏那一帧
+      if (!hint) return;
     } else if (ev.type === "expert_start") {
       endText();
       foldTail();
@@ -2053,7 +2132,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       const input = box.querySelector("input");
       const done = () => { const v = input.value.trim(); if (v) sendFeedback("down", v); box.innerHTML = '<span class="fb-thanks">记下了，会进下一轮复盘。</span>'; setTimeout(clearNote, 2000); };
       box.querySelector("button").onclick = done;
-      input.onkeydown = (ev) => { if (ev.key === "Enter") done(); if (ev.key === "Escape") clearNote(); };
+      input.onkeydown = (ev) => { if (imeKey(ev)) return; if (ev.key === "Enter") done(); if (ev.key === "Escape") clearNote(); };
       bar.after(box);
       input.focus();
     };
@@ -2446,6 +2525,8 @@ inputEl.addEventListener("input", detectMention);
 inputEl.addEventListener("click", detectMention);
 inputEl.addEventListener("keydown", (e) => {
   if (!mentionMenu.classList.contains("show")) return;
+  // @ 后面接着打拼音：这时的回车/Tab/Esc/上下键是给输入法选词、上屏、取消的，不是挑技能、关菜单
+  if (imeKey(e)) return;
   const items = [...mentionMenu.querySelectorAll(".mi")].filter(el => el.dataset.insert);
   // 上下键挑人。以前根本没这一段：选中那一行全靠 renderMentionMenu 给第一行钉个 .sel，
   // 回车永远只能拿到第一个——想要第二个只能伸手去点，键盘上挑不动
@@ -2855,7 +2936,7 @@ function makeAskCard(ev, turnSid, submit, ctx) {
   const inp = card.querySelector(".ask-free input");
   if (inp) {
     card.querySelector(".ask-free button").onclick = () => answerIt(inp.value);
-    inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answerIt(inp.value); } };
+    inp.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { e.preventDefault(); answerIt(inp.value); } };
   }
   // 数字键直选：手在键盘上就别再去够鼠标。焦点在输入框里时不抢——那时 1 就是要打个 1
   card.tabIndex = -1;
@@ -3053,7 +3134,7 @@ function renderFileFilter() {
   if (find && !find.dataset.wired) {
     find.dataset.wired = "1";
     find.oninput = () => { fileQuery = find.value; renderFiles(filesCache); };
-    find.onkeydown = (e) => { if (e.key === "Escape" && find.value) { e.stopPropagation(); find.value = ""; fileQuery = ""; renderFiles(filesCache); } };
+    find.onkeydown = (e) => { if (e.key === "Escape" && find.value && !imeKey(e)) { e.stopPropagation(); find.value = ""; fileQuery = ""; renderFiles(filesCache); } };
   }
 }
 

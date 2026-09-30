@@ -717,6 +717,30 @@ const RENDER_LIC = (d) => `PAGES.license.render(${JSON.stringify(d)})`;
   // ================= 5. 「模型与 Key」：渠道能自己加、能改地址、能删 =================
   // 预置目录只有十来家，
   // 自建网关 / 内网代理 / 换了域名的私有部署都不在里面，这页不给加就等于只做了一半。
+  // 模型的增删不在这页，在工作台。以前这页写的是一句「去工作台 → 设置 → 模型」，人得关页、回去、自己翻三层；
+  // 现在是链接，点了新标签页直接开在模型面板上（工作台那头认 #go=settings:models）
+  const goM = await A.js(`(async () => {
+    location.hash = "#/models"; await new Promise(r=>setTimeout(r,400));
+    const b = document.getElementById("ad-body");
+    const sel = 'a.ad-go[href="/#go=settings:models"]';
+    const rowIds = [...b.querySelectorAll("tbody tr")].filter((tr) => tr.querySelector(sel))
+      .map((tr) => (tr.querySelector("input.ad-key") || {}).dataset?.pk || "?");
+    const all = [...b.querySelectorAll(sel)];
+    return { rowIds, n: all.length, blank: all.every((a) => a.target === "_blank" && /noopener/.test(a.rel)),
+             plain: /设置 → 模型/.test(b.textContent) };
+  })()`);
+  ok("一个模型都没挂的渠道那行给了「去挂模型」链接；挂了的（方舟、OpenRouter）不给（反向对照）",
+     goM.rowIds.slice().sort().join() === "gw1,gw2,local", goM);
+  ok("「这台服务器上的模型」标题旁也有去工作台的链接，全都新标签页打开", goM.n === 4 && goM.blank, goM);
+  ok("页上不再有让人自己照着走的「设置 → 模型」纯文字", goM.plain === false, goM);
+  const goDev = await A.js(`(async () => {
+    location.hash = "#/security"; await new Promise(r=>setTimeout(r,400));
+    const b = document.getElementById("ad-body");
+    return { go: !!b.querySelector('a.ad-go[href="/#go=settings:security"]'), wrong: /设置 → 设备/.test(b.textContent) };
+  })()`);
+  ok("「允许远程设备接入」指的路是真的：链接到工作台安全页（那儿有配对码），不再写一个不存在的「设置 → 设备」",
+     goDev.go === true && goDev.wrong === false, goDev);
+
   console.log("\n【5】渠道自定义：加一条、改地址、删一条（删是连坐的）");
   const n0 = savedSettings.length;
   const bad = await A.js(`(async () => {
@@ -767,9 +791,10 @@ const RENDER_LIC = (d) => `PAGES.license.render(${JSON.stringify(d)})`;
     const $ = (id) => document.querySelector("#mf-" + id);
     $("base_url").value = "https://gw3.example/v1"; $("api_key").value = "sk-inner";
     document.querySelector(".ui-overlay [data-ok]").click(); await wait(800);
-    return { closed: !document.querySelector(".ui-overlay") };
+    return { closed: !document.querySelector(".ui-overlay"), toast: document.getElementById("ad-toast").textContent };
   })()`);
   ok("填对了弹窗才关", add.closed === true, add);
+  ok("建好了告诉人下一步点哪儿（那行的「去挂模型」），不再报一串菜单路径", /去挂模型/.test(add.toast) && !/→/.test(add.toast), add.toast);
   let sent = savedSettings[savedSettings.length - 1] || {};
   const fresh = (sent.providers || []).find((p) => p.base_url === "https://gw3.example/v1");
   ok("新渠道发到了服务端，id 留空交给服务端生成（前端自己编会跟别人撞）",

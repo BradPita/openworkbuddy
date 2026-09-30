@@ -760,6 +760,50 @@ function normalize(config) {
   return JSON.stringify([config.providers, config.media_models, config.media, !!config.media_migrated]) !== before;
 }
 
+/**
+ * 「一路一份地址 + Key + 型号」这种扁平写法，落成真正的渠道 + 模型条目，并设成这一路的默认。
+ *
+ * 首次开箱向导第三步就是这么提交的（{ media: { image: {...} } }）。以前服务端把它写进
+ * config.media[cap] 就完事，紧接着 normalize 看见迁移戳已经盖过，flatten 按空的
+ * media_models 把 config.media 重算一遍——刚填的那份当场被抹掉，界面上却写着「已配」。
+ *
+ * Key 是一串星号 = 前端回填的掩码，用户没动这一栏：沿用同一地址那条渠道上存着的真 Key。
+ * 地址或型号缺一样就不落，返回 false。
+ */
+function upsertLegacy(config, cap, entry) {
+  if (!CAPS.includes(cap) || !entry) return false;
+  const base = String(entry.base_url || "").trim();
+  const model = String(entry.model || "").trim();
+  if (!base || !model) return false;
+  const providers = (config.providers = Array.isArray(config.providers) ? config.providers : []);
+  const models = (config.media_models = Array.isArray(config.media_models) ? config.media_models : []);
+  const sameBase = (p) => providerKeyOf({ base_url: p.base_url }) === providerKeyOf({ base_url: base });
+  let key = String(entry.api_key || "").trim();
+  if (/^\*+$/.test(key)) key = String((providers.find((p) => sameBase(p) && String(p.api_key || "").trim()) || {}).api_key || "");
+  const want = providerKeyOf({ base_url: base, api_key: key });
+  let prov = providers.find((p) => providerKeyOf(p) === want);
+  if (!prov) {
+    const kind = guessKind(base);
+    let host = base;
+    try { host = new URL(base).host || base; } catch {}
+    const ids = new Set(providers.map((p) => String(p.id || "")));
+    prov = {
+      id: uniqueId(kind, ids),
+      name: kind === "custom" ? host : (PROVIDER_KINDS.find((k) => k.kind === kind) || {}).label || base,
+      kind, base_url: base, api_key: key,
+    };
+    providers.push(prov);
+  }
+  const voice = String(entry.voice || "").trim();
+  let row = models.find((m) => m.cap === cap && m.provider === prov.id && String(m.model || "").trim() === model);
+  if (!row) {
+    row = { cap, name: model, provider: prov.id, model, voice };
+    models.push(row);
+  } else if (entry.voice !== undefined) row.voice = voice;
+  for (const m of models) if (m.cap === cap) m.default = m === row;
+  return true;
+}
+
 /** 把每一路的默认那条压平回老的 config.media[cap]，让 src/tools/media.js 那边完全无感 */
 function flatten(providers, models, prev) {
   const out = {};
@@ -957,6 +1001,6 @@ module.exports = {
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, API_FORMATS, isApiFormat, normApi, protoOfChannel, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   VIDEO_SPECS, videoSpecOf, videoPlan,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
-  normalize, flatten, resolve, pick, MediaPickError,
+  normalize, flatten, resolve, pick, MediaPickError, upsertLegacy,
   RELAY_KINDS, BRAND_HINTS, brandOf, brandInCatalog, arkDated, mismatch, kindLabel, rehomeMismatched,
 };

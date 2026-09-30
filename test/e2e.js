@@ -7573,7 +7573,8 @@ async function testLibraryTurnAnchor() {
 function testSweepEndOfRunScope() {
   const srv = srcLib.src("server");
   const a01 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
-  const m = /const sw = sweep\.plan\(getWorkspaceDir\(\), \{([^}]*)\}\)/.exec(srv);
+  // 收尾这份清单挪到了后台线程（sweepPlanOffThread，判据还是 sweep.plan 那一份，test/server-stall.js 逐条比过）
+  const m = /const sw = (?:sweep\.plan|await sweepPlanOffThread)\(getWorkspaceDir\(\), \{([^}]*)\}\)/.exec(srv);
   assert(m, "server.js 收尾处找不到算清单的那一行");
   assert(/task:\s*taskBaseDir/.test(m[1]), "★收尾清单没圈到本对话的成果文件夹★ 几条对话同时跑时会端出别的对话的文件：" + m[0]);
   assert(/g\.key === "debug"/.test(srv) && /dbg >= 3/.test(srv), "调试草稿没有单独的门槛：_pose.js 这种小文件攒不到 20 MB，永远问不出来");
@@ -9700,6 +9701,7 @@ testCanvasEdgeVersion();
   await testThinkingSwitch();
   await testThinkingSettingsApi();
   await testOnboardingWizardApi();
+  await testEmbeddingEndpointConfig();
   await testEmbedFailoverResilience();
   testUiNoRawMarkdown();
   testLookPrefsStatic();
@@ -10680,6 +10682,7 @@ async function testOnboardingWizardApi() {
     r.end();
   });
   let fakeOllama = null;
+  let fakeRelay = null;
 
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
@@ -10889,6 +10892,98 @@ async function testOnboardingWizardApi() {
     assert(made2.model && made2.model !== "bge-m3:latest", "不点名时该退回模板默认值：" + JSON.stringify(made2));
     assert(!/14b/.test(made2.model || ""), "本机模板的兜底型号又换回了 14b（约 9GB，16G 的机器拉不动，连不上 Ollama 时就是拿它当默认）：" + made2.model);
 
+    // 5-quater. ★自己填地址那条路★（中转站 / new-api 网关 / 公司内网）：以前向导只列目录里那几家，
+    // 用中转的人得先跳过第一步、进了界面再去设置里找「自定义」——大脑没接上时什么都干不了，
+    // 第一步恰恰是最需要这条路的地方。一台假中转钉住：只填域名也接得上（自动补 /v1）、
+    // Key 带到了、格式记对了、验不过不留半成品、判断模型不许混进来
+    const a7 = await req("GET", "/api/onboarding");
+    const fmts = ((a7.json || {}).api_formats || []).map((f) => f.id);
+    assert(fmts.includes("openai") && fmts.includes("anthropic"), "向导拿不到接口格式清单，「自己填地址」那一栏没得选：" + JSON.stringify(fmts));
+    const relayHits = [];
+    fakeRelay = http.createServer((rq, rs) => {
+      let raw = "";
+      rq.on("data", (c) => (raw += c));
+      rq.on("end", () => {
+        let m = "";
+        try { m = String(JSON.parse(raw || "{}").model || ""); } catch {}
+        relayHits.push({ url: rq.url, auth: rq.headers.authorization || "", model: m });
+        const send = (code, obj) => { rs.writeHead(code, { "Content-Type": "application/json" }); rs.end(JSON.stringify(obj)); };
+        // 接口挂在 /v1 下，根路径下什么都没有——绝大多数中转就是这样
+        if (rq.url === "/v1/chat/completions" && m === "relay-chat") return send(200, { choices: [{ message: { role: "assistant", content: "pong" } }] });
+        send(404, { error: { message: "not found" } });
+      });
+    });
+    await new Promise((r) => fakeRelay.listen(0, "127.0.0.1", r));
+    const RELAY = "http://127.0.0.1:" + fakeRelay.address().port;
+    const RELAY_KEY = "sk-e2e-relay-key";
+    const provN2 = (cfgOnDisk().providers || []).length;
+
+    const cr = await req("POST", "/api/onboarding", { custom: { base_url: RELAY, api: "openai", model: "relay-chat" }, api_key: RELAY_KEY });
+    assert(cr.code === 200 && cr.json && cr.json.ok === true, "只填域名的中转接不上（该自动试 /v1）：HTTP " + cr.code + " " + cr.body.slice(0, 240));
+    assert(relayHits.some((h) => h.url === "/chat/completions") && relayHits.some((h) => h.url === "/v1/chat/completions"),
+      "先按原样打、404 了再补 /v1——两趟都该有：" + JSON.stringify(relayHits.map((h) => h.url)));
+    assert(relayHits.filter((h) => h.url === "/v1/chat/completions").every((h) => h.auth === "Bearer " + RELAY_KEY), "★验活没带他填的 Key★：" + JSON.stringify(relayHits.map((h) => h.auth ? "有" : "无")));
+    const c3 = cfgOnDisk();
+    const cm3 = (c3.models || []).find((m) => m.name === cr.json.active_model) || {};
+    const cp3 = (c3.providers || []).find((p) => p.id === cm3.channel) || {};
+    assert(cp3.base_url === RELAY + "/v1", "★落盘的是没 /v1 的那个地址★ 验过的和跑起来用的不是同一个：" + cp3.base_url);
+    assert(cp3.kind === "custom" && cp3.api_key === RELAY_KEY && cm3.model === "relay-chat", "渠道/Key/模型名没照填：" + JSON.stringify({ kind: cp3.kind, key: !!cp3.api_key, model: cm3.model }));
+    assert((c3.providers || []).length === provN2 + 1, "接一家中转 = 恰好多一个渠道：" + provN2 + " → " + (c3.providers || []).length);
+    assert(c3.active_model === cr.json.active_model || (await req("GET", "/api/onboarding")).json.brain.ok === true, "接上之后大脑该是它");
+
+    // 验不过：两趟都 404。要说清打的是哪个地址、不替他断定是地址错还是型号错，也不许留半成品
+    const nBefore = (cfgOnDisk().models || []).length;
+    const miss = await req("POST", "/api/onboarding", { custom: { base_url: RELAY, api: "openai", model: "no-such-model" }, api_key: RELAY_KEY });
+    assert(miss.code === 200 && miss.json && miss.json.ok === false && /地址或模型名/.test(miss.json.error || "") && miss.json.error.includes(RELAY),
+      "验不过要说「地址或模型名」并带上打的地址：" + miss.body.slice(0, 240));
+    assert((cfgOnDisk().models || []).length === nBefore && (cfgOnDisk().providers || []).length === provN2 + 1, "★验不过还是落了半成品★");
+
+    // 外网地址不填 Key → 400；判断模型不许当对话模型；Anthropic 格式记在渠道上
+    const noKey = await req("POST", "/api/onboarding", { custom: { base_url: "https://relay.e2e.invalid/v1", model: "gpt-x" }, api_key: "", skip_test: true });
+    assert(noKey.code === 400 && /Key/.test((noKey.json || {}).error || ""), "外网中转不填 Key 应 400：HTTP " + noKey.code + " " + noKey.body.slice(0, 200));
+    const jev = await req("POST", "/api/onboarding", { custom: { base_url: "https://relay.e2e.invalid/v1", model: "typesafe/jev" }, api_key: "k", skip_test: true });
+    assert(jev.code === 400 && /判断模型/.test((jev.json || {}).error || ""), "★判断模型被当对话模型接进来了★：HTTP " + jev.code + " " + jev.body.slice(0, 200));
+    const badUrl = await req("POST", "/api/onboarding", { custom: { base_url: "relay.e2e.invalid", model: "gpt-x" }, api_key: "k", skip_test: true });
+    assert(badUrl.code === 400 && /地址/.test((badUrl.json || {}).error || ""), "地址没写 http(s) 要点到地址上：" + badUrl.body.slice(0, 200));
+    assert((cfgOnDisk().providers || []).length === provN2 + 1, "被拒的那几次不许留下渠道");
+    const ant = await req("POST", "/api/onboarding", { custom: { base_url: "https://claude-relay.e2e.invalid", api: "anthropic", model: "claude-sonnet-5" }, api_key: "k-ant", skip_test: true });
+    assert(ant.code === 200 && ant.json.ok === true, "Anthropic 格式的中转接不上：" + ant.body.slice(0, 200));
+    const c4 = cfgOnDisk();
+    const am = (c4.models || []).find((m) => m.name === ant.json.active_model) || {};
+    const ap4 = (c4.providers || []).find((p) => p.id === am.channel) || {};
+    assert(ap4.api === "anthropic" && am.provider === "anthropic", "★选了 Anthropic 格式，落盘成了 OpenAI★ 每一趟都会打错路径：" + JSON.stringify({ api: ap4.api, provider: am.provider }));
+    // 成员碰不到（这条路会带着 Key 出网，也会改平台的大脑）
+    const memC = await reqAs(memberToken, "POST", "/api/onboarding", { custom: { base_url: RELAY, model: "relay-chat" }, api_key: "x" });
+    assert(memC.code === 403, "★普通成员能用「自己填地址」改平台的大脑★：HTTP " + memC.code);
+
+    // 5-quinquies. ★向导第三步（图 / 视频 / 语音 / 看图 / 听写）存下去的东西得真的留下★
+    // 以前服务端把 { media: { image } } 写进 config.media 就算完，紧接着 normalize 按空的 media_models
+    // 把 config.media 重算一遍，刚填的当场被抹掉——界面却亮着「已配」，要等真让它画图才发现什么都没有
+    const mImg = await req("POST", "/api/settings", { media: { image: { base_url: "https://dashscope.aliyuncs.com/api/v1", api_key: "k-img-e2e", model: "qwen-image" } } });
+    assert(mImg.code === 200 && mImg.json && mImg.json.ok, "向导存生图失败：HTTP " + mImg.code + " " + mImg.body.slice(0, 200));
+    const c5 = cfgOnDisk();
+    const imgRow = (c5.media_models || []).find((m) => m.cap === "image" && m.model === "qwen-image");
+    const imgProv = imgRow && (c5.providers || []).find((p) => p.id === imgRow.provider);
+    assert(imgRow && imgRow.default && imgProv && imgProv.api_key === "k-img-e2e", "★向导存的生图没落成渠道 + 默认模型★ " + JSON.stringify({ media_models: c5.media_models, media: c5.media && c5.media.image }));
+    assert(c5.media && c5.media.image && c5.media.image.model === "qwen-image", "config.media.image 压平后应指着刚填的：" + JSON.stringify(c5.media && c5.media.image));
+    const o5 = (await req("GET", "/api/onboarding")).json || {};
+    assert(o5.media && o5.media.image === true, "存完回来生图应算已配：" + JSON.stringify(o5.media));
+    // 本机转写服务不要 Key；没型号的半截不收（存了也调不通，还会亮「已配」）
+    const mAsr = await req("POST", "/api/settings", { media: { asr: { base_url: "http://127.0.0.1:9/v1", api_key: "", model: "whisper-large-v3" } } });
+    assert(mAsr.code === 200, "本机转写不填 Key 应能存：HTTP " + mAsr.code + " " + mAsr.body.slice(0, 200));
+    assert(((await req("GET", "/api/onboarding")).json.media || {}).asr === true, "本机转写存完应算已配（本机接口本来就没有 Key）");
+    const mHalf = await req("POST", "/api/settings", { media: { video: { base_url: "https://ark.cn-beijing.volces.com/api/v3", api_key: "k", model: "" } } });
+    assert(mHalf.code === 400 && /模型名/.test((mHalf.json || {}).error || ""), "没型号的应 400 并点名模型名：HTTP " + mHalf.code + " " + mHalf.body.slice(0, 200));
+    assert(!(cfgOnDisk().media_models || []).some((m) => m.cap === "video"), "被拒的那次不许留下视频条目");
+    const memM = await reqAs(memberToken, "POST", "/api/settings", { media: { image: { base_url: "https://x.e2e.invalid/v1", api_key: "x", model: "m" } } });
+    assert(memM.code === 403, "★普通成员能改平台的多媒体渠道★：HTTP " + memM.code);
+
+    // 搜索选「自定义接口」：认的是地址，不要鉴权的自建接口没有 Key 也算配好
+    const sCus = await req("POST", "/api/settings", { search: { provider: "custom", custom_url: "https://search.e2e.invalid/api" } });
+    assert(sCus.code === 200, "存自定义搜索失败：HTTP " + sCus.code + " " + sCus.body.slice(0, 200));
+    const o6 = (await req("GET", "/api/onboarding")).json || {};
+    assert(o6.search && o6.search.provider === "custom" && o6.search.has_key === true, "自定义搜索填了地址没填 Key，向导应算已配：" + JSON.stringify(o6.search));
+
     // 6. 未登录不给看（体检表里有渠道名、目录路径）
     const anon = await new Promise((resolve) => {
       http.get({ host: "127.0.0.1", port, path: "/api/onboarding" }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0));
@@ -10922,9 +11017,166 @@ async function testOnboardingWizardApi() {
 
     console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·向导填 Key 落在渠道行不分叉、设置页当场认账·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
     console.log("✅ 本机 Ollama 选型号：问得到机器上装了哪些(3 个)·10 分钟走缓存(上游只打 1 次)·匿名打不到上游·没起来/地址没写全各报各的·点名的型号真拿去验并落盘·验不过不许改坏原来那条(盘上+内存都查)·模板那条也认 model_id、兜底不再是 14b");
+    console.log("✅ 向导自己填地址：只填域名自动补 /v1 且落盘的是验过的那个·Key 带到上游·验不过说「地址或模型名」+打的地址且不留半成品·外网不填 Key/判断模型/地址不全各 400·Anthropic 格式记在渠道上·成员 403");
+    console.log("✅ 向导第三步真的存下：生图落成渠道 + 默认模型、压平后还在、回来算已配·本机转写不填 Key 能存·没型号 400 不留半截·成员 403·自定义搜索只填地址算已配");
   } finally {
     child.kill("SIGKILL");
     try { if (fakeOllama) fakeOllama.close(); } catch {}
+    try { if (fakeRelay) fakeRelay.close(); } catch {}
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 嵌入接口（语义召回）能在设置里自己填。
+ *
+ * 老样子：自动找只认得通义/智谱/OpenAI/Ollama 这几家的地址。只接了 DeepSeek 或中转站的人，
+ * 语义召回永远开不了；记忆面板还叫他去「设置 → 模型 配一条 embeddings 渠道」——那个地方根本不存在。
+ * llm.js 其实早就认 config.embedding，只是没有任何一条路能把它写进去。
+ */
+async function testEmbeddingEndpointConfig() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-emb-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  // 有第二个人在，这台才不是「个人桌面版」，平台管理员那道闸才真的起作用
+  const memberToken = "e2em" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [
+      { username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() },
+      { username: "e2e同事", salt: "x", hash: "x", role: "member", status: "active", credits: 0, created_at: Date.now() },
+    ],
+    tokens: { [token]: { user: "e2e", at: Date.now() }, [memberToken]: { user: "e2e同事", at: Date.now() } },
+  }));
+
+  // 假的嵌入接口：认 fake-embed 系列模型，Key 是 bad 就照 OpenAI 的样子回 401
+  const seen = [];
+  const fake = http.createServer((rq, rs) => {
+    let b = "";
+    rq.on("data", (c) => (b += c));
+    rq.on("end", () => {
+      let j = {};
+      try { j = JSON.parse(b); } catch {}
+      seen.push({ path: rq.url, auth: rq.headers.authorization || "", model: j.model, input: j.input });
+      if (rq.url !== "/v1/embeddings") { rs.writeHead(404); return rs.end("not found"); }
+      if (rq.headers.authorization === "Bearer bad") { rs.writeHead(401, { "Content-Type": "application/json" }); return rs.end('{"error":{"message":"Incorrect API key provided"}}'); }
+      const input = Array.isArray(j.input) ? j.input : [j.input];
+      rs.writeHead(200, { "Content-Type": "application/json" });
+      rs.end(JSON.stringify({ data: input.map((_, i) => ({ index: i, embedding: [0.1 + i, 0.2, 0.3] })), model: j.model }));
+    });
+  });
+  await new Promise((r) => fake.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${fake.address().port}/v1`;
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
+  const reqAs = (tk, method, p, body) => new Promise((resolve) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const r = http.request({
+      host: "127.0.0.1", port, path: p, method,
+      headers: { Cookie: "openworkbuddy_token=" + tk, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+    }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    if (data) r.write(data);
+    r.end();
+  });
+  const req = (method, p, body) => reqAs(token, method, p, body);
+  const cfgOnDisk = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")); } catch { return null; } };
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
+
+    // 1. 干净的家目录：没有任何渠道，语义召回是关的（反向对照：后面翻成开的，只能是这一栏的功劳）
+    let r = await req("GET", "/api/memory");
+    assert.strictEqual(r.code, 200, r.body);
+    assert.strictEqual(r.json.vectors.enabled, false, "什么都没配，语义召回却显示开着：" + JSON.stringify(r.json.vectors));
+    assert(r.json.embedding && r.json.embedding.base_url === "" && r.json.embedding.has_key === false, "平台管理员拿不到嵌入接口那张表：" + JSON.stringify(r.json.embedding));
+    r = await reqAs(memberToken, "GET", "/api/memory");
+    assert.strictEqual(r.code, 200, r.body);
+    assert.strictEqual(r.json.embedding, null, "普通成员也拿到了嵌入接口的表单数据，界面就会给他画一张一存就 403 的表");
+
+    // 2. 测一下：真打到上游，带的是表单里的 Key
+    r = await req("POST", "/api/embedding/test", { base_url: base, api_key: "k-emb", model: "fake-embed" });
+    assert(r.json && r.json.ok === true && r.json.dims === 3, "测一下没通：" + r.body);
+    const ping = seen[seen.length - 1];
+    assert(ping && ping.auth === "Bearer k-emb" && ping.model === "fake-embed" && JSON.stringify(ping.input) === '["ping"]', "测一下打过去的不对：" + JSON.stringify(ping));
+    // 上游说不行：原样转述状态码和原文，不替人猜
+    r = await req("POST", "/api/embedding/test", { base_url: base, api_key: "bad", model: "fake-embed" });
+    assert(r.json && r.json.ok === false && /401/.test(r.json.error) && /Incorrect API key provided/.test(r.json.error), "上游 401 没原样转述：" + r.body);
+    assert(!cfgOnDisk() || !cfgOnDisk().embedding, "测一下不该落盘");
+
+    // 3. 保存：落盘、回读掩码、语义召回翻成开，而且真的用它算出了向量
+    r = await req("POST", "/api/settings", { embedding: { base_url: base + "/", api_key: "k-emb", model: "fake-embed" } });
+    assert.strictEqual(r.code, 200, r.body);
+    let ec = (cfgOnDisk() || {}).embedding || {};
+    assert(ec.base_url === base && ec.api_key === "k-emb" && ec.model === "fake-embed", "嵌入接口没按原样落盘（末尾斜杠该去掉）：" + JSON.stringify({ ...ec, api_key: ec.api_key ? "(有)" : "" }));
+    r = await req("GET", "/api/settings");
+    assert(r.json.embedding && r.json.embedding.api_key === "********" && r.json.embedding.has_key === true && r.json.embedding.model === "fake-embed", "设置回读不对：" + JSON.stringify(r.json.embedding));
+    assert(!r.body.includes("k-emb"), "设置接口把嵌入 Key 原文吐出去了");
+    const m2 = await reqAs(memberToken, "GET", "/api/settings");
+    assert(!m2.body.includes("k-emb"), "普通成员读设置拿到了嵌入 Key 原文");
+    r = await req("GET", "/api/memory");
+    assert(r.json.vectors.enabled === true && r.json.vectors.source === "设置里显式指定的嵌入渠道" && r.json.vectors.model === "fake-embed",
+      "存完语义召回没开，或没说走的是哪一条：" + JSON.stringify(r.json.vectors));
+    const before = seen.length;
+    r = await req("POST", "/api/memory/item", { text: "周报只要三段：进展、问题、下周计划" });
+    assert(r.json && r.json.ok, "加记忆没成：" + r.body);
+    let have = 0;
+    for (let i = 0; i < 50 && !have; i++) {
+      await new Promise((ok) => setTimeout(ok, 100));
+      have = ((await req("GET", "/api/memory")).json.vectors || {}).have || 0;
+    }
+    assert(have >= 1, "配好了嵌入接口，记下的那条却一直没算出向量");
+    assert(seen.slice(before).some((x) => x.auth === "Bearer k-emb" && JSON.stringify(x.input).includes("周报只要三段")), "向量不是拿这一栏的地址和 Key 算的");
+
+    // 4. 八颗星 = 没改；可换了地址还沿用旧 Key 就是把这家的 Key 发给另一家
+    r = await req("POST", "/api/settings", { embedding: { base_url: base, api_key: "********", model: "fake-embed-2" } });
+    assert.strictEqual(r.code, 200, r.body);
+    ec = cfgOnDisk().embedding;
+    assert(ec.api_key === "k-emb" && ec.model === "fake-embed-2", "掩码原样存回来把 Key 抹了，或模型没更新");
+    r = await req("POST", "/api/embedding/test", { base_url: base, api_key: "********", model: "fake-embed-2" });
+    assert(r.json && r.json.ok === true && seen[seen.length - 1].auth === "Bearer k-emb", "测一下传八颗星没用已存的那把 Key：" + r.body);
+    const n0 = seen.length;
+    r = await req("POST", "/api/settings", { embedding: { base_url: "https://other.example.com/v1", api_key: "********", model: "x" } });
+    assert(r.code === 400 && /重新填/.test(r.json.error), "换了地址还带着旧 Key 走了：" + r.body);
+    assert.strictEqual(cfgOnDisk().embedding.base_url, base, "换地址被拒了，盘上的却变了");
+    r = await req("POST", "/api/embedding/test", { base_url: "https://other.example.com/v1", api_key: "********", model: "x" });
+    assert(r.code === 400 && /重新填/.test(r.json.error) && seen.length === n0, "测一下拿旧 Key 去打新地址了：" + r.body);
+
+    // 5. 半截的不收
+    r = await req("POST", "/api/settings", { embedding: { base_url: base, api_key: "k", model: "" } });
+    assert(r.code === 400 && /模型名/.test(r.json.error), "没模型名也存了：" + r.body);
+    r = await req("POST", "/api/settings", { embedding: { base_url: "api.example.com", api_key: "k", model: "m" } });
+    assert(r.code === 400 && /http/.test(r.json.error), "地址不是 http(s) 也存了：" + r.body);
+    assert.strictEqual(cfgOnDisk().embedding.model, "fake-embed-2", "被拒的保存改动了盘上那份");
+
+    // 6. 普通成员：存和测都 403，上游一个请求也收不到
+    const n1 = seen.length;
+    r = await reqAs(memberToken, "POST", "/api/settings", { embedding: { base_url: base, api_key: "m-key", model: "fake-embed" } });
+    assert.strictEqual(r.code, 403, "普通成员改得了整台服务器的嵌入接口：" + r.body);
+    r = await reqAs(memberToken, "POST", "/api/embedding/test", { base_url: base, api_key: "********", model: "fake-embed" });
+    assert.strictEqual(r.code, 403, "普通成员能拿服务器的 Key 去测：" + r.body);
+    assert.strictEqual(seen.length, n1, "被拒的请求还是打到了上游");
+
+    // 7. 清空：回到自动找（这台什么渠道都没有 → 语义召回关）
+    r = await req("POST", "/api/settings", { embedding: { base_url: "", api_key: "", model: "" } });
+    assert.strictEqual(r.code, 200, r.body);
+    assert(!("embedding" in cfgOnDisk()), "清空了盘上还留着");
+    r = await req("GET", "/api/memory");
+    assert.strictEqual(r.json.vectors.enabled, false, "清空后语义召回还显示开着");
+
+    console.log("✅ 嵌入接口能在设置里填：测一下真打上游(401 原样转述)·保存落盘+回读八颗星+语义召回翻开且真用它算向量·掩码不抹 Key、换地址须重填 Key(存/测都拦)·半截 400·成员 403 不碰上游·清空回自动");
+  } finally {
+    child.kill("SIGKILL");
+    try { fake.close(); } catch {}
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
@@ -11530,7 +11782,8 @@ function testOutputOwnership() {
     // 判定本身：一处实现漏了就是两条路一起漏，所以单独钉一遍
     const em = src.indexOf("function makeFilesEmitter(");
     assert(em > 0, "agent.js 里找不到 makeFilesEmitter");
-    assert(/ownership\.mine\(f, baseDir, runToken\)/.test(src.slice(em, em + 3000)),
+    // 第四个参数是同一趟扫描几条对话都报到时的让位判据（cede，server-stall 里另测），前三个一个都不能少
+    assert(/ownership\.mine\(f, baseDir, runToken(?:, \w+)?\)/.test(src.slice(em, em + 3000)),
       "产出发射器没过归属判定，别的对话正在写的文件会挂到本轮来");
   }
 

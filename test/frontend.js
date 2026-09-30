@@ -75,7 +75,7 @@ const IC_STUB = UI00_SRC.slice(UI00_SRC.indexOf("function ic(name, cls)"), UI00_
 // 所以统一在最前面垫一层：夹具自己注了就什么都不做（函数声明会提升，这里看到的就已经是 function），
 // 没注过才把真源码那一份挂到 window 上。挂 window 而不是声明顶层变量，免得跟夹具自己那份撞名。
 const IC_BOOT = 'if (typeof ic === "undefined") { (function(){\n' + IC_STUB
-  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS;\n})(); }\n';
+  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS; window.imeKey = imeKey;\n})(); }\n';
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 两条工作线"); // 附件段的下一段（以前是会话历史，中间插进了工作线）
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
@@ -1136,7 +1136,11 @@ function esc(s){ const d=document.createElement("div"); d.textContent = s==null?
 function ic(name){ return '<svg class="i" aria-hidden="true"><use href="#i-' + name + '"></use></svg>'; }
 var lastSaveError = "";
 window.SAVES = [];
-async function saveSettings(p){ window.SAVES.push(JSON.stringify(p)); return true; }
+// SAVE_FAIL 给了就当服务端拒了（成员存 bin 会是 403 那种），lastSaveError 跟真 saveSettings 一样被写上
+async function saveSettings(p){ window.SAVES.push(JSON.stringify(p)); if (window.SAVE_FAIL) { lastSaveError = window.SAVE_FAIL; return false; } return true; }
+// 真的 amPlatformOwner 就是读这一格（app-01），这里照抄判据，谁是管理员由各节自己拨
+var settingsCache = { platform_owner: true };
+function amPlatformOwner(){ return !!(settingsCache && settingsCache.platform_owner); }
 `;
 
 const ENG_CHECKS = `
@@ -1264,6 +1268,73 @@ const ENG_CHECKS = `
   await wait();
   ok("反向对照：点卡片正文确实切得过去，不是把整张卡点死了",
     window.SAVES.length >= 1 && window.SAVES[0].indexOf("codex") >= 0, window.SAVES);
+
+  // ⑧ 装在别处的：报错叫人「在设置里填绝对路径」，可路径框以前只画在选中的卡里，
+  // 没找到的那条又选不中——框永远出不来。现在没找到的卡上直接给一行填路径的
+  const URLS = [];
+  const fetch0 = window.fetch;
+  window.fetch = async (u, o) => { URLS.push(String(u)); return fetch0(u, o); };
+  const binRow = (id) => card(id).querySelector(".eng-bin");
+  const renderWith = async (cur, bin) => { window.__P = PAY(cur); window.__P.engines[2].options = bin ? { bin } : {}; window.SAVES = []; await renderEngineCard(box); };
+  settingsCache.platform_owner = true;
+  await renderWith("builtin", "/opt/x/gemini");
+  ok("★没找到的那条卡上就有填路径的一行★（管理员）", !!binRow("gemini") && !!binRow("gemini").querySelector('[data-act="bin"]'));
+  ok("  ← 框里是上回存的路径", binRow("gemini").querySelector("input").value === "/opt/x/gemini", binRow("gemini").querySelector("input").value);
+  ok("  ← 找得到的卡上不多这一行（路径在选中后的展开区里改）", !binRow("claude-code") && !binRow("codex"));
+  window.SAVES = [];
+  binRow("gemini").querySelector("input").click();
+  await wait(60);
+  ok("点进框里打字不算「选这条引擎」", window.SAVES.length === 0, window.SAVES);
+  binRow("gemini").querySelector("input").value = "  /usr/local/bin/gemini ";
+  URLS.length = 0;
+  binRow("gemini").querySelector('[data-act="bin"]').click();
+  await wait();
+  ok("★点「按这个路径找」只存这一格★", window.SAVES.length === 1
+    && window.SAVES[0] === JSON.stringify({ agent: { engine_options: { gemini: { bin: "/usr/local/bin/gemini" } } } }), window.SAVES);
+  ok("  ← 存完真去重新探一遍（带 force，不读 60 秒缓存）", URLS.includes("/api/engines?force=1"), URLS);
+  // 清空再点 = 改回自动找
+  await renderWith("builtin", "/opt/x/gemini");
+  binRow("gemini").querySelector("input").value = "";
+  binRow("gemini").querySelector('[data-act="bin"]').click();
+  await wait();
+  ok("框清空再点：存空串，改回自动找", window.SAVES[0] === JSON.stringify({ agent: { engine_options: { gemini: { bin: "" } } } }), window.SAVES);
+  // 存失败：原样说服务端那句，不重探
+  await renderWith("builtin", "");
+  window.SAVE_FAIL = "只有平台管理员能改这一项";
+  URLS.length = 0;
+  binRow("gemini").querySelector("input").value = "/x/gemini";
+  binRow("gemini").querySelector('[data-act="bin"]').click();
+  await wait();
+  window.SAVE_FAIL = "";
+  ok("存失败：原样说服务端那句，也不去重探", box.querySelector("#ag-eng-msg").textContent === "只有平台管理员能改这一项"
+    && !URLS.some((u) => u.includes("force")), [box.querySelector("#ag-eng-msg").textContent, URLS]);
+  // 管理员选中的那张：展开区照旧有路径框，按钮也说自己存路径
+  await renderWith("claude-code", "");
+  const xa = card("claude-code").querySelector(".eng-x");
+  ok("管理员：选中那张的展开区照旧有路径框", !!xa.querySelector('input[data-k="bin"]') && /路径/.test(xa.querySelector('[data-act="save"]').textContent));
+
+  // 成员：路径是整台机器的（server 级），成员存它服务端回 403——带着它的话连模型和思考档也一起存不下
+  settingsCache.platform_owner = false;
+  await renderWith("claude-code", "/opt/x/gemini");
+  ok("★成员看不到任何路径框★", box.querySelectorAll(".eng-bin, [data-k=bin]").length === 0, box.querySelectorAll(".eng-bin, [data-k=bin]").length);
+  const xm = card("claude-code").querySelector(".eng-x");
+  ok("  ← 按钮也不说「保存路径」", xm.querySelector('[data-act="save"]').textContent === "保存模型 / 思考档", xm.querySelector('[data-act="save"]').textContent);
+  xm.querySelector('input[data-k="model"]').value = "opus";
+  window.SAVES = [];
+  xm.querySelector('[data-act="save"]').click();
+  await wait(60);
+  const body = JSON.parse(window.SAVES[0] || "{}");
+  const opts = ((body.agent || {}).engine_options || {})["claude-code"] || {};
+  ok("★成员存模型：发出去的只有模型和思考档，没有 bin★", opts.model === "opus" && !("bin" in opts) && Object.keys(opts).sort().join() === "model,thinking", window.SAVES);
+  // ★反向对照★ 同一个按钮换成管理员：bin 是跟着发的（空串也发）——上面那条的「没有」不是按钮压根不读框
+  settingsCache.platform_owner = true;
+  await renderWith("claude-code", "");
+  window.SAVES = [];
+  card("claude-code").querySelector('.eng-x [data-act="save"]').click();
+  await wait(60);
+  const optsA = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {})["claude-code"] || {};
+  ok("★反向对照★ 管理员存同一处：bin 跟着发（空串也发）", "bin" in optsA, window.SAVES);
+  window.fetch = fetch0;
 
   return names;
 })()
@@ -2241,6 +2312,39 @@ const SB_GUARD = "if (replayingOlder) return;";
 if (!WIN_SCROLL_SRC.includes(SB_GUARD)) throw new Error("[长对话分批画·反向对照] scrollBottom 里找不到要去掉的那句（写法变了？）：" + SB_GUARD);
 // 一份一个闭包：各有各的 chatStick、各挂各的 scroll 监听，跟 app-01 里一样由滚动位置算出来
 const scrollKit = (src) => "(function () {\n" + src + "\nreturn { scrollBottom };\n})()";
+// 第 6 节「往上翻」：↑ 连着点、人手往上滚自动补。切 app-01 滚动引导那段到「出错的步骤」之前（带上自动补那截），
+// 每个变体在测试里现 eval 一份、挂上自己的 scroll 监听，用完摘掉。几份监听都去拨同一颗 #to-top，
+// 最后挂上的那份说了算——所以现挂现摘，谁在测谁最后挂
+const GT0 = APP02X.indexOf("let chatStick = true;");
+const GT1 = APP02X.indexOf("// 执行过程里出错的步骤", GT0);
+if (GT0 < 0 || GT1 <= GT0 || !/function autoLoadOlder\(/.test(APP02X.slice(GT0, GT1)) || !/function goTop\(/.test(APP02X.slice(GT0, GT1))) throw new Error("app-01.js 里 goTop / autoLoadOlder 那段找不到了，前端测试没法定位真源码");
+const GT_BASE = APP02X.slice(GT0, GT1);
+const gtKit = (src) => "(function () {\n" + src + "\nreturn { goTop, syncScrollGuides, autoLoadOlder };\n})()";
+const gtSwap = (pairs) => gtKit(pairs.reduce((out, [a, b]) => {
+  if (!out.includes(a)) throw new Error("[往上翻·反向对照] app-01.js 里找不到要改的那句（写法变了？）：" + a);
+  return out.split(a).join(b);
+}, GT_BASE));
+const GT_SRC = {
+  real: gtKit(GT_BASE),
+  // 改之前：翻过一屏半才给按钮，到了顶就收
+  oldShow: gtSwap([["older || st > chatScroll.clientHeight * 1.5", "st > chatScroll.clientHeight * 1.5"]]),
+  // 改之前：点了只往顶上滚，不补
+  oldClick: gtSwap([["if (turnsHidden() > 0 && (chatScroll.scrollTop < 40 || toTopFlying === sessionId)) {", "if (false) {"]]),
+  // 只认「已经在顶上」，不认「正往顶上滚」：连着点第二下就只是再滚一次
+  noFly: gtSwap([["(chatScroll.scrollTop < 40 || toTopFlying === sessionId)", "chatScroll.scrollTop < 40"]]),
+  // 补完不记下被拨回去的位置：下一帧的 scroll 把它当成人往下滚了，旗子提前倒
+  noReset: gtSwap([["lastScrollTop = chatScroll.scrollTop; // 补完", "// 补完"]]),
+  // 半路补完只要一次平滑滚动、不盯：Chromium 把它当成刚被掐掉的那趟，不理
+  noWatch: gtSwap([["if (added) keepGoingTop(sessionId);", ""]]),
+  // 往下滚不倒旗
+  noDown: gtSwap([["(st <= 0 || st > lastScrollTop)", "(st <= 0)"]]),
+  // 旗子不记是哪条对话、往下滚也不倒：半路换了对话，那边的第一下跟着补
+  noSess: gtSwap([["(st <= 0 || st > lastScrollTop)", "(st <= 0)"], ["toTopFlying === sessionId", "toTopFlying"]]),
+  // 自动补不看是不是人手在滚：程序发起的平滑滚动半路被补画掐断
+  noGate: gtSwap([["if (!scrollBarDrag && performance.now() - userScrollAt > 300) return;", ""]]),
+  // 往下滚也补
+  noUp: gtSwap([["if (!up || st > chatScroll.clientHeight || replayingOlder) return;", "if (st > chatScroll.clientHeight || replayingOlder) return;"]]),
+};
 const WIN_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0;width:900px'><div id='session-title'></div>"
   + "<div id='chat-scroll' style='height:600px;flex:none'><div class='chat-col' id='chat-col'></div></div>"
@@ -2256,6 +2360,7 @@ const WIN_STUBS = TRAIL_STUBS + "\n" + [
   "var currentUser = null, renderUserChip = () => {};",
   "var SCROLL_REAL = " + scrollKit(WIN_SCROLL_SRC) + ";",
   "var SCROLL_OLD = " + scrollKit(WIN_SCROLL_SRC.replace(SB_GUARD, "")) + ";", // 改之前：补画时照样叫
+  "var GT_SRC = " + JSON.stringify(GT_SRC) + ";",
   // /api/session/<id> 回 SESS 里那份（深拷一份，跟真接口一样每次是新对象）；👍👎 记下发出去的 payload
   "window.SESS = {}; window.FB_POSTS = [];",
   "window.fetch = async (url, init) => {",
@@ -2516,6 +2621,176 @@ const WIN_CHECKS = `
       const s3 = await scrollRun(SCROLL_OLD.scrollBottom);
       ok("★反向对照★ 只去掉 scrollBottom 里那一句：假的「有新内容」、命中被拽回底部都回来了", s3.badge && !s3.seen && s3.atBottom, JSON.stringify(s3));
     } finally { renderCtxMeter = ctx0; renderUserChip = chip0; currentUser = null; scrollBottom = sb0; }
+  }
+
+  // ---------- 6. 往上翻：↑ 连着点、人手往上滚自动补 ----------
+  // 用户原话：长对话点一下向上，到了顶还得手动去点「显示更早的 10 轮」，那个向上的按钮应该一直在、能连着点。
+  {
+    const tt = document.getElementById("to-top");
+    const fire = () => chatScroll.dispatchEvent(new Event("scroll"));
+    const shownTop = () => tt.classList.contains("show");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 平滑滚动一帧一帧走，等它落到顶；落不到就明说
+    const toZero = async () => {
+      for (let i = 0; i < 150 && chatScroll.scrollTop > 0; i++) await tick();
+      fire(); await tick();
+      if (chatScroll.scrollTop > 0) throw new Error("等了 3 秒还没滚到顶：scrollTop=" + chatScroll.scrollTop + "（上一条过的是「" + names[names.length - 1] + "」，收着 " + turnsHidden() + " 轮）");
+    };
+    // 等滚动停下来（连着三拍没动）
+    const still = async () => { let y = -1; for (let i = 0, n = 0; i < 150 && n < 3; i++) { await tick(); n = chatScroll.scrollTop === y ? n + 1 : 0; y = chatScroll.scrollTop; } fire(); await tick(); };
+    // 等那趟平滑滚动真动起来（离开起点往上走了）：Chromium 只在动画真在走的时候，才把「掐断后紧接着再要一次」当重复的扔掉
+    const moving = async () => { const y = chatScroll.scrollTop; for (let i = 0; i < 120 && chatScroll.scrollTop >= y; i++) await new Promise((r) => requestAnimationFrame(r)); };
+    const atBottom = async (id) => { await open(id); chatScroll.scrollTop = chatScroll.scrollHeight; fire(); await tick(); };
+    // 人手滚一下：先来一个滚轮事件，再把滚动条挪过去
+    const wheelTo = (y) => { chatScroll.dispatchEvent(new WheelEvent("wheel", { deltaY: y < chatScroll.scrollTop ? -100 : 100 })); chatScroll.scrollTop = y; fire(); };
+    const withKit = async (key, fn) => {
+      const K = (0, eval)(GT_SRC[key]);
+      await sleep(350); // 上一份留下的「人刚滚过」过期
+      try { return await fn(K); } finally {
+        chatScroll.removeEventListener("scroll", K.syncScrollGuides);
+        chatScroll.removeEventListener("scroll", K.autoLoadOlder);
+      }
+    };
+    await withKit("real", async (K) => {
+      await atBottom("S_HUGE");
+      ok("60 轮的对话：打开收着 50 轮", turnsHidden() === 50, String(turnsHidden()));
+      ok("  └ 贴底时 ↑ 就在，提示是「往上翻」", shownTop() && tt.title === "往上翻", tt.className + " / " + tt.title);
+      K.goTop(); await toZero();
+      ok("离顶远的第一下只回到眼前这批的顶上，不补（不然一下跳过好几屏）", turnsHidden() === 50 && no(turns()[0]) === 50, nos());
+      ok("  └ 到顶了按钮还在（以前这时就收了）", shownTop());
+      ok("  └ 这一路是程序在滚、人手没动：没被自动补掐断在半路", chatScroll.scrollTop === 0);
+      K.goTop();
+      ok("到顶再点：补出更早的 10 轮", turnsHidden() === 40 && nos() === range(40, 59), nos());
+      await toZero();
+      ok("  └ 接着滚到新补那批的顶上", no(turns()[0]) === 40 && shownTop());
+      // 连着点：第二下落在平滑滚动的半路上（先证明真在半路，不然这条测的是「又在顶上」）
+      K.goTop();
+      const mid = chatScroll.scrollTop;
+      K.goTop();
+      ok("连点两下不等滚完：两下都补（第二下在半路 scrollTop=" + Math.round(mid) + "）", mid > 40 && turnsHidden() === 20, turnsHidden() + " / mid=" + mid);
+      // 半路隔了一帧再点：补完那一下把滚动条往下拨了，这不能被当成「人往下滚了」
+      await toZero();
+      K.goTop(); await moving();
+      const mid2 = chatScroll.scrollTop;
+      K.goTop();
+      ok("  └ 滚动已经在走了再点也照样补、照样接着滚（scrollTop=" + Math.round(mid2) + "）", mid2 > 40 && turnsHidden() === 0 && !more(), turnsHidden() + " / mid2=" + mid2);
+      await toZero();
+      ok("一路点到最开头：停在第 0 问", no(turns()[0]) === 0 && turns().length === 60, nos());
+      ok("  └ 真到了最前，按钮收起、提示换回「回到最前」", !shownTop() && tt.title === "回到最前", tt.className + " / " + tt.title);
+      // 半路人自己往下拖：这趟不算「正往顶上去」了，再点只是往上滚
+      await atBottom("S_HUGE");
+      K.goTop(); await toZero(); K.goTop();
+      const mid3 = chatScroll.scrollTop;
+      chatScroll.scrollTop = chatScroll.scrollHeight; fire(); await tick();
+      K.goTop();
+      ok("半路往下拖回底部再点：只往上滚，不补（" + Math.round(mid3) + "）", mid3 > 40 && turnsHidden() === 40, String(turnsHidden()));
+      await toZero();
+      // 半路换了条对话：那条贴底，第一下不许跟着上一条的「正往顶上去」一起补
+      await atBottom("S_HUGE");
+      K.goTop(); await toZero(); K.goTop();
+      const mid4 = chatScroll.scrollTop;
+      await atBottom("S_LONG");
+      K.goTop();
+      ok("半路换到 26 轮那条贴底点第一下：不补，还收着 16 轮（" + Math.round(mid4) + "）", mid4 > 40 && turnsHidden() === 16, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("real", async (K) => {
+      // 人手往上滚到离顶一屏以内：自动补一批，眼前那一屏不动
+      await atBottom("S_HUGE");
+      const a = turns()[0];
+      wheelTo(chatScroll.clientHeight + 200); await tick();
+      ok("（前提：离顶一屏开外滚着不补）", turnsHidden() === 50, String(turnsHidden()));
+      chatScroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      chatScroll.scrollTop = 300;
+      const y0 = a.getBoundingClientRect().top;
+      fire();
+      const y1 = a.getBoundingClientRect().top;
+      ok("人手往上滚到离顶一屏以内：自动补出更早的 10 轮", turnsHidden() === 40 && no(turns()[10]) === 50, nos());
+      ok("  └ 原来最上面那轮在屏幕上没挪（差 " + Math.round(y1 - y0) + "px）", Math.abs(y1 - y0) <= 1);
+      // 程序挪的（没滚轮、没拖滚动条）：往上挪到离顶很近也不补
+      await sleep(350);
+      chatScroll.scrollTop = 100; fire(); await tick();
+      ok("程序挪到离顶很近（人手没动）：不补", turnsHidden() === 40, String(turnsHidden()));
+      // 离顶一屏以内，人往下滚：不补
+      wheelTo(300); await tick();
+      ok("离顶近但人是往下滚：不补", turnsHidden() === 40, String(turnsHidden()));
+      // 拖滚动条：pointerdown 落在滚动容器本身上
+      chatScroll.scrollTop = chatScroll.clientHeight * 0.8; fire(); await tick();
+      chatScroll.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await sleep(350);
+      chatScroll.scrollTop = 20; fire(); await tick();
+      dispatchEvent(new PointerEvent("pointerup"));
+      ok("拖着滚动条往上到顶附近：也自动补", turnsHidden() === 30, String(turnsHidden()));
+      // 一路往上滚：用不着点任何按钮就翻到最开头
+      for (let i = 0; i < 200 && (turnsHidden() > 0 || chatScroll.scrollTop > 0); i++) { wheelTo(Math.max(0, chatScroll.scrollTop - 1500)); await tick(); }
+      ok("一路往上滚就翻到了最开头，一下按钮都没点", turnsHidden() === 0 && !more() && no(turns()[0]) === 0 && chatScroll.scrollTop === 0, turnsHidden() + " / " + chatScroll.scrollTop);
+    });
+    // ★反向对照★ 每条改回一处，上面对应那条就得红
+    await withKit("oldShow", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero();
+      ok("★反向对照★ 改回「翻过一屏半才给」：到了顶按钮就收了", !shownTop() && turnsHidden() === 50);
+    });
+    await withKit("oldClick", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await toZero();
+      ok("★反向对照★ 改回「点了只滚不补」：在顶上再点什么也没多出来", turnsHidden() === 50, String(turnsHidden()));
+    });
+    await withKit("noFly", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop();
+      const mid = chatScroll.scrollTop; K.goTop();
+      ok("★反向对照★ 不认「正往顶上滚」：半路第二下没补（scrollTop=" + Math.round(mid) + "）", mid > 40 && turnsHidden() === 40, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("noReset", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await frame();
+      const mid = chatScroll.scrollTop; K.goTop();
+      ok("★反向对照★ 补完不记下拨回的位置：隔一帧再点被当成人往下滚了，没补", mid > 40 && turnsHidden() === 40, turnsHidden() + " / mid=" + mid);
+      await toZero();
+    });
+    // 半路补完紧接着那次「平滑滚到 0」：Chromium 有时扔、有时不扔，看合成线程掐完没有。真浏览器那条上面测过了，
+    // 这里把「扔」钉死——下一次 scrollTo 直接吞掉——才测得准是谁把它救回来的
+    const dropNextScroll = () => { let armed = true; chatScroll.scrollTo = function (...a) { if (armed) { armed = false; return; } return Element.prototype.scrollTo.apply(this, a); }; };
+    const undoDrop = () => { delete chatScroll.scrollTo; };
+    await withKit("real", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await moving();
+      dropNextScroll();
+      try {
+        K.goTop();
+        await toZero();
+        ok("半路那次平滑滚动被浏览器扔了：盯着的那几帧补发一次，照样滚到顶", chatScroll.scrollTop === 0 && turnsHidden() === 30, turnsHidden() + " / " + chatScroll.scrollTop);
+      } finally { undoDrop(); }
+    });
+    await withKit("noWatch", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await moving();
+      dropNextScroll();
+      const mid = chatScroll.scrollTop;
+      try { K.goTop(); await still(); } finally { undoDrop(); }
+      ok("★反向对照★ 半路补完只发一次平滑滚动、不盯着：停在半路不动了（停在 " + Math.round(chatScroll.scrollTop) + "）", mid > 40 && turnsHidden() === 30 && chatScroll.scrollTop > 40, turnsHidden() + " / " + chatScroll.scrollTop);
+      chatScroll.scrollTop = 0; fire(); await tick();
+    });
+    await withKit("noDown", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop();
+      chatScroll.scrollTop = chatScroll.scrollHeight; fire(); await tick();
+      K.goTop();
+      ok("★反向对照★ 往下滚不倒旗：拖回底部再点，一下补了", turnsHidden() === 30, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("noSess", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop();
+      await atBottom("S_LONG"); K.goTop();
+      ok("★反向对照★ 旗子不记是哪条：换到贴底的那条，第一下就补了", turnsHidden() === 6, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("noGate", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await still();
+      ok("★反向对照★ 自动补不看人手：点 ↑ 滚的半路被补画插一脚（收着 " + turnsHidden() + " 轮、停在 " + Math.round(chatScroll.scrollTop) + "）", turnsHidden() < 50);
+    });
+    await withKit("noUp", async (K) => {
+      await atBottom("S_HUGE"); wheelTo(chatScroll.clientHeight + 200); await sleep(350);
+      chatScroll.scrollTop = 100; fire(); await tick();
+      ok("（前提：程序挪过来的没补）", turnsHidden() === 50, String(turnsHidden()));
+      wheelTo(300); await tick();
+      ok("★反向对照★ 往下滚也补：离顶近往下滚了一下就补了", turnsHidden() < 50, String(turnsHidden()));
+    });
   }
 
   console.warn = warn0;
@@ -2931,6 +3206,95 @@ function testMultiRunI18n() {
   return names;
 }
 
+// 拼音打一半按回车/Esc：回车是把字母上屏、Esc 是取消拼字——这两下都是给输入法的。
+// 没过 imeKey 的回车会把半截拼音当整条发出去、把搜索跳到拼音字母匹配的那页；
+// 没过的 Esc 会把整张表单关掉、把画布上正在跑的那轮叫停。
+// 一处处补永远补不全，所以钉整个 public/js：每个认 Enter/Escape 的地方要么过 imeKey，要么在下面白名单里写明为什么不用
+const IME_EXEMPT = [
+  ["app-00-ui.js", "resetHistH(); e.preventDefault(); return;", "拖输入框高度的那根把手，不是文字框"],
+  ["app-01.js", "done(false); }", "确认框：只有按钮，没有文字框"],
+  ["app-01.js", 'a.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") open(e); };', "可点的卡片，不是文字框"],
+  ["app-03.js", 'getElementById("auth-pair").addEventListener', "配对码，只有字母数字"],
+  ["app-03.js", 'getElementById("auth-pass").addEventListener', "密码框：系统不给开输入法"],
+  ["app-03.js", 'getElementById("auth-invite").addEventListener', "邀请码，只有字母数字"],
+  ["app-05.js", ".ck-save[data-chan=", "API Key，只有 ASCII"],
+  ["app-06.js", "#tfa-pw-go", "密码框：系统不给开输入法"],
+  ["app-06.js", "#tfa-enable", "六位验证码"],
+  ["app-06.js", "#tfa-rc-go", "恢复码，只有字母数字"],
+  ["app-06.js", "!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) { cleanup(); return; }", "录快捷键：录的就是按键本身，不是文字"],
+  ["app-07-canvas-board.js", 'finish(""); } };', "追加/替换二选一：只有按钮"],
+  ["app-07-canvas-board.js", 'close("later"); } };', "盘上/我的冲突框：只有按钮"],
+  ["app-07-canvas-generate.js", 'if (evt.key === "Escape") close(); };', "看大图：没有文字框"],
+  ["app-07-canvas-nodes.js", 'if (event.key === "Escape") close(); };', "右键菜单：没有文字框"],
+  ["app-07-canvas-timeline.js", "canvasPlaybackStop(); return; }", "播放条：没有文字框"],
+  ["app-07-canvas-viewport.js", "canvasState.selectedIds.size || canvasState.marqueeMode", "焦点在输入框里时这个处理函数一进来就 return 了"],
+];
+/** 扫一遍：files 是 [[文件名, 源码]]。返回 { hits, guarded, bare }，bare 是既没过 imeKey 也不在白名单里的 */
+function scanImeGuards(files) {
+  const hits = [], bare = [];
+  let guarded = 0;
+  for (const [f, src] of files) {
+    const L = src.split("\n");
+    L.forEach((line, i) => {
+      if (!/\.key\s*===?\s*"(Enter|Escape)"/.test(line)) return;
+      hits.push(f + ":" + (i + 1));
+      if (/imeKey\(/.test(line)) { guarded++; return; }
+      // 守卫写在处理函数开头（if (imeKey(e)) return;）：往上找到这个处理函数的头，头到这一行（再往下带两行）之间有就算
+      let h = i;
+      while (h > 0 && i - h < 40 && !/keydown|function onKey|const onKey|Handler = \(/.test(L[h])) h--;
+      if (L.slice(h, i + 3).some((p) => /if \(imeKey\(\w+\)\) return/.test(p))) { guarded++; return; }
+      if (IME_EXEMPT.some(([ef, snip]) => ef === f && line.includes(snip))) return;
+      bare.push(f + ":" + (i + 1) + "  " + line.trim().slice(0, 120));
+    });
+  }
+  return { hits, guarded, bare };
+}
+function testImeGuardCoverage() {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const jsDir = path.join(__dirname, "..", "public", "js");
+  const files = fs.readdirSync(jsDir).filter((f) => f.endsWith(".js") && f !== "i18n.js").sort()
+    .map((f) => [f, fs.readFileSync(path.join(jsDir, f), "utf8")]);
+  const r = scanImeGuards(files);
+  ok(`认回车/Esc 的 ${r.hits.length} 处：${r.guarded} 处过 imeKey，其余 ${r.hits.length - r.guarded} 处都在白名单里写了为什么`, r.bare.length === 0,
+    "这几处拼音打一半按回车/Esc 会被当真：\n" + r.bare.join("\n"));
+  ok("  └ 扫得到东西（不是正则没对上一处都没扫）", r.guarded >= 25 && r.hits.length >= 40, r.guarded + " / " + r.hits.length);
+  const stale = IME_EXEMPT.filter(([ef, snip]) => !files.some(([f, src]) => f === ef && src.includes(snip)));
+  ok("  └ 白名单里每条都还对得上源码（改过的那处得重新判一次要不要守卫）", stale.length === 0, stale.map((e) => e[0] + "  " + e[1]).join("\n"));
+  // 这一轮补上的几处，逐个点名：以前拼字中按 Esc 会叫停画布那轮、关掉整张表、把 @ 菜单的回车当成挑技能
+  const must = [
+    ["app-07-canvas.js", 'else if (evt.key === "Escape" && !imeKey(evt))'],
+    ["app-01.js", "@ 后面接着打拼音"],
+    ["admin.js", 'if (e.key === "Escape" && !imeKey(e)) close();'],
+    ["admin.js", "if (imeKey(e)) return; // 拼音打一半"],
+  ];
+  const lost = must.filter(([ef, snip]) => !files.some(([f, src]) => f === ef && src.includes(snip)));
+  ok("画布聊天的 Esc、@ 菜单、后台表单和导航搜索都过了 imeKey", lost.length === 0, lost.map((e) => e.join("  ")).join("\n"));
+  // ★反向对照★ 把画布聊天那句守卫摘掉：扫描当场点名这一行
+  const cv = files.map(([f, src]) => [f, f === "app-07-canvas.js" ? src.replace('evt.key === "Escape" && !imeKey(evt)', 'evt.key === "Escape"') : src]);
+  const rr = scanImeGuards(cv);
+  ok("★反向对照★ 摘掉画布聊天 Esc 那句守卫：扫描点名 app-07-canvas.js", rr.bare.length === 1 && rr.bare[0].startsWith("app-07-canvas.js:"), rr.bare.join("\n"));
+  // ★反向对照★ 摘掉 @ 菜单开头那句：回车/Tab/Esc 三处一起露出来
+  const am = files.map(([f, src]) => [f, f === "app-01.js" ? src.replace("  if (imeKey(e)) return;\n  const items", "  const items") : src]);
+  const ra = scanImeGuards(am);
+  ok("★反向对照★ 摘掉 @ 菜单开头那句守卫：回车/Tab 和 Esc 两处被点名", ra.bare.length === 2 && ra.bare.every((b) => b.startsWith("app-01.js:")), ra.bare.join("\n"));
+  // 后台那一页没加载 app-00-ui.js，自己抄了一份 imeKey：抄的这份也得三样都认
+  const adm = files.find(([f]) => f === "admin.js")[1];
+  const a0 = adm.indexOf("let imeEndAt"), a1 = adm.indexOf("\n", adm.indexOf("const imeKey"));
+  ok("后台那份 imeKey 找得到", a0 > 0 && a1 > a0);
+  let endCb = null, now = 1000;
+  const doc = { addEventListener: (t, cb) => { if (t === "compositionend") endCb = cb; } };
+  const imeK = new Function("document", "performance", adm.slice(a0, a1) + "\nreturn imeKey;")(doc, { now: () => now });
+  ok("  └ 拼字中（isComposing）认", imeK({ isComposing: true, keyCode: 13 }) === true);
+  ok("  └ 起头那一下（keyCode 229）认", imeK({ isComposing: false, keyCode: 229 }) === true);
+  ok("  └ 平常的回车不认", imeK({ isComposing: false, keyCode: 13 }) === false);
+  endCb(); now += 10;
+  ok("  └ Safari 那种：拼字刚结束 10ms 的回车认", imeK({ isComposing: false, keyCode: 13 }) === true);
+  now += 100;
+  ok("  └ 结束 110ms 之后再按回车：是人要发送，不认", imeK({ isComposing: false, keyCode: 13 }) === false);
+  return names;
+}
+
 // 预览面板：点 × 是滑出去、滑完再拆；换对话、开新任务必须当场拆（上一个对话的网页一帧都不许留到下一个对话里跑）。
 // 那几处调用在 app-02.js，跑不起来，只能钉源码
 function testPreviewCloseSites(src) {
@@ -3196,7 +3560,7 @@ const MEM_CHECKS = `
     { id: "i1", scope: "xiaoyuan", text: "小袁的周报只要三段", source: "auto" },
     { id: "i2", scope: SHARED, text: "全公司统一用飞书日历", source: "user" },
   ];
-  let calls = [], nextDel = { ok: true, removed: 1 }, view = {};
+  let calls = [], nextDel = { ok: true, removed: 1 }, nextTest = { ok: true, dims: 1024 }, nextSave = { ok: true, body: { ok: true } }, view = {};
   window.toasts = [];
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
@@ -3207,7 +3571,10 @@ const MEM_CHECKS = `
     const j = (v) => Promise.resolve({ ok: true, json: () => Promise.resolve(v) });
     if (url === "/api/memory" && (!opt || !opt.method || opt.method === "GET"))
       return j({ items: ITEMS.slice(), shared_tag: SHARED, content: "老板写的背景", limits: { max_items: 120 },
-                 vectors: { enabled: false }, can_share: !!view.can_share, can_edit_manual: !!view.can_edit_manual });
+                 vectors: view.vectors || { enabled: false }, can_share: !!view.can_share, can_edit_manual: !!view.can_edit_manual,
+                 embedding: view.embedding === undefined ? null : view.embedding });
+    if (url === "/api/embedding/test") return j(nextTest);
+    if (url === "/api/settings") return Promise.resolve({ ok: nextSave.ok, json: () => Promise.resolve(nextSave.body) });
     if (url.startsWith("/api/memory/item/")) return j(nextDel);
     if (url === "/api/memory/item") return j({ ok: true, note: "记住了" });
     if (url === "/api/memory/import/scan") return j({ sources: [] });
@@ -3264,6 +3631,65 @@ const MEM_CHECKS = `
   await q("#mem-add").onclick();
   const add2 = calls.find((c) => c.url === "/api/memory/item" && c.method === "POST");
   ok("反向对照：他勾了共享，请求里就带 shared:true", add2 && add2.body.shared === true, JSON.stringify(add2 && add2.body));
+
+  // ⑤ 嵌入接口：提示语以前叫人去「设置 → 模型 配一条 embeddings 渠道」，那地方根本不存在
+  const vecText = () => (q("#mem-vec") || {}).textContent || "";
+  const lastPost = (u) => calls.filter((c) => c.url === u && c.method === "POST").pop();
+  await draw({ can_share: false, can_edit_manual: false, embedding: null });
+  ok("普通成员：没有嵌入接口那张表（存了也是 403）", !q("#emb-card"));
+  ok("普通成员：提示说由平台管理员配，不指向一个不存在的地方", /平台管理员/.test(vecText()) && !/设置 → 模型/.test(pane.textContent), vecText());
+  await draw({ can_share: true, can_edit_manual: true, embedding: { base_url: "", model: "", api_key: "", has_key: false } });
+  ok("平台管理员：嵌入接口那张表画出来了", !!q("#emb-card") && !!q("#emb-base") && !!q("#emb-key") && !!q("#emb-model"));
+  ok("平台管理员：提示指向下面这张表", /在下面填一个嵌入接口/.test(vecText()) && !/设置 → 模型/.test(pane.textContent), vecText());
+  ok("没存过就不画「清空」", !q("#emb-clear"));
+  // 缺模型名：拦在前端，一个请求都不发
+  q("#emb-base").value = "https://relay.example.com/v1"; q("#emb-model").value = "";
+  calls = [];
+  await q("#emb-save").onclick();
+  ok("没填模型名就不发保存", !lastPost("/api/settings") && /都要填/.test(q("#emb-msg").textContent), q("#emb-msg").textContent);
+  // 点预设：地址和模型一起填上
+  const sf = [...pane.querySelectorAll("[data-emb-base]")].find((c) => /硅基流动/.test(c.textContent));
+  sf.onclick();
+  ok("点「硅基流动」把地址和模型都填上了", q("#emb-base").value === "https://api.siliconflow.cn/v1" && q("#emb-model").value === "BAAI/bge-m3");
+  q("#emb-key").value = "sk-sf";
+  calls = []; nextTest = { ok: true, dims: 1024 };
+  await q("#emb-test").onclick();
+  const t1 = lastPost("/api/embedding/test");
+  ok("测一下发的是表单里这三样", t1 && t1.body.base_url === "https://api.siliconflow.cn/v1" && t1.body.api_key === "sk-sf" && t1.body.model === "BAAI/bge-m3", JSON.stringify(t1 && t1.body));
+  ok("通了说几维", /1024/.test(q("#emb-msg").textContent), q("#emb-msg").textContent);
+  nextTest = { ok: false, status: 401, error: "401：Incorrect API key provided" };
+  await q("#emb-test").onclick();
+  ok("没通就原样显示上游的话", /Incorrect API key provided/.test(q("#emb-msg").textContent), q("#emb-msg").textContent);
+  calls = [];
+  await q("#emb-save").onclick();
+  const sv = lastPost("/api/settings");
+  ok("保存：只发 embedding 这一项", sv && Object.keys(sv.body).join() === "embedding" && sv.body.embedding.model === "BAAI/bge-m3" && sv.body.embedding.api_key === "sk-sf", JSON.stringify(sv && sv.body));
+  ok("存成了就重画这一页", calls.some((c) => c.url === "/api/memory" && c.method === "GET"));
+  // 存过 Key 的：回来是八颗星；一改地址，星号就清掉（不能把这家的 Key 带去另一家）
+  await draw({ can_share: true, can_edit_manual: true, embedding: { base_url: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3", api_key: "********", key_hint: "sk-…f2a", has_key: true },
+               vectors: { enabled: true, failed: true, model: "BAAI/bge-m3", source: "设置里显式指定的嵌入渠道", have: 0, total: 3 } });
+  ok("存过 Key：输入框是八颗星 + 提示末几位", q("#emb-key").value === "********" && /f2a/.test(q("#emb-key").placeholder));
+  ok("全挂了就说调不通，不说「开着」", /调不通/.test(vecText()) && !/开着/.test(vecText()), vecText());
+  ok("说出现在走的是哪一条", /设置里显式指定的嵌入渠道/.test((q("#emb-src") || {}).textContent || ""));
+  q("#emb-base").value = "https://other.example.com/v1";
+  q("#emb-base").dispatchEvent(new Event("input"));
+  ok("改了地址，星号清掉让人重填 Key", q("#emb-key").value === "");
+  // 反向对照：不改地址，星号原样留着
+  await draw({ can_share: true, can_edit_manual: true, embedding: { base_url: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3", api_key: "********", has_key: true } });
+  q("#emb-model").value = "BAAI/bge-large-zh-v1.5";
+  calls = [];
+  await q("#emb-save").onclick();
+  ok("反向对照：只改模型，Key 仍传八颗星（= 没改）", lastPost("/api/settings").body.embedding.api_key === "********");
+  // 后端拒了要说出来，不重画
+  nextSave = { ok: false, body: { error: "换了接口地址，Key 要重新填一遍" } };
+  calls = [];
+  await q("#emb-save").onclick();
+  ok("后端 400 就显示原话、不重画", /重新填/.test(q("#emb-msg").textContent) && !calls.some((c) => c.url === "/api/memory" && c.method === "GET"), q("#emb-msg").textContent);
+  nextSave = { ok: true, body: { ok: true } };
+  calls = [];
+  await q("#emb-clear").onclick({ preventDefault() {} });
+  const cl = lastPost("/api/settings");
+  ok("清空：三样都发空串", cl && cl.body.embedding.base_url === "" && cl.body.embedding.model === "" && cl.body.embedding.api_key === "", JSON.stringify(cl && cl.body));
   return names;
 })()
 `;
@@ -6011,7 +6437,7 @@ const ONB_STUBS = `
     // 第一步最上面那张授权卡只要 /api/auth/state 里公开的 license 一块；LIC_DOWN = 服务端拿不到
     if (url === "/api/auth/state") { if (LIC_DOWN) throw new Error("down"); return j({ license: LIC }); }
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
-      const nm = body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
+      const nm = body.custom ? "自定义中转" : body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
     if (url === "/api/provider-models") { POSTS.push(["provider-models", body]); return j(OLLAMA_LIST === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: OLLAMA_LIST.map((id) => ({ id })) }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
@@ -6163,6 +6589,39 @@ const ONB_CHECKS = `
   ok("选模板验活：POST 的是 {kind, api_key}，没有 model", POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ark" && b.api_key === "sk-bad2" && !("model" in b)), JSON.stringify(POSTS));
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
+  // ---- 自己填地址（中转站 / 自建网关）：以前第一步没有这条路，得先跳过、进了界面再去设置里找 ----
+  const cGrp = [...body.querySelectorAll("#onb-model optgroup")].find((g) => g.label.includes("列表里没有"));
+  ok("下拉框最后有「自己填地址」一项", cGrp && cGrp.querySelector("option[value='custom:']") && /自己填地址/.test(cGrp.textContent), cGrp && cGrp.outerHTML);
+  ok("反向对照：没选它时地址、格式、模型名三栏都收着", q("#onb-crow").hidden && q("#onb-crow2").hidden);
+  q("#onb-model").value = "custom:"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("选「自己填地址」：地址、格式、模型名露出来，Key 框能填，本机型号那行收着", !q("#onb-crow").hidden && !q("#onb-crow2").hidden && !q("#onb-key").disabled && q("#onb-mrow").hidden);
+  const fmtIds = [...q("#onb-cfmt").options].map((o) => o.value);
+  ok("接口格式能选，默认 OpenAI 兼容，Anthropic 也在", fmtIds[0] === "openai" && fmtIds.includes("anthropic"), fmtIds.join());
+  POSTS.length = 0;
+  q("#onb-go").click(); await tick();
+  ok("地址空着点验活：提醒填地址，不发请求", /接口地址/.test(q("#onb-err").textContent) && !POSTS.some(([k]) => k === "onboarding"));
+  q("#onb-curl").value = "https://relay.example.com/v1/chat/completions"; q("#onb-key").value = "sk-relay";
+  q("#onb-curl").dispatchEvent(new Event("change")); await tick(); await tick();
+  const listAsk = POSTS.find(([k]) => k === "provider-models");
+  ok("填完地址就去问它有哪些模型：地址剥到 /v1、带着填的 Key", listAsk && listAsk[1].base_url === "https://relay.example.com/v1" && listAsk[1].api_key === "sk-relay", JSON.stringify(POSTS));
+  ok("问到的模型挂进模型名的下拉提示", q("#onb-cmodels").querySelectorAll("option").length === OLLAMA_LIST.length && /列出了 3 个模型/.test(q("#onb-ctip").textContent), q("#onb-ctip").textContent);
+  POSTS.length = 0;
+  q("#onb-go").click(); await tick();
+  ok("模型名空着点验活：提醒填模型名，不发请求", /模型名/.test(q("#onb-err").textContent) && !POSTS.some(([k]) => k === "onboarding"));
+  q("#onb-cmodel").value = "gpt-5"; q("#onb-cfmt").value = "anthropic";
+  q("#onb-go").click(); await tick(); await tick();
+  const cPost = (POSTS.find(([k]) => k === "onboarding") || [])[1] || {};
+  ok("验活 POST 的是 {custom:{地址, 格式, 模型名}, api_key}，不带 kind / model", cPost.custom && cPost.custom.base_url === "https://relay.example.com/v1/chat/completions" && cPost.custom.api === "anthropic" && cPost.custom.model === "gpt-5" && cPost.api_key === "sk-relay" && !("kind" in cPost) && !("model" in cPost), JSON.stringify(cPost));
+  ok("验活没过：留在第一步、原因写出来", q("#onb-err").textContent.includes("401") && steps.querySelector(".onb-step.cur").textContent.includes("大模型"));
+  // 只填了域名、第一趟没问到：再补 /v1 问一次（中转的接口多半挂在 /v1 下）
+  const keepList = OLLAMA_LIST; OLLAMA_LIST = null; POSTS.length = 0;
+  q("#onb-curl").value = "https://relay2.example.com"; q("#onb-curl").dispatchEvent(new Event("change")); await tick(); await tick(); await tick();
+  const asks = POSTS.filter(([k]) => k === "provider-models").map(([, b]) => b.base_url);
+  ok("只填域名问不到：再补 /v1 问一次；还是没有就叫他照文档填", asks.join() === "https://relay2.example.com,https://relay2.example.com/v1" && /照接口文档/.test(q("#onb-ctip").textContent), JSON.stringify(asks));
+  OLLAMA_LIST = keepList;
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("选回云端渠道：那三栏收起来", q("#onb-crow").hidden && q("#onb-crow2").hidden);
+
   // ---- 走本机 CLI：先真连再切引擎 ----
   q("#onb-seg button[data-v=local]").click();
   ok("切到本机：云端表单藏起来、本机表单露出来", q("#onb-cloud").hidden && !q("#onb-local").hidden);
@@ -6197,12 +6656,32 @@ const ONB_CHECKS = `
   q("#onb-sp-key").value = "tvly-1"; q("#onb-go").click(); await tick(); await tick();
   ok("搜索测试失败：保存过但留在本步、原因写出来", POSTS[0][0] === "settings" && POSTS[0][1].search.provider === "tavily" && POSTS[0][1].search.tavily_key === "tvly-1" && POSTS[1][0] === "search-test" && q("#onb-err").textContent.includes("0 条") && steps.querySelector(".onb-step.cur").textContent.includes("联网搜索"));
   ok("搜索 payload 只带所选那家的 key（不把别家的 key 清空）", !("jina_key" in POSTS[0][1].search));
+  // ---- 搜索也能自己填地址（阿里云 IQS、秘塔、自建 SearXNG……）：设置里一直有，向导里以前没有 ----
+  ok("反向对照：选的不是自定义时，地址栏收着", q("#onb-sp-custom").hidden);
+  q("#onb-sp").value = "custom"; q("#onb-sp").dispatchEvent(new Event("change"));
+  ok("搜索服务商里有「自定义接口」：选了露出地址和字段名，Key 标成可留空", q("#onb-sp").value === "custom" && !q("#onb-sp-custom").hidden && /留空/.test(q("#onb-sp-klb").textContent) && q("#onb-sp-key").placeholder === "可留空");
+  POSTS.length = 0; q("#onb-sp-key").value = "";
+  q("#onb-go").click(); await tick();
+  ok("自定义没填地址：提醒填地址，不存", /接口地址/.test(q("#onb-err").textContent) && !POSTS.some(([k]) => k === "settings"));
+  q("#onb-sp-url").value = "https://search.example.com/api"; q("#onb-go").click(); await tick(); await tick();
+  const sPatch = ((POSTS.find(([k]) => k === "settings") || [])[1] || {}).search || {};
+  ok("自定义不填 Key 也能存：只带地址，不带空 Key（空 Key 会把设置里填过的冲掉）", sPatch.provider === "custom" && sPatch.custom_url === "https://search.example.com/api" && !("custom_key" in sPatch) && !("custom_query_field" in sPatch) && POSTS.some(([k]) => k === "search-test"), JSON.stringify(sPatch));
+  POSTS.length = 0; q("#onb-sp-key").value = "k-1"; q("#onb-sp-field").value = "q"; q("#onb-go").click(); await tick(); await tick();
+  const sPatch2 = ((POSTS.find(([k]) => k === "settings") || [])[1] || {}).search || {};
+  ok("反向对照：填了 Key 和字段名就一起带上", sPatch2.custom_key === "k-1" && sPatch2.custom_query_field === "q", JSON.stringify(sPatch2));
+  onbState.st = { ...onbState.st, search: { provider: "custom", has_key: true } };
+  renderOnbSearch(body);
+  ok("配过自定义再回来：下拉停在自定义，顶上写「自定义接口」而不是 custom", q("#onb-sp").value === "custom" && /自定义接口/.test((q(".onb-ok") || {}).textContent || ""));
+  onbState.st = { ...onbState.st, search: { provider: "", has_key: false } };
+  renderOnbSearch(body);
+  q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
+  q("#onb-sp-key").value = "tvly-1";
   SEARCH_TEST_OK = true; POSTS.length = 0;
   q("#onb-go").click(); await tick(); await tick(); await tick();
   ok("搜索测活通过：翻到第三步", steps.querySelector(".onb-step.cur").textContent.includes("图/视频/语音"));
 
   // ---- 第三步：多媒体 ----
-  ok("四行能力：生图已配、其余未配，输入框默认收起", body.querySelectorAll(".onb-row").length === 4 && q(".onb-row[data-kind=image] .onb-chip").classList.contains("ok") && !q(".onb-row[data-kind=video] .onb-chip").classList.contains("ok") && [...body.querySelectorAll(".onb-row-b")].every((b) => b.hidden));
+  ok("五行能力（跟设置里的五路对齐，含听写）：生图已配、其余未配，输入框默认收起", body.querySelectorAll(".onb-row").length === 5 && q(".onb-row[data-kind=asr]") && q(".onb-row[data-kind=image] .onb-chip").classList.contains("ok") && !q(".onb-row[data-kind=video] .onb-chip").classList.contains("ok") && [...body.querySelectorAll(".onb-row-b")].every((b) => b.hidden));
   ok("第三步整屏文字克制（<300 字）", body.innerText.length < 300, body.innerText.length);
   POSTS.length = 0;
   q(".onb-row[data-kind=tts] .onb-fill").click();
@@ -6216,6 +6695,18 @@ const ONB_CHECKS = `
   ok("地址/Key 没填就保存：当场拦下", q(".onb-row[data-kind=tts] .err").textContent.includes("都要填") && !POSTS.some(([k]) => k === "settings"));
   q(".onb-row[data-kind=tts] input[data-f=base_url]").value = "https://x/v1"; q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
   ok("只填了地址没填 Key：照样拦", q(".onb-row[data-kind=tts] .err").textContent.includes("都要填") && !POSTS.some(([k]) => k === "settings"));
+  q(".onb-row[data-kind=tts] input[data-f=api_key]").value = "k"; q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
+  ok("有地址有 Key 没型号：也拦（没型号服务端落不成模型，以前放过去会亮一个假的「已配」）", /模型名/.test(q(".onb-row[data-kind=tts] .err").textContent) && !POSTS.some(([k]) => k === "settings"));
+  q(".onb-row[data-kind=tts] input[data-f=api_key]").value = "";
+  // 本机转写服务：不填 Key 照样能存
+  q(".onb-row[data-kind=asr] .onb-fill").click();
+  const asrRow = q(".onb-row[data-kind=asr]");
+  ok("听写一行有预设、没有音色框", asrRow.querySelectorAll(".onb-preset").length >= 1 && !asrRow.querySelector("input[data-f=voice]"));
+  asrRow.querySelector("input[data-f=base_url]").value = "http://127.0.0.1:9000/v1"; asrRow.querySelector("input[data-f=model]").value = "whisper-large-v3";
+  asrRow.querySelector(".onb-save").click(); await tick(); await tick();
+  const asrPost = (POSTS.find(([k, p]) => k === "settings" && p.media && p.media.asr) || [])[1];
+  ok("本机接口不填 Key 也能存，行变「已配」", asrPost && asrPost.media.asr.base_url === "http://127.0.0.1:9000/v1" && asrPost.media.asr.api_key === "" && asrRow.querySelector(".onb-chip").classList.contains("ok"), JSON.stringify(asrPost));
+  POSTS.length = 0;
   q(".onb-row[data-kind=tts] input[data-f=base_url]").value = "https://x/v1"; q(".onb-row[data-kind=tts] input[data-f=api_key]").value = "k"; q(".onb-row[data-kind=tts] input[data-f=model]").value = "tts-1";
   q(".onb-row[data-kind=tts] .onb-save").click(); await tick(); await tick();
   ok("保存语音：只发 media.tts 一块，行变「已配」并收起", POSTS.some(([k, p]) => k === "settings" && p.media && Object.keys(p.media).join() === "tts" && p.media.tts.model === "tts-1") && q(".onb-row[data-kind=tts] .onb-chip").classList.contains("ok") && q(".onb-row[data-kind=tts] .onb-row-b").hidden);
@@ -6231,10 +6722,10 @@ const ONB_CHECKS = `
 
   // ---- 第五步：完成 ----
   const sum = q("#onb-sum");
-  ok("清单四行：大模型 ✓ codex、搜索 ✓ tavily、多媒体 2/4、IM 1 个", sum.querySelectorAll(".onb-row").length === 4 && sum.innerText.includes("codex") && sum.innerText.includes("tavily") && sum.innerText.includes("2 / 4") && sum.innerText.includes("1 个通道"));
+  ok("清单四行：大模型 ✓ codex、搜索 ✓ tavily、多媒体 3/5（生图 + 语音 + 听写）、IM 1 个", sum.querySelectorAll(".onb-row").length === 4 && sum.innerText.includes("codex") && sum.innerText.includes("tavily") && sum.innerText.includes("3 / 5") && sum.innerText.includes("1 个通道"));
   ok("工作目录占位符是当前目录", q("#onb-dir").placeholder === "/tmp/ws");
   ok("大脑接上后步骤条能回跳", (steps.querySelectorAll(".onb-step")[1].click(), steps.querySelector(".onb-step.cur").textContent.includes("联网搜索")));
-  ok("已配的搜索步：显示已配、按钮变下一步", q(".onb-ok").textContent.includes("tavily") && q("#onb-go").textContent === "下一步");
+  ok("已配的搜索步：显示已配（写的是家名 Tavily，不是内部代号）、按钮变下一步", q(".onb-ok").textContent.includes("Tavily") && q("#onb-go").textContent === "下一步", (q(".onb-ok") || {}).textContent);
   q("#onb-go").click(); await tick(); q("#onb-go").click(); await tick(); q("#onb-go").click(); await tick();
   DONE_OK = false; POSTS.length = 0;
   q("#onb-dir").value = "/tmp/ws2"; q("#onb-go").click(); await tick(); await tick();
@@ -9222,7 +9713,9 @@ const SCROLLGUIDE_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_
   + "<div class='step-card failed'><div class='head'><span class='tag'>D</span><span class='tag err'>失败</span></div><pre>err-d</pre></div>"
   + "</div></div></body>";
 // replayingOlder 是 app-01 顶上那个全局（往前补画旧轮时才为真，见「长对话分批画」第 5 节）；这一屏不补画，恒为假
-const SCROLLGUIDE_STUBS = `const chatScroll = document.getElementById("chat-scroll"); let replayingOlder = false;`;
+// turnsHidden / showOlderTurns / TURN_WINDOW 是「长对话分批画」那边的；这一屏没有收着的轮次，那节自己拿真源测
+const SCROLLGUIDE_STUBS = `const chatScroll = document.getElementById("chat-scroll"); let replayingOlder = false;
+var turnsHidden = () => 0, showOlderTurns = () => 0, TURN_WINDOW = 10, sessionId = null;`;
 const SCROLLGUIDE_CHECKS = `
 (async () => {
   const names = [];
@@ -9641,6 +10134,37 @@ const COMPOSER_CHECKS = `
   ok("排队中的消息显示成 chip，提示仍在", bar.querySelectorAll(".q-chip").length === 1 && bar.querySelector(".q-chip .qt").textContent.includes("页脚") && !!bar.querySelector(".qb-hint"));
   bar.querySelector(".q-chip .qx").click();
   ok("点 ✕ 取消这条排队消息", bar.querySelectorAll(".q-chip").length === 0 && sessionQueues.get("s1").length === 0);
+
+  // ---- 输入法选词时的回车：是上屏，不是发送 ----
+  // 拼音打到一半按回车，是把字母原样放进框里；以前这一下直接当发送，半截拼音成了一整条消息
+  const imeEnter = (init, code229) => {
+    const e = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+    if (code229) Object.defineProperty(e, "keyCode", { get: () => 229 });
+    inputEl.dispatchEvent(e);
+    return e;
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  typeIn("nihao");
+  let n0 = CALLS.length, ev = imeEnter({ isComposing: true });
+  ok("★拼字中按回车上屏：不发送，也不拦默认行为（字母得留在框里）★", CALLS.length === n0 && !ev.defaultPrevented && inputEl.value === "nihao", CALLS.join(","));
+  ev = imeEnter({}, true);
+  ok("★keyCode 229 的回车（被输入法吃掉的那一下）：不发送★", CALLS.length === n0 && !ev.defaultPrevented, CALLS.join(","));
+  // Safari 的顺序反过来：先 compositionend，再来一个 isComposing 已经是 false 的回车
+  inputEl.dispatchEvent(new CompositionEvent("compositionend", { data: "你好", bubbles: true }));
+  ev = imeEnter({});
+  ok("★Safari 的顺序（compositionend 先到）：紧跟着的这个回车也不发★", CALLS.length === n0 && !ev.defaultPrevented, CALLS.join(","));
+  await sleep(80);
+  ev = imeEnter({});
+  ok("反向对照：词选完了再按回车，照常发出去", CALLS.length === n0 + 1 && ev.defaultPrevented && sentText() === "nihao", CALLS.join(","));
+  // ★反向对照★：让 imeKey 永远说「不是输入法的」，同一下拼字中的回车就发出去了——拦住它的就是这一个判断
+  const ime0 = imeKey;
+  imeKey = () => false;
+  try {
+    typeIn("zhongwen"); n0 = CALLS.length;
+    imeEnter({ isComposing: true });
+    ok("★反向对照★：不认输入法，拼字中的回车把半截拼音当整条消息发出去了", CALLS.length === n0 + 1 && sentText() === "zhongwen", CALLS.join(","));
+  } finally { imeKey = ime0; }
+  typeIn("");
 
   // ---- 任务结束 ----
   BUSY = false; updateSendUI();
@@ -12006,6 +12530,46 @@ const MOD_CHECKS = (P) => `
     ok("输入框外 AltGr+U 不是在打字：照样跳", CALLED.join() === "next-attn", CALLED);
   }
 
+  // ---- 输入法拼字中（候选框开着）：键是给输入法的，快捷键一个都不许接 ----
+  // 拼音打一半按 Esc 关候选框，以前 Esc 直接落到「让我停下」，把正在跑的任务叫停了
+  // 构造器里的 keyCode 这台 Chromium 认不认说不准，认不上就钉在事件对象上
+  const imePress = (init, target, code229) => {
+    const ev = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init, ...(code229 ? { keyCode: 229 } : {}) });
+    if (code229 && ev.keyCode !== 229) Object.defineProperty(ev, "keyCode", { get: () => 229 });
+    target.dispatchEvent(ev);
+    return ev;
+  };
+  const busy0 = curBusy;
+  curBusy = () => true; // 任务在跑：这时候 Esc 真落下去就是 stopTask
+  try {
+    CALLED.length = 0;
+    ev = imePress({ key: "Escape", code: "Escape", isComposing: true }, ta);
+    ok("★拼字中按 Esc 关候选框：任务不被叫停、也不拦默认行为★", CALLED.length === 0 && !ev.defaultPrevented, CALLED);
+    CALLED.length = 0;
+    ev = imePress({ key: "Process", code: "KeyB", [flag(M)]: true }, ta, true);
+    ok("★起头那一下（isComposing 还是 false、keyCode 229）：" + M + "+B 也不切左栏★", CALLED.length === 0 && !ev.defaultPrevented, CALLED);
+    CALLED.length = 0;
+    ev = imePress({ key: "Escape", code: "Escape" }, ta);
+    ok("反向对照：没在拼字时输入框里 Esc 照样叫停", CALLED.join() === "stop" && ev.defaultPrevented, CALLED);
+    // 反向对照：把真源码里那句守卫摘掉再装一份，挂在一个不在文档里的输入框上（事件冒不到 document，真分发器看不见）。
+    // 同样的拼字事件，没守卫的那份就会接——证明拦住它的是这一句，不是别的条件碰巧挡了
+    const GUARD = "if (imeKey(e)) return;";
+    const src = ${JSON.stringify(MOD_DISPATCH_SRC)};
+    ok("分发器源码里有这句守卫", src.includes(GUARD));
+    const box = document.createElement("textarea");
+    window.__imeBox = box;
+    (0, eval)(src.replace(GUARD, "").replace('document.addEventListener("keydown"', 'window.__imeBox.addEventListener("keydown"'));
+    CALLED.length = 0;
+    imePress({ key: "Escape", code: "Escape", isComposing: true }, box);
+    ok("★反向对照★：摘掉守卫，同一下拼字中的 Esc 就把任务叫停了", CALLED.join() === "stop", CALLED);
+    CALLED.length = 0;
+    imePress({ key: "Process", code: "KeyB", [flag(M)]: true }, box, true);
+    ok("★反向对照★：摘掉守卫，keyCode 229 的 " + M + "+B 就切了左栏", CALLED.join() === "toggle-sidebar", CALLED);
+    delete window.__imeBox;
+  } finally {
+    curBusy = busy0;
+  }
+
   // ---- 老存档：存着 Meta+J 的照样生效，默认那个键让出来 ----
   settingsCache = { shortcuts: { "toggle-sidebar": "Meta+J" } };
   CALLED.length = 0;
@@ -14117,6 +14681,12 @@ app.whenReady().then(async () => {
     } finally { if (!winCMP.isDestroyed()) winCMP.destroy(); }
 
     {
+      const namesIME = testImeGuardCoverage();
+      for (const n of namesIME) console.log("  ✓ " + n);
+      console.log(`✅ 前端：拼音打一半按回车/Esc 不当真（整个 public/js 每一处认回车/Esc 的地方都过 imeKey 或写明为什么不用·后台那份抄的也三样都认·含反向对照）${namesIME.length} 项通过`);
+    }
+
+    {
       const namesMRI = testMultiRunI18n();
       for (const n of namesMRI) console.log("  ✓ " + n);
       console.log(`✅ 前端：多开那两波的英文（打开对话的等待和失败·预览页载入·成果区分格·侧栏行上的停·含反向对照）${namesMRI.length} 项通过`);
@@ -14137,7 +14707,7 @@ app.whenReady().then(async () => {
       const namesMEM = await winMEM.webContents.executeJavaScript(IC_BOOT + IC_STUB + "\n" + ESC_SRC + "\n" + MEM_SRC + "\n" + MEM_CHECKS, true)
         .catch((e) => { throw new Error("[记忆页权限] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesMEM) console.log("  ✓ " + n);
-      console.log(`✅ 前端：记忆页按权限画（共享那条不画删·勾选框和保存按钮不画·搬家卡不画·删了不吞返回值·管理员那页一样不少）${namesMEM.length} 项通过`);
+      console.log(`✅ 前端：记忆页按权限画（共享那条不画删·勾选框和保存按钮不画·搬家卡不画·删了不吞返回值·管理员那页一样不少·嵌入接口只给管理员填、测一下原样转述、改地址清 Key）${namesMEM.length} 项通过`);
     } finally { if (!winMEM.isDestroyed()) winMEM.destroy(); }
 
     const winGATE = mkWin({ show: false, width: 1000, height: 900, webPreferences: { offscreen: true } });
