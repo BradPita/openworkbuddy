@@ -24,6 +24,7 @@ const { dataPath } = require("./paths");
 const crypto = require("crypto");
 const store = require("./store");
 const org = require("./org");
+const log = require("./log");
 const rbac = require("./rbac"); // 谁能做什么：角色分档和能力表只有那一个文件说了算
 const usageStore = require("./usage-store");
 const pricing = require("./pricing");
@@ -900,6 +901,34 @@ function createLimiter({ windowMs = LOGIN_WINDOW_MS, now = () => Date.now() } = 
 const loginLimiter = createLimiter();
 const FAILS_PER_USER = 8; // 盯着一个账号打
 const FAILS_PER_IP = 30; // 换着账号打
+
+/**
+ * 登录记录分两处放，量级不同：
+ *   · 每一次成败 → 运行日志（logs/app-日期.jsonl，按天滚、留 14 天），给装机的人排查用。
+ *   · 少见而且要紧的（连续输错被锁、停用的账号还在试）→ 组织审计，管理员在后台看得到。
+ * 不把每次登录都塞进审计：审计每个组织只留最新 5000 条，三千人的公司两天就能把
+ * 「谁改了额度、谁删了人」挤出去——合规要查的恰恰是那些。
+ * 密码、验证码一个字都不记。
+ */
+const disabledNoticeAt = new Map(); // 停用账号的尝试：同一个人一个窗口里只进一次审计
+function loginTrail(ok, what, name, ip, extra) {
+  const who = String(name || "").slice(0, 64);
+  (ok ? log.info : log.warn)("auth", what, { user: who, ip, ...(extra || {}) });
+}
+function auditLoginLock(name, ip) {
+  // 用户名不存在的不进审计：随手编的名字能无限多，拿它刷审计就能把真记录挤掉
+  const u = loadUsers().users.find((x) => x.username === name);
+  const wait = loginLimiter.retryAfter("user|" + String(name || "").toLowerCase(), FAILS_PER_USER);
+  if (!u || !wait) return;
+  org.audit({ org: org.orgIdOf(u), actor: "系统", action: "登录连续失败，暂时锁住", target: u.username,
+    detail: `最后一次来自 ${ip}，${Math.ceil(wait / 60)} 分钟内不能再试` });
+}
+function auditDisabledLogin(u, ip) {
+  const t = Date.now(), last = disabledNoticeAt.get(u.username) || 0;
+  if (t - last < LOGIN_WINDOW_MS) return;
+  disabledNoticeAt.set(u.username, t);
+  org.audit({ org: org.orgIdOf(u), actor: u.username, action: "停用的账号尝试登录", target: u.username, detail: `来自 ${ip}，密码是对的` });
+}
 const REGS_PER_IP = 5; // 注册也得拦，不然一个脚本能把账本刷满
 
 /** 私网/环回地址：判断「这一跳是不是我们自己那层反代」用的 */
@@ -2016,16 +2045,22 @@ function createRouter(opts) {
     // 先看闸再算密码：scrypt 是重活，让它连打就等于替对方把 CPU 也占了
     if (wait) return res.status(429).json({ error: `试太多次了，${wait} 秒后再试` });
     const user = verify(name, password);
+    const ip = clientIp(req);
     if (!user) {
       loginLimiter.fail(userKey);
       loginLimiter.fail(ipKey);
+      loginTrail(false, "登录失败：用户名或密码不对", name, ip);
+      auditLoginLock(name, ip);
       return res.status(401).json({ error: "用户名或密码不对" });
     }
     if ((user.status || "active") === "disabled") {
       loginLimiter.pass(userKey);
       loginLimiter.pass(ipKey);
+      loginTrail(false, "登录被拦：账号已停用", user.username, ip);
+      auditDisabledLogin(user, ip);
       return res.status(403).json({ error: "这个账号已被管理员停用" });
     }
+    let via = "密码";
     // —— 二次验证。密码对了**还不算登录成功**，这儿不发 cookie ——
     if (twoFactorOn(user)) {
       const code = String((req.body || {}).code || "").trim();
@@ -2034,14 +2069,18 @@ function createRouter(opts) {
         // 放的话，攻击者拿密码表来撞，撞中了会收到 need_2fa（而不是「密码不对」），
         // 等于我们免费帮他标出了哪些密码是真的，还不计次数。
         loginLimiter.fail(userKey);
+        auditLoginLock(user.username, ip); // 密码对、光不给码也会锁：说明密码已经在别人手里了
         return res.status(401).json({ need_2fa: true, error: "请输入验证器上的 6 位数字" });
       }
       const how = consumeTwoFactor(user.username, code);
       if (!how) {
         loginLimiter.fail(userKey);
         loginLimiter.fail(ipKey);
+        loginTrail(false, "登录失败：二次验证码不对", user.username, ip);
+        auditLoginLock(user.username, ip);
         return res.status(401).json({ need_2fa: true, error: "验证码不对或已经用过了" });
       }
+      via = how === "recovery" ? "恢复码" : "验证器";
       if (how === "recovery") {
         const left = ((loadUsers().users.find((x) => x.username === user.username) || {}).totp || {}).recovery || [];
         res.set("X-Recovery-Left", String(left.length));
@@ -2049,6 +2088,7 @@ function createRouter(opts) {
     }
     loginLimiter.pass(userKey);
     loginLimiter.pass(ipKey);
+    loginTrail(true, "登录成功", user.username, ip, { via });
     setTokenCookie(res, issueToken(user.username), req, user);
     res.json({ ok: true, user: publicUser(user), pending: user.status === "pending",
       two_factor_status: twoFactorStatus(user) });

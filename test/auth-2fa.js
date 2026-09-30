@@ -18,6 +18,7 @@ const path = require("path");
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-2fa-"));
 process.env.OPENWORKBUDDY_DATA_DIR = DIR;
+process.env.OPENWORKBUDDY_LOG_DIR = path.join(DIR, "logs"); // 登录留痕那一段要读它
 
 const account = require(path.join(__dirname, "..", "account.js"));
 const org = require(path.join(__dirname, "..", "org.js"));
@@ -253,6 +254,45 @@ const PW = "Zx9#mQ2vLp";
     "已经绑过的人（小孙）不受这道门影响：开强制不该把他也关在外面");
 
   org.updateOrg("default", { settings: { require_2fa: false } }, "小赵");
+
+  console.log("\n⑬ 登录留痕：每次成败进运行日志，锁号、停用账号在试进组织审计");
+  const authRows = () => {
+    const d = path.join(DIR, "logs");
+    let text = "";
+    try { for (const f of fs.readdirSync(d)) text += fs.readFileSync(path.join(d, f), "utf8"); } catch {}
+    return text.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((x) => x && x.mod === "auth");
+  };
+  const auditOf = (target) => org.listAudit("default", { limit: 500 }).audit.filter((a) => a.target === target);
+  I.register("小郑", PW);
+  await hit("POST", "/api/auth/login", { body: { username: "小郑", password: PW } });
+  let rows = authRows().filter((x) => x.user === "小郑");
+  ok(rows.some((x) => x.msg === "登录成功" && x.ip && x.via === "密码"), "登录成功记进运行日志，带来源 IP 和用的哪种凭证", JSON.stringify(rows));
+  ok(!auditOf("小郑").some((a) => /登录/.test(a.action)),
+    "★成功登录不进组织审计★ 审计每家只留 5000 条，每次登录都写的话几天就把真正的管理操作挤掉了");
+
+  for (let i = 0; i < 8; i++) await hit("POST", "/api/auth/login", { body: { username: "小郑", password: "wrong-" + PW + i } });
+  rows = authRows().filter((x) => x.user === "小郑" && /用户名或密码不对/.test(x.msg));
+  ok(rows.length === 8, "每一次输错都进运行日志（8 次）", rows.length);
+  ok(!authRows().some((x) => JSON.stringify(x).includes("wrong-" + PW)), "★输错的密码一个字都不落盘★");
+  const locks = auditOf("小郑").filter((a) => /锁住/.test(a.action));
+  ok(locks.length === 1 && /分钟/.test(locks[0].detail), "输到被锁的那一下进组织审计，而且只进一次", JSON.stringify(locks));
+  for (let i = 0; i < 3; i++) await hit("POST", "/api/auth/login", { body: { username: "小郑", password: "wrong" } });
+  ok(auditOf("小郑").filter((a) => /锁住/.test(a.action)).length === 1, "锁着的时候再撞，不再往审计里写（不然拿它就能刷审计）");
+
+  // 同一个假名连撞到锁：锁号那一步真走到了，才说明「不存在就不记」是那一行在拦
+  const ghost = [];
+  for (let i = 0; i < 8; i++) ghost.push((await hit("POST", "/api/auth/login", { body: { username: "瞎编的名字", password: "x" + i } })).status);
+  ok(ghost.every((c) => c === 401) && (await hit("POST", "/api/auth/login", { body: { username: "瞎编的名字", password: "x" } })).status === 429,
+    "假名也照样撞到了锁（这一段测的是锁号那一步）", ghost.join(","));
+  ok(!org.listAudit("default", { limit: 5000 }).audit.some((a) => /瞎编的名字/.test(a.target)),
+    "★不存在的用户名不进审计★ 随手编的名字无限多，拿它能把真记录全挤出去");
+
+  I.register("小冯", PW);
+  const feng = I.loadUsers(); feng.users.find((u) => u.username === "小冯").status = "disabled"; I.saveUsers(feng);
+  for (let i = 0; i < 3; i++) await hit("POST", "/api/auth/login", { body: { username: "小冯", password: PW } });
+  const tries = auditOf("小冯").filter((a) => /停用的账号尝试登录/.test(a.action));
+  ok(tries.length === 1, "停用的账号拿对的密码来试：进审计告诉管理员密码在谁手里，一个窗口只记一次", JSON.stringify(tries));
   server.close();
 
   console.log("\n" + (fail ? `❌ 有失败：${fail} 挂` : "✅ 全过"));
