@@ -16063,10 +16063,13 @@ async function testRunOwnership() {
     "阴性对照没生效：改坏了判据居然还是拒绝，说明上面测到的不是这段代码");
 
   // ---- 接线：判据写对了，路由不调它等于没有 ----
-  const routeOf = (sig, len) => {
+  // 截到下一条顶格路由为止。以前截固定长度，路由前头陆续加了闸（组织到期、终端里正在跑）
+  // 就把后面要找的那行挤出窗口，看着像顺序反了，其实只是没截到
+  const routeOf = (sig) => {
     const i = src.indexOf(sig);
     assert.ok(i > 0, `server.js 里找不到路由 ${sig}`);
-    return src.slice(i, i + len);
+    const end = src.indexOf("\napp.", i + 1);
+    return src.slice(i, end > 0 ? end : undefined);
   };
   for (const [sig, what] of [
     ['app.post("/api/chat/interject"', "插队（往别人正在跑的任务里塞一句话）"],
@@ -16074,12 +16077,12 @@ async function testRunOwnership() {
     ['app.post("/api/chat/stop"', "把别人的任务掐掉"],
     ['app.get("/api/chat/stream/:id"', "把别人的实时输出整段读走"],
   ]) {
-    assert.ok(/guardRun\(req, res, /.test(routeOf(sig, 500)), `${sig} 没查归属 → 同一台服务器上的另一个人可以：${what}`);
+    assert.ok(/guardRun\(req, res, /.test(routeOf(sig)), `${sig} 没查归属 → 同一台服务器上的另一个人可以：${what}`);
   }
 
   // /api/chat 的这道检查必须赶在 SSE 头之前：头一发出去，403 的正文就顶着
   // text/event-stream 的壳过去，前端拿到的是一个「连上了但什么都不发」的流
-  const chat = routeOf('app.post("/api/chat", async (req, res)', 2000);
+  const chat = routeOf('app.post("/api/chat", async (req, res)');
   const iGuard = chat.indexOf("sessionAllowed(user, getSession(sessionId))");
   const iSse = chat.indexOf('res.setHeader("Content-Type", "text/event-stream');
   assert.ok(iGuard > 0, "POST /api/chat 没查会话归属 → 拿到别人的会话 id 就能接着他的上下文继续跑，还写进他的历史");
@@ -16087,7 +16090,7 @@ async function testRunOwnership() {
 
   // 「哪些任务还在跑」要按侧栏那个窄口径给：宽了的后果不是泄露，是前端 reattachRunning
   // 会把同事的任务画面挨个回放进管理员自己的窗口
-  const running = routeOf('app.get("/api/chat/running"', 700);
+  const running = routeOf('app.get("/api/chat/running"');
   assert.ok(/ownSession\(req\.user/.test(running),
     "/api/chat/running 没按侧栏口径过滤——管理员刷新页面会把全服务器所有人正在跑的任务接回自己窗口");
   assert.ok(!/role === "admin"/.test(running),
@@ -16095,7 +16098,7 @@ async function testRunOwnership() {
 
   // 直调口（重跑一格不过模型）。它拿 sessionId 只为定产物落点，可 sess.dir 本身就是别人的
   // 成果目录——不查归属的话，随便一个登录用户都能把自己生成的图写进别人的交付文件夹里
-  const direct = routeOf('app.post("/api/tool/run"', 1600);
+  const direct = routeOf('app.post("/api/tool/run"');
   const iOwn = direct.indexOf("sessionAllowed(user, sess)");
   const iDir = direct.indexOf("sess.dir");
   assert.ok(iOwn > 0, "POST /api/tool/run 没查会话归属 → 拿到别人的会话 id 就能往他的成果目录里写文件");
