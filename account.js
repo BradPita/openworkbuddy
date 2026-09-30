@@ -487,10 +487,15 @@ function twoFactorStatus(u) {
   };
 }
 
-/** 没有登录态时（CLI / IM / 定时任务）消耗记在谁名下：档次最高的那个人，同档取最早建的 */
+/**
+ * 没有登录态时（CLI / IM / 定时任务）消耗记在谁名下：默认组织里档次最高的那个人，同档取最早建的。
+ * 先圈默认组织：平台超管转让过的话，全站最早注册的超管可能是某家分公司的，账和身份就落到别人家去了。
+ * 默认组织一个人都没有（手改过账本）才退回全站挑。
+ */
 function defaultUser() {
   const us = loadUsers().users;
-  return [...us].sort((a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
+  const home = us.filter((u) => org.orgIdOf(u) === org.DEFAULT_ORG);
+  return [...(home.length ? home : us)].sort((a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
 }
 
 /** 席位满了返回一句话，没满返回空串。停用的人不占席位，待审核的占（批下来就是在用的人） */
@@ -500,6 +505,9 @@ function seatsFull(st, orgId) {
   const used = st.users.filter((u) => (u.org || org.DEFAULT_ORG) === orgId && u.status !== "disabled").length;
   return used >= seats ? `「${o.name}」的席位已用满（${used}/${seats}）` : "";
 }
+// 分公司的席位只有平台超管改得了（admin.js 里非平台管理员改组织会把 seats 摘掉），
+// 光说「找管理员」的话，分公司的管理员看到的是一句叫自己去找自己的话
+const seatTail = (orgId, dflt) => (orgId === org.DEFAULT_ORG ? dflt : "，这家的席位要找平台超管加");
 
 function register(username, password, opts = {}) {
   username = String(username || "").trim();
@@ -515,7 +523,7 @@ function register(username, password, opts = {}) {
   // 席位闸要放在建号**之前**：先建后查的话，报错弹出来的时候人已经躺在账本里了
   if (!first) {
     const full = seatsFull(st, orgId);
-    if (full) throw new Error(full + "，请管理员加了席位再来");
+    if (full) throw new Error(full + seatTail(orgId, "，请管理员加了席位再来"));
   }
   // 这个组织有超管了没有。以前 owner 只给**全站**第一个人，于是分公司里一个超管都没有，
   // 两个管理员可以互相停用、互相降级——「管理员权限太大」这件事最狠的一处就在这儿。
@@ -1275,7 +1283,7 @@ function assertCanManage(actor, target, what) {
     const t = rbac.ROLE_LABEL[rbac.roleOf(target)];
     const a = rbac.ROLE_LABEL[rbac.roleOf(actor)];
     throw new Error(rbac.rankOf(actor) === rbac.rankOf(target)
-      ? `同级动不了同级：${a}${what}不了另一个${a}。要动他，得由更高一档的人来`
+      ? `同级动不了同级：${a}${what}不了另一个${a}。要动这个号，得由更高一档的人来`
       : `${t}不能被${a}${what}`);
   }
 }
@@ -1287,7 +1295,7 @@ function assertCanManage(actor, target, what) {
 function assertNotLastOwner(u, what) {
   if (rbac.roleOf(u) !== "owner") return;
   throw new Error(`「${u.username}」是「${org.getOrg(org.orgIdOf(u)).name}」的超级管理员，不能被${what}。` +
-    "要换人：先在「管理员角色」里把超级管理员转让给他，再回来" + what + "这个号");
+    "要换人：先在「管理员角色」里把超级管理员转让给接任的人，再回来" + what + "这个号");
 }
 
 /** 按登录名取人再过 assertCanManage。路由层要判「我管不管得到他」时用这个，别自己去翻账本 */
@@ -1629,7 +1637,7 @@ function setMember(actor, username, patch) {
     // 停用的人不占席位。停满一个、再招满一个、再把停用的那个启用回来，席位就被绕过去了
     if (u.status === "disabled" && patch.status !== "disabled") {
       const full = seatsFull(st, org.orgIdOf(u));
-      if (full) throw new Error(full + "，加了席位才能重新启用");
+      if (full) throw new Error(full + seatTail(org.orgIdOf(u), "，加了席位才能重新启用"));
     }
     if ((u.status || "active") !== patch.status) {
       u.status = patch.status;

@@ -1066,7 +1066,7 @@ app.use(
 /**
  * 企业加装包。
  *
- * 开源版**只留口子，不留实现**。SSO / 目录同步、审计外送 SIEM、离线许可证、高可用、
+ * 开源版**只留口子，不留实现**。SSO / 目录同步、审计外送 SIEM、高可用、
  * 白标这几样归商业授权，将来住在私有仓库 openworkbuddy-enterprise 里，以一个 npm 包装上来。
  * 线是怎么划的见 docs/开源与商业版边界.md。
  *
@@ -1109,7 +1109,7 @@ const entDeps = { org, account, security, config, admin };
 /**
  * 第一个口子：**认证之前**。
  *
- * 这一档是给 SSO 回调用的（SAML 的 ACS、OIDC 的 redirect_uri、以及离线许可证校验）。
+ * 这一档是给 SSO 回调用的（SAML 的 ACS、OIDC 的 redirect_uri）。
  * 这些请求按定义就是**还没登录**的那一个——身份正是它们要带回来的东西。
  * 挂在 authGuard 后面的话，IdP 打回来的那一跳会被自己人挡在门外，SSO 根本走不通。
  *

@@ -1009,6 +1009,7 @@ PAGES.members = {
         : `<div class="ad-actions">
             <button class="ui-btn ui-btn--ghost ui-btn--xs" data-edit="${esc(u.username)}">${ic("pencil", "i-sm")} 改</button>
             <button class="ui-btn ui-btn--ghost ui-btn--xs" data-pwd="${esc(u.username)}">${ic("key", "i-sm")} 重置密码</button>
+            ${u.two_factor ? `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-tfa="${esc(u.username)}" title="手机丢了、换了手机：清掉让本人重新绑">${ic("shield", "i-sm")} 解二次验证</button>` : ""}
             ${u.owner || u.status === "disabled" ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-off="${esc(u.username)}" title="一次关掉他手上所有还能用的口子">${ic("log-out", "i-sm")} 办离职</button>`}
             ${u.owner ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-del="${esc(u.username)}">${ic("trash", "i-sm")}</button>`}
           </div>`,
@@ -1229,6 +1230,21 @@ PAGES.members = {
           async () => {
             const r = await post("/api/admin/members/" + encodeURIComponent(b.dataset.pwd) + "/reset-password");
             showPassword(b.dataset.pwd, r.password, "新密码");
+          }
+        );
+    });
+
+    // 解二次验证：后端那条接口早就有，以前界面上没有按钮，手机丢了只能上服务器跑命令行
+    root.querySelectorAll("[data-tfa]").forEach((b) => {
+      b.onclick = () =>
+        confirmBox(
+          "解掉「" + b.dataset.tfa + "」的二次验证",
+          "本人下次登录只要密码。组织开了强制二次验证的话，登录后会先让本人重新绑一次。",
+          "解掉",
+          async () => {
+            await post("/api/admin/members/" + encodeURIComponent(b.dataset.tfa) + "/reset-2fa");
+            toast("已解掉，让本人重新绑一次验证器");
+            route(true);
           }
         );
     });

@@ -2021,12 +2021,51 @@ async function login(username, password) {
     r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "active" } });
     eq(r.status, 400, "★席位满了，把停用的人启用回来：拒绝★ 不然停一个、招一个、再启用，席位就被绕过去了");
     ok(/席位已用满/.test(r.json.error || ""), "报错说的是席位", r.json.error);
+    ok(/平台超管/.test(r.json.error || ""), "★分公司的席位只有平台超管加得了，报错就指到平台超管★ 不然分公司管理员看到的是叫自己找自己", r.json.error);
     eq(account._internals.loadUsers().users.find((u) => u.username === "xiaoyuan").status, "disabled", "人还是停用着");
     r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "pending" } });
     eq(r.status, 400, "改成待审核也占席位，一样拒");
     r = await call("POST", `/api/admin/orgs/${org2}`, { cookie: boss, body: { seats: seated() + 1 } });
     r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "active" } });
     eq(r.status, 200, "反向对照：加了席位就能启用");
+  }
+
+  console.log("\n【33】没登录态的消耗（命令行 / IM / 定时）记在默认组织名下；管理员能在网页上解二次验证");
+  {
+    const rbac = require(path.join(ROOT, "rbac"));
+    const st = account._internals.loadUsers();
+    const t = st.users.find((u) => u.username === "fenboss");
+    const keep = t.created_at;
+    // 平台超管转让过、全站最早的超管落在分公司：以前按全站挑，账和身份就记到别人家去了
+    t.created_at = "2000-01-01T00:00:00.000Z";
+    account._internals.saveUsers(st);
+    const all = account._internals.loadUsers().users;
+    const globalPick = [...all].sort((x, y) => rbac.rankOf(y) - rbac.rankOf(x) || String(x.created_at).localeCompare(String(y.created_at)))[0];
+    eq(globalPick.username, "fenboss", "对照：按全站挑，挑中的是分公司的超管（以前就是这么记错账的）");
+    const d = account.defaultUser();
+    eq(org.orgIdOf(d), org.DEFAULT_ORG, "★defaultUser 落在默认组织★");
+    eq(d.username, "laoban", "默认组织里档次最高的就是平台超管");
+    const st2 = account._internals.loadUsers();
+    st2.users.find((u) => u.username === "fenboss").created_at = keep;
+    account._internals.saveUsers(st2);
+
+    // 解二次验证：接口早就有，以前界面上没有按钮
+    const st3 = account._internals.loadUsers();
+    st3.users.find((u) => u.username === "tibu").totp = { secret: "JBSWY3DPEHPK3PXP", enabled_at: new Date().toISOString() };
+    account._internals.saveUsers(st3);
+    st3.users.find((u) => u.username === "hqguy").totp = { secret: "JBSWY3DPEHPK3PXP", enabled_at: new Date().toISOString() };
+    account._internals.saveUsers(st3);
+    r = await call("POST", "/api/admin/members/tibu/reset-2fa", { cookie: fen });
+    eq(r.status, 200, "分公司超管解得了自家成员的");
+    eq(r.json.was_on, true, "回话里说本来是开着的");
+    ok(!account._internals.loadUsers().users.find((u) => u.username === "tibu").totp, "真清掉了");
+    r = await call("POST", "/api/admin/members/hqguy/reset-2fa", { cookie: fen });
+    eq(r.status, 400, "反向对照：分公司超管解不了总部成员的");
+    ok(!!account._internals.loadUsers().users.find((u) => u.username === "hqguy").totp, "总部那位的二次验证原样在");
+    r = await call("POST", "/api/admin/members/hqguy/reset-2fa", { cookie: boss });
+    eq(r.status, 200, "总部自己的超管解得了");
+    const ui = fs.readFileSync(path.join(ROOT, "public", "js", "admin.js"), "utf8");
+    ok(/data-tfa=/.test(ui) && /\/reset-2fa"/.test(ui), "成员那一行有「解二次验证」按钮，接的就是这条接口");
   }
 
   server.close();
