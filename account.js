@@ -77,8 +77,21 @@ function writeStoreAtomic(file, data, pretty) {
 
 function loadUsers() {
   const d = readStore(USERS_FILE, { users: [], tokens: {} });
-  // settings 要原样带着走：这里丢一个字段，下一次 saveUsers 就把它从盘上抹掉了
-  return { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {} };
+  // settings 要原样带着走：这里丢一个字段，下一次 saveUsers 就把它从盘上抹掉了。removed 同理（见 removeMember）
+  return { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {}, removed: d.removed || [] };
+}
+/**
+ * 删掉的登录名不许再用。对话、记忆、定时任务、中转 Key 全是按登录名认主人的，
+ * 删人时这些都还留在盘上（审计要看）。名字要是能被新人注册走，新人一登录就接手了前人的全部对话和记忆。
+ */
+function assertNameUnused(st, name) {
+  if (st.users.some((u) => u.username === name)) throw new Error("用户名已存在");
+  if ((st.removed || []).some((r) => r && r.username === name)) throw new Error("这个用户名属于一个已删除的账号，换一个");
+}
+/** 删掉的账号原来在哪个组织。找不到回 ""——那就谁的组织都不算，只有平台管理员看得了它留下的东西 */
+function removedOrgOf(username) {
+  const r = (loadUsers().removed || []).find((x) => x && x.username === username);
+  return r ? r.org || org.DEFAULT_ORG : "";
 }
 /**
  * 已经有账号之后还让不让别人自己注册。默认不让——这东西挂到公网上就是给陌生人发积分。
@@ -484,7 +497,7 @@ function register(username, password, opts = {}) {
   if (!/^[\w一-龥.-]{2,24}$/.test(username)) throw new Error("用户名需 2-24 位（中英文、数字、_.-）");
   assertPassword(password, { username, org: opts.org || org.DEFAULT_ORG });
   const st = loadUsers();
-  if (st.users.some((u) => u.username === username)) throw new Error("用户名已存在");
+  assertNameUnused(st, username);
   const salt = crypto.randomBytes(16).toString("hex");
   const first = st.users.length === 0;
   const orgId = first ? org.DEFAULT_ORG : opts.org || org.DEFAULT_ORG;
@@ -533,6 +546,7 @@ function renameUser(oldName, newName) {
   if (!u) throw new Error("账号不存在");
   if (newName === oldName) return oldName;
   if (st.users.some((x) => x.username === newName)) throw new Error("这个登录名已经有人用了");
+  assertNameUnused(st, newName);
   u.username = newName;
   for (const t of Object.keys(st.tokens)) if (st.tokens[t] && st.tokens[t].user === oldName) st.tokens[t].user = newName;
   saveUsers(st);
@@ -1661,6 +1675,8 @@ function removeMember(actor, username) {
   assertNotLastOwner(st.users[i], "删除");
   const [u] = st.users.splice(i, 1);
   for (const [t, info] of Object.entries(st.tokens)) if (info.user === username) delete st.tokens[t];
+  st.removed = (st.removed || []).filter((r) => r && r.username !== username)
+    .concat({ username, org: org.orgIdOf(u), at: Date.now(), by: actor.username });
   saveUsers(st);
   org.audit({ org: org.orgIdOf(u), actor: actor.username, action: "删除成员", target: username });
   return publicUser(u);
@@ -2298,6 +2314,7 @@ function createRouter(opts) {
 
 module.exports = {
   fixLegacyCache,
+  removedOrgOf,
   hasUsers,
   userCount,
   seatCount,

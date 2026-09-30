@@ -1257,7 +1257,11 @@ function sessionAllowed(user, s) {
   if (!owner || owner === user.username) return true;
   if (!account.canAdmin(user)) return false;
   const o = account._internals.loadUsers().users.find((u) => u.username === owner);
-  return !o || org.orgIdOf(o) === org.orgIdOf(user);
+  if (o) return org.orgIdOf(o) === org.orgIdOf(user);
+  // 主人已经删了：按删除时记下的组织认。原来这里是「找不到人就放行」——
+  // 任何一家公司的管理员、审计员都能翻别家删掉的员工留下的全部对话
+  const was = account.removedOrgOf(owner);
+  return was ? was === org.orgIdOf(user) : ownsGlobalWorkspace(user);
 }
 function guardSession(req, res) {
   const s = getSession(req.params.id);

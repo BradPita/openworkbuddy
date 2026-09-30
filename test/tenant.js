@@ -1899,6 +1899,39 @@ async function login(username, password) {
   }
 
 
+  console.log("\n【29】删掉的成员：他的对话只归原组织管，名字也不许被新人拿走");
+  {
+    // 判据原样从 server.js 切出来跑，别抄一份——抄的那份会在 server.js 改坏之后继续给绿灯
+    const SRC23 = srcLib.src("server");
+    const i0 = SRC23.indexOf("function sessionOwner(s) {");
+    const i1 = SRC23.indexOf("function guardSession(");
+    ok(i0 > 0 && i1 > i0, "从 server.js 里切得出 sessionOwner + sessionAllowed", { i0, i1 });
+    const sessionAllowed23 = new Function("account", "org", "ownsGlobalWorkspace", "legacySessionOwner",
+      SRC23.slice(i0, i1) + "\nreturn sessionAllowed;")(account, org, admin.ownsGlobalWorkspace, () => "");
+    const who = (n) => account._internals.loadUsers().users.find((u) => u.username === n);
+    const fenU = who("fenboss");
+    account.createMember(fenU, { username: "linshigong", role: "member" });
+    const sess = { user: "linshigong", transcript: [{ role: "user", content: "分公司的内部事" }] };
+    ok(sessionAllowed23(fenU, sess), "人还在的时候，本组织管理员看得了（对照组）");
+    ok(!sessionAllowed23(who("laoban"), sess), "人还在的时候，别家管理员看不了（对照组）");
+    account.removeMember(fenU, "linshigong");
+    ok(sessionAllowed23(fenU, sess), "删掉以后，原组织的管理员照样看得了（离职交接要翻）");
+    ok(!sessionAllowed23(who("laoban"), sess),
+      "★删掉以后别家管理员也能翻他的对话★ 原来这里「找不到主人就放行」");
+    ok(!sessionAllowed23(who("xiaoyuan"), sess), "删掉以后，同组织的普通成员照样看不了");
+    const ghost = { user: "从来没有过这个人", transcript: [{ role: "user", content: "x" }] };
+    ok(sessionAllowed23(who("laoban"), ghost), "查无此人的老对话：平台管理员看得了（总得有人能收拾）");
+    ok(!sessionAllowed23(fenU, ghost), "查无此人的老对话：分公司管理员看不了");
+
+    let err = "";
+    try { account._internals.register("linshigong", "pw-new-12345", { org: org2 }); } catch (e) { err = e.message; }
+    ok(/已删除/.test(err), "删掉的登录名不许再注册（不然新人一登录就接手了前人的对话和记忆）", err);
+    err = "";
+    try { account._internals.renameUser("xiaoyuan", "linshigong"); } catch (e) { err = e.message; }
+    ok(/已删除/.test(err), "也不许把别的账号改名成它", err);
+    eq(who("xiaoyuan").username, "xiaoyuan", "改名被拒，原账号名字没动");
+  }
+
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });
