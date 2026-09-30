@@ -376,6 +376,14 @@ Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
  <sub>顺手把它转给一个天天手搓 PPT、周报、会议纪要的同事，比一百次曝光管用。</sub>
 </p>
 
+<p align="center">
+ <img src="docs/images/tip-wechat.png" width="280" alt="微信扫码打赏">
+</p>
+
+<p align="center">
+ <sub>用着顺手，扫码请作者喝杯咖啡。打赏是心意，不算商业授权，公司使用看 <a href="#商用授权--企业服务">商用授权</a>。</sub>
+</p>
+
 ## 贡献者
 
 感谢每一个动手改过这个项目的人。想加入他们：[参与贡献](CONTRIBUTING.md)。

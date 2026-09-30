@@ -364,6 +364,14 @@ An independent open-source project, not affiliated with Tencent or its WorkBuddy
  <sub>Pass it to one colleague who hand-builds decks, weekly reports and meeting notes — worth more than a hundred impressions.</sub>
 </p>
 
+<p align="center">
+ <img src="docs/images/tip-wechat.png" width="280" alt="Tip the author via WeChat Pay">
+</p>
+
+<p align="center">
+ <sub>If it saves you time, buy the author a coffee (WeChat Pay). A tip is a thank-you, not a commercial license — companies, see <a href="#commercial-license--enterprise-services">Commercial license</a>.</sub>
+</p>
+
 ## Contributors
 
 Thanks to everyone who has changed something here. Want to join them: [CONTRIBUTING.md](CONTRIBUTING.md).
