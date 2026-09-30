@@ -48,6 +48,27 @@ function toPrune(list, keep = KEEP) {
 }
 
 /**
+ * 打包时跳过能重新生成的东西：按本机 tar 是哪一家给 --exclude 参数，模式一律从 -C 那一层的开头算。
+ *
+ * 两家 tar 的 --exclude 默认都不锚定开头——路径里任何一段对得上就跳过。
+ * 2026-09-29 复审实测（bsdtar 3.5.3）：用户自己的技能 skills/x/ 底下要是有个 data/ 目录，
+ * 里面的 metrics/、thumbs/、runtime/codex/cache/、*.json.bak 全被当成我们的派生数据悄悄漏打，
+ * 恢复出来那个技能就缺了一块，打包时一个字都不说。
+ *   · bsdtar（mac、Windows 自带）：模式前加 ^ 就锚定开头。
+ *   · GNU tar（Linux）：--anchored 摆在这些 --exclude 前面；它不认 ^，加了等于一个都不排除。
+ *   · 认不出是哪家（busybox 之类）：一个都不排除。包大一点，不会少东西。
+ * @param {string} versionText `tar --version` 的输出
+ * @param {string[]} patterns 如 "data/thumbs"、"data/*.json.bak"
+ * @returns {string[]}
+ */
+function tarExcludeArgs(versionText, patterns) {
+  const v = String(versionText || "");
+  if (/bsdtar|libarchive/i.test(v)) return patterns.map((p) => "--exclude=^" + p);
+  if (/\bGNU tar\b/.test(v)) return ["--anchored", ...patterns.map((p) => "--exclude=" + p)];
+  return [];
+}
+
+/**
  * deps：
  *   everyDays()   → 当前配置的周期
  *   list()        → listBackups()
@@ -99,4 +120,4 @@ function createAutoBackup(deps) {
   return { tick, start, isRunning: () => running, lastError: () => lastError };
 }
 
-module.exports = { createAutoBackup, normalizeDays, isDue, toPrune, isAuto, AUTO_TAG, KEEP };
+module.exports = { createAutoBackup, normalizeDays, isDue, toPrune, isAuto, tarExcludeArgs, AUTO_TAG, KEEP };

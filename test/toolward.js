@@ -42,6 +42,10 @@ delete process.env.OPENWORKBUDDY_TOOLWARD;
 delete process.env.OPENWORKBUDDY_TOOLWARD_BIN;
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tw-home-"));
 process.env.OPENWORKBUDDY_HOME = HOME;      // 必须在 require("../skills") 之前
+// 这些临时目录里躺着（打了码的）配置和技能，退出时一起收，中途抛了也收。2026-09-28 实测：
+// 以前只在走到结尾时收 HOME / BIN_DIR / SRC，mkClean 造的那几个一个不删，临时目录里已经堆了 15 个 owb-tw-src-*
+const TMP_DIRS = [HOME];
+process.on("exit", () => { for (const d of TMP_DIRS) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} } });
 
 const tw = require("../toolward");
 const { toReport, redactServers, safeUrl, relTo } = tw._internals;
@@ -174,6 +178,7 @@ console.log("\n【3】密钥不出门：交出去的那份配置里不许有真�
 console.log("\n【4】真去跑一个进程：假的 toolward");
 // ══════════════════════════════════════════════════════════════════
 const BIN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tw-bin-"));
+TMP_DIRS.push(BIN_DIR);
 const BIN = path.join(BIN_DIR, "toolward");
 const PLAN = path.join(BIN_DIR, "plan.json");
 const CALLS = path.join(BIN_DIR, "calls.log");
@@ -214,6 +219,7 @@ const clearCalls = () => { try { fs.unlinkSync(CALLS); } catch {} };
 process.env.OPENWORKBUDDY_TOOLWARD_BIN = BIN;
 
 const SRC = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tw-src-"));
+TMP_DIRS.push(SRC);
 fs.writeFileSync(path.join(SRC, "skill.md"), "---\nname: demo\ndescription: 测试用\n---\n\n把三张图拼成一张，写清楚每一步。\n");
 
 {
@@ -296,6 +302,7 @@ function tryInstall(srcDir, opts) {
 /** 一份自带那把尺子挑不出毛病的技能：这样拦不拦全看第二把 */
 function mkClean(name) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tw-src-"));
+  TMP_DIRS.push(d);
   fs.writeFileSync(path.join(d, "skill.md"), `---\nname: ${name}\ndescription: 测试用\n---\n\n把三张图拼成一张，写清楚每一步。\n`);
   return d;
 }
@@ -361,8 +368,7 @@ console.log("\n【6】doctor 那一行：没装不算毛病，装着没在用才
   ok(c.level === "ok", "两把尺子都在跑，不该报问题：" + c.level);
 }
 
-// 收摊：这些临时目录里躺着（打了码的）配置和技能，别留在 /tmp
-for (const d of [HOME, BIN_DIR, SRC]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
+// 收摊交给上面挂在 exit 上的那一段（TMP_DIRS）
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

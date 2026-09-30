@@ -884,7 +884,7 @@ function renderAboutPane(pane) {
       买授权不解锁任何功能：没有功能锁，不联网验证。<br>
       部署配置、脚本、技能模板等示例代码按 MIT 发布，可商用。<br>
       <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noreferrer">商业授权怎么谈</a>
-      · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE-ECOSYSTEM.md" target="_blank" rel="noreferrer">哪些按 MIT</a>
+      · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md#按-mit-授权的部分" target="_blank" rel="noreferrer">哪些按 MIT</a>
       · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE" target="_blank" rel="noreferrer">许可证全文</a>
       · <a class="link" href="mailto:contact@aijentra.com" target="_blank" rel="noreferrer">contact@aijentra.com</a></div>
     </div>

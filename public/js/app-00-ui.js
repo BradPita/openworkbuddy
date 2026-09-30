@@ -83,6 +83,21 @@ function avaPicks(cur) {
   return AVATAR_ICONS.map((n) => avaCell(n, cur)).join("");
 }
 
+/** 这一下按键是不是给输入法的（拼音/假名选词、上屏、取消），而不是给我们的回车/Esc。
+ *  拼音打一半按回车，是把字母原样上屏；当成「发送」的话，半截拼音就作为整条消息发出去了。
+ *  Chromium 里这一下带 isComposing / keyCode 229，一看就知道；Safari 反过来——先发 compositionend
+ *  再发这个回车，到它手里 isComposing 已经是 false，所以还得看「是不是拼字刚结束」。
+ *  50ms 远短于人手连按两个键的间隔：空格选完词再按回车发送，不会被误吞。 */
+function imeKey(e) {
+  if (!e) return false;
+  if (e.isComposing || e.keyCode === 229) return true;
+  return performance.now() - (window.__imeEndAt ?? -Infinity) < 50;
+}
+if (!window.__imeEndWired) {
+  window.__imeEndWired = true;
+  document.addEventListener("compositionend", () => { window.__imeEndAt = performance.now(); }, true);
+}
+
 /* 自建 tooltip 顶掉原生 title：原生那个要悬停一秒才出来，出来是一坨系统灰框，
    成果卡上那种长路径会直接糊掉半张卡。这里 380ms 出、跟着目标走、贴不下就翻到下方。
    不改任何标记——鼠标扫过时把 title 就地搬进 data-tip，动态插入的节点一样吃得到。 */
@@ -155,7 +170,9 @@ function avaPicks(cur) {
 function markActivatable(el) {
   if (!el) return el;
   if (el.tabIndex < 0) el.tabIndex = 0;
-  el.dataset.activate = "1"; // 键盘处理认这个标记，不认 role——见下面为什么 role 不能一律加
+  // 键盘处理认这个标记，不认 role——见下面为什么 role 不能一律加。
+  // 已经是 "1" 就别再写：同值照样算一次属性变更，观察器、样式失效都要跟着走一遍
+  if (el.dataset.activate !== "1") el.dataset.activate = "1";
   // 成果卡这类元素自己带着「预览 / 打开位置 / 下载」几个真按钮，外层再声明 role="button"
   // 就成了按钮套按钮，读屏会把里面那几个吞掉。有交互子元素时只给焦点，不动语义。
   if (!el.getAttribute("role") && !el.querySelector("a[href],button,input,select,textarea")) {
@@ -189,9 +206,21 @@ function onActivate(el, fn) {
     e.preventDefault(); // 空格默认是翻页，落在行上会把侧栏滚走
     el.click();
   });
+  // 观察器只补新挂上来的行。以前侧栏动一下（换一颗「在跑」的点、改一行标题）就把全页几百行从头标一遍：
+  // 2026-09-29 实测 551 条历史、5 路并跑，静置 10 秒侧栏 data-activate 被重写 5510 次，行一个没新增。
+  // 没换掉的行身上的标记还在，不用再碰
+  function armAdded(records) {
+    for (const r of records) {
+      for (const n of r.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.matches(SEL)) markActivatable(n);
+        n.querySelectorAll(SEL).forEach(markActivatable);
+      }
+    }
+  }
   function boot() {
     arm();
-    const mo = new MutationObserver(arm);
+    const mo = new MutationObserver(armAdded);
     ["proj-list", "history"].forEach((id) => {
       const n = document.getElementById(id);
       if (n) mo.observe(n, { childList: true, subtree: true });
@@ -375,9 +404,14 @@ function fadeOnOverflow(el) {
     el.classList.toggle("sc-more", el.scrollHeight - el.clientHeight - el.scrollTop > 2);
     el.classList.toggle("sc-up", el.scrollTop > 2);
   };
+  // 内容一变就量，是在微任务里读 scrollHeight：这时候版还是脏的，等于当场逼浏览器把整页排一遍，
+  // 而同一趟任务后面接着还要改 DOM，到了帧里再排一遍。2026-09-29 实测切会话时侧栏换高亮行就撞上这个，
+  // 10 次切换里有 14 次被逼排版超过 1ms，合计 69.5ms，最长一次 21.7ms。这个渐隐晚一帧没人看得出，攒到下一帧开头量一次
+  let raf = 0;
+  const syncSoon = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; sync(); }); };
   el.addEventListener("scroll", sync, { passive: true });
-  try { new ResizeObserver(sync).observe(el); } catch {}
-  try { new MutationObserver(sync).observe(el, { childList: true, subtree: true, characterData: true }); } catch {}
+  try { new ResizeObserver(sync).observe(el); } catch {} // 尺寸回调在排完版之后，读是现成的，不用攒
+  try { new MutationObserver(syncSoon).observe(el, { childList: true, subtree: true, characterData: true }); } catch {}
   sync();
 }
 function initSideFades() {

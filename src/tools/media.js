@@ -215,6 +215,28 @@ function shrinkForVision(abs) {
 }
 
 /**
+ * 同上，异步版。独立服务进程里（2026-09-29 起桌面版默认）没有 nativeImage，大图交给主进程缩；
+ * 主进程不在或超时就原样发——跟纯 node 里缩不动时一个口径，看图不因为这个失败。
+ */
+async function shrinkForVisionAsync(abs) {
+  const bridge = require("../../electron-bridge");
+  if (!bridge.isRemote()) return shrinkForVision(abs);
+  const raw = fs.readFileSync(abs);
+  const ext = (abs.split(".").pop() || "png").toLowerCase();
+  const mime = IMAGE_MIME[ext] || "image/png";
+  const asis = { b64: raw.toString("base64"), mime, note: "" };
+  if (raw.length <= 900 * 1024) return asis;
+  try {
+    const r = await bridge.call("image.shrinkForVision", { abs, maxEdge: 1568, quality: 82 }, { timeoutMs: 10000 });
+    const jpg = r && bridge.toBuf(r.jpg);
+    if (!jpg || !jpg.length || jpg.length >= raw.length) return asis;
+    return { b64: jpg.toString("base64"), mime: "image/jpeg", note: `（原图 ${r.width}×${r.height}、${Math.round(raw.length / 1024)}KB，压缩后再看的）` };
+  } catch {
+    return asis;
+  }
+}
+
+/**
  * 把工作空间里的一张图读成能直接塞进请求体的 base64。
  *
  * 三条路要用它：看图（look_at_image）、生图喂参考图、生视频定首尾帧。为什么非得是同一份——
@@ -223,7 +245,7 @@ function shrinkForVision(abs) {
  *
  * 返回 { err }（一整句可以原样发给模型的话）或 { b64, mime, note, abs }。
  */
-function readImageInput(rel, resolveFile, what) {
+async function readImageInput(rel, resolveFile, what) {
   const s = String(rel == null ? "" : rel).trim();
   if (!s) return { err: `缺少${what}的路径（工作空间里的相对路径，先 list_files 看看真实文件名）` };
   let p;
@@ -231,7 +253,7 @@ function readImageInput(rel, resolveFile, what) {
   if (!fs.existsSync(p)) return { err: `找不到${what} ${s}。用户上传的图在工作空间里，先 list_files 看看真实文件名。` };
   if (fs.statSync(p).isDirectory()) return { err: `${s} 是个目录，不是图片。` };
   if (!IMAGE_EXT.test(p)) return { err: `${s} 不是图片（支持 png / jpg / webp / gif / bmp）。文本文件用 read_file。` };
-  const { b64, mime, note } = shrinkForVision(p);
+  const { b64, mime, note } = await shrinkForVisionAsync(p);
   if (b64.length > 12 * 1048576) {
     return { err: `${path.basename(p)} 太大了（编码后约 ${Math.round(b64.length / 1048576)}MB），上游收不下。先缩小再用。` };
   }
@@ -311,7 +333,7 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
     return { content: "没有能看图的模型：请用户去 设置 → 模型 → 视觉模型 填接口地址 / API Key / 模型名。这一步不用重试。", isError: true };
   }
 
-  const got = readImageInput(rel, resolveFile, "图片");
+  const got = await readImageInput(rel, resolveFile, "图片");
   if (got.err) return { content: got.err, isError: true };
   const { b64, mime, note, abs: p } = got;
   const signal = anySignal(stop, AbortSignal.timeout(Math.max(timeoutMs || 0, 120000)));
@@ -463,14 +485,14 @@ const MAX_REF_IMAGES = 4;
  * 允许传一个字符串（模型真会这么写），统一当成一张图处理，不为这个多报一条格式错。
  * 返回 { err } 或 { uris }。
  */
-function refImageUris(v, resolveFile) {
+async function refImageUris(v, resolveFile) {
   const list = v == null || v === "" ? [] : Array.isArray(v) ? v : [v];
   if (!list.length) return { uris: [] };
   if (typeof resolveFile !== "function") return { err: "这个环境下生图喂不了参考图（当前调用没有文件解析器）。去掉 reference_images 就是纯文生图。" };
   if (list.length > MAX_REF_IMAGES) return { err: `参考图最多 ${MAX_REF_IMAGES} 张，这次给了 ${list.length} 张。挑最能说明问题的几张。` };
   const uris = [];
   for (const rel of list) {
-    const got = readImageInput(rel, resolveFile, "参考图");
+    const got = await readImageInput(rel, resolveFile, "参考图");
     if (got.err) return { err: got.err };
     uris.push(imageDataUri(got));
   }
@@ -492,7 +514,7 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
   }
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "缺少 prompt（画面描述）", isError: true };
-  const ref = refImageUris(input.reference_images, resolveFile);
+  const ref = await refImageUris(input.reference_images, resolveFile);
   if (ref.err) return { content: ref.err, isError: true };
   const refs = ref.uris;
   // 渠道不认参考图时，宁可把这一趟报废掉，也不能偷偷退回纯文生：
@@ -568,11 +590,11 @@ async function generateVideo(media, input, opts = {}) {
   }
   let firstUri = null, lastUri = null;
   if (input.first_frame) {
-    const fr = readImageInput(input.first_frame, opts.resolveFile, "首帧图");
+    const fr = await readImageInput(input.first_frame, opts.resolveFile, "首帧图");
     if (fr.err) return { content: typeof opts.resolveFile === "function" ? fr.err : "这个环境下生视频喂不了首尾帧（当前调用没有文件解析器）。去掉 first_frame 就是纯文生视频。", isError: true };
     firstUri = imageDataUri(fr);
     if (input.last_frame) {
-      const lf = readImageInput(input.last_frame, opts.resolveFile, "尾帧图");
+      const lf = await readImageInput(input.last_frame, opts.resolveFile, "尾帧图");
       if (lf.err) return { content: lf.err, isError: true };
       lastUri = imageDataUri(lf);
     }

@@ -297,7 +297,8 @@ console.log("\n⑪ 服务端六个口子（/api/lanes · /api/cli/live · stream
   };
   const mkReq = (o) => {
     const hooks = {};
-    return Object.assign({ params: {}, query: {}, body: {}, on: (k, f) => { hooks[k] = f; }, __hooks: hooks }, o);
+    // socket：真请求一定有；/api/cli/stream 入口先看它断没断（2026-09-29 复审，见 test/live-abort.js）
+    return Object.assign({ params: {}, query: {}, body: {}, socket: { destroyed: false }, on: (k, f) => { hooks[k] = f; }, __hooks: hooks }, o);
   };
   const call = (h, req) => { const res = mkRes(); h(req, res); return res; };
 

@@ -289,6 +289,26 @@ function createRouter(deps = {}) {
       fail(res, 401, hit.reason, "authentication_error", "invalid_api_key");
       return null;
     }
+    // 挂到人头上的 Key 跟着人走：人停用了、删了，Key 也就不能再用。
+    // 原来停用成员只踢掉了登录态，他拿走的 Key 照样能调、照样记在组织账上
+    if (hit.key.user && deps.user) {
+      const who = getUser(hit.key.user);
+      const why = !who ? "这把 Key 的归属账号已删除"
+        : who.status === "disabled" ? "这把 Key 的归属账号已停用"
+        : who.status === "pending" ? "这把 Key 的归属账号还没通过审核" : "";
+      if (why) {
+        log.warn("relay", "归属账号用不了的 Key 还在被调", { key: hit.key.id, name: hit.key.name, user: hit.key.user, ip, why });
+        fail(res, 401, why, "authentication_error", "invalid_api_key");
+        return null;
+      }
+    }
+    // Key 所在的组织停了（租户到期）。Key 本身没错，是这家的服务停了：402，跟欠费同一类
+    const orgWhy = deps.orgProblem ? String(deps.orgProblem(hit.key.org) || "") : "";
+    if (orgWhy) {
+      log.warn("relay", "停了服务的组织还在调中转", { key: hit.key.id, name: hit.key.name, org: hit.key.org, ip });
+      fail(res, 402, orgWhy, "insufficient_quota", "insufficient_quota");
+      return null;
+    }
     return hit.key;
   }
 

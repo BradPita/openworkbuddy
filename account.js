@@ -24,6 +24,7 @@ const { dataPath } = require("./paths");
 const crypto = require("crypto");
 const store = require("./store");
 const org = require("./org");
+const log = require("./log");
 const rbac = require("./rbac"); // 谁能做什么：角色分档和能力表只有那一个文件说了算
 const usageStore = require("./usage-store");
 const pricing = require("./pricing");
@@ -77,8 +78,21 @@ function writeStoreAtomic(file, data, pretty) {
 
 function loadUsers() {
   const d = readStore(USERS_FILE, { users: [], tokens: {} });
-  // settings 要原样带着走：这里丢一个字段，下一次 saveUsers 就把它从盘上抹掉了
-  return { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {} };
+  // settings 要原样带着走：这里丢一个字段，下一次 saveUsers 就把它从盘上抹掉了。removed 同理（见 removeMember）
+  return { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {}, removed: d.removed || [] };
+}
+/**
+ * 删掉的登录名不许再用。对话、记忆、定时任务、中转 Key 全是按登录名认主人的，
+ * 删人时这些都还留在盘上（审计要看）。名字要是能被新人注册走，新人一登录就接手了前人的全部对话和记忆。
+ */
+function assertNameUnused(st, name) {
+  if (st.users.some((u) => u.username === name)) throw new Error("用户名已存在");
+  if ((st.removed || []).some((r) => r && r.username === name)) throw new Error("这个用户名属于一个已删除的账号，换一个");
+}
+/** 删掉的账号原来在哪个组织。找不到回 ""——那就谁的组织都不算，只有平台管理员看得了它留下的东西 */
+function removedOrgOf(username) {
+  const r = (loadUsers().removed || []).find((x) => x && x.username === username);
+  return r ? r.org || org.DEFAULT_ORG : "";
 }
 /**
  * 已经有账号之后还让不让别人自己注册。默认不让——这东西挂到公网上就是给陌生人发积分。
@@ -473,18 +487,34 @@ function twoFactorStatus(u) {
   };
 }
 
-/** 没有登录态时（CLI / IM / 定时任务）消耗记在谁名下：档次最高的那个人，同档取最早建的 */
+/**
+ * 没有登录态时（CLI / IM / 定时任务）消耗记在谁名下：默认组织里档次最高的那个人，同档取最早建的。
+ * 先圈默认组织：平台超管转让过的话，全站最早注册的超管可能是某家分公司的，账和身份就落到别人家去了。
+ * 默认组织一个人都没有（手改过账本）才退回全站挑。
+ */
 function defaultUser() {
   const us = loadUsers().users;
-  return [...us].sort((a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
+  const home = us.filter((u) => org.orgIdOf(u) === org.DEFAULT_ORG);
+  return [...(home.length ? home : us)].sort((a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
 }
+
+/** 席位满了返回一句话，没满返回空串。停用的人不占席位，待审核的占（批下来就是在用的人） */
+function seatsFull(st, orgId) {
+  const o = org.getOrg(orgId);
+  const seats = org.planInfo(o).seats;
+  const used = st.users.filter((u) => (u.org || org.DEFAULT_ORG) === orgId && u.status !== "disabled").length;
+  return used >= seats ? `「${o.name}」的席位已用满（${used}/${seats}）` : "";
+}
+// 分公司的席位只有平台超管改得了（admin.js 里非平台管理员改组织会把 seats 摘掉），
+// 光说「找管理员」的话，分公司的管理员看到的是一句叫自己去找自己的话
+const seatTail = (orgId, dflt) => (orgId === org.DEFAULT_ORG ? dflt : "，这家的席位要找平台超管加");
 
 function register(username, password, opts = {}) {
   username = String(username || "").trim();
   if (!/^[\w一-龥.-]{2,24}$/.test(username)) throw new Error("用户名需 2-24 位（中英文、数字、_.-）");
   assertPassword(password, { username, org: opts.org || org.DEFAULT_ORG });
   const st = loadUsers();
-  if (st.users.some((u) => u.username === username)) throw new Error("用户名已存在");
+  assertNameUnused(st, username);
   const salt = crypto.randomBytes(16).toString("hex");
   const first = st.users.length === 0;
   const orgId = first ? org.DEFAULT_ORG : opts.org || org.DEFAULT_ORG;
@@ -492,9 +522,8 @@ function register(username, password, opts = {}) {
   const s = org.settingsOf(o);
   // 席位闸要放在建号**之前**：先建后查的话，报错弹出来的时候人已经躺在账本里了
   if (!first) {
-    const seats = org.planInfo(o).seats;
-    const used = st.users.filter((u) => (u.org || org.DEFAULT_ORG) === orgId && u.status !== "disabled").length;
-    if (used >= seats) throw new Error(`「${o.name}」的席位已用满（${used}/${seats}），让管理员在企业设置里加席位`);
+    const full = seatsFull(st, orgId);
+    if (full) throw new Error(full + seatTail(orgId, "，请管理员加了席位再来"));
   }
   // 这个组织有超管了没有。以前 owner 只给**全站**第一个人，于是分公司里一个超管都没有，
   // 两个管理员可以互相停用、互相降级——「管理员权限太大」这件事最狠的一处就在这儿。
@@ -533,6 +562,7 @@ function renameUser(oldName, newName) {
   if (!u) throw new Error("账号不存在");
   if (newName === oldName) return oldName;
   if (st.users.some((x) => x.username === newName)) throw new Error("这个登录名已经有人用了");
+  assertNameUnused(st, newName);
   u.username = newName;
   for (const t of Object.keys(st.tokens)) if (st.tokens[t] && st.tokens[t].user === oldName) st.tokens[t].user = newName;
   saveUsers(st);
@@ -886,6 +916,34 @@ function createLimiter({ windowMs = LOGIN_WINDOW_MS, now = () => Date.now() } = 
 const loginLimiter = createLimiter();
 const FAILS_PER_USER = 8; // 盯着一个账号打
 const FAILS_PER_IP = 30; // 换着账号打
+
+/**
+ * 登录记录分两处放，量级不同：
+ *   · 每一次成败 → 运行日志（logs/app-日期.jsonl，按天滚、留 14 天），给装机的人排查用。
+ *   · 少见而且要紧的（连续输错被锁、停用的账号还在试）→ 组织审计，管理员在后台看得到。
+ * 不把每次登录都塞进审计：审计每个组织只留最新 5000 条，三千人的公司两天就能把
+ * 「谁改了额度、谁删了人」挤出去——合规要查的恰恰是那些。
+ * 密码、验证码一个字都不记。
+ */
+const disabledNoticeAt = new Map(); // 停用账号的尝试：同一个人一个窗口里只进一次审计
+function loginTrail(ok, what, name, ip, extra) {
+  const who = String(name || "").slice(0, 64);
+  (ok ? log.info : log.warn)("auth", what, { user: who, ip, ...(extra || {}) });
+}
+function auditLoginLock(name, ip) {
+  // 用户名不存在的不进审计：随手编的名字能无限多，拿它刷审计就能把真记录挤掉
+  const u = loadUsers().users.find((x) => x.username === name);
+  const wait = loginLimiter.retryAfter("user|" + String(name || "").toLowerCase(), FAILS_PER_USER);
+  if (!u || !wait) return;
+  org.audit({ org: org.orgIdOf(u), actor: "系统", action: "登录连续失败，暂时锁住", target: u.username,
+    detail: `最后一次来自 ${ip}，${Math.ceil(wait / 60)} 分钟内不能再试` });
+}
+function auditDisabledLogin(u, ip) {
+  const t = Date.now(), last = disabledNoticeAt.get(u.username) || 0;
+  if (t - last < LOGIN_WINDOW_MS) return;
+  disabledNoticeAt.set(u.username, t);
+  org.audit({ org: org.orgIdOf(u), actor: u.username, action: "停用的账号尝试登录", target: u.username, detail: `来自 ${ip}，密码是对的` });
+}
 const REGS_PER_IP = 5; // 注册也得拦，不然一个脚本能把账本刷满
 
 /** 私网/环回地址：判断「这一跳是不是我们自己那层反代」用的 */
@@ -1225,7 +1283,7 @@ function assertCanManage(actor, target, what) {
     const t = rbac.ROLE_LABEL[rbac.roleOf(target)];
     const a = rbac.ROLE_LABEL[rbac.roleOf(actor)];
     throw new Error(rbac.rankOf(actor) === rbac.rankOf(target)
-      ? `同级动不了同级：${a}${what}不了另一个${a}。要动他，得由更高一档的人来`
+      ? `同级动不了同级：${a}${what}不了另一个${a}。要动这个号，得由更高一档的人来`
       : `${t}不能被${a}${what}`);
   }
 }
@@ -1237,7 +1295,7 @@ function assertCanManage(actor, target, what) {
 function assertNotLastOwner(u, what) {
   if (rbac.roleOf(u) !== "owner") return;
   throw new Error(`「${u.username}」是「${org.getOrg(org.orgIdOf(u)).name}」的超级管理员，不能被${what}。` +
-    "要换人：先在「管理员角色」里把超级管理员转让给他，再回来" + what + "这个号");
+    "要换人：先在「管理员角色」里把超级管理员转让给接任的人，再回来" + what + "这个号");
 }
 
 /** 按登录名取人再过 assertCanManage。路由层要判「我管不管得到他」时用这个，别自己去翻账本 */
@@ -1527,8 +1585,9 @@ function memberCounts() {
   for (const u of loadUsers().users) {
     const id = org.orgIdOf(u);
     let c = out.get(id);
-    if (!c) out.set(id, (c = { members: 0, active: 0 }));
+    if (!c) out.set(id, (c = { members: 0, active: 0, owners: 0 }));
     c.members++;
+    if (rbac.roleOf(u) === "owner") c.owners++;
     // 老账号没有 status 这一格，当 active 算——跟 publicUser 里那一格的默认值保持一致，
     // 两处对不上的话，同一家公司在成员页和组织列表上会显示两个不同的在用人数
     if ((u.status || "active") === "active") c.active++;
@@ -1575,6 +1634,11 @@ function setMember(actor, username, patch) {
   if (patch.status !== undefined) {
     if (!MEMBER_STATUS.has(patch.status)) throw new Error("没有这个状态");
     if (patch.status !== "active") assertNotLastOwner(u, "停用");
+    // 停用的人不占席位。停满一个、再招满一个、再把停用的那个启用回来，席位就被绕过去了
+    if (u.status === "disabled" && patch.status !== "disabled") {
+      const full = seatsFull(st, org.orgIdOf(u));
+      if (full) throw new Error(full + seatTail(org.orgIdOf(u), "，加了席位才能重新启用"));
+    }
     if ((u.status || "active") !== patch.status) {
       u.status = patch.status;
       changed.push("状态→" + patch.status);
@@ -1661,6 +1725,8 @@ function removeMember(actor, username) {
   assertNotLastOwner(st.users[i], "删除");
   const [u] = st.users.splice(i, 1);
   for (const [t, info] of Object.entries(st.tokens)) if (info.user === username) delete st.tokens[t];
+  st.removed = (st.removed || []).filter((r) => r && r.username !== username)
+    .concat({ username, org: org.orgIdOf(u), at: Date.now(), by: actor.username });
   saveUsers(st);
   org.audit({ org: org.orgIdOf(u), actor: actor.username, action: "删除成员", target: username });
   return publicUser(u);
@@ -2000,16 +2066,22 @@ function createRouter(opts) {
     // 先看闸再算密码：scrypt 是重活，让它连打就等于替对方把 CPU 也占了
     if (wait) return res.status(429).json({ error: `试太多次了，${wait} 秒后再试` });
     const user = verify(name, password);
+    const ip = clientIp(req);
     if (!user) {
       loginLimiter.fail(userKey);
       loginLimiter.fail(ipKey);
+      loginTrail(false, "登录失败：用户名或密码不对", name, ip);
+      auditLoginLock(name, ip);
       return res.status(401).json({ error: "用户名或密码不对" });
     }
     if ((user.status || "active") === "disabled") {
       loginLimiter.pass(userKey);
       loginLimiter.pass(ipKey);
+      loginTrail(false, "登录被拦：账号已停用", user.username, ip);
+      auditDisabledLogin(user, ip);
       return res.status(403).json({ error: "这个账号已被管理员停用" });
     }
+    let via = "密码";
     // —— 二次验证。密码对了**还不算登录成功**，这儿不发 cookie ——
     if (twoFactorOn(user)) {
       const code = String((req.body || {}).code || "").trim();
@@ -2018,14 +2090,18 @@ function createRouter(opts) {
         // 放的话，攻击者拿密码表来撞，撞中了会收到 need_2fa（而不是「密码不对」），
         // 等于我们免费帮他标出了哪些密码是真的，还不计次数。
         loginLimiter.fail(userKey);
+        auditLoginLock(user.username, ip); // 密码对、光不给码也会锁：说明密码已经在别人手里了
         return res.status(401).json({ need_2fa: true, error: "请输入验证器上的 6 位数字" });
       }
       const how = consumeTwoFactor(user.username, code);
       if (!how) {
         loginLimiter.fail(userKey);
         loginLimiter.fail(ipKey);
+        loginTrail(false, "登录失败：二次验证码不对", user.username, ip);
+        auditLoginLock(user.username, ip);
         return res.status(401).json({ need_2fa: true, error: "验证码不对或已经用过了" });
       }
+      via = how === "recovery" ? "恢复码" : "验证器";
       if (how === "recovery") {
         const left = ((loadUsers().users.find((x) => x.username === user.username) || {}).totp || {}).recovery || [];
         res.set("X-Recovery-Left", String(left.length));
@@ -2033,6 +2109,7 @@ function createRouter(opts) {
     }
     loginLimiter.pass(userKey);
     loginLimiter.pass(ipKey);
+    loginTrail(true, "登录成功", user.username, ip, { via });
     setTokenCookie(res, issueToken(user.username), req, user);
     res.json({ ok: true, user: publicUser(user), pending: user.status === "pending",
       two_factor_status: twoFactorStatus(user) });
@@ -2298,6 +2375,7 @@ function createRouter(opts) {
 
 module.exports = {
   fixLegacyCache,
+  removedOrgOf,
   hasUsers,
   userCount,
   seatCount,

@@ -41,6 +41,16 @@ function platformOnly(req, res, next) {
   if (!platformAdmin(req.user)) return res.status(403).json({ error: "只有平台管理员（默认组织的管理员）能做这个操作" });
   next();
 }
+/**
+ * 租户管理员改自己组织设置时，平台握着的那几格（org.tenantHeld）动了就整单拒掉，说清是哪几格。
+ * 不悄悄丢掉：丢掉的话界面提示「已保存」，下一次打开又变回去，管理员只会以为是 bug 再改一次
+ */
+function heldOrThrow(user, settings) {
+  if (platformAdmin(user)) return settings;
+  const r = org.tenantHeld(org.settingsOf(org.getOrg(org.orgIdOf(user))), settings);
+  if (r.refused.length) throw new Error(`「${r.refused.join("」「")}」由平台管理员设定，本组织改不了`);
+  return r.settings;
+}
 /** 开组织 / 改别人的套餐席位：只有机主。见文件头 */
 function platformOwnerOnly(req, res, next) {
   if (!account.platformOwner(req.user)) return res.status(403).json({ error: "只有平台超级管理员（默认组织的超级管理员）能做这个操作" });
@@ -78,6 +88,8 @@ const PLATFORM_WRITE = [
   // agent 手里有 shell。放开写等于让任何一个刚注册的同事给全公司的 agent 递指令。
   // 读（GET）不拦：装了什么谁都该看得见。
   "/api/skills", "/api/memory",
+  // 嵌入接口「测一下」拿的是整台服务器那把 Key 去打外部接口（路由里也自己认了一遍）
+  "/api/embedding/",
   // 「用系统程序打开」「在访达里显示」= 在**服务器那台机器**上起一个进程。
   // 按上面那条线，这是「配这台机器」，不是租户内动作：成员开在别人机器上的窗口他也看不见，
   // 而这条路径以前连表都不在，任何登录用户都能拿它拉起服务端进程。
@@ -281,7 +293,7 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
       if (anyCap || anyBudget)
         actor = {
           org: o.id, user: (req.user && req.user.username) || "",
-          dept: (req.user && req.user.dept) || "", source: "web",
+          dept: (req.user && req.user.dept) || "", source: req.quotaSource || "web",
           quota: anyCap ? qt : null,
           budget: anyBudget ? bctx : null,
           // 价目要跟着走：管理员改过的价、这个组织谈下来的折扣，都影响这一趟扣多少。
@@ -550,6 +562,7 @@ function createAdminRouter(deps = {}) {
     const body = { ...(req.body || {}) };
     // 套餐 / 席位 / 到期时间是「卖出去的东西」，本组织管理员不能自己改大
     if (!platformAdmin(req.user)) { delete body.plan; delete body.seats; delete body.expires_at; delete body.root_dir; }
+    if (body.settings) body.settings = heldOrThrow(req.user, body.settings);
     const o = org.updateOrg(org.orgIdOf(req.user), body, req.user.username);
     return { ok: true, org: { ...o, settings: org.settingsOf(o) } };
   }));
@@ -812,7 +825,7 @@ function createAdminRouter(deps = {}) {
     if (b.budget !== undefined) patch.budget = b.budget;
     if (b.price_discount !== undefined) patch.price_discount = b.price_discount;
     if (!Object.keys(patch).length) throw new Error("没说要改什么");
-    const o = org.updateOrg(org.orgIdOf(req.user), { settings: patch }, req.user.username);
+    const o = org.updateOrg(org.orgIdOf(req.user), { settings: heldOrThrow(req.user, patch) }, req.user.username);
     const st = org.settingsOf(o);
     // 上限改了，「已用多少」的进程内缓存得扔掉。不扔的话，刚把上限从 100 提到 1000，
     // 下一个请求仍按旧数算「还差多远」——管理员会以为没生效，然后再改一次。
@@ -897,8 +910,8 @@ function createAdminRouter(deps = {}) {
     const counts = account.memberCounts();
     return {
       orgs: org.listOrgs().map((o) => {
-        const c = counts.get(o.id) || { members: 0, active: 0 };
-        return { ...o, settings: org.settingsOf(o), ...org.planInfo(o), members: c.members, active: c.active };
+        const c = counts.get(o.id) || { members: 0, active: 0, owners: 0 };
+        return { ...o, settings: org.settingsOf(o), ...org.planInfo(o), members: c.members, active: c.active, has_owner: c.owners > 0 };
       }),
       plans: org.PLANS, plan_order: org.PLAN_ORDER,
     };
@@ -907,6 +920,17 @@ function createAdminRouter(deps = {}) {
     org.createOrg({ ...(req.body || {}), actor: req.user.username })));
   router.post("/api/admin/orgs/:id", platformOwnerOnly, guarded((req) =>
     ({ ok: true, org: org.updateOrg(req.params.id, req.body || {}, req.user.username) })));
+  // 新开的组织里一个人都没有，它自己的管理员发不了码——这张码只能由平台这一层发。
+  // 码本身照旧造不出超级管理员；是 register 那边「这家还没超管，第一个管理员级别的人就是」
+  // 让拿管理员码进来的第一个人成了这家的超管。所以默认发管理员码、只能用一次
+  router.post("/api/admin/orgs/:id/invites", platformOwnerOnly, guarded((req) => {
+    // 不能用 getOrg：它查不到会退回默认组织，打错一个 id 就成了往总部发管理员码
+    const o = org.listOrgs().find((x) => x.id === req.params.id);
+    if (!o) throw new Error("没有这个组织：" + req.params.id);
+    const b = req.body || {};
+    const role = rbac.ASSIGNABLE.includes(b.role) ? b.role : "admin";
+    return org.createInvite(o.id, { role, dept: b.dept, max_uses: b.max_uses || 1, days: b.days || 7, actor: req.user.username });
+  }));
 
   // ---------- 审计 ----------
   router.get("/api/admin/audit", guarded((req) =>

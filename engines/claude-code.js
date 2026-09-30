@@ -170,6 +170,7 @@ async function run({
   model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, guard = {}, env, extraArgs = [],
   globalMcp = false,
   thinking: thinkingLevel, addDirs = [],
+  onWrite = null,
 }) {
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
   // 双击启动的桌面版会「设置页显示已装、一跑就 ENOENT」
@@ -263,6 +264,9 @@ async function run({
         else if (b.type === "tool_use") {
           toolNames.set(b.id, b.name);
           emit({ type: "tool_use", id: b.id, name: b.name, purpose: purposeOf(b.name, b.input), depth: 0 });
+          // 点名写的文件报上去：几条对话共用一趟扫描时，产出卡靠这个认主，不靠谁先比对
+          const target = /^(Write|Edit|MultiEdit|NotebookEdit)$/.test(b.name) && b.input ? b.input.file_path || b.input.notebook_path : "";
+          if (onWrite && typeof target === "string" && target) { try { onWrite(path.resolve(cwd, target)); } catch {} }
         }
       }
       void u;

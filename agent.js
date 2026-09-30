@@ -6,7 +6,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, orgPolicy, badToolArgs } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, withWorkspace, orgPolicy, badToolArgs } = require("./tools");
 const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
@@ -283,6 +283,7 @@ const USE_SKILL_TOOL = {
 const fs = require("fs");
 const path = require("path");
 const { dataPath, DATA_DIR } = require("./paths");
+const { AsyncResource } = require("async_hooks");
 const os = require("os");
 const memory = require("./memory");
 const brandKit = require("./brand-kit"); // 产品品牌档案：提到哪个产品才把 ≤300 字摘要放进易变段
@@ -844,9 +845,11 @@ function worktreeLine() {
  * 判断这张图该不该绕开单配的看图模型——丢了它就只能按型号名猜，
  * 而名字是一层很薄的伪装（同一个理由见 media-models.js capOfModel 那段）。
  */
-function activeChannel(config) {
+function activeChannel(config, llmOverride) {
   const list = Array.isArray(config.models) ? config.models : [];
-  const e = list.find((m) => m.name === config.active_model) || list[0];
+  // llmOverride 是 createLLM 给这个对话造的那个，provider 字段放的就是模型条目名（llm.js）
+  const own = llmOverride && llmOverride.provider ? list.find((m) => m.name === llmOverride.provider) : null;
+  const e = own || list.find((m) => m.name === config.active_model) || list[0];
   if (e && e.base_url && e.model) return { base_url: e.base_url, api_key: e.api_key, model: e.model, provider: e.provider, caps: Array.isArray(e.caps) ? e.caps : null };
   const legacy = config.provider === "anthropic" ? config.anthropic : config.openai;
   return legacy && legacy.model ? { ...legacy, provider: config.provider } : {};
@@ -980,7 +983,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   function teamMembers(team) {
     return (team.members || []).map((n) => experts.find((e) => e.name === n)).filter(Boolean);
   }
-  // 技能每次任务实时加载（save_skill 新建的技能立即可用）
+  // 技能表走 skills.js 的签名缓存：一轮里这儿要被调 4 次以上，不再每次重读 52 个 skill.md。
+  // 新建/删掉技能当场就认（save_skill 新建的立即可用），就地改写已有 skill.md 最多晚 1 秒
   function getSkills() {
     return loadSkills();
   }
@@ -1039,6 +1043,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 1. 接到任务先简短说明计划（2-4 句），然后立即执行，不要等用户确认。信息不全时不要停下来用**文字**反问，自己挑一个最合理的默认假设、写在开场白里继续做。要问就用 ask_user 工具（弹可点的选项卡片）。**该问的只有这三类**：①缺了它整件事会白做的关键信息（发给谁、用哪个账号）；②选错了成品形态会完全不同的岔路（报告交 Word 还是 PDF、视频出横版还是竖版）；③要花钱、不可逆、要覆盖或删除已有内容、要对外发布，以及只有用户本人才知道的事（预算、口味、时间安排）。**这三类之外一律自己定**——技术路线（用哪个库、抓哪条接口、代码怎么组织、跑几轮）永远算自己定。一次只问一个，问完接着干，不许连环追问，也不许拿 ask_user 汇报进度。
 2. 涉及已有文件/项目的任务，动手前先 list_files、search_files、read_file 把现场看清楚，不要凭文件名猜内容。**看明白之后直接改**——用户让你改，你就改，不要回头问"要不要我改""确认后我再动手"；只有删文件、清空目录、推远端这类不可逆的事才值得停下来问一句。改的方式是 edit_file 精准替换，不是 write_file 整篇盖掉。
 3. 成果文件写到工作目录根目录，文件名有意义。**一件产出只留一份**——写完不要再 cp 一份到别处（工作空间根目录也不行）：聊天里的产出卡片和右侧文件面板本来就能直接预览、直接「所在位置」，多出来的副本只会让用户看到同一个文件显示两遍。用户要把成果拿去别的地方，等他开口再动。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
+3.0 调试脚本、自检截图这类用完即弃的文件写进 \`.tmp/\`（不进成果区），别摊在成品旁边。
 3.1 消息里带「已上传文件：xxx」就是用户拖进来或粘贴进来的东西，一律先看再动手：
    - 用户输入中可能还有「【图片 1：xxx.png】」「【视频 1：xxx.mp4】」「【音频 1：xxx.wav】」「【文本摘录 1：xxx.txt】」这类素材锚点。**锚点出现的顺序和它前后的描述就是用户指定的输入关系**：例如「【图片 1】是人物、【图片 2】是背景」或两个锚点中间的动作描述，必须照此理解、引用和生成，不能按文件名或上传时间自行重排。末尾的「已上传文件」清单只是在兼容旧会话，文件是否可用以它为准。
    - 图片（.png/.jpg/…）用 look_at_image，带上一个具体问题（"把报错原文一字不差抄下来"、"这页分几块、各放了什么"）。**别用 read_file 读图**，读出来是乱码。图不进对话历史，只有你问到的答案会进，所以一次就把要用的细节问全。
@@ -1935,7 +1940,9 @@ function modePrompt(mode) {
         extendMs: grown(),
       };
     }
-    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit }));
+    const res = await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit, llmOverride }));
+    if (res && res.editedFile) noteWrote(res.editedFile, runToken);
+    return res;
   }
 
   /**
@@ -1943,14 +1950,16 @@ function modePrompt(mode) {
    * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
    * 少传一个 actor，审批卡片就跑去问了别人。
    */
-  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit }) {
+  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit, llmOverride }) {
     return {
       onProgress: emit ? progressSink(emit, { id: callId, name, depth }) : undefined, // 长工具（渲染 / 配音 / 合成）往回报进度；只直播不存盘
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
       media: mediaModels.resolve(config), // 带上全表，generate_image 这些才能按名字点名用哪个模型
-      visionFallback: activeChannel(config), // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 src/tools/media.js pickEye）
+      // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 src/tools/media.js pickEye）。
+      // 「主模型」是这个对话此刻在用的那个——单独给对话选了多模态模型、全局默认却是纯文本的，要按对话这个算
+      visionFallback: activeChannel(config, llmOverride),
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,
       // 判断模型那条路。只带它认路要用的两样，不把整份 config（连着所有 Key）递进工具层
@@ -2121,7 +2130,7 @@ function modePrompt(mode) {
 
   // force=true 是人手动敲 /compact：这时候不看阈值也不看「关了自动压缩」这个设置——
   // 那个设置管的是「别自作主张」，不是「不许我自己压」。
-  async function compactHistory(history, { emit = () => {}, stats, traceNode, force = false, llm: useLlm = null, skills = [] } = {}) {
+  async function compactHistory(history, { emit = () => {}, stats, traceNode, force = false, llm: useLlm = null, skills = [], sessionId = "" } = {}) {
     // 压缩用的模型跟这一趟对话选的那条走（llmOverride）。以前写死全局 llm：用户在「模型」里把默认
     // 渠道填成了判断模型（Jev），对话本身走的是按对话选的另一条，压缩那一下却撞到 Jev 的 400
     // 「is a decisions model」——整趟任务因此报错，而用户根本没在那条渠道上跑过任何东西。
@@ -2215,10 +2224,14 @@ function modePrompt(mode) {
     const summary = String(result.text || "").trim();
     if (!summary) { emit({ type: "compact", removed: 0, failed: "模型没吐出摘要，这一次没压成" }); return; }
     // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
+    // 文件名带会话 id（跟 sessFile 同一道替换）：删会话时 server.js 的 removeSessionFiles 按它把归档一起删掉，
+    // 不然用户删了对话，被压掉的那段原文还躺在这儿。不缩进：2026-09-28 实测 482 份 30M，缩进占了一截，
+    // 这些文件是给程序兜底、给人偶尔翻的，不是给人天天读的。保留期（90 天 / 200MB）在 retention.js
     try {
       const dir = dataPath("data", "compact-archive");
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, `${Date.now()}.json`), JSON.stringify(old, null, 2));
+      const sid = String(sessionId || "").replace(/[^\w-]/g, "_");
+      fs.writeFileSync(path.join(dir, `${sid ? sid + "-" : ""}${Date.now()}.json`), JSON.stringify(old));
     } catch (e) { console.warn("[agent] 压缩归档失败（不拦压缩）:", e.message); }
     history.splice(0, cut, {
       role: "user",
@@ -2238,6 +2251,11 @@ function modePrompt(mode) {
   // 产出归属账本：判「这个文件是不是本回合的产出」，见文件底部 makeOwnership 的说明
   const ownership = makeOwnership();
   const { claimBaseDir } = ownership;
+  // 工具点名写的文件记下是谁写的：几条对话共用一趟扫描、都看见同一个根目录文件时，归属不靠谁先比对
+  const noteWrote = (abs, runToken) => {
+    const n = runToken == null ? "" : wroteName(abs, getWorkspaceDir());
+    if (n) ownership.wrote(n, runToken);
+  };
   let runSeq = 0;
   // brand-kit 按 runToken 记「这趟任务选了哪份档案」，那张表全进程共用；runSeq 每个运行时都从 1 数起，
   // 不加运行时前缀，另一个运行时的第 1 趟会把这边第 1 趟提过的产品串进去
@@ -2271,7 +2289,7 @@ function modePrompt(mode) {
     //   2) 同一版本已被别的任务先认领 → 不是我的（根目录文件只有这一道能拦）。
     const runToken = ++runSeq;
     claimBaseDir(baseDir, runToken);
-    const filesOut = makeFilesEmitter({ emit, ownership, baseDir, runToken });
+    const filesOut = makeFilesEmitter({ emit, ownership, baseDir, runToken, scan: true });
     // 工具一跑完就对一次账，长任务中途就能看到产物，不用等收尾。
     // CLI 这条路是**每个**工具结果来一次（不像内置引擎是一批一次），所以走节流的那个口子：
     // 一串结果连着回来时合并成一次走树，而不是一个结果扫一遍 500 个文件
@@ -2306,6 +2324,7 @@ function modePrompt(mode) {
 
     try {
       const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang });
+      await filesOut.ready; // 开跑前的基线必须先落定，否则引擎第一步写的文件会被当成「本来就有」
       const runWith = (resumeId) => backend.run({
         prompt: enginePrompt(history, resumeId),
         cwd,
@@ -2326,6 +2345,7 @@ function modePrompt(mode) {
         thinking: prefs.agentCfg(config).thinking || "auto",
         ...(bridged ? bridged.runOpts : {}),
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
+        onWrite: (abs) => noteWrote(abs, runToken),
       });
       let r;
       try {
@@ -2339,7 +2359,7 @@ function modePrompt(mode) {
         emit({ type: "status", text: "引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的", depth: 0 });
         r = await runWith(null);
       }
-      try { filesOut.push(true); } catch {} // 收尾这一下必须立刻发：产出得赶在这一轮结束前落到界面上
+      await filesOut.push(true); // 收尾这一下必须立刻发：产出得赶在这一轮结束前落到界面上（出错在里面留痕，不往外抛）
       const rawFinal = (r.finalText || "").trim();
       // 调用方（Web / IM / 定时任务）都指望 runTask 就地把回复追加进 history。
       // 按正式格式写（text，不是 content）：以前写的是 content，下一轮转成供应商消息就是空 assistant，整段会话从此 400
@@ -2804,7 +2824,7 @@ function modePrompt(mode) {
     // 这件事必须在服务端算：前端那份 mtime 快照是活的，历史回放时早就对不上了，算出来永远是空。
     claimBaseDir(baseDir, runToken);
     filesOut = makeFilesEmitter({
-      emit, ownership, baseDir, runToken,
+      emit, ownership, baseDir, runToken, scan: true,
       // 长跑可见性：进度档一有更新就把里程碑清单推给前端，时间线卡片实时打勾
       after: (changed) => {
         const progName = changed.find((n) => n.split("/").pop() === "PROGRESS.md");
@@ -2825,11 +2845,13 @@ function modePrompt(mode) {
     // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
     const ctxState = { lastCtxPct: -1 };
     if (depth === 0) {
-      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()], sessionId }); }
       catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
       // 压完再播：让界面上那根条直接落到压缩后的真实位置，而不是先闪一下旧数字
       emitContext(history, emit, ctxState, L);
     }
+    // 基线在后台线程走（跟上面的压缩并行），第一步工具动手之前必须已经落定
+    await filesOut.ready;
 
     // 自动续跑：撞「最大步数/最大运行时间」后自动开下一轮接着干（仅顶层任务；手动停止、模型挂死不续跑）。
     // 外层 for(;;) 只负责续跑判定，内层步循环保持原缩进不动。
@@ -2901,7 +2923,7 @@ function modePrompt(mode) {
       // 发请求前先把老工具结果压进上下文预算，宁可丢细节也不能让整个任务撞 400 全丢
       // 超阈值时先智能压缩（老步骤浓缩成接手摘要），压不动再盲截。没有这一步，
       // 跑到几十步的长任务只能靠 trimHistory 把早期工具输出截成空壳，模型越跑越失忆
-      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()], sessionId }); }
       catch (e) { console.warn("[agent] 任务中压缩失败，本步跳过:", e.message); }
       if (depth === 0) emitContext(history, emit, ctxState, L);
       const trimmed = trimHistory(history, ctxBudget(L)); // 按这一步真正要发的那条渠道的窗口算（换过道就按新渠道）
@@ -2931,10 +2953,9 @@ function modePrompt(mode) {
         const quiet = Math.round((Date.now() - lastData) / 1000);
         if (quiet >= 60) emit({ type: "status", text: `模型已 ${quiet} 秒没有输出，仍在等待（连续 ${Math.round(stallMs / 1000)} 秒无输出将判定挂起并停止）`, depth });
       }, 30000);
-      const budgetSignal = AbortSignal.timeout(Math.max(10000, deadline - Date.now()));
-      const signal = AbortSignal.any
-        ? AbortSignal.any([stallCtl.signal, budgetSignal, ...(stopSignal ? [stopSignal] : [])])
-        : stallCtl.signal;
+      // 卡壳 / 总时长到点 / 手动停止，哪个先到都掐。自己管计时器和监听、这一步结束就摘（见 stepSignal）
+      const stepSig = stepSignal([stallCtl.signal, stopSignal], Math.max(10000, deadline - Date.now()));
+      const signal = stepSig.signal;
       // 每一步现拼：技能可能在上一步刚 use_skill 进来
       const sys = system + skillGate.skillBlock(loadedSkills) + recipes.pinBlock(stats.recipe);
       const gen = tr.generation({
@@ -3000,6 +3021,7 @@ function modePrompt(mode) {
       } finally {
         clearTimeout(stallTimer);
         clearInterval(heartbeat);
+        stepSig.release();
       }
 
       if (result.usage) {
@@ -3431,7 +3453,7 @@ function modePrompt(mode) {
     } finally {
       // 最后一批产出必须在这一轮结束前发出去，不能等尾随定时器。
       // 出错路径上也要发：半截产出照样是用户的东西，不能因为任务栽了就藏起来
-      if (filesOut) { try { filesOut.push(true); } catch {} filesOut.stop(); }
+      if (filesOut) { try { await filesOut.push(true); } catch {} filesOut.stop(); }
       unwatchSleep();
       releaseAwake();
     }
@@ -3811,6 +3833,18 @@ function collectSources(name, input, content) {
  */
 const MTIME_SLACK_MS = 2000;
 /**
+ * 「谁点名写了这个文件」的记忆留多久。只用来在几条对话同一趟扫描都看见它时认主，
+ * 过了这么久还没被比对到，说明扫描早就走过了，记着也没用。
+ */
+const WRITE_HINT_MS = 2 * 60_000;
+/** 工具报上来的绝对路径 → 扫描清单里的名字（相对工作目录、斜杠分隔）；不在工作目录里的不算 */
+function wroteName(abs, root) {
+  if (typeof abs !== "string" || !abs || !root) return "";
+  const rel = path.relative(path.resolve(root), path.resolve(abs));
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return "";
+  return rel.split(path.sep).join("/");
+}
+/**
  * 「本回合改了哪些」拿 turnSnapshot()（整棵树）做差，不拿 outputFiles()（最深 3 层、最新 500 条）。
  * 拿后者做差时，agent 写到第 4 层往下的成品前后两份里都没有，「本回合产出」一张卡都不挂。
  * files 仍是 outputFiles() 那份——右侧面板和 @ 补全的口径不动；本回合报过、却不在那份里的
@@ -3819,9 +3853,318 @@ const MTIME_SLACK_MS = 2000;
  */
 const TURN_FILES_CAP = 500;   // turn_files 最多带几条；截了就 full:false，前端不拿它判「已删除」
 const WALK_GAP_MAX_MS = 5000; // 耗时放宽节流的上限：产出最多晚这么久上屏，收尾那一下照样同步
-function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, after = null, since = null }) {
-  const baseline = new Map();
-  for (const f of turnSnapshot(baseDir).files) baseline.set(f.name, f.mtime);
+
+/**
+ * 一步模型调用的中止信号：卡壳 / 手动停止 / 总时长，哪个先到都掐。
+ *
+ * 以前是 AbortSignal.any([卡壳, 停止, AbortSignal.timeout(剩下的总时长)])。那个 timeout 一挂就是
+ * 半小时，合成出来的信号挂在它的源头上，这一步早跑完了也回收不掉。2026-09-29 实测：5 条对话并发
+ * 跑 6 分钟，堆里攒下约 3000 个收不回来的合成信号；单独复现 2000 次，AbortSignal.any 那条路回收
+ * 0 个，自己管计时器和监听、用完就摘的这条路回收 2000 个。
+ * 所以自己拼：一个 AbortController + 一个 unref 的计时器 + 挂在源头上的 once 监听，release() 全摘。
+ * @param {Array<AbortSignal|null|undefined>} sources
+ * @param {number} budgetMs 总时长还剩多少，到点按超时掐（原因跟 AbortSignal.timeout 一样是 TimeoutError）
+ */
+function stepSignal(sources, budgetMs) {
+  const ctl = new AbortController();
+  /** @type {Array<[AbortSignal, () => void]>} */
+  const hooks = [];
+  const fire = (reason) => { if (!ctl.signal.aborted) ctl.abort(reason); };
+  let timer = null;
+  for (const s of sources) {
+    if (!s) continue;
+    if (s.aborted) { fire(s.reason); break; }
+    const on = () => fire(s.reason);
+    s.addEventListener("abort", on, { once: true });
+    hooks.push([s, on]);
+  }
+  if (!ctl.signal.aborted) {
+    timer = setTimeout(() => fire(new DOMException("The operation was aborted due to timeout", "TimeoutError")), budgetMs);
+    if (timer.unref) timer.unref();
+  }
+  return {
+    signal: ctl.signal,
+    release() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      for (const [s, on] of hooks) s.removeEventListener("abort", on);
+      hooks.length = 0;
+    },
+  };
+}
+
+/**
+ * 翻工作目录挪到后台线程，几条对话共用一趟。
+ *
+ * 2026-09-29 实测（5 条对话并发、假引擎、540 秒 CPU 采样）：主线程 42.6% 的 CPU 花在同步翻工作目录上，
+ * readdir 335 万次、stat 3260 万次。每条对话的产出发射器各自节流、各自整树走一遍（turnSnapshot +
+ * outputFiles），5 条就是 5 份；回合收尾再同步走一遍 outputFiles 和 sweep.plan。走一趟整树的那段时间
+ * 事件循环整个停着——所有对话的流式输出、所有接口一起卡，用户看到的就是「多开几个对话就一顿一顿的」。
+ *
+ * 现在：
+ *   1. 走树放进一个 worker 线程，主线程只收结果、做差；
+ *   2. 同一个工作目录几条对话同时要，合成一趟走（scanHub），结果分给每一条；
+ *   3. 口径跟 tools.outputFiles() / turnSnapshot() 一样：同一个 walkAll、同一套跳过规矩，测试逐条对过。
+ * 线程起不来、或连着挂 SCAN_BROKEN_MAX 次，就退回主线程同步走：慢，但产出一条不少（跟 thumb.js 同一个套路）。
+ */
+const SCAN_GAP_MS = 300;        // 两趟走树之间至少隔这么久（跟发射器原来的 gapMs 一样），还会按上一趟耗时 ×4 放宽
+const SCAN_IDLE_MS = 30000;     // 线程闲这么久就收掉：没任务在跑的时候不占那份内存
+const SCAN_BROKEN_MAX = 3;      // 线程连着挂这么多次就认栽，之后全在主线程走
+const OUTPUT_FILES_CAP = 500;   // 跟 tools.js 的 FILES_CAP 同一个数：面板那份只要最新 500 条
+
+/**
+ * 真正走树的那段。**不许引用外面的任何变量**：它会被 toString() 塞进 worker 里跑，
+ * 线程起不来时主线程也拿同一段跑——两条路是同一份代码，口径不会分叉。
+ * @param {any} wsb lib/ws-browse
+ * @param {any} sweep sweep.js
+ * @param {typeof import("fs")} fs
+ * @param {typeof import("path")} path
+ * @param {{op:"scan", root:string, appDataDir:string, bases:string[]} | {op:"sweep", root:string, opts:object}} m
+ */
+function scanTree(wsb, sweep, fs, path, m) {
+  const t0 = Date.now();
+  if (m.op === "sweep") return { plan: sweep.plan(m.root, m.opts || {}), ms: Date.now() - t0 };
+  // 跟 tools.js ensureDirs() 一样：工作目录和它的 .tmp 先在
+  try { fs.mkdirSync(path.join(m.root, ".tmp"), { recursive: true }); } catch {}
+  const opts = { appDataDir: m.appDataDir, maxDepth: Infinity };
+  const full = wsb.walkAll(m.root, opts);
+  // 面板那份（outputFiles 口径）：最深 3 层；IM_对话/、定时任务/ 下的成果文件夹本身就占了两层，放宽到 4 层，
+  // 不然那里面一个子文件夹（网站/index.html）整个从面板上消失。跟 tools.js outputFiles 同一条规矩。
+  // 整树没撞上限时直接从整树里挑，不再多走一趟；撞了上限才单走一趟浅的。
+  // 浅的也撞上限（浅层就两万个文件）时交回主线程按老办法走，这里不猜
+  const shallow = (f) => f.name.split("/").length <= (/^(IM_对话|定时任务)\//.test(f.name) ? 4 : 3);
+  let three = null;
+  if (!full.capped) three = full.files.filter(shallow);
+  else {
+    const sh = wsb.walkAll(m.root, { appDataDir: m.appDataDir, maxDepth: 4 });
+    if (sh.files.length < wsb.WALK_CAP) three = sh.files.filter(shallow);
+  }
+  const top = three ? three.sort((a, b) => b.mtime.localeCompare(a.mtime)).slice(0, m.filesCap) : null;
+  // 整树撞了上限：每条对话自己的成果文件夹单独补走一趟（turnSnapshot 同一个做法）
+  /** @type {Record<string, any>} */
+  const subs = {};
+  if (full.capped) {
+    for (const b of m.bases || []) {
+      const segs = String(b || "").split("/").filter(Boolean);
+      if (!segs.length) continue;
+      let cur = m.root, ok = true;
+      for (const s of segs) {
+        cur = path.join(cur, s);
+        if (s === ".." || wsb.skipEntry(s, cur, m.appDataDir)) { ok = false; break; }
+      }
+      subs[b] = ok ? wsb.walkAll(cur, opts).files : null;
+    }
+  }
+  return { files: full.files, capped: full.capped, top, subs, ms: Date.now() - t0 };
+}
+
+/** @type {{ w: any, jobs: Map<number, {m:any, resolve:Function, reject:Function}>, idle: any, retiring: boolean } | null} */
+let scanWorker = null;
+let scanSeq = 0;
+let scanBroken = 0;
+// 测试靠这几个数分辨「在后台线程走的」还是「退回主线程走的」、一共走了几趟
+const scanStats = { worker: 0, local: 0, spawned: 0, crashed: 0, scans: 0 };
+
+function scanLocal(m) {
+  scanStats.local++;
+  return scanTree(require("./lib/ws-browse"), require("./sweep"), fs, path, m);
+}
+
+function scanWorkerRec() {
+  if (scanWorker) return scanWorker;
+  const { Worker } = require("worker_threads");
+  const src = [
+    'const { parentPort, workerData } = require("worker_threads");',
+    'const fs = require("fs"), path = require("path");',
+    "const wsb = require(workerData.wsb), sweep = require(workerData.sweep);",
+    `const scanTree = (${scanTree.toString()});`,
+    'parentPort.on("message", ({ id, m }) => {',
+    "  let out;",
+    "  try { out = { id, ok: true, r: scanTree(wsb, sweep, fs, path, m) }; }",
+    "  catch (e) { out = { id, ok: false, err: String((e && e.message) || e) }; }",
+    "  parentPort.postMessage(out);",
+    "});",
+  ].join("\n");
+  const w = new Worker(src, { eval: true, workerData: { wsb: require.resolve("./lib/ws-browse"), sweep: require.resolve("./sweep") } });
+  scanStats.spawned++;
+  const rec = { w, jobs: new Map(), idle: null, retiring: false };
+  w.unref(); // 闲着的线程不许吊住进程退出（CLI、测试都要能正常结束）；手上有活时 runScan 会 ref 回去
+  w.on("message", (msg) => {
+    const job = rec.jobs.get(msg.id);
+    rec.jobs.delete(msg.id);
+    scanBroken = 0; // 干成过一件，之前零星的崩溃不算数
+    if (job) {
+      if (msg.ok) { scanStats.worker++; job.resolve(msg.r); }
+      else {
+        // 线程里那一趟抛了：主线程照老办法再走一次。同样抛的话那才是这个目录本身的问题，原样交给调用方
+        console.warn(`[产出扫描] 后台那一趟出错：${msg.err}，改在主线程再走一次`);
+        try { job.resolve(scanLocal(job.m)); } catch (e) { job.reject(e); }
+      }
+    }
+    if (!rec.jobs.size) scanIdle(rec);
+  });
+  w.on("error", (e) => console.warn(`[产出扫描] 后台线程报错：${(e && e.message) || e}`));
+  w.on("exit", (code) => {
+    if (scanWorker === rec) scanWorker = null;
+    if (rec.idle) { clearTimeout(rec.idle); rec.idle = null; }
+    const left = [...rec.jobs.values()];
+    rec.jobs.clear();
+    if (rec.retiring && !left.length) return; // 闲久了自己收的，不算挂
+    scanStats.crashed++;
+    if (++scanBroken >= SCAN_BROKEN_MAX) console.warn(`[产出扫描] 后台线程连着退出 ${scanBroken} 次（最后一次退出码 ${code}），之后改在主线程翻目录`);
+    // 它手上那几件活不能跟着没了：主线程补走，产出照样一条不少
+    for (const j of left) { try { j.resolve(scanLocal(j.m)); } catch (e) { j.reject(e); } }
+  });
+  scanWorker = rec;
+  return rec;
+}
+
+function scanIdle(rec) {
+  rec.w.unref();
+  if (rec.idle) clearTimeout(rec.idle);
+  rec.idle = setTimeout(() => {
+    rec.idle = null;
+    if (rec.jobs.size) return;
+    rec.retiring = true;
+    if (scanWorker === rec) scanWorker = null;
+    rec.w.terminate().catch(() => {});
+  }, SCAN_IDLE_MS);
+  if (rec.idle.unref) rec.idle.unref();
+}
+
+/** 派一件活：能进线程就进线程，线程这条路认栽了就在主线程跑 */
+function runScan(m) {
+  if (scanBroken >= SCAN_BROKEN_MAX) return new Promise((resolve) => resolve(scanLocal(m)));
+  let rec;
+  try { rec = scanWorkerRec(); } catch (e) {
+    scanBroken++;
+    console.warn(`[产出扫描] 后台线程起不来：${e.message}，这一趟在主线程走`);
+    return new Promise((resolve) => resolve(scanLocal(m)));
+  }
+  const id = ++scanSeq;
+  return new Promise((resolve, reject) => {
+    rec.jobs.set(id, { m, resolve, reject });
+    if (rec.idle) { clearTimeout(rec.idle); rec.idle = null; }
+    rec.w.ref(); // 手上有活的时候才拦着进程退出
+    rec.w.postMessage({ id, m });
+  });
+}
+
+/**
+ * 一个工作目录一个 hub：谁要结果就排进 waiters，到点合成一趟走，结果分给这一批所有人。
+ * urgent（开跑基线、收尾那一下）不等间隔，但也不拼进已经在路上的那趟——那趟开走时这条要求的
+ * 文件可能还没写完，拼进去就会漏。
+ */
+const scanHubs = new Map();
+function scanHub(root) {
+  const dir = path.resolve(root);
+  const appDataDir = dataPath("data");
+  const key = dir + "\u0000" + appDataDir;
+  let h = scanHubs.get(key);
+  if (!h) {
+    h = { key, root: dir, appDataDir, bases: new Map(), waiters: [], running: false, urgent: false, lastAt: 0, lastCost: 0, timer: null, soon: null };
+    scanHubs.set(key, h);
+  }
+  return h;
+}
+/**
+ * @param {{who:*, ats:number[]}} [tag] 哪条对话、哪几个时刻要的（工具跑完那一下）。同一趟里几条对话
+ *   都看见一个没人点名写过的根目录文件时，拿它判归谁；开跑基线、面板刷新这种不带
+ */
+function hubWant(h, urgent, tag) {
+  const waiter = { resolve: null, reject: null, taken: false, who: tag ? tag.who : null, ats: tag ? tag.ats : [], batch: null };
+  const p = new Promise((resolve, reject) => { waiter.resolve = resolve; waiter.reject = reject; });
+  h.waiters.push(waiter);
+  if (urgent) h.urgent = true;
+  hubKick(h);
+  return { p, waiter };
+}
+function hubKick(h) {
+  if (h.running || !h.waiters.length) return;
+  const wait = h.urgent ? 0 : Math.max(SCAN_GAP_MS, Math.min(WALK_GAP_MAX_MS, h.lastCost * 4)) - (Date.now() - h.lastAt);
+  if (wait > 0) {
+    if (!h.timer) {
+      h.timer = setTimeout(() => { h.timer = null; hubKick(h); }, wait);
+      if (h.timer.unref) h.timer.unref();
+    }
+    return;
+  }
+  // 急的也等到这一轮事件处理完再开走：同一时刻收尾的几条对话（同一批工具结果回来）拼进同一趟
+  if (!h.soon) {
+    h.soon = setImmediate(() => { h.soon = null; hubStart(h); });
+  }
+}
+function hubStart(h) {
+  if (h.running || !h.waiters.length) return;
+  if (h.timer) { clearTimeout(h.timer); h.timer = null; }
+  const batch = h.waiters;
+  h.waiters = [];
+  const pushes = batch.filter((w) => w.who != null);
+  for (const w of batch) { w.taken = true; w.batch = pushes; }
+  h.running = true;
+  h.urgent = false;
+  h.lastAt = Date.now();
+  scanStats.scans++;
+  runScan({ op: "scan", root: h.root, appDataDir: h.appDataDir, bases: [...h.bases.keys()], filesCap: OUTPUT_FILES_CAP })
+    .then((raw) => {
+      // 节流按走树本身花的时间放宽（跟原来同步走时一样占不到四分之一），不按排队等的时间
+      h.lastCost = raw.ms || 0;
+      for (const w of batch) w.resolve(raw);
+    }, (e) => { for (const w of batch) w.reject(e); })
+    .then(() => { h.running = false; hubKick(h); hubGc(h); });
+}
+/** 没人登记、没人在等：这个 hub 用完了 */
+function hubGc(h) {
+  if (h.running || h.waiters.length || h.bases.size) return;
+  if (h.timer) { clearTimeout(h.timer); h.timer = null; }
+  if (scanHubs.get(h.key) === h) scanHubs.delete(h.key);
+}
+
+/** 面板那份（outputFiles 口径）。每次给新对象：markDuplicates 会往上写 dup_of，同一趟的结果是几条对话共用的 */
+function filesOf(raw) {
+  if (!raw.top) return outputFiles(); // 浅层就撞了两万条的上限：按老办法在主线程走，口径不猜
+  return require("./tools")._internals.markDuplicates(raw.top.map((f) => ({ name: f.name, size: f.size, mtime: f.mtime })));
+}
+/** 整树快照（turnSnapshot 口径）：撞了上限时把这条对话自己的成果文件夹并进来 */
+function snapOf(raw, baseDir) {
+  const segs = String(baseDir || "").split("/").filter(Boolean);
+  if (!raw.capped || !segs.length) return { files: raw.files, capped: raw.capped };
+  const sub = raw.subs && raw.subs[String(baseDir)];
+  if (!sub) return { files: raw.files, capped: true };
+  const prefix = segs.join("/") + "/";
+  const byName = new Map(raw.files.map((f) => [f.name, f]));
+  for (const f of sub) byName.set(prefix + f.name, { name: prefix + f.name, size: f.size, mtime: f.mtime });
+  return { files: [...byName.values()], capped: true };
+}
+
+/**
+ * outputFiles() 的后台版：结果一样，走树不在主线程。回合收尾刷面板用。
+ * @param {string} root 工作目录（绝对路径）
+ */
+async function scanOutputs(root) {
+  const dir = path.resolve(root);
+  const { withWorkspace } = require("./tools");
+  const h = scanHub(dir);
+  try {
+    const raw = await hubWant(h, true).p;
+    return withWorkspace(dir, () => filesOf(raw));
+  } catch (e) {
+    console.warn(`[产出扫描] 后台翻目录失败：${(e && e.message) || e}，这一次改在主线程走`);
+    return withWorkspace(dir, () => outputFiles());
+  } finally {
+    hubGc(h);
+  }
+}
+
+/**
+ * sweep.plan() 的后台版：回合收尾那张「要不要清掉中间文件」的卡。它要把整个工作区（或本回合的
+ * 文件夹）逐个 stat 一遍，同样不该在主线程上走。
+ */
+function sweepPlanOffThread(root, opts) {
+  return runScan({ op: "sweep", root: path.resolve(root), opts: opts || {} }).then((r) => r.plan);
+}
+
+function makeFilesEmitter({ emit, ownership, baseDir, runToken, scan = false, gapMs = 300, after = null, since = null }) {
+  const baseline = new Map(); // 开跑那一刻的整树快照：同步那条路下面当场走，后台那条路等 ready
   const reported = new Set(); // 这一回合报过的产出，跨事件累计：后面每条事件都得带上它们还在不在
   // 这回合的起点。可注入是为了能测（测试里造的文件 mtime 就在当下这一两毫秒内）
   const startedAt = (since == null ? Date.now() : Number(since)) - MTIME_SLACK_MS;
@@ -3830,10 +4173,10 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
     return Number.isFinite(t) ? t >= startedAt : true; // 时间戳读不出来就别拿它当拒绝的理由
   };
   let lastAt = 0, lastCost = 0, timer = null, lastSig = "", dead = false;
-  const walk = () => {
-    lastAt = Date.now();
-    const files = outputFiles();
-    const snap = turnSnapshot(baseDir);
+  // 比对一次：files 是面板那份（outputFiles 口径），snap 是整树快照（turnSnapshot 口径）。
+  // 同步走的、后台线程走的都喂进这一个函数，判据只有一份
+  const apply = (files, snap, w) => {
+    const cede = w && w.batch && w.batch.length > 1 ? (f) => cedeTo(w.batch, f, runToken) : null;
     const changed = [];
     for (const f of snap.files) {
       const known = baseline.get(f.name);
@@ -3845,7 +4188,7 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
       if (isUserInput(f)) continue;
       // 基线里没有它，只说明它刚挤进这 500 条的窗口，不说明它是今天写的
       if (!bornAfterStart(f)) continue;
-      if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
+      if (ownership.mine(f, baseDir, runToken, cede)) changed.push(f.name);
     }
     for (const n of changed) reported.add(n);
     // 报过、但面板那份里没有的（第 4 层往下、挤出最新 500 条的）：带上它们此刻的样子。快照里
@@ -3856,7 +4199,8 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
     for (const n of reported) {
       if (inFiles.has(n)) continue;
       const f = bySnap.get(n);
-      if (f) extra.push(f); else unseen.push(n);
+      // 拷一份再发：后台那条路上快照是几条对话共用的，事件里的对象不能跟别的对话串成同一个
+      if (f) extra.push({ name: f.name, size: f.size, mtime: f.mtime }); else unseen.push(n);
     }
     if (unseen.length) {
       const alive = statOutputs(unseen);
@@ -3870,7 +4214,7 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
     let sig = String(files.length) + "/" + turnFiles.length + (snap.capped ? "+" : "");
     for (const f of files) sig += "\u0000" + f.name + "|" + f.mtime + "|" + f.size;
     for (const f of turnFiles) sig += "\u0000" + f.name + "|" + f.mtime + "|" + f.size;
-    if (!changed.length && sig === lastSig) { lastCost = Date.now() - lastAt; return; } // 盘上一个字节没动：这条事件对界面是纯噪音
+    if (!changed.length && sig === lastSig) return; // 盘上一个字节没动：这条事件对界面是纯噪音
     lastSig = sig;
     // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
     const scope = filesScope(files);
@@ -3882,60 +4226,183 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
       ...(snap.capped ? { scan_capped: true } : {}),
       ...scope,
     });
-    lastCost = Date.now() - lastAt;
     if (after) after(changed);
   };
-  return {
-    /** @param {boolean} [now] 立刻走一遍（收尾用）：产出必须在这一轮结束前落到界面上 */
-    push(now) {
-      if (dead) return;
-      if (timer) { clearTimeout(timer); timer = null; }
-      const wait = Math.max(gapMs, Math.min(WALK_GAP_MAX_MS, lastCost * 4)) - (Date.now() - lastAt);
-      if (now || wait <= 0) { walk(); return; }
-      timer = setTimeout(() => { timer = null; if (!dead) walk(); }, wait);
-      if (timer.unref) timer.unref(); // 别为了一条产出事件把进程吊着不退
-    },
-    stop() { dead = true; if (timer) { clearTimeout(timer); timer = null; } },
+
+  if (!scan) {
+    // 同步那条路：在调用方的线程上当场走树。测试和不在任务里的零散调用用它
+    for (const f of turnSnapshot(baseDir).files) baseline.set(f.name, f.mtime);
+    const walk = () => {
+      lastAt = Date.now();
+      try { apply(outputFiles(), turnSnapshot(baseDir)); } finally { lastCost = Date.now() - lastAt; }
+    };
+    return {
+      ready: Promise.resolve(),
+      /** @param {boolean} [now] 立刻走一遍（收尾用）：产出必须在这一轮结束前落到界面上 */
+      push(now) {
+        if (dead) return;
+        if (timer) { clearTimeout(timer); timer = null; }
+        const wait = Math.max(gapMs, Math.min(WALK_GAP_MAX_MS, lastCost * 4)) - (Date.now() - lastAt);
+        if (now || wait <= 0) { walk(); return; }
+        timer = setTimeout(() => { timer = null; if (!dead) walk(); }, wait);
+        if (timer.unref) timer.unref(); // 别为了一条产出事件把进程吊着不退
+      },
+      stop() { dead = true; if (timer) { clearTimeout(timer); timer = null; } },
+    };
+  }
+
+  // 后台线程那条路（scan: true，任务里用的就是这条）：走树交给 scanHub，同一个工作目录几条对话共用一趟，
+  // 主线程只做差。节流也在 hub 那一层（间隔、按耗时放宽都跟上面一样），不再每条对话各算各的
+  const hub = scanHub(getWorkspaceDir());
+  const base = String(baseDir || "");
+  if (base) hub.bases.set(base, (hub.bases.get(base) || 0) + 1);
+  const warn = (e) => console.warn(`[产出] 这一趟没比对出来：${(e && e.message) || e}`);
+  // 结果是从线程消息的回调里回来的，那条异步链上没有这一轮的工作目录。绑回建发射器时的那条，
+  // 再钉死在这个 hub 走的那个根上：中途切了项目（默认根变了），这一趟比对、作用域、after 读到的
+  // ws() 仍是清单来的那个目录，不会拿 A 目录的清单去套 B 目录
+  const run = AsyncResource.bind((raw, w) => { if (!dead) withWorkspace(hub.root, () => apply(filesOf(raw), snapOf(raw, base), w)); });
+  const ready = hubWant(hub, true).p.then((raw) => { for (const f of snapOf(raw, base).files) baseline.set(f.name, f.mtime); });
+  ready.catch(() => {}); // 先挂个接手的：拒绝原样留给 await ready 的那一方，别在没人等时变成进程级的未处理拒绝
+  let pending = null, pendingW = null, pendingAts = null, againAt = 0;
+  const once = (urgent, ats, track) => ready
+    .then(() => {
+      const { p, waiter } = hubWant(hub, urgent, { who: runToken, ats });
+      if (track) pendingW = waiter;
+      return p.then((raw) => run(raw, waiter));
+    })
+    .catch(warn);
+  const queue = (at) => {
+    pendingW = null;
+    pendingAts = [at];
+    pending = once(false, pendingAts, true).then(() => {
+      pending = null;
+      pendingW = null;
+      pendingAts = null;
+      if (againAt && !dead) { const a = againAt; againAt = 0; queue(a); }
+    });
+    return pending;
   };
+  const api = {
+    ready,
+    /**
+     * @param {boolean} [now] 收尾用：不等间隔，这一趟比对完、事件发出去才 resolve
+     * @returns {Promise<void>} 不会 reject：出错在里面留痕
+     */
+    push(now) {
+      if (dead) return Promise.resolve();
+      const at = Date.now();
+      if (now) return once(true, [at], false);
+      if (pending) {
+        // 排着的那趟还没开走，会把这次的改动一起看到（时刻也记上）；已经开走了，回来再补一趟
+        if (pendingW && pendingW.taken) againAt = againAt || at;
+        else if (pendingAts.length < 16) pendingAts.push(at);
+        return pending;
+      }
+      return queue(at);
+    },
+    stop() {
+      if (dead) return;
+      dead = true;
+      if (base) {
+        const n = (hub.bases.get(base) || 0) - 1;
+        if (n > 0) hub.bases.set(base, n); else hub.bases.delete(base);
+      }
+      hubGc(hub);
+    },
+  };
+  return api;
 }
 
+/**
+ * 同一趟扫描几条对话都看见了一个根目录文件（不在谁的成果文件夹里，也没有工具点名写过它，
+ * 比如脚本顺手生成的）：归「文件写好之后头一个报工具跑完的那条对话」。工具跑完才来要扫描，
+ * 写它的那条对话报到得最早；别的对话只是恰好同一趟，谁的回调先跑不该决定归属。
+ * 判不出来（时间戳读不出、谁都在它之前报的）就不让，按老规矩谁先比对归谁。
+ */
+function cedeTo(batch, f, runToken) {
+  const t = Date.parse(f && f.mtime);
+  if (!Number.isFinite(t)) return false;
+  let best = Infinity, who = null;
+  for (const w of batch) for (const a of w.ats) if (a + 1 >= t && a < best) { best = a; who = w.who; }
+  return who != null && who !== runToken;
+}
 function makeOwnership() {
   const dirOwners = new Map();  // 任务目录名 -> runToken
   const fileClaims = new Map(); // 文件名 -> { owner, mtime }
-  const topSeg = (n) => { const s = String(n || ""); const i = s.indexOf("/"); return i < 0 ? s : s.slice(0, i); };
+  const writes = new Map();     // 文件名 -> { owner, at }：工具点名写的
+  const norm = (n) => String(n || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  // 按整条文件夹路径登记，不按头一段：IM_对话/0930_做海报 和 IM_对话/0930_查天气 是两段会话，
+  // 只看头一段它俩都是「IM_对话」，并排跑时互相把对方的产出认成自己的
+  const under = (name, dir) => { const d = norm(dir); return !!d && norm(name).startsWith(d + "/"); };
+  /** 文件所在的、已登记过的那个文件夹（有嵌套取最深的） */
+  const ownerDirOf = (name) => {
+    const segs = norm(name).split("/");
+    for (let i = segs.length - 1; i > 0; i--) { const d = segs.slice(0, i).join("/"); if (dirOwners.has(d)) return d; }
+    return "";
+  };
 
   /** 任务开跑时登记自己的文件夹 */
   function claimBaseDir(baseDir, runToken) {
-    const top = topSeg(baseDir);
-    if (!top) return;
+    const d = norm(baseDir);
+    if (!d) return;
     if (dirOwners.size > 500) dirOwners.clear();
-    dirOwners.set(top, runToken);
+    dirOwners.set(d, runToken);
   }
 
   /** 这个文件躺在「别的任务已登记的文件夹」里吗 */
   function inForeignDir(name, baseDir, runToken) {
-    const top = topSeg(name);
-    if (!top || top === String(name || "")) return false; // 根目录下的文件，没有文件夹归属可言
-    if (top === topSeg(baseDir)) return false;            // 自己的文件夹
-    const owner = dirOwners.get(top);
-    return owner !== undefined && owner !== runToken;
+    if (!norm(name).includes("/")) return false; // 根目录下的文件，没有文件夹归属可言
+    if (under(name, baseDir)) return false;      // 自己的文件夹
+    const d = ownerDirOf(name);
+    return !!d && dirOwners.get(d) !== runToken;
   }
 
-  /** 判定并（判定为「是我的」时）落账。file 是 outputFiles() 里的一项 */
-  function mine(file, baseDir, runToken) {
+  /**
+   * 工具调用里点了名写的文件（write_file / edit_file 的 path，CLI 引擎 Write/Edit 的 file_path）。
+   * 这是唯一不靠猜的证据：几条对话共用一趟扫描时，根目录下冒出来的新文件归点了它名的那条，
+   * 不归碰巧先比对的那条。写的那条认领过这一版就销掉——之后别的对话再看到同一版，fileClaims 会拦
+   */
+  function wrote(name, runToken, at = Date.now()) {
+    const n = String(name || "");
+    if (!n) return;
+    if (writes.size > 500) for (const [k, v] of writes) if (at - v.at > WRITE_HINT_MS) writes.delete(k);
+    if (writes.size > 500) writes.clear();
+    writes.set(n, { owner: runToken, at });
+  }
+  function writerOf(name, now = Date.now()) {
+    const w = writes.get(name);
+    if (!w) return undefined;
+    if (now - w.at > WRITE_HINT_MS) { writes.delete(name); return undefined; }
+    return w.owner;
+  }
+
+  /**
+   * 判定并（判定为「是我的」时）落账。file 是 outputFiles() 里的一项。
+   * cede(file)：同一趟扫描里，文件写好之后头一个来要扫描的是另一条对话（见 cedeTo），我这边就让
+   */
+  function mine(file, baseDir, runToken, cede) {
     const name = file && file.name;
     if (!name) return false;
-    if (inForeignDir(name, baseDir, runToken)) return false;
-    const claim = fileClaims.get(name);
-    // 同一版本已被别的并行任务认领 → 是它的产出。仍有一个小窗口：对方写完文件但
-    // 它那步工具还没跑完、没来得及认领——误报也只是多摆一张卡片，不丢文件
-    if (claim && claim.owner !== runToken && claim.mtime === file.mtime) return false;
+    const writer = writerOf(name);
+    if (writer !== undefined) {
+      // 有人点名写过：只看是不是我。连别的对话文件夹里的也算——用户让这条对话去改那份，改完的就是这一轮的产出
+      if (writer !== runToken) return false;
+      writes.delete(name);
+    } else {
+      if (inForeignDir(name, baseDir, runToken)) return false;
+      const claim = fileClaims.get(name);
+      // 同一版本已被别的并行任务认领 → 是它的产出。仍有一个小窗口：对方写完文件但
+      // 它那步工具还没跑完、没来得及认领——误报也只是多摆一张卡片，不丢文件
+      if (claim && claim.owner !== runToken && claim.mtime === file.mtime) return false;
+      const inMine = under(name, baseDir);
+      if (!inMine && cede && cede(file)) return false;
+    }
     if (fileClaims.size > 1000) fileClaims.clear();
     fileClaims.set(name, { owner: runToken, mtime: file.mtime });
     return true;
   }
 
-  return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
+  return { claimBaseDir, inForeignDir, mine, wrote, writerOf, _dirOwners: dirOwners, _fileClaims: fileClaims, _writes: writes };
 }
 
-module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS };
+module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel };

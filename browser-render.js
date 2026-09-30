@@ -14,7 +14,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+// 服务端在独立服务进程里（2026-09-29 起桌面版默认）：那边开不了窗口，渲染交给主进程，
+// 能不能渲染看主进程报上来的 caps.windows
+const bridge = require("./electron-bridge");
+
 function available() {
+  if (bridge.isRemote()) return !!bridge.caps().windows;
   if (!process.versions.electron || process.env.ELECTRON_RUN_AS_NODE) return false;
   try {
     const { app } = require("electron");
@@ -86,6 +91,7 @@ const MERMAID_THEME = {
 
 /** mermaid 源码 → SVG 字符串（离线；不指定 theme 时用上面那套克制的配色） */
 async function renderMermaid(source, theme) {
+  if (bridge.isRemote()) return String(await bridge.call("mermaid.render", { source: String(source), theme: theme || null }, { timeoutMs: 30000 }));
   const mermaidSrc = fs
     .readFileSync(require.resolve("mermaid/dist/mermaid.min.js"), "utf8")
     .replace(/<\/script>/gi, "<\\/script>");
@@ -123,6 +129,11 @@ function svgSize(svg) {
 
 /** SVG → PNG（2 倍清晰度截图；中文字体由 Chromium 渲染，无乱码） */
 async function svgToPng(svg, scale = 2) {
+  if (bridge.isRemote()) {
+    const buf = bridge.toBuf(await bridge.call("svg.png", { svg: String(svg), scale }, { timeoutMs: 30000 }));
+    if (!buf) throw new Error("桌面主进程没有返回图片数据（svg.png）");
+    return buf;
+  }
   const { w, h } = svgSize(svg);
   return withHiddenWindow(w * scale, h * scale, async (win) => {
     const html =

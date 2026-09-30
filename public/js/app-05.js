@@ -109,7 +109,7 @@ async function renderHubMcp(box) {
             <div class="nm"><span>${esc(sv.name)}</span><span class="al ${sv.connected ? "ok" : "bad"}">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
           <div class="ds mcp-server-command" title="${esc(isRemote(sv) ? sv.url : [sv.command, ...(sv.args || [])].join(" "))}">${isRemote(sv)
             ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
-            : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" ")) + ((sv.env_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.env_keys.length} 个环境变量：${esc(sv.env_keys.join("、"))}）</span>` : "")}</div>
+            : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" ")) + (sv.args_hidden ? `<span style="opacity:.7">（${sv.args_hidden} 个启动参数只有平台管理员看得到）</span>` : "") + ((sv.env_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.env_keys.length} 个环境变量：${esc(sv.env_keys.join("、"))}）</span>` : "")}</div>
           ${sv.connected
             ? `<div class="tg">${(sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")}</div>`
             : mcpErrBlock(sv.error)}
@@ -251,80 +251,327 @@ async function renderHubMcp(box) {
 
 // ================= 参考模板库（照着抄的提示词，点一下填进输入框） =================
 // 每条都对应本地真实具备的能力（技能包 / 工具 / 专家团），不写做不到的画饼模板。
+// id 是「藏起来」和「照着改一份」认这条用的，存在各人和各组织的盘上——只加不改，改了的话藏过的又冒出来。
 const PROMPT_TPLS = [
-  { c: "网页", icon: "monitor", t: "做一个工作台/仪表盘", d: "先定视觉方向，再按数据排版",
+  { id: "b-web-dashboard", c: "网页", icon: "monitor", t: "做一个工作台/仪表盘", d: "先定视觉方向，再按数据排版",
     p: `做一个「__主题__工作台」单页网站：\n\n【内容】顶部标题栏 + 关键指标卡（几个由数据说了算，别凑整）+ 主区域（__放什么__）+ 侧边__放什么__\n【数据】用我工作区里的 __文件名__；没有数据就先造 8 条像真的示例数据，并在页面上标注「示例数据」\n【技术】单文件 HTML，CSS/JS 全部内联，脚本样式不引外部 CDN，断网也能打开\n【风格】动笔前先说一句这页的参照物和主色（比如「像终端里的监控面板，暗底信号绿」），别默认白底蓝标题\n【体验】移动端优先；跟随系统深浅色，纯暗色风格则写死 color-scheme；交互要有 hover/点击反馈\n\n做完把文件读回来自查一遍：有没有引用外部资源、有没有空的 onclick。` },
-  { c: "网页", icon: "target", t: "做一个产品落地页", d: "先给三版方向，选一版再动笔",
+  { id: "b-web-landing", c: "网页", icon: "target", t: "做一个产品落地页", d: "先给三版方向，选一版再动笔",
     p: `帮我做一个「__产品名__」的落地页（单文件 HTML）：\n\n先别动手——给我三个不同的视觉方向，每个一句话说清参照物、主色、首屏怎么组织（比如「像一份纸质说明书：暖白底、衬线标题、首屏只有一句话和一张大图」），我选一个你再写；\n首屏一句话说清「给谁解决什么问题」，别写形容词堆砌；\n往下放什么按这个产品的实际情况定（卖点、真实案例、定价、常见问题、用前用后对比都行），别套「三个卖点＋五条 FAQ」的固定模板；\n底部行动召唤按钮。\n\nCSS 内联，移动端优先。` },
-  { c: "研究", icon: "search", t: "深度研究一个课题", d: "拆子问题→逐个查证→自我挑刺→带来源报告",
+  { id: "b-research-deep", c: "研究", icon: "search", t: "深度研究一个课题", d: "拆子问题→逐个查证→自我挑刺→带来源报告",
     p: `帮我深度研究「__课题__」：\n\n1) 先把它拆成 5 个以内的子问题，列出来给我看；\n2) 逐个联网检索并打开原文核对，不要只看搜索摘要；\n3) 写完初稿后自己找一轮反面证据，能推翻的结论就改掉；\n4) 输出研究报告：结论先行 → 论据 → 不确定的地方 → 来源清单（带链接和日期）。\n\n查不到的就写「未找到公开信息」，绝对不许编数字和来源。` },
-  { c: "研究", icon: "scale", t: "竞品横向对比", d: "先定维度再逐条填表，出差异化建议",
+  { id: "b-research-compare", c: "研究", icon: "scale", t: "竞品横向对比", d: "先定维度再逐条填表，出差异化建议",
     p: `帮我对比「__A__ / __B__ / __C__」：\n\n先定出 6-8 个对比维度（定价、目标用户、核心能力、部署方式、生态、短板…），列出来；\n逐条联网查证填表，每格标注信息来源和获取日期；查不到写「未公开」，不许推测；\n最后给：① 对比表 ② 各自最适合谁 ③ 如果我要做同类产品，切哪个缝隙。` },
-  { c: "数据", icon: "chart-column", t: "数据文件变分析报告", d: "读数→算指标→画图→写结论",
+  { id: "b-data-report", c: "数据", icon: "chart-column", t: "数据文件变分析报告", d: "读数→算指标→画图→写结论",
     p: `读取工作区里的 __文件名__，做一份分析：\n\n1) 先告诉我这份数据有多少行、有哪些字段、有没有缺失或异常值；\n2) 算出这几个指标：__指标1__、__指标2__ 的环比/同比变化；\n3) 画 2-3 张图（趋势 + 构成），存成图片；\n4) 输出一份 Word 报告：结论写最前面，图表跟在对应结论后面。\n\n算不出来的指标直接说算不出来，别用估计值糊弄。` },
-  { c: "数据", icon: "trending-up", t: "把结论做成图表", d: "指定图表类型，输出可直接用的图片",
+  { id: "b-data-chart", c: "数据", icon: "trending-up", t: "把结论做成图表", d: "指定图表类型，输出可直接用的图片",
     p: `把下面这组数据画成图：\n\n__粘贴数据__\n\n要求：__折线/柱状/饼图/散点__，中文标签不要乱码，坐标轴带单位，标题写结论不写「XX图」。\n生成图片存到工作区，并告诉我文件名。` },
-  { c: "办公", icon: "presentation", t: "材料整理成 PPT", d: "16:9，每页一个主题，标题写结论",
+  { id: "b-office-ppt", c: "办公", icon: "presentation", t: "材料整理成 PPT", d: "16:9，每页一个主题，标题写结论",
     p: `把 __工作区里的 XX 文件 / 下面这段内容__ 整理成一份 16:9 的 PPT：\n\n页数控制在 __10__ 页以内；\n每页一个主题，标题直接写结论（比如「获客成本降了 32%」而不是「获客成本分析」）；\n有数据的页配图表，没数据的页别硬凑图；\n最后一页是行动建议，具体到谁在什么时候做什么。` },
-  { c: "办公", icon: "notebook-pen", t: "会议记录变纪要", d: "决议 / 待办 / 待议 三段式",
+  { id: "b-office-minutes", c: "办公", icon: "notebook-pen", t: "会议记录变纪要", d: "决议 / 待办 / 待议 三段式",
     p: `把下面这段会议记录整理成纪要：\n\n__粘贴记录__\n\n分三段：\n【结论与决议】已经拍板的事；\n【待办】谁 · 做什么 · 什么时候前完成（没说负责人就写「待认领」）；\n【待议】有争议或没结论的。\n\n原文里没说的一律不许补充推断。` },
-  { c: "办公", icon: "calendar-days", t: "写本周周报", d: "读工作区产出，自动汇总成周报",
+  { id: "b-office-weekly", c: "办公", icon: "calendar-days", t: "写本周周报", d: "读工作区产出，自动汇总成周报",
     p: `帮我写这周的周报：\n\n先看看工作区里这周新增/修改了哪些文件，作为素材；\n补充这些我口述的进展：__…__\n\n格式：本周完成（带可验证的结果，不写「推进了」这种虚词）→ 下周计划 → 需要支持的事。\n控制在一页内。` },
-  { c: "内容", icon: "pencil", t: "写一篇公众号文章", d: "先给选题角度再动笔",
+  { id: "b-content-article", c: "内容", icon: "pencil", t: "写一篇公众号文章", d: "先给选题角度再动笔",
     p: `写一篇关于「__主题__」的公众号文章：\n\n先给我 3 个不同的切入角度，我选一个你再动笔；\n目标读者是 __谁__，他们最关心 __什么__；\n开头 3 句话内必须让读者觉得「这说的是我」；\n中间要有具体的例子或数字，不要通篇讲道理；\n字数 __1500__ 字左右。` },
-  { c: "内容", icon: "megaphone", t: "一条内容改成多平台版本", d: "同一个内核，不同平台的话术",
+  { id: "b-content-multi", c: "内容", icon: "megaphone", t: "一条内容改成多平台版本", d: "同一个内核，不同平台的话术",
     p: `把下面这条内容改写成三个版本：\n\n__粘贴原文__\n\n① 公众号（正式、有结构、能读 3 分钟）\n② 小红书（口语、有情绪、带 emoji 和话题标签）\n③ 朋友圈（100 字内，一句话钩子）\n\n内核信息保持一致，别为了适配平台把事实改了。` },
-  { c: "团队", icon: "users", t: "整团派活（专家团接力）", d: "一句话把复杂任务交给一支团队",
+  { id: "b-team-delegate", c: "团队", icon: "users", t: "整团派活（专家团接力）", d: "一句话把复杂任务交给一支团队",
     p: `请把下面这个任务整体委派给专家团「__团队名__」（用 delegate_to_team）：\n\n__任务描述，越具体越好：要什么、给谁看、什么格式、什么时候要__\n\n拿回结果后你自己核一遍：说生成的文件真的存在吗？数据有出处吗？没问题再交给我。` },
-  { c: "团队", icon: "id-card", t: "指名派给某个专家", d: "点名让某位专家单独干",
+  { id: "b-team-expert", c: "团队", icon: "id-card", t: "指名派给某个专家", d: "点名让某位专家单独干",
     p: `请把这件事委派给专家「__专家名__」：\n\n__任务描述__\n\n它汇报完你要替我核一遍再转给我。` },
-  { c: "自动化", icon: "clock", t: "让它每天自动干一件事", d: "配合侧栏「自动化」建定时任务",
+  { id: "b-auto-daily", c: "自动化", icon: "clock", t: "让它每天自动干一件事", d: "配合侧栏「自动化」建定时任务",
     p: `每天早上帮我做这件事（我待会去「自动化」里把它设成定时任务）：\n\n__要做什么__\n\n输出格式：__…__。如果当天没有值得说的变化，就明确回一句「今天无异常」，不要为了凑字数编内容。` },
 ];
+
+/**
+ * 模板分三层，页面上靠来源那一排分开：
+ *   · 内置：上面这张表，谁都改不了。点「改」是另存一份到「我的」或「公司」，同一步把原来那条藏起来
+ *   · 我的：只有自己看得见、改得了
+ *   · 公司：全组织看得见，只有管理员改得了（个人桌面版没有这一层，服务端给的 org 是 null）
+ * 能不能改以服务端为准（routes/prompt-tpls.js），这里只决定按钮摆不摆：
+ * 摆了按钮点下去才说「你没权限」，跟没有这个按钮一样气人。
+ */
+const TPL_ICONS = ["file-text", "sparkles", "lightbulb", "pencil", "search", "chart-column", "presentation", "notebook-pen",
+  "calendar-days", "megaphone", "users", "mail", "globe", "code", "image", "clock"];
+
+async function loadPromptTpls() {
+  try {
+    const r = await fetch("/api/prompt-tpls");
+    const d = await r.json().catch(() => null);
+    if (!r.ok || !d || !d.mine) return { data: null, why: (d && d.error) || `HTTP ${r.status}` };
+    return { data: d, why: "" };
+  } catch { return { data: null, why: "连不上本机服务" }; }
+}
+async function deletePromptTpl(scope, id) {
+  try {
+    const r = await fetch(`/api/prompt-tpls/${encodeURIComponent(scope)}/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const d = await r.json().catch(() => null);
+    return r.ok ? "" : (d && d.error) || `HTTP ${r.status}`;
+  } catch { return "连不上本机服务"; }
+}
+
+/** 三层并成一张表。藏起来的内置模板另放一边，「已藏起」里列它们，好让人放回 */
+function promptTplRows(data) {
+  const mine = (data && data.mine) || { items: [], hidden: [] };
+  const org = (data && data.org) || null;
+  const byOrg = new Set(org ? org.hidden : []), byMe = new Set(mine.hidden);
+  const rows = [
+    ...mine.items.map(t => ({ ...t, layer: "mine" })),
+    ...(org ? org.items.map(t => ({ ...t, layer: "org" })) : []),
+    ...PROMPT_TPLS.filter(t => !byOrg.has(t.id) && !byMe.has(t.id)).map(t => ({ ...t, layer: "builtin" })),
+  ];
+  const hidden = PROMPT_TPLS.filter(t => byOrg.has(t.id) || byMe.has(t.id))
+    .map(t => ({ ...t, layer: "builtin", byOrg: byOrg.has(t.id), byMe: byMe.has(t.id) }));
+  return { rows, hidden };
+}
+
+/**
+ * 编辑框。o.id 有值 = 改已有的那条；o.hide = 从内置模板改过来，存的时候把它藏起；
+ * o.fork = 把公司的一条存一份给自己。存好了 resolve { item, scope }，取消 resolve null。
+ *
+ * 改过之后点空白处、按 Esc、点「取消」都先问一句再关：提示词动辄几百字，手一滑全没了没处找。
+ */
+function openPromptTplEditor(o) {
+  const d = (renderPromptPage._s || {}).data;
+  const org = d && d.org;
+  const canOrg = !!(org && d.can_edit_org);
+  const base = o.base || {};
+  const editing = !!o.id;
+  // 改已有的那条不换层。换层 = 在另一层新建 + 删掉这条，两步分开做，每一步后果都看得清
+  const pickScope = !editing && !o.fork && canOrg;
+  let scope = o.scope || "mine";
+  let icon = base.icon || "file-text";
+  const icons = TPL_ICONS.includes(icon) ? TPL_ICONS : [icon, ...TPL_ICONS];
+  const cats = [...new Set([...PROMPT_TPLS, ...((d && d.mine.items) || []), ...((org && org.items) || [])].map(t => t.c))];
+  const title = editing ? "改模板" : o.hide ? "照着改一份" : o.fork ? "存一份给自己" : "新建模板";
+  const hintOf = () =>
+    o.hide ? (scope === "org" ? "存成公司的一份，原来那条对全组织藏起来" : "存成你自己的一份，原来那条会藏起来，随时能放回")
+    : o.fork ? "存成你自己的一份，公司那条不受影响"
+    : scope === "org" ? "全组织都看得见，改动记进操作审计" : "只有你看得见";
+  return new Promise((resolve) => {
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    wrap.innerHTML =
+      `<div class="ask-box tpl-ed" role="dialog" aria-modal="true" aria-label="${esc(title)}">` +
+      `<div class="ask-t">${esc(title)}</div><div class="ask-h tpl-ed-hint"></div>` +
+      `<label class="tpl-f"><span>标题</span><input class="ask-in" data-k="t" maxlength="40" autocomplete="off"></label>` +
+      `<div class="tpl-f2"><label class="tpl-f"><span>分类</span><input class="ask-in" data-k="c" maxlength="12" list="tpl-cat-dl" placeholder="其他" autocomplete="off"></label>` +
+      `<label class="tpl-f"><span>一句话说明</span><input class="ask-in" data-k="d" maxlength="80" placeholder="选填" autocomplete="off"></label></div>` +
+      `<label class="tpl-f"><span>提示词</span><textarea class="tpl-p" data-k="p" maxlength="8000" rows="9" placeholder="要换的地方写成 __占位__，填进输入框时会先选中它"></textarea></label>` +
+      `<div class="tpl-f"><span>图标</span><div class="tpl-icons">${icons.map(n =>
+        `<button type="button" class="tpl-ico${n === icon ? " on" : ""}" data-ic="${esc(n)}" aria-label="${esc(n)}">${ic(n)}</button>`).join("")}</div></div>` +
+      (pickScope ? `<div class="tpl-f"><span>放在</span><div class="tpl-scope"><button type="button" data-sc="mine">我的</button><button type="button" data-sc="org">公司</button></div></div>` : "") +
+      `<datalist id="tpl-cat-dl">${cats.map(c => `<option value="${esc(c)}">`).join("")}</datalist>` +
+      `<div class="ask-err" hidden></div>` +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">取消</button><button type="button" class="btn-brand ask-ok">保存</button></div></div>`;
+    document.body.appendChild(wrap);
+    const $ = (s) => wrap.querySelector(s);
+    const field = (k) => wrap.querySelector(`[data-k="${k}"]`);
+    const okBtn = $(".ask-ok"), errEl = $(".ask-err");
+    for (const k of ["t", "c", "d", "p"]) field(k).value = base[k] || "";
+    const start = JSON.stringify(["t", "c", "d", "p"].map(k => field(k).value)) + icon + scope;
+    const dirty = () => JSON.stringify(["t", "c", "d", "p"].map(k => field(k).value)) + icon + scope !== start;
+    let busy = false;
+    const paint = () => {
+      $(".tpl-ed-hint").textContent = hintOf();
+      wrap.querySelectorAll(".tpl-scope button").forEach(b => b.classList.toggle("on", b.dataset.sc === scope));
+      okBtn.disabled = busy || !field("t").value.trim() || !field("p").value.trim();
+    };
+    function done(val) {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(val);
+    }
+    async function leave() {
+      if (!dirty()) return done(null);
+      if (await askConfirm({ title: "改的还没存，丢掉吗？", ok: "丢掉", cancel: "接着改", danger: true })) done(null);
+    }
+    async function save() {
+      if (okBtn.disabled) return;
+      busy = true; okBtn.textContent = "保存中…"; errEl.hidden = true; paint();
+      const body = { scope, t: field("t").value, c: field("c").value, d: field("d").value, p: field("p").value, icon };
+      if (o.id) body.id = o.id;
+      if (o.hide) body.hide = o.hide;
+      const { data, why } = await postJson("/api/prompt-tpls", body);
+      busy = false; okBtn.textContent = "保存"; paint();
+      if (!data || !data.ok) { errEl.textContent = why || "没存上"; errEl.hidden = false; return; }
+      done({ item: data.item, scope });
+    }
+    function onKey(e) {
+      if (imeKey(e)) return;              // 拼音打一半按 Esc 是撤掉候选词，不是关窗
+      if (askConfirm._close) return;      // 「丢掉吗」那一问开着时，键归它
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); leave(); }
+      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); save(); }
+    }
+    wrap.querySelectorAll("[data-k]").forEach(el => el.oninput = paint);
+    wrap.querySelectorAll(".tpl-ico").forEach(b => b.onclick = () => {
+      icon = b.dataset.ic;
+      wrap.querySelectorAll(".tpl-ico").forEach(x => x.classList.toggle("on", x === b));
+    });
+    wrap.querySelectorAll(".tpl-scope button").forEach(b => b.onclick = () => { scope = b.dataset.sc; paint(); });
+    okBtn.onclick = save;
+    $(".ask-no").onclick = leave;
+    wrap.onmousedown = (e) => { if (e.target === wrap) leave(); };
+    document.addEventListener("keydown", onKey, true);
+    paint();
+    field("t").focus();
+  });
+}
+
+/** 管理员藏一条内置模板：只对自己藏，还是对全组织藏——两条路后果不一样，得问 */
+function askPromptTplHideScope(name) {
+  return new Promise((resolve) => {
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    wrap.innerHTML =
+      `<div class="ask-box" role="dialog" aria-modal="true" aria-label="藏起这条模板">` +
+      `<div class="ask-t">藏起「${esc(name)}」</div>` +
+      `<div class="ask-h">只对你藏，别人照常看得见；对全组织藏，大家都看不到。都能放回。</div>` +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">算了</button>` +
+      `<button type="button" class="btn-plain" data-sc="mine">只对我</button>` +
+      `<button type="button" class="btn-brand" data-sc="org">对全组织</button></div></div>`;
+    document.body.appendChild(wrap);
+    function done(val) {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(val);
+    }
+    function onKey(e) {
+      if (imeKey(e)) return;
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+    }
+    wrap.querySelectorAll("[data-sc]").forEach(b => b.onclick = () => done(b.dataset.sc));
+    wrap.querySelector(".ask-no").onclick = () => done(null);
+    wrap.onmousedown = (e) => { if (e.target === wrap) done(null); };
+    document.addEventListener("keydown", onKey, true);
+    wrap.querySelector(".ask-no").focus();
+  });
+}
 
 function renderPromptPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
-  const cats = ["全部", ...new Set(PROMPT_TPLS.map(t => t.c))];
-  if (!renderPromptPage._cat) renderPromptPage._cat = "全部";
+  const S = renderPromptPage._s || (renderPromptPage._s = { layer: "all", cat: "全部", data: null, why: "" });
+  const tok = renderPromptPage._tok = (renderPromptPage._tok || 0) + 1;
+  const reload = async () => {
+    const r = await loadPromptTpls();
+    if (renderPromptPage._tok !== tok) return;   // 页面已经重画过了，这一趟的结果作废
+    if (r.data) { S.data = r.data; S.why = ""; } else S.why = r.why;
+    draw();
+  };
+  const edit = async (o) => {
+    const saved = await openPromptTplEditor(o);
+    if (!saved) return;
+    // 存到了眼下这一栏看不见的那一层（比如在「内置」里照着改了一份），跟过去，不然像是没存上
+    if (S.layer !== "all" && S.layer !== saved.scope) S.layer = saved.scope;
+    toast("存好了", "circle-check");
+    reload();
+  };
+  const setHidden = async (scope, id, hidden) => {
+    const { data, why } = await postJson("/api/prompt-tpls/hidden", { scope, id, hidden });
+    if (!data || !data.ok) { toast(`${hidden ? "没藏成" : "没放回"}：${why || "没存上"}`, "circle-x"); return false; }
+    return true;
+  };
   const draw = () => {
-    const cat = renderPromptPage._cat;
+    const grid = page.querySelector("#tpl-grid");
+    if (!grid) return;
+    const d = S.data, org = d && d.org, canOrg = !!(org && d.can_edit_org);
+    const { rows, hidden } = promptTplRows(d);
+    if ((S.layer === "org" && !org) || (S.layer === "hidden" && !hidden.length)) S.layer = "all";
+    const layers = [["all", "全部"], ["mine", "我的"], ...(org ? [["org", "公司"]] : []), ["builtin", "内置"],
+      ...(hidden.length ? [["hidden", `已藏起 ${hidden.length}`]] : [])];
+    page.querySelector(".tpl-src").innerHTML = layers.map(([k, n]) =>
+      `<span class="chip ${S.layer === k ? "active" : ""}" data-s="${k}"${k === "org" && org.name ? ` title="${esc(org.name)}"` : ""}>${esc(n)}</span>`).join("");
+    const pool = S.layer === "hidden" ? hidden : rows.filter(t => S.layer === "all" || t.layer === S.layer);
+    const cats = ["全部", ...new Set(pool.map(t => t.c))];
+    if (!cats.includes(S.cat)) S.cat = "全部";
+    page.querySelector(".tpl-cats").innerHTML = cats.length > 2 ? cats.map(c =>
+      `<span class="chip ${S.cat === c ? "active" : ""}" data-c="${esc(c)}">${esc(c)}</span>`).join("") : "";
+    const warn = page.querySelector(".tpl-warn");
+    warn.hidden = !S.why;
+    if (S.why) warn.innerHTML = `${esc(`自己加的模板没取到：${S.why}`)} <button type="button" class="btn-plain tpl-retry">再试一次</button>`;
     const q = (page.querySelector("#tpl-q")?.value || "").trim().toLowerCase();
-    const list = PROMPT_TPLS.filter(t =>
-      (cat === "全部" || t.c === cat) &&
-      (!q || (t.t + t.d + t.p).toLowerCase().includes(q)));
-    page.querySelector("#tpl-grid").innerHTML = list.map((t, i) => `
-      <div class="tpl-card${q && !(t.t + t.d).toLowerCase().includes(q) ? " open" : ""}" data-i="${PROMPT_TPLS.indexOf(t)}">
-        <div class="hd"><span class="ic">${ic(t.icon)}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span><span class="chev">${ic("chevron-right")}</span></div>
-        <div class="dd">${esc(t.d)}</div>
+    const list = pool.filter(t => (S.cat === "全部" || t.c === S.cat) && (!q || (t.t + (t.d || "") + t.p).toLowerCase().includes(q)));
+    const ops = (t) => {
+      let h = `<button class="primary tpl-use">填进输入框</button><button class="tpl-copy">复制</button><span class="sp"></span>`;
+      if (S.layer === "hidden") {
+        return h + (t.byOrg && !canOrg ? `<span class="tpl-note">管理员对全组织藏的</span>` : `<button class="tpl-restore">${ic("rotate-ccw")}放回</button>`);
+      }
+      if (t.layer === "mine" || (t.layer === "org" && canOrg)) return h + `<button class="tpl-edit">改</button><button class="tpl-del">删</button>`;
+      if (t.layer === "org") return h + `<button class="tpl-fork">存一份给自己</button>`;
+      return h + `<button class="tpl-edit">改</button><button class="tpl-hide">藏起来</button>`;
+    };
+    grid.innerHTML = list.map((t, i) => {
+      const own = t.layer !== "builtin";
+      const nt = own ? ' translate="no"' : "";   // 别人写的字，撞上词典里的中文也别给翻了
+      return `
+      <div class="tpl-card${q && !(t.t + (t.d || "")).toLowerCase().includes(q) ? " open" : ""}" data-i="${i}">
+        <div class="hd"><span class="ic">${ic(t.icon || "file-text")}</span><span class="tt"${nt}>${esc(t.t)}</span>${own ? `<span class="src ${t.layer}">${t.layer === "mine" ? "我的" : "公司"}</span>` : ""}<span class="ct"${nt}>${esc(t.c)}</span><span class="chev">${ic("chevron-right")}</span></div>
+        <div class="dd"${nt}>${esc(t.d || "")}</div>
         <pre>${esc(t.p)}</pre>
-        <div class="ops"><button class="primary tpl-use">填进输入框</button><button class="tpl-copy">复制</button></div>
-      </div>`).join("") || '<div class="hub-empty">没有匹配的模板</div>';
-    page.querySelectorAll(".tpl-card").forEach(card => {
-      const t = PROMPT_TPLS[+card.dataset.i];
+        <div class="ops">${ops(t)}</div>
+      </div>`;
+    }).join("") || (
+      q || S.cat !== "全部" ? '<div class="hub-empty">没有匹配的模板</div>'
+      : S.layer === "mine" ? '<div class="hub-empty">还没有自己的模板 <button type="button" class="btn-plain tpl-new">新建一条</button></div>'
+      : S.layer === "org" && canOrg ? '<div class="hub-empty">公司还没有模板 <button type="button" class="btn-plain tpl-new">新建一条</button></div>'
+      : S.layer === "org" ? '<div class="hub-empty">公司还没有模板，管理员加了这里就有</div>'
+      : '<div class="hub-empty">没有匹配的模板</div>');
+    page.querySelectorAll(".tpl-src .chip").forEach(c => c.onclick = () => { S.layer = c.dataset.s; draw(); });
+    page.querySelectorAll(".tpl-cats .chip").forEach(c => c.onclick = () => { S.cat = c.dataset.c; draw(); });
+    page.querySelectorAll(".tpl-new").forEach(b => b.onclick = () => edit({ scope: S.layer === "org" && canOrg ? "org" : "mine" }));
+    const retry = warn.querySelector(".tpl-retry");
+    if (retry) retry.onclick = reload;
+    grid.querySelectorAll(".tpl-card").forEach(card => {
+      const t = list[+card.dataset.i];
+      const on = (sel, fn) => { const b = card.querySelector(sel); if (b) b.onclick = fn; };
       card.onclick = (e) => { if (e.target.closest("button")) return; card.classList.toggle("open"); };
-      card.querySelector(".tpl-use").onclick = () => startTaskWith(t.p);
-      card.querySelector(".tpl-copy").onclick = async (e) => {
+      on(".tpl-use", () => startTaskWith(t.p));
+      on(".tpl-copy", async (e) => {
         try { await navigator.clipboard.writeText(t.p); e.target.textContent = "已复制"; setTimeout(() => e.target.textContent = "复制", 1200); }
         catch { toast("复制失败，手动选中上面的文字吧", "circle-x"); }
-      };
+      });
+      on(".tpl-edit", () => edit(t.layer === "builtin" ? { base: t, hide: t.id } : { base: t, id: t.id, scope: t.layer }));
+      on(".tpl-fork", () => edit({ base: t, scope: "mine", fork: true }));
+      on(".tpl-del", async () => {
+        const yes = await askConfirm({ title: `删掉「${t.t}」？`, hint: t.layer === "org" ? "全组织都会少这一条，删了找不回来" : "删了找不回来", ok: "删掉", danger: true });
+        if (!yes) return;
+        const why = await deletePromptTpl(t.layer, t.id);
+        if (why) return toast(`没删掉：${why}`, "circle-x");
+        toast("删掉了", "circle-check");
+        reload();
+      });
+      on(".tpl-hide", async () => {
+        const scope = canOrg ? await askPromptTplHideScope(t.t) : "mine";
+        if (!scope || !(await setHidden(scope, t.id, true))) return;
+        toast("藏起来了，「已藏起」里能放回", "circle-check");
+        reload();
+      });
+      on(".tpl-restore", async () => {
+        for (const scope of [...(t.byMe ? ["mine"] : []), ...(t.byOrg && canOrg ? ["org"] : [])]) {
+          if (!(await setHidden(scope, t.id, false))) break;
+        }
+        reload();
+      });
     });
   };
   page.innerHTML = `
     <div class="hub-head">
       <div class="hub-sec-title" style="margin:0">照着抄就行 <span class="sub">点卡片看全文；带 __下划线__ 的地方换成你的内容；「填进输入框」直接开一条新任务</span></div>
       <div class="hub-search" style="margin-left:auto">${ic("search")}<input id="tpl-q" placeholder="搜模板…"></div>
+      <button class="btn-brand tpl-new">${ic("plus")}新建模板</button>
     </div>
-    <div class="hub-chips" style="margin:4px 0 14px">${cats.map(c =>
-      `<span class="chip ${renderPromptPage._cat === c ? "active" : ""}" data-c="${esc(c)}">${esc(c)}</span>`).join("")}</div>
+    <div class="hub-chips tpl-src" style="margin:4px 0 8px"></div>
+    <div class="hub-chips tpl-cats" style="margin:0 0 14px"></div>
+    <div class="tpl-warn" hidden></div>
     <div class="tpl-grid" id="tpl-grid"></div>`;
-  page.querySelectorAll(".chip[data-c]").forEach(c => c.onclick = () => {
-    renderPromptPage._cat = c.dataset.c;
-    page.querySelectorAll(".chip[data-c]").forEach(x => x.classList.toggle("active", x === c));
-    draw();
-  });
   page.querySelector("#tpl-q").oninput = draw;
   draw();
+  reload();
 }
 
 /**
@@ -2140,7 +2387,7 @@ function renderOpsPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">最近的运行指标</div>
-      <div class="d" style="margin-bottom:8px">每分钟存一份快照到 <code>data/metrics/&lt;年-月&gt;.jsonl</code>，保留 6 个月，计数为每分钟增量。</div>
+      <div class="d" style="margin-bottom:8px">每分钟存一份快照到 <code>data/metrics/&lt;年-月&gt;.jsonl</code>，闲着时十分钟一份，保留 3 个月，计数为每分钟增量。</div>
       <div id="ops-cards" style="display:flex;flex-wrap:wrap;gap:10px;margin:10px 0"></div>
       <div id="ops-chart"></div>
     </div>
@@ -2229,7 +2476,7 @@ function renderOpsPane(pane) {
   pane.querySelector("#ops-refresh").onclick = () => { loadMetrics(); loadLogs(); };
   pane.querySelector("#ops-level").onchange = loadLogs;
   pane.querySelector("#ops-day").onchange = loadLogs;
-  pane.querySelector("#ops-q").onkeydown = (e) => { if (e.key === "Enter") loadLogs(); };
+  pane.querySelector("#ops-q").onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) loadLogs(); };
   loadMetrics();
   loadLogs();
 }
@@ -2548,7 +2795,7 @@ async function renderEngineCard(box, force) {
       <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b><span class="eng-bs">${engBadgeHtml(e, v)}</span></div>
       <div class="eng-n">${esc(e.note || "")}</div>
       ${howNote}
-      ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>` : ""}
+      ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>${engineBinRowHtml(e)}` : ""}
       ${tryRow}
       ${builtin || !on ? "" : engineExtraHtml(e)}
     </div>`;
@@ -2562,9 +2809,19 @@ async function renderEngineCard(box, force) {
     if (el.classList.contains("on")) bindEngineExtra(el, id, box);
     const tb = el.querySelector('[data-act="test"]');
     if (tb) tb.onclick = (ev) => { ev.stopPropagation(); testEngineConnect(el, id); };
+    const bb = el.querySelector('[data-act="bin"]');
+    if (bb) bb.onclick = async (ev) => {
+      ev.stopPropagation();
+      const bin = el.querySelector('.eng-bin input[data-k="bin"]').value.trim();
+      msg.textContent = bin ? "按这个路径找…" : "清掉路径，改回自动找…";
+      const ok = await saveSettings({ agent: { engine_options: { [id]: { bin } } } }, null);
+      if (!ok) { msg.textContent = lastSaveError || "保存失败"; return; }
+      // 还是找不到的话，卡片上那行红字会换成「设置里填的路径跑不起来：…」，不用这里再猜
+      return renderEngineCard(box, true);
+    };
     el.onclick = async (ev) => {
-      // 展开区的输入框、试一试那一行、测出来的结论，点了都不算"切引擎"
-      if (ev.target.closest(".eng-x, .eng-try, .eng-r")) return;
+      // 展开区的输入框、试一试那一行、测出来的结论、填路径那一行，点了都不算"切引擎"
+      if (ev.target.closest(".eng-x, .eng-try, .eng-r, .eng-bin")) return;
       if (el.classList.contains("on")) return;
       if (el.dataset.ready !== "1") {
         // 没找到的那条：点了不切。静默切到一个跑不起来的引擎，用户会以为在用本机订阅，
@@ -2585,6 +2842,19 @@ async function renderEngineCard(box, force) {
   });
 }
 
+/**
+ * 没找到的那张卡上也得能填路径。以前路径框只长在「选中之后的展开区」里，
+ * 而没找到的引擎点了不许选中——报错里叫人「在设置里填绝对路径」，那个框却永远画不出来。
+ * 路径是「起哪个可执行文件」，多人服务器上只归平台管理员（prefs.js 不把 bin 算个人项）。
+ */
+function engineBinRowHtml(e) {
+  if (!amPlatformOwner()) return "";
+  return `<div class="eng-bin eng-row" onclick="event.stopPropagation()">
+    <input type="text" data-k="bin" placeholder="装在别处？填它的绝对路径" value="${esc((e.options || {}).bin || "")}" spellcheck="false" autocomplete="off">
+    <button class="btn-plain" data-act="bin">按这个路径找</button>
+  </div>`;
+}
+
 /** 选中的引擎才展开：可执行文件路径、模型、思考档 */
 // 思考/effort 档位（跟 thinking.js 的 LEVELS 同一张表；"" = 跟随全局档位）
 const ENGINE_THINK_LEVELS = [
@@ -2603,16 +2873,17 @@ function engineExtraHtml(e) {
     : e.id === "codex"
       ? "Codex 无模型目录可查。留空用默认，或手填模型名。"
       : "留空 = 用 CLI 自己的默认模型；也可以直接输入它支持的模型名。";
+  // 路径框只画给平台管理员：成员存的时候带上它（哪怕是空串）整单都会 403，连模型和思考档也存不下
   return `<div class="eng-x" onclick="event.stopPropagation()">
-    <label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
-      <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>
+    ${amPlatformOwner() ? `<label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
+      <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>` : ""}
     <label>模型<span style="color:var(--owb-text-3)">（${esc(modelHint)}）</span>
       <input type="text" data-k="model" list="${listId}" placeholder="默认" value="${esc(o.model || "")}" autocomplete="off">
       <datalist id="${listId}">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist></label>
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">
-      <button class="btn-plain" data-act="save">保存路径 / 模型 / 思考档</button>
+      <button class="btn-plain" data-act="save">${amPlatformOwner() ? "保存路径 / 模型 / 思考档" : "保存模型 / 思考档"}</button>
       <span class="eng-msg" data-role="xmsg"></span>
     </div>
     <div class="eng-c">跑起来是这条命令：${esc(e.launchHeader || "")}${e.version ? "　本机这一份：" + esc(e.version) : ""}</div>
@@ -2833,13 +3104,24 @@ function squareThumb(file, size) {
 }
 
 async function renderMemoryPane(pane) {
+  // 常见的几家嵌入接口。自动找已经认得通义/智谱/OpenAI/Ollama，硅基流动补给只接了 DeepSeek 或中转站的人
+  const EMBED_PRESETS = [
+    ["硅基流动 · bge-m3", "https://api.siliconflow.cn/v1", "BAAI/bge-m3"],
+    ["OpenAI · 3-small", "https://api.openai.com/v1", "text-embedding-3-small"],
+    ["通义 · v4", "https://dashscope.aliyuncs.com/compatible-mode/v1", "text-embedding-v4"],
+    ["智谱 · embedding-3", "https://open.bigmodel.cn/api/paas/v4", "embedding-3"],
+    ["本机 Ollama", "http://127.0.0.1:11434/v1", "nomic-embed-text"],
+  ];
   const m = await fetch("/api/memory").then(r => r.json());
   const items = m.items || [];
   // 语义召回到底开没开、算出来几条：以前这里什么都不说，向量一条没算出来用户也只会觉得「记忆越来越不准」
   const vs = m.vectors || {};
-  const vecOk = !vs.enabled || !vs.total || vs.have >= vs.total;
+  // 嵌入接口表单只画给平台管理员（后端对别人回 null）；提示语要指向真的存在的那个地方
+  const emb = m.embedding;
+  const vecOk = !vs.failed && (!vs.enabled || !vs.total || vs.have >= vs.total);
   const vecLine = !vs.enabled
-    ? "语义召回未开，现按关键词召回。在 设置 → 模型 配一条 embeddings 渠道即可开启。"
+    ? `语义召回没开，现按关键词召回。${emb ? "在下面填一个嵌入接口就能开。" : "嵌入接口由平台管理员配置。"}`
+    : vs.failed ? `嵌入接口调不通，已退回关键词召回。${emb ? "点下面「测一下」看上游怎么说。" : "请平台管理员看一下。"}`
     : !vs.total ? `语义召回已接上（${vs.model}），记了东西就会自动算向量。`
     : vs.have >= vs.total ? `语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
     : `语义召回：${vs.have}/${vs.total} 条有向量，嵌入渠道可能不通，现按关键词召回。日志搜「[记忆向量]」查原因。`;
@@ -2872,6 +3154,24 @@ async function renderMemoryPane(pane) {
       </label>` : `
       <div class="d" style="margin-top:6px">只有你自己可见。全员共享的条目需平台管理员添加。</div>`}
     </div>
+    ${!emb ? "" : `
+    <div class="card-item" id="emb-card">
+      <div class="t">${ic("search")} 嵌入接口（语义召回用）</div>
+      <div class="d" style="margin-bottom:8px">不填就从已配渠道自动找：通义、智谱、OpenAI、本机 Ollama。${vs.enabled && vs.source ? `<span id="emb-src">现在用的是${esc(vs.source)}。</span>` : ""}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${EMBED_PRESETS.map(([nm, base, model]) =>
+        `<span class="chip" data-emb-base="${esc(base)}" data-emb-model="${esc(model)}">${esc(nm)}</span>`).join("")}</div>
+      <div class="form-row"><input id="emb-base" placeholder="接口地址，如 https://api.siliconflow.cn/v1" value="${esc(emb.base_url)}"></div>
+      <div class="form-row">
+        <input id="emb-key" type="password" autocomplete="off" placeholder="${emb.has_key ? `已存 ${esc(emb.key_hint || "")}，不改就留着` : "API Key（本机接口可空）"}" value="${emb.has_key ? "********" : ""}">
+        <input id="emb-model" placeholder="模型名，如 BAAI/bge-m3" value="${esc(emb.model)}">
+      </div>
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn-plain" id="emb-test">${ic("zap")} 测一下</button>
+        <button class="btn-brand" id="emb-save">保存</button>
+        ${emb.base_url ? `<a href="#" class="link" id="emb-clear">清空，改回自动找</a>` : ""}
+        <span class="ok-msg" id="emb-msg"></span>
+      </div>
+    </div>`}
     <div class="card-item">
       <div class="t">${ic("file-pen-line")} 背景说明（全局共享，原样进提示词）</div>
       <div class="d" style="margin-bottom:8px">放团队背景、数据口径、固定模板等成段内容，全员共用。${m.can_edit_manual ? "" : "由平台管理员维护，你只能查看。"}</div>
@@ -2891,6 +3191,40 @@ async function renderMemoryPane(pane) {
       </div>
     </div>`}
     ${m.can_edit_manual ? `<button class="btn-brand" id="mem-save">保存背景说明</button><span class="ok-msg" id="mem-msg"></span>` : ""}`;
+  if (emb) {
+    const q = (id) => pane.querySelector(id);
+    const msg = q("#emb-msg");
+    const form = () => ({ base_url: q("#emb-base").value.trim(), api_key: q("#emb-key").value.trim(), model: q("#emb-model").value.trim() });
+    // 换了地址，已存的那把 Key 不能跟着过去（后端也会拦）：星号清掉，让人看见要重填
+    q("#emb-base").addEventListener("input", () => { if (/^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = "API Key（本机接口可空）"; } });
+    pane.querySelectorAll("[data-emb-base]").forEach(c => c.onclick = () => {
+      if (q("#emb-base").value.trim() !== c.dataset.embBase && /^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = "API Key（本机接口可空）"; }
+      q("#emb-base").value = c.dataset.embBase; q("#emb-model").value = c.dataset.embModel;
+      pane.querySelectorAll("[data-emb-base]").forEach(x => x.classList.toggle("active", x === c));
+    });
+    const check = (f) => {
+      if (!f.base_url || !f.model) { setMsg(msg, "circle-x", "接口地址和模型名都要填", "err"); return false; }
+      return true;
+    };
+    q("#emb-test").onclick = async () => {
+      const f = form();
+      if (!check(f)) return;
+      setMsg(msg, "", "测试中…");
+      const r = await fetch("/api/embedding/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f) })
+        .then(r => r.json()).catch(() => ({ ok: false, error: "网络错误" }));
+      if (r.ok) setMsg(msg, "circle-check", `通了，向量 ${r.dims} 维`, "ok");
+      else setMsg(msg, "circle-x", r.error || "没通", "err");
+    };
+    const save = async (body, done) => {
+      const resp = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ embedding: body }) });
+      if (!resp.ok) return setMsg(msg, "circle-x", (await resp.json().catch(() => ({}))).error || "保存失败", "err");
+      toast(done);
+      return renderMemoryPane(pane);
+    };
+    q("#emb-save").onclick = () => { const f = form(); return check(f) ? save(f, "嵌入接口已保存，向量在后台补算") : undefined; };
+    const clr = q("#emb-clear");
+    if (clr) clr.onclick = (e) => { e.preventDefault(); return save({ base_url: "", api_key: "", model: "" }, "已清空，改回从已配渠道自动找"); };
+  }
   if (m.can_edit_manual) pane.querySelector("#mem-save").onclick = async () => {
     const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });
     pane.querySelector("#mem-msg").textContent = resp.ok ? "✓ 已保存" : ((await resp.json().catch(() => ({}))).error || "保存失败");

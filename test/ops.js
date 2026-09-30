@@ -247,7 +247,7 @@ console.log("\n【7】指标：按月分片写读，老片自己滚掉");
   }
   metrics.write({ ts: "2026-09-03T10:00:00.000Z", tasks: 4 });
   const left = metrics._internals.shards();
-  eq(left.length, metrics._internals.KEEP_MONTHS, "只留最近 6 片");
+  eq(left.length, metrics._internals.KEEP_MONTHS, `只留最近 ${metrics._internals.KEEP_MONTHS} 片`);
   ok(!left.includes("2025-01"), "最老的那几片滚掉了", left);
   ok(left.includes("2026-09"), "当月这片当然还在");
 
@@ -314,6 +314,33 @@ console.log("\n【9】告警：一条渠道正在响，不许把另一条刚挂�
 
   eq(metrics.evaluate({ ...base, channel_fail_streak: { C: 4 } }, t0 + 180000).filter((x) => x.level === "alert").length,
      0, "连挂 4 次够不到门槛（5 次），不报——偶发失败不该叫人");
+
+  // 2026-09-29：告警文案不替人猜原因，只附原话；好几天没再被调过的渠道不算「正在挂」
+  fs.rmSync(metrics._internals.STATE_FILE, { force: true });
+  a = metrics.evaluate({ ...base, channel_fail_streak: { D: 5 }, channel_fail_last: { D: "渠道「D」余额不足，模型不给跑了" } }, t0);
+  ok(a[0].text.includes("最近一次：渠道「D」余额不足"), "告警里带上最近一次挂的原话", a[0].text);
+  ok(!/多半|欠费 \/ 被限流/.test(a[0].text), "不再替人猜「多半是欠费/限流/网络」", a[0].text);
+  fs.rmSync(metrics._internals.STATE_FILE, { force: true });
+  a = metrics.evaluate({ ...base, channel_fail_streak: { D: 5 } }, t0);
+  ok(/已连续失败 5 次。去 设置/.test(a[0].text), "没记原话时照样说清几次、去哪换", a[0].text);
+
+  const HEALTH = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "model_health.json");
+  const nowT = Date.parse("2026-09-29T08:00:00.000Z");
+  fs.writeFileSync(HEALTH, JSON.stringify({
+    old: { recent: [1, 0, 0, 0, 0, 0], last_fail_t: nowT - 7 * 86400e3, last_fail: "LLM 接口错误 400: 旧的\n原始报错：……" },
+    fresh: { recent: [1, 0, 0, 0, 0, 0], last_fail_t: nowT - 3600e3, last_fail: "渠道「fresh」余额不足，模型不给跑了——这不是软件出错\n原始报错：……" },
+    untimed: { recent: [0, 0, 0, 0, 0] },
+    healed: { recent: [0, 0, 0, 1], last_fail_t: nowT - 60e3 },
+  }));
+  const ch = metrics._internals.channelHealth(nowT);
+  eq(ch.streak.old, undefined, "7 天前挂的、之后再没调过的渠道不算正在挂（jev 那 5 次就是这么回响了一周）");
+  eq(ch.streak.fresh, 5, "1 小时前还在挂的照报");
+  eq(ch.last.fresh, "渠道「fresh」余额不足，模型不给跑了", "原话只取头一句，后面的说明和原始报错不带");
+  eq(ch.streak.untimed, 5, "没记时间的老记录照旧算——0 是「没记过」，不是「很久以前」");
+  eq(ch.streak.healed, undefined, "最后一次成功了就不算连挂");
+  // ★反向对照★：同一条记录，站在它刚挂完 1 小时的那一刻看，是算的——证明上面剔掉它靠的是时间，不是别的
+  eq(metrics._internals.channelHealth(nowT - 7 * 86400e3 + 3600e3).streak.old, 5, "★反向对照★：同一条记录在它还新鲜时照报");
+  fs.rmSync(HEALTH, { force: true });
 
   fs.rmSync(metrics._internals.STATE_FILE, { force: true });
   a = metrics.evaluate({ ...base, channel_fail_streak: {}, disk_free_pct: 0.05 }, t0);
@@ -456,6 +483,43 @@ console.log("\n【13】指标：每分钟那个循环真的会滚 + 会推");
   await new Promise((r) => setTimeout(r, 1400));
   metrics.stop();
   ok(true, "推送函数抛错也没把进程带走");
+
+  console.log("\n【14】指标：主线程被堵了多久（卡顿要能归因）");
+  {
+    const I = metrics._internals;
+    const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+    const s0 = metrics.snapshot();
+    ok(!("loop_p99_ms" in s0) && !("loop_max_ms" in s0) && !("loop_util" in s0), "没 start 的时候不开表，行里也没这几格（单调 snapshot 的不受影响）");
+    I.loopArm();
+    await nap(300);
+    const t = Date.now(); while (Date.now() - t < 800) {} // 故意把主线程堵 800ms，跟六条对话同跑时那种卡法一样
+    await nap(300);
+    const a = metrics.snapshot();
+    ok(a.loop_max_ms >= 600, "★主线程堵了 800ms，loop_max_ms 抓得到★", a.loop_max_ms);
+    ok(a.loop_p99_ms > 0 && a.loop_p99_ms <= a.loop_max_ms, "p99 有值、不超过 max", JSON.stringify(a));
+    ok(typeof a.loop_util === "number" && a.loop_util > 0.3 && a.loop_util <= 1, "纯 node 下记得出忙的比例（这段一大半时间在堵）", a.loop_util);
+    await nap(800);
+    const b = metrics.snapshot();
+    ok(typeof b.loop_max_ms === "number" && b.loop_max_ms < 300, "反向对照：下一段没堵，max 回落了——读完就清零，不是一直挂着上一分钟的尖峰", b.loop_max_ms);
+    ok(b.loop_util < a.loop_util, "反向对照：忙的比例也降下来了", `${b.loop_util} vs ${a.loop_util}`);
+    // Electron 主进程里 eventLoopUtilization 恒为 0，记下来会被读成「一点都不忙」
+    let faked = false;
+    try { Object.defineProperty(process.versions, "electron", { value: "43.2.0", configurable: true }); faked = process.versions.electron === "43.2.0"; } catch {}
+    if (faked) {
+      I.loopDisarm(); I.loopArm();
+      await nap(200);
+      const e = metrics.snapshot();
+      ok(!("loop_util" in e) && typeof e.loop_max_ms === "number", "★Electron 里不记 loop_util（那里恒为 0），卡顿读数照记★", JSON.stringify(e));
+      try { delete process.versions.electron; } catch {}
+    } else console.log("  - 跳过：这版 node 不让往 process.versions 上加字段");
+    I.loopDisarm();
+    await nap(100);
+    const c = metrics.snapshot();
+    ok(!("loop_max_ms" in c) && !("loop_util" in c), "stop 之后表关了，行里不再有这几格");
+    const src = fs.readFileSync(path.join(__dirname, "..", "metrics.js"), "utf8");
+    ok(/function start\([\s\S]{0,300}loopArm\(\)/.test(src) && /function stop\(\)[\s\S]{0,120}loopDisarm\(\)/.test(src), "★start 开表、stop 关表★ 服务端只调 start/stop，漏一头就是永远没数或者关不掉");
+    ok(!/function stop\(\)[\s\S]{0,120}loopDisarm\(\)/.test("function stop() {\n  if (timer) { clearInterval(timer); timer = null; }\n}"), "反向对照：没关表的 stop 会被认出来");
+  }
 
   console.log(`\n通过 ${pass}，失败 ${fail}`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}

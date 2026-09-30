@@ -18,7 +18,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execFile } = require("child_process");
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 // URL 解析 IPv6 时 hostname 是带方括号的 "[::1]"，直接拿去比对集合永远不相等——
@@ -49,7 +49,7 @@ function getJson(url, opts = {}) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 本进程自己拉起来的那个 Chrome。拉起一次就一直复用，不会每调一次开一个窗口。 */
-const OWN = { port: 0, pid: 0, dir: "" };
+const OWN = { port: 0, pid: 0, dir: "", headless: false };
 
 // 拉起来的 Chrome 不会自己消失：detached + unref 之后它和本进程就断了关系，没人收就一直挂着。
 // 这台机器上真挂出过一个：跑了十个半小时，GPU 进程常年 160% CPU，load average 上了三位数。
@@ -78,9 +78,11 @@ function killTree(pid, sig) {
 /** 关掉本进程拉起来的那个 Chrome。用户自己开着的窗口一律不碰。 */
 function close(why = "") {
   clearIdle();
-  const pid = OWN.pid;
-  OWN.port = 0; OWN.pid = 0; OWN.dir = "";
+  const pid = OWN.pid, port = OWN.port;
+  OWN.port = 0; OWN.pid = 0; OWN.dir = ""; OWN.headless = false;
   if (!pid) return { closed: false, why: "当前这个 Chrome 不是本工具拉起来的，不动它" };
+  // 浏览器都要没了，挂在它身上的「过会儿冻住 / 闲久了关掉」也一起撤：留着的话到点去连一个死端口
+  forgetPort(port);
   killTree(pid, "SIGTERM");
   const t = setTimeout(() => killTree(pid, "SIGKILL"), 2000);
   if (typeof t.unref === "function") t.unref();
@@ -160,6 +162,46 @@ function profileDir(raw) {
   return dir;
 }
 
+/** 这几个 profile 文件存在 = 有 Chrome 正开着这个 profile（macOS/Linux 是前两个，Windows 是 lockfile） */
+const PROFILE_LOCKS = ["SingletonLock", "SingletonSocket", "lockfile"];
+const profileLocked = (dir) => PROFILE_LOCKS.some((f) => { try { fs.lstatSync(path.join(dir, f)); return true; } catch { return false; } });
+/**
+ * 这个 profile 现在被哪个进程开着。Chrome 在 profile 里放一个 SingletonLock 符号链接，指向「主机名-pid」。
+ * 光有 pid 不够：pid 会被复用，崩掉的 Chrome 留下的锁可能正指着一个不相干的进程——
+ * 所以再用 ps 核一遍它的命令行里确实带着这个 user-data-dir，核不上就当不知道（不认领、不去杀）。
+ * @param {string} dir
+ * @returns {Promise<{ pid: number, headless: boolean }>}
+ */
+async function profileOwner(dir) {
+  const none = { pid: 0, headless: false };
+  if (process.platform === "win32") return none;
+  let pid = 0;
+  try { pid = Number((/-(\d+)$/.exec(fs.readlinkSync(path.join(dir, "SingletonLock"))) || [])[1]) || 0; } catch {}
+  if (!pid) return none;
+  /** @type {string} */
+  const cmd = await new Promise((res) => execFile("ps", ["-p", String(pid), "-o", "command="], { timeout: 3000 }, (e, out) => res(e ? "" : String(out || ""))));
+  if (!cmd.includes(`--user-data-dir=${dir}`)) return none;
+  return { pid, headless: /--headless\b/.test(cmd) };
+}
+const TRIM_DIRS = ["optimization_guide_model_store", "component_crx_cache", "BrowserMetrics"];
+/**
+ * 拉起前顺手清掉 Chrome 自己下载、自己能重建的几样：优化模型、组件包、指标。启动参数已经不让它再下了，
+ * 这里只收以前攒下的。登录态那几样（Cookies、Local Storage、Login Data、IndexedDB）一概不碰——
+ * 用户在这个浏览器里登过的站全靠它们。
+ * profile 正被某个 Chrome 开着（可能是用户自己手动开的）就一个字节都不动：在人家脚底下删文件，崩的是人家。
+ * @param {string} dir
+ * @returns {Promise<string[]>} 真删掉了哪几个
+ */
+async function trimProfile(dir) {
+  if (profileLocked(dir)) return [];
+  const gone = [];
+  for (const d of TRIM_DIRS) {
+    const p = path.join(dir, d);
+    try { await fs.promises.access(p); await fs.promises.rm(p, { recursive: true, force: true }); gone.push(d); } catch {}
+  }
+  return gone;
+}
+
 /**
  * 拉起专用 Chrome。端口写死 0：由 Chrome 自己挑一个空的，再从 DevToolsActivePort 读回来。
  * 这样就绕开了「9222 被别的东西占着、但它根本不是 DevTools」——本机就是这个情况：
@@ -182,12 +224,24 @@ async function launch(input = {}) {
   // 顺序反过来（先删端口文件再拉）会踩坑——同一个 profile 再 spawn 一次，Chrome 只是把
   // 网址交给已在跑的那个实例然后自己退出，端口文件又被我们删了，于是干等 20 秒然后报错。
   const had = readPortFile(portFile);
-  if (had && (await probe(had, 1200))) { OWN.port = had; OWN.dir = dir; return { port: had, launched: false, adopted: true, user_data_dir: dir, bin }; }
+  if (had && (await probe(had, 1200))) {
+    OWN.port = had; OWN.dir = dir;
+    // 认领来的也要记下 pid：以前只记端口，于是闲置到点不关（touchIdle 看 pid）、退出时也不带走（reapAll 看 pid）——
+    // 应用崩过一次、下次启动认领回来的那个 Chrome 就成了没人管的常驻进程
+    const who = await profileOwner(dir);
+    if (who.pid) { OWN.pid = who.pid; OWN.headless = who.headless; hookExit(); touchIdle(); }
+    return { port: had, launched: false, adopted: true, ...(who.pid ? { pid: who.pid } : {}), user_data_dir: dir, bin };
+  }
   try { fs.rmSync(portFile, { force: true }); } catch {}
+  await trimProfile(dir);
   const args = [
     "--remote-debugging-port=0", `--user-data-dir=${dir}`,
     "--no-first-run", "--no-default-browser-check", "--no-service-autorun", "--disable-background-networking",
-    "--disable-features=Translate,AcceptCHFrame", "--hide-crash-restore-bubble", "--password-store=basic",
+    // 2026-09-28 实测这个 profile 攒到 317M：HTTP 缓存 139M、优化模型 40M、组件包 30M——自动化一样都用不上。
+    // 缓存封顶 64MB；组件更新关掉（代价：这个浏览器里放不了带 DRM 的视频，自动化不需要）
+    "--disk-cache-size=67108864", "--disable-component-update",
+    "--disable-features=Translate,AcceptCHFrame,OptimizationGuideModelDownloading,OptimizationHints,OptimizationHintsFetching,MediaRouter",
+    "--hide-crash-restore-bubble", "--password-store=basic",
   ];
   // 无头也要能跑 WebGL：闪卡、Three.js、地图这类页面没有 GL 上下文就只剩一句报错。
   // 千万别顺手加 --disable-gpu——那正好把 WebGL 关掉，截出来的图上写着
@@ -202,7 +256,7 @@ async function launch(input = {}) {
     await sleep(150);
     const port = readPortFile(portFile);
     if (port && (await probe(port, 1200))) {
-      OWN.port = port; OWN.pid = child.pid || 0; OWN.dir = dir;
+      OWN.port = port; OWN.pid = child.pid || 0; OWN.dir = dir; OWN.headless = wantHeadless(input);
       hookExit(); touchIdle();
       return { port, launched: true, pid: OWN.pid, user_data_dir: dir, bin };
     }
@@ -532,16 +586,268 @@ function connect(wsUrl, opts = {}) {
     const client = { call, send: call, on, off, close };
   });
 }
+/**
+ * 哪个任务开的哪个标签页：owner（会话 id）→ { port, id }。
+ *
+ * 几个对话同时用浏览器，不给 tab_id 时以前一律拿「第一个页面标签页」——这边导航到博物馆官网，
+ * 那边截的「游戏画面」就成了博物馆首页，模型还当真去分析。现在每个任务头一回用就给它单开一个，
+ * 往后不点名都落在自己那个上；别人的标签页不列给它看，点名去动也拦下。
+ * 没带 owner 的调用（命令行、直调、测试）用一个没人占着的页面标签页——绝不落到别的任务的标签页上。
+ * @typedef {{ port: number, id: string, opened: boolean, last: number, idle: any }} OwnedTab
+ * @type {Map<string, OwnedTab>}
+ */
+const OWNED = new Map();
+const ownerOf = (port, id) => { for (const [o, t] of OWNED) if (t.port === port && t.id === id) return o; return ""; };
+const takenByOther = (port, id, owner) => { const o = ownerOf(port, id); return !!o && o !== owner; };
+
+/** 每次读环境变量，测试里改了立刻生效。给 0 = 关掉这一条 */
+function envMs(name, dflt) {
+  const raw = process.env[name];
+  const n = raw === undefined || raw === "" ? dflt : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+/**
+ * 动完多久把页面冻住（只在无头模式，见 parkWrap）。
+ * 以前是 8 秒。模型两次动作之间光想就常常 5-60 秒，「打开 → 等一会 → 截图/取值」中间那段页面早冻了，
+ * 拿回来的是冻住那一刻的样子，模型照着旧状态下结论。2026-09-29 复审实测（真无头 Chrome，冻结点调到 1 秒）：
+ * 打开后隔 6 秒取值，页面里每 100ms 走一下的计时器只走了 15 下，不冻是 65 下。
+ * 当初要治的是一闲就是几分钟的游戏页，一分钟冻住照样治得住。
+ */
+const parkMs = () => envMs("OWB_CDP_PARK_MS", 60000);
+/** 解冻之后结果里带的话：冻着那段页面里什么都没发生，模型得知道眼前这一屏可能是冻住前的样子 */
+const THAW_NOTE = "这一页之前闲着被冻住了（页面里的定时器、动画、网络回调都停着），这一下才解冻；要看它自己跑出来的新状态，先等几秒再看";
+/** 一个任务的标签页闲多久就关掉。整个浏览器那个闲置计时，只要还有别的任务在用就永远到不了点，所以按标签页单算 */
+const tabIdleMs = () => envMs("OWB_CDP_TAB_IDLE_MS", 10 * 60 * 1000);
+/** 同一个浏览器里最多给几个任务各开一个标签页。到顶了收掉闲得最久的那个 */
+const maxTabs = () => Math.max(1, Math.floor(envMs("OWB_CDP_MAX_TABS", 6)) || 6);
+
+/**
+ * 这个任务此刻是不是还在跑。server.js 开机时接上（网页对话的 activeRuns + IM/定时任务的 holdRun）；
+ * 没接的（命令行、测试）一律当「不在跑」，行为跟以前一样。
+ *
+ * 2026-09-29 复审：任务收尾时 releaseOwner 已经把它的标签页收了，所以还记在 OWNED 里的，多半是还没跑完的。
+ * 以前闲置关页、到顶腾位只看「这一刻有没有动作在执行」：等用户回话 / 等审批超过 10 分钟的任务，
+ * 回来发现填了一半的表单、登好的账号连页一起没了；第 7 个同时开浏览器的对话，会把另一个正在跑的对话的页收掉。
+ */
+let isActive = (/** @type {string} */ _owner) => false;
+/** @param {((owner: string) => boolean) | null} fn */
+function setActivePredicate(fn) { isActive = typeof fn === "function" ? fn : () => false; }
+const stillRunning = (/** @type {string} */ owner) => { try { return !!isActive(owner); } catch { return false; } };
+
+/**
+ * 标签页被收掉的任务 → 下回来时要告诉它的话。不说的话模型拿到一张新开的白页，会当成原来那个网页去分析。
+ * @type {Map<string, string>}
+ */
+const GONE = new Map();
+function markGone(owner, why) {
+  GONE.set(owner, why);
+  if (GONE.size > 200) GONE.delete(GONE.keys().next().value);
+}
+
+/**
+ * 无头模式下动完的标签页，过 parkMs() 冻住；下次再动之前先解冻、拉到前台。
+ *
+ * 2026-09-28 实测：无头 Chrome 用 SwiftShader 在 CPU 上画 WebGL，一个跑着 requestAnimationFrame 的游戏页
+ * 整棵进程树吃 134-189% CPU，而那几分钟根本没有工具在用它（一趟任务动它一下，然后一闲就是几分钟）；
+ * 冻住之后 7-18%。几个任务各开一个，就是几个核常年满载，整台 Mac 跟着卡。
+ *
+ * 解冻用 Page.bringToFront，不用「active + 焦点模拟」：这里每个动作单开一条 WebSocket、用完就关，
+ * 焦点模拟跟着连接走，连接一关就失效，页面又变回 hidden——下一次截图拍到的是一个停住的画面。
+ * bringToFront 改的是页面本身，换一条连接照样在。
+ * 只在无头模式做：有头的浏览器里 bringToFront 会把 Chrome 窗口整个提到最前、抢走焦点，
+ * 人正在别的应用里打字会被一下拽走；而有头模式下后台标签页 Chrome 自己就会降频。
+ * @typedef {{ port: number, id: string, timer: any, parked: boolean, busy: number, parking: Promise<void> | null }} ParkSlot
+ * @type {Map<string, ParkSlot>}
+ */
+const PARK = new Map();
+const parkKey = (port, id) => `${port}:${id}`;
+function parkSlot(port, id) {
+  let s = PARK.get(parkKey(port, id));
+  if (!s) { s = { port, id, timer: null, parked: false, busy: 0, parking: null }; PARK.set(parkKey(port, id), s); }
+  return s;
+}
+function dropPark(port, id) {
+  const s = PARK.get(parkKey(port, id));
+  if (!s) return;
+  if (s.timer) clearTimeout(s.timer);
+  PARK.delete(parkKey(port, id));
+}
+/** 一个端口上的浏览器没了：停放和闲置计时一起撤 */
+function forgetPort(port) {
+  for (const s of [...PARK.values()]) if (s.port === port) dropPark(s.port, s.id);
+  for (const [o, t] of [...OWNED]) if (t.port === port) { if (t.idle) clearTimeout(t.idle); OWNED.delete(o); }
+  HEADLESS.delete(port);
+}
+/** 单开一条连接改页面的生命周期状态。标签页已经不在了返回 false */
+async function lifecycle(port, id, state) {
+  const tabs = await getJson(`http://127.0.0.1:${port}/json/list`);
+  const t = (tabs || []).find((x) => x.id === id);
+  if (!t || !t.webSocketDebuggerUrl) return false;
+  const c = await connect(t.webSocketDebuggerUrl, { idleMs: 5000 });
+  try { await c.call("Page.setWebLifecycleState", { state }, 3000); return true; } finally { c.close(); }
+}
+/** 按标签页各计各的：A 任务一直在动，不能把 B 任务那个标签页的冻结往后推 */
+function armPark(port, id) {
+  const slot = parkSlot(port, id);
+  if (slot.timer) clearTimeout(slot.timer);
+  slot.timer = null;
+  const ms = parkMs();
+  if (!ms) return;
+  slot.timer = setTimeout(() => {
+    slot.timer = null;
+    if (PARK.get(parkKey(port, id)) !== slot || slot.busy || slot.parked) return;
+    slot.parking = lifecycle(port, id, "frozen")
+      .then((done) => { if (done) slot.parked = true; else dropPark(port, id); })
+      .catch(() => {})
+      .finally(() => { slot.parking = null; });
+  }, ms);
+  if (typeof slot.timer.unref === "function") slot.timer.unref();
+}
+/**
+ * 这个端口上是不是无头浏览器。自己拉起的看启动参数；别的看 /json/version 里的 HeadlessChrome，一分钟问一次。
+ * @type {Map<number, { v: boolean, at: number }>}
+ */
+const HEADLESS = new Map();
+async function headlessAt(port) {
+  if (port === OWN.port && OWN.pid) return OWN.headless;
+  const hit = HEADLESS.get(port);
+  if (hit && Date.now() - hit.at < 60000) return hit.v;
+  const v = await probe(port);
+  const h = !!v && (/headless/i.test(String(v.Browser || "")) || /HeadlessChrome/.test(String(v["User-Agent"] || "")));
+  HEADLESS.set(port, { v: h, at: Date.now() });
+  return h;
+}
+/**
+ * 包住一个动作：动之前解冻 + 拉到前台，动完重新计时。解冻两步每次都发——
+ * 同一个无头窗口里别的标签页被拉到前台时，这一页会被挤成 hidden，光看「冻没冻」判断不了。
+ * 页面是从冻住状态解开的，结果里带上 note（给了才带；navigate 换了新页面，不用说）。
+ * @param {number} port
+ * @param {boolean} headless
+ * @param {(call: CdpClient["call"], tab: any) => Promise<any>} fn
+ * @param {string} [note]
+ */
+function parkWrap(port, headless, fn, note = "") {
+  if (!headless) return fn;
+  return async (call, tab) => {
+    const slot = parkSlot(port, tab.id);
+    slot.busy++;
+    if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
+    try {
+      // 冻到一半：等它冻完再解，不然「冻住」那一下可能落在解冻之后，整个动作对着一个停住的页面做
+      if (slot.parking) await slot.parking;
+      const thawed = slot.parked;
+      try { await call("Page.setWebLifecycleState", { state: "active" }, 5000); } catch {}
+      try { await call("Page.bringToFront", {}, 5000); } catch {}
+      slot.parked = false;
+      const out = await fn(call, tab);
+      return thawed && note && out && typeof out === "object" && !out.note ? { ...out, note } : out;
+    } finally {
+      slot.busy--;
+      if (!slot.busy) armPark(port, tab.id);
+    }
+  };
+}
+
+/**
+ * 这个任务的标签页闲太久：关掉，下回再来时新开一个并告诉它。
+ * 任务还没跑完就不关，接着计时：它可能正等着用户回话，回来还要接着填那张表。无头的页早就冻住了，留着只占内存不占 CPU。
+ */
+function armTabIdle(owner, t) {
+  if (t.idle) clearTimeout(t.idle);
+  t.idle = null;
+  const ms = tabIdleMs();
+  if (!ms) return;
+  t.idle = setTimeout(() => {
+    t.idle = null;
+    if (OWNED.get(owner) !== t) return;
+    if ((PARK.get(parkKey(t.port, t.id)) || { busy: 0 }).busy || stillRunning(owner)) return armTabIdle(owner, t);
+    markGone(owner, "你之前的标签页闲置太久已经关掉了，这是新开的空白页；要接着用就重新打开网址");
+    dropOwner(owner).catch(() => {});
+  }, ms);
+  if (typeof t.idle.unref === "function") t.idle.unref();
+}
+/** 只撤账，不碰浏览器 */
+function forgetOwner(owner) {
+  const t = OWNED.get(owner);
+  if (!t) return null;
+  OWNED.delete(owner);
+  if (t.idle) clearTimeout(t.idle);
+  dropPark(t.port, t.id);
+  return t;
+}
+/**
+ * 撤账并把标签页收掉：自己开的关掉；关不掉（浏览器回了错），或者本来就是借来的那一页，就冻住——
+ * 借来的那页可能是用户自己的，不能替他关，但也不能让它在后台接着转。有头的浏览器里借来的页一概不动。
+ */
+async function dropOwner(owner) {
+  const slot = (() => { const t = OWNED.get(owner); return t ? PARK.get(parkKey(t.port, t.id)) : null; })();
+  const t = forgetOwner(owner);
+  if (!t) return false;
+  if (slot && slot.parking) await slot.parking;
+  if (t.opened) { try { await closePage(t.port, t.id); return true; } catch {} }
+  const headless = await headlessAt(t.port).catch(() => false);
+  if (t.opened || headless) { try { await lifecycle(t.port, t.id, "frozen"); } catch {} }
+  return true;
+}
+/**
+ * 到顶了：收掉闲得最久、此刻没在干活、任务也已经不在跑的。
+ * 都还在跑就先超出上限——把另一个对话跑到一半的页收掉，比多开一页更糟。
+ */
+async function makeRoom(port, owner) {
+  const others = [...OWNED].filter(([o, t]) => o !== owner && t.port === port);
+  const idle = others.filter(([o, t]) => !(PARK.get(parkKey(port, t.id)) || { busy: 0 }).busy && !stillRunning(o)).sort((a, b) => a[1].last - b[1].last);
+  for (let n = others.length; n >= maxTabs() && idle.length; n--) {
+    const [victim] = /** @type {[string, OwnedTab]} */ (idle.shift());
+    markGone(victim, "同时开着的标签页太多，你之前那个闲得最久，已经收掉了；这是新开的空白页，要接着用就重新打开网址");
+    await dropOwner(victim);
+  }
+}
+
+/** 这个任务自己的标签页：还在就用，不在了（被关、浏览器重启）就新开一个记下 */
+async function ownTab(port, owner) {
+  const had = OWNED.get(owner);
+  if (had && had.port === port) {
+    const tabs = await getJson(`http://127.0.0.1:${port}/json/list`).catch(() => []);
+    if ((tabs || []).some((x) => x.id === had.id)) { had.last = Date.now(); armTabIdle(owner, had); return had.id; }
+  }
+  if (had) forgetOwner(owner);
+  await makeRoom(port, owner);
+  let id = "", opened = true;
+  try { id = (await newPage(port)).id; } catch (e) {
+    // 开不出新标签页（老浏览器、策略禁了）：退一步用一个没人占着的；全被占了就直说，不去跟别的任务抢同一个页面
+    const pages = ((await getJson(`http://127.0.0.1:${port}/json/list`).catch(() => [])) || []).filter((x) => x.type === "page");
+    const free = pages.find((x) => !ownerOf(port, x.id));
+    if (!free) throw new Error(`没能给这个任务单开一个标签页（${e.message}），其它标签页都有别的任务在用`);
+    id = free.id; opened = false;
+  }
+  /** @type {OwnedTab} */
+  const t = { port, id, opened, last: Date.now(), idle: null };
+  OWNED.set(owner, t);
+  armTabIdle(owner, t);
+  return id;
+}
+
+/**
+ * 任务收尾时把它开的标签页关掉。开着不关的话，一天跑几十个任务，
+ * 后台 Chrome 里就挂着几十个页面（每个几十上百 MB），电脑越用越卡。关不掉（浏览器已经没了）也算关好了。
+ */
+async function releaseOwner(owner) {
+  if (!owner) return false;
+  GONE.delete(owner);
+  return dropOwner(owner);
+}
+
 async function withTab(tabId, fn, port = 9222) {
   let tabs = await getJson(`http://127.0.0.1:${port}/json/list`);
-  const pages = (tabs || []).filter((x) => x.type === "page");
-  // 一个页面都没有（窗口全关了、或者刚拉起来还没落地）就自己开一个空白页，
+  // 不点名时只挑没人占着的页面：别的任务的标签页正停在它自己的网页上，拿来一导航就把人家的活冲掉了
+  const free = (list) => (list || []).filter((x) => x.type === "page" && !ownerOf(port, x.id));
+  // 一个空闲页面都没有（窗口全关了、刚拉起来还没落地、或者全被别的任务占着）就自己开一个空白页，
   // 而不是甩一句「没有可操作的标签页」让人去手动点。
-  if (!tabId && !pages.length) {
+  if (!tabId && !free(tabs).length) {
     try { await getJson(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" }); } catch { try { await getJson(`http://127.0.0.1:${port}/json/new?about:blank`); } catch {} }
     tabs = await getJson(`http://127.0.0.1:${port}/json/list`);
   }
-  const tab = (tabs || []).find((x) => x.id === tabId) || (tabId ? null : (tabs || []).find((x) => x.type === "page"));
+  const tab = (tabs || []).find((x) => x.id === tabId) || (tabId ? null : free(tabs)[0]);
   if (!tab || !tab.webSocketDebuggerUrl) throw new Error(tabId ? `找不到 Chrome 标签页：${tabId}` : "这个 Chrome 里没有可操作的页面标签页");
   const c = await connect(tab.webSocketDebuggerUrl); try { return await fn(c.call, tab); } finally { c.close(); }
 }
@@ -575,13 +881,41 @@ async function run(input = {}) {
       hint: port ? "" : `${want || 9222} 上没有 DevTools。直接发一条 navigate 或 screenshot 就行，会自己拉起一个专用 Chrome。`,
     };
   }
-  if (action === "close") return close();
+  if (action === "close") {
+    // 浏览器是几个任务共用的：一个任务说「关掉」，只收它自己那个标签页，别把别人正用着的整个浏览器掐了
+    const owner = String(input.owner || "");
+    if (owner && [...OWNED.keys()].some((o) => o !== owner)) {
+      await releaseOwner(owner);
+      return { closed: false, why: "别的任务还在用这个浏览器，只关了你自己的标签页" };
+    }
+    if (owner) { forgetOwner(owner); GONE.delete(owner); }
+    return close();
+  }
   const ready = await ensure(input);
   const port = ready.port;
   touchIdle();
-  if (action === "list_tabs") return { port, ...ready, tabs: (await getJson(`http://127.0.0.1:${port}/json/list`)).filter((x) => x.type === "page").map((x) => ({ id: x.id, title: x.title, url: x.url, type: x.type })) };
-  if (action === "close_tab") { const id = String(input.tab_id || ""); if (!id) throw new Error("close_tab 要给 tab_id"); try { await getJson(`http://127.0.0.1:${port}/json/close/${encodeURIComponent(id)}`); } catch {} return { port, closed: id }; }
-  return withTab(String(input.tab_id || ""), async (call, tab) => {
+  const owner = String(input.owner || "");
+  if (action === "list_tabs") {
+    const mine = owner && OWNED.get(owner);
+    const pages = (await getJson(`http://127.0.0.1:${port}/json/list`)).filter((x) => x.type === "page" && !takenByOther(port, x.id, owner));
+    return { port, ...ready, tabs: pages.map((x) => ({ id: x.id, title: x.title, url: x.url, type: x.type, ...(mine && mine.port === port && mine.id === x.id ? { mine: true } : {}) })) };
+  }
+  const named = String(input.tab_id || "");
+  if (named && owner && takenByOther(port, named, owner)) throw new Error(`标签页 ${named} 是别的任务在用，不能动。不给 tab_id 就会用你自己的标签页`);
+  if (action === "close_tab") {
+    if (!named) throw new Error("close_tab 要给 tab_id");
+    try { await getJson(`http://127.0.0.1:${port}/json/close/${encodeURIComponent(named)}`); } catch {}
+    const mine = owner && OWNED.get(owner);
+    if (mine && mine.port === port && mine.id === named) forgetOwner(owner);
+    dropPark(port, named);
+    return { port, closed: named };
+  }
+  // 标签页被收掉过（闲太久 / 同时开太多）：这次用的是新开的空白页，结果里说一声
+  const gone = owner && !named ? GONE.get(owner) || "" : "";
+  if (gone) GONE.delete(owner);
+  const tabId = named || (owner ? await ownTab(port, owner) : "");
+  const headless = await headlessAt(port);
+  const out = await withTab(tabId, parkWrap(port, headless, async (call, tab) => {
     if (action === "navigate") {
       const result = await call("Page.navigate", { url: String(input.url || "") });
       const wait = input.wait_ms === undefined ? 4000 : Math.min(60000, Math.max(0, Number(input.wait_ms) || 0));
@@ -622,6 +956,8 @@ async function run(input = {}) {
       return { tab_id: tab.id, port, mime: "image/png", data };
     }
     throw new Error(`不支持的 Chrome CDP 操作：${action}`);
-  }, port);
+  }, action === "navigate" ? "" : THAW_NOTE), port);
+  return gone && out && typeof out === "object" ? { ...out, note: gone } : out;
 }
-module.exports = { run, ensure, probe, findChrome, launch, close, endpointHost, connect, getJson, spawnIsolated, newPage, closePage, touchIdle };
+module.exports = { run, ensure, probe, findChrome, launch, close, endpointHost, connect, getJson, spawnIsolated, newPage, closePage, touchIdle, releaseOwner, setActivePredicate,
+  _internals: { trimProfile, profileOwner, TRIM_DIRS, PARK, OWNED, parkMs, THAW_NOTE } };

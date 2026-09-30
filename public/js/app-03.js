@@ -383,11 +383,11 @@ document.getElementById("auth-pair").addEventListener("input", (e) => {
   e.target.value = raw.length > 4 ? raw.slice(0, 4) + "-" + raw.slice(4) : raw;
 });
 document.getElementById("auth-pair").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
-document.getElementById("auth-pair-name").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+document.getElementById("auth-pair-name").addEventListener("keydown", (e) => { if (e.key === "Enter" && !imeKey(e)) submitAuth(); });
 document.getElementById("auth-go").onclick = submitAuth;
 document.getElementById("auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
 document.getElementById("auth-invite").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
-document.getElementById("auth-user").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("auth-pass").focus(); });
+document.getElementById("auth-user").addEventListener("keydown", (e) => { if (e.key === "Enter" && !imeKey(e)) document.getElementById("auth-pass").focus(); });
 // 看一眼密码。管理员重置出来的是一串随机字符，盲打十有八九要错一次
 document.getElementById("auth-eye").onclick = () => {
   const el = document.getElementById("auth-pass");
@@ -617,7 +617,7 @@ const ONB_TIPS = {
 // 不然新用户第一次搜索就是一次超时，而他还以为是自己装错了
 const ONB_SEARCH_NAME = {
   bocha: "博查", zhipu: "智谱", qiniu: "七牛云",
-  tavily: "Tavily", serper: "Serper", jina: "Jina", brave: "Brave Search",
+  tavily: "Tavily", serper: "Serper", jina: "Jina", brave: "Brave Search", custom: "自定义接口",
 };
 const ONB_SEARCH = {
   bocha: ["sk-...", "推荐。国内服务商，专做给大模型用的搜索，中文结果好，有免费额度。"],
@@ -627,21 +627,29 @@ const ONB_SEARCH = {
   serper: ["...", "海外，拿 Google 的结果，中文收录一般。"],
   jina: ["jina_...", "海外，注册送免费额度，结果带网页正文。"],
   brave: ["BSA...", "海外，独立索引、隐私友好；有免费档但要绑卡。"],
+  // 设置里一直有这一家，向导里以前没有：用阿里云 IQS、秘塔、自建 SearXNG 的人得先跳过、再去设置里找
+  custom: ["可留空", "自己填地址：POST 一个 JSON、回一个结果数组就能接。"],
 };
-// 多媒体四项的一键预设：[名字, 接口地址, 模型名, 默认音色]，点一下就填好，只剩粘 Key
+// 多媒体五项的一键预设：[名字, 接口地址, 模型名, 默认音色]，点一下就填好，只剩粘 Key
 const ONB_MEDIA_PRESETS = {
   image: [["阿里云百炼 · qwen-image", "https://dashscope.aliyuncs.com/api/v1", "qwen-image"], ["OpenAI · gpt-image-1", "https://api.openai.com/v1", "gpt-image-1"]],
   video: [["阿里云百炼 · 万相", "https://dashscope.aliyuncs.com/api/v1", "wan2.2-t2v-plus"], ["火山方舟 · Seedance", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedance-1-0-pro-250528"], ["智谱 · CogVideoX", "https://open.bigmodel.cn/api/paas/v4", "cogvideox-3"], ["MiniMax · 海螺", "https://api.minimax.chat/v1", "MiniMax-Hailuo-02"], ["硅基流动 · 万相", "https://api.siliconflow.cn/v1", "Wan-AI/Wan2.2-T2V-A14B"]],
   tts: [["阿里云百炼 · qwen-tts", "https://dashscope.aliyuncs.com/api/v1", "qwen-tts", "Cherry"], ["OpenAI · gpt-4o-mini-tts", "https://api.openai.com/v1", "gpt-4o-mini-tts", "alloy"]],
   vision: [["阿里云百炼 · qwen-vl-max", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-vl-max"], ["OpenAI · gpt-5-mini", "https://api.openai.com/v1", "gpt-5-mini"]],
+  // 转写只收说 /audio/transcriptions 的型号（百炼那套是异步任务，没接），所以这里没有百炼
+  asr: [["OpenAI · gpt-4o-mini-transcribe", "https://api.openai.com/v1", "gpt-4o-mini-transcribe"], ["硅基流动 · SenseVoice", "https://api.siliconflow.cn/v1", "FunAudioLLM/SenseVoiceSmall"]],
 };
-// 四类多媒体能力：填的都是「OpenAI 兼容接口地址 + Key + 模型名」，说明只写一句它能干什么
+// 五类多媒体能力：填的都是「OpenAI 兼容接口地址 + Key + 模型名」，说明只写一句它能干什么。
+// 设置里有哪几路，这里就得有哪几路——以前少了转写，想接听写的人得先跳过、再去设置里找
 const ONB_MEDIA = [
   ["image", "image", "生图", "配图、海报、封面", "mi"],
   ["video", "clapperboard", "生视频", "短视频、动态封面", "mv"],
   ["tts", "mic", "语音", "配音、播客旁白", "mt"],
   ["vision", "eye", "看图", "读截图、识别图片里的字", "mvi"],
+  ["asr", "file-audio", "听写", "录音转文字、出字幕", "ma"],
 ];
+// 本机接口（Ollama、自己起的 whisper 服务）本来就没有 Key，别逼人编一个。跟服务端 chat-models.js 的 isLocalBase 同一张名单
+const isLocalBase = (u) => /localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]/.test(String(u || ""));
 /**
  * 首次开箱向导：五步走完，大脑必配，其余按需。
  *
@@ -787,13 +795,31 @@ function renderOnb() {
 }
 
 // ---------- 第一步：大模型（必需） ----------
+// 服务商下拉里「自己填地址」那一项的值；跟已配的模型名、tpl: 模板项都撞不上
+const ONB_CUSTOM = "custom:";
+/** 接口格式清单以服务端为准（API_FORMATS 只有一份）；老服务端没回就只给最常见的两种 */
+function onbApiFormats(st) {
+  const f = Array.isArray(st.api_formats) && st.api_formats.length ? st.api_formats : null;
+  return f || [{ id: "openai", label: "OpenAI 兼容（最通用）" }, { id: "anthropic", label: "Anthropic 兼容" }];
+}
+/** 跟服务端 chat-models.js 的 trimEndpoint 同一个规矩：文档里抄来的整条 …/chat/completions 去掉尾巴 */
+function onbTrimEndpoint(u) {
+  return String(u || "").trim().replace(/\/+$/, "")
+    .replace(/\/(chat\/completions|completions|responses|messages)$/i, "")
+    .replace(/\/+$/, "");
+}
+/** 只填了域名（没有路径）——中转站的接口多半挂在 /v1 下，问清单时补一次 */
+function onbBareHost(u) {
+  try { return !new URL(u).pathname.replace(/\/+$/, ""); } catch { return false; }
+}
+
 function renderOnbBrain(body) {
   const { st } = onbState;
   const engs = st.engines || [];
   const installed = engs.filter(e => e.installed);
   body.innerHTML = `
     ${onbLicCard(onbState.lic)}
-    ${onbHead("先接上一个大模型", "OpenWorkBuddy 自己不含模型。填一家服务商的 API Key，或者直接用你电脑上已登录的 Claude Code / Codex。", "必需")}
+    ${onbHead("先接上一个大模型", "OpenWorkBuddy 不含模型。填服务商的 Key，或用本机已登录的 Claude Code / Codex。", "必需")}
     ${st.brain.ok ? `<div class="onb-ok" id="onb-brain-ok">${ic("circle-check")} 已接上 <b>${esc(st.brain.name)}</b>${st.brain.model ? ` · ${esc(st.brain.model)}` : ""}<a id="onb-brain-change">换一个</a></div>` : ""}
     <div id="onb-brain-form" ${st.brain.ok ? "hidden" : ""}>
       <div class="onb-seg" id="onb-seg">
@@ -805,8 +831,14 @@ function renderOnbBrain(body) {
         <select id="onb-model">${st.models.map(m =>
           `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}" data-model="${esc(m.model)}">${esc(m.name)}${m.local ? "" : ` · ${esc(m.model)}`}${m.has_key ? "（已配）" : ""}</option>`).join("")}${
           (st.templates || []).length ? `<optgroup label="${st.models.length ? "新接一家" : "选一家服务商"}">${(st.templates || []).map(t =>
-          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}" data-model="${esc(t.model)}">${esc(t.name)}${t.local ? "" : ` · ${esc(t.model)}`}</option>`).join("")}</optgroup>` : ""}</select>
+          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}" data-model="${esc(t.model)}">${esc(t.name)}${t.local ? "" : ` · ${esc(t.model)}`}</option>`).join("")}</optgroup>` : ""}<optgroup label="列表里没有"><option value="${ONB_CUSTOM}" data-url="" data-local="0" data-model="">自己填地址（中转站、自建网关）</option></optgroup></select>
         <div class="onb-tip" id="onb-tip"></div>
+        <div id="onb-crow" hidden>
+          <label class="onb-lb">接口地址</label>
+          <input id="onb-curl" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
+          <label class="onb-lb">接口格式</label>
+          <select id="onb-cfmt">${onbApiFormats(st).map(f => `<option value="${esc(f.id)}">${esc(f.label)}</option>`).join("")}</select>
+        </div>
         <div id="onb-mrow" hidden>
           <label class="onb-lb">用哪个模型</label>
           <select id="onb-mdl"></select>
@@ -815,6 +847,12 @@ function renderOnbBrain(body) {
         </div>
         <label class="onb-lb">API Key</label>
         <input id="onb-key" type="password" placeholder="粘贴 API Key" autocomplete="off" spellcheck="false">
+        <div id="onb-crow2" hidden>
+          <label class="onb-lb">模型名</label>
+          <input id="onb-cmodel" list="onb-cmodels" placeholder="照接口文档填，例如 deepseek-chat" autocomplete="off" spellcheck="false">
+          <datalist id="onb-cmodels"></datalist>
+          <div class="onb-tip" id="onb-ctip"></div>
+        </div>
       </div>
       <div id="onb-local" hidden>
         ${installed.length
@@ -908,7 +946,47 @@ function renderOnbBrain(body) {
     bindAgain();
     syncCustom();
   };
+  // 「自己填地址」：中转站、new-api / one-api、公司内网网关。以前得先跳过这一步、进了界面再去设置里找，
+  // 可大脑没接上什么都干不了——最需要这条路的恰恰是第一步
+  const crow = body.querySelector("#onb-crow");
+  const crow2 = body.querySelector("#onb-crow2");
+  const curl = body.querySelector("#onb-curl");
+  const cfmt = body.querySelector("#onb-cfmt");
+  const cmodel = body.querySelector("#onb-cmodel");
+  const cmodels = body.querySelector("#onb-cmodels");
+  const ctip = body.querySelector("#onb-ctip");
+  const isCustom = () => sel.value === ONB_CUSTOM;
+  let listSeq = 0;
+  // 地址和 Key 都填了就去问一次它有哪些模型，问到了挂进模型名的下拉提示里；问不到不拦路，照文档手填
+  const listCustom = async () => {
+    const base = onbTrimEndpoint(curl.value);
+    const key = keyEl.value.trim();
+    const seq = ++listSeq;
+    if (!/^https?:\/\/[^/\s]+/i.test(base)) { cmodels.innerHTML = ""; ctip.textContent = ""; return; }
+    const ask = (u) => fetch("/api/provider-models", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: u, api_key: key }),
+    }).then((r) => r.json()).catch(() => ({ ok: false }));
+    ctip.textContent = "正在问这个地址有哪些模型…";
+    let d = await ask(base);
+    if (!(d && d.ok && (d.models || []).length) && onbBareHost(base)) d = await ask(base + "/v1");
+    if (seq !== listSeq || !ctip.isConnected) return;
+    const ids = (d && d.ok && Array.isArray(d.models) ? d.models : []).map((m) => String(m.id || m)).filter(Boolean);
+    cmodels.innerHTML = ids.map((id) => `<option value="${esc(id)}"></option>`).join("");
+    ctip.textContent = ids.length ? `这个地址列出了 ${ids.length} 个模型，点模型名一栏可以挑` : "没拿到模型清单，照接口文档把模型名填上";
+  };
+  curl.onchange = listCustom;
+  keyEl.addEventListener("change", () => { if (isCustom()) listCustom(); });
   const syncTip = () => {
+    const custom = isCustom();
+    crow.hidden = crow2.hidden = !custom;
+    if (custom) {
+      tipEl.textContent = "填中转站或自建网关给你的地址、Key 和模型名。";
+      keyEl.disabled = false;
+      keyEl.placeholder = "粘贴 API Key（本机接口可不填）";
+      mrow.hidden = true;
+      setTimeout(() => curl.focus(), 20);
+      return;
+    }
     const opt = sel.selectedOptions[0];
     const local = !!opt && opt.dataset.local === "1";
     const url = opt ? opt.dataset.url : "";
@@ -936,12 +1014,16 @@ function renderOnbBrain(body) {
         // model_id 只在本机那条路上带：云端用哪个型号是模板定好的，本机才需要他自己点名
         const wantModel = mrow.hidden ? "" : pickedModel();
         if (!mrow.hidden && !wantModel) { err.textContent = "先选一个模型——本机装了哪些只有你知道，我猜不出来"; return; }
+        if (isCustom() && !curl.value.trim()) { err.textContent = "先把接口地址填上"; curl.focus(); return; }
+        if (isCustom() && !cmodel.value.trim()) { err.textContent = "模型名还空着，照这家接口文档填"; cmodel.focus(); return; }
         const r = await fetch("/api/onboarding", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(Object.assign(
-            sel.value.startsWith("tpl:")
-              ? { kind: sel.value.slice(4), api_key: keyEl.value.trim() }
-              : { model: sel.value, api_key: keyEl.value.trim() },
+            isCustom()
+              ? { custom: { base_url: curl.value.trim(), api: cfmt.value, model: cmodel.value.trim() }, api_key: keyEl.value.trim() }
+              : sel.value.startsWith("tpl:")
+                ? { kind: sel.value.slice(4), api_key: keyEl.value.trim() }
+                : { model: sel.value, api_key: keyEl.value.trim() },
             wantModel ? { model_id: wantModel } : {})),
         }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
         if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
@@ -982,12 +1064,18 @@ function renderOnbSearch(body) {
   const sc = st.search || {};
   body.innerHTML = `
     ${onbHead("联网搜索", "让它能查资料、看新闻、核对事实。不填也能搜（走不要 Key 的免费通道），但结果一般。", "推荐")}
-    ${sc.has_key ? `<div class="onb-ok">${ic("circle-check")} 已配 <b>${esc(sc.provider)}</b></div>` : ""}
+    ${sc.has_key ? `<div class="onb-ok">${ic("circle-check")} 已配 <b>${esc(ONB_SEARCH_NAME[sc.provider] || sc.provider)}</b></div>` : ""}
     <label class="onb-lb">搜索服务商</label>
     <select id="onb-sp">${Object.entries(ONB_SEARCH).map(([id, [, tip]], i) =>
       `<option value="${id}">${esc(ONB_SEARCH_NAME[id] || id)}${i === 0 ? "（推荐）" : ""}</option>`).join("")}</select>
     <div class="onb-tip" id="onb-sp-tip"></div>
-    <label class="onb-lb">API Key</label>
+    <div id="onb-sp-custom" hidden>
+      <label class="onb-lb">接口地址（POST）</label>
+      <input id="onb-sp-url" placeholder="https://……/search" autocomplete="off" spellcheck="false">
+      <label class="onb-lb">问题字段名</label>
+      <input id="onb-sp-field" placeholder="query（不填就用它）" autocomplete="off" spellcheck="false">
+    </div>
+    <label class="onb-lb" id="onb-sp-klb">API Key</label>
     <input id="onb-sp-key" type="password" autocomplete="off" spellcheck="false">
     <div class="err" id="onb-err"></div>
     ${onbFoot(sc.has_key ? "下一步" : "保存并测试", "先跳过，用免费的 DuckDuckGo")}`;
@@ -996,18 +1084,41 @@ function renderOnbSearch(body) {
   const tip = body.querySelector("#onb-sp-tip");
   const err = body.querySelector("#onb-err");
   const go = body.querySelector("#onb-go");
-  sel.value = sc.provider || Object.keys(ONB_SEARCH)[0];
-  const sync = () => { const [ph, t] = ONB_SEARCH[sel.value] || ["", ""]; keyEl.placeholder = ph; tip.innerHTML = `${t} ${keyLink(sel.value)}`; };
+  const cBox = body.querySelector("#onb-sp-custom");
+  const cUrl = body.querySelector("#onb-sp-url");
+  const cField = body.querySelector("#onb-sp-field");
+  const kLb = body.querySelector("#onb-sp-klb");
+  // 服务端认的那家不在这张表里（比这一版前端新）就停在第一家，别让下拉框显示成一片空白
+  sel.value = ONB_SEARCH[sc.provider] ? sc.provider : Object.keys(ONB_SEARCH)[0];
+  const sync = () => {
+    const [ph, t] = ONB_SEARCH[sel.value] || ["", ""];
+    const custom = sel.value === "custom";
+    keyEl.placeholder = ph;
+    tip.innerHTML = custom ? esc(t) : `${t} ${keyLink(sel.value)}`;
+    cBox.hidden = !custom;
+    kLb.textContent = custom ? "接口 Key（不要鉴权就留空）" : "API Key";
+  };
   sel.onchange = sync;
   sync();
   go.onclick = async () => {
     const key = keyEl.value.trim();
-    if (!key) { if (sc.has_key) return onbGo(2); err.textContent = "没填 Key。不想填就点「先跳过」"; return; }
+    const custom = sel.value === "custom";
+    const url = custom ? cUrl.value.trim() : "";
+    if (custom ? !url : !key) {
+      if (sc.has_key) return onbGo(2);
+      err.textContent = custom ? "先把接口地址填上。不想填就点「先跳过」" : "没填 Key。不想填就点「先跳过」";
+      return;
+    }
+    if (custom && !/^https?:\/\/[^/\s]+/i.test(url)) { err.textContent = "接口地址要填完整，http(s) 开头"; return; }
     err.textContent = "";
     go.disabled = true;
     go.textContent = "保存并测试中…";
     try {
-      const ok = await saveSettings({ search: { provider: sel.value, [sel.value + "_key"]: key } });
+      // 自定义那家 Key 可以不填；空着就别发，免得把设置里早先填好的那把冲掉
+      const patch = custom
+        ? { provider: "custom", custom_url: url, ...(cField.value.trim() ? { custom_query_field: cField.value.trim() } : {}), ...(key ? { custom_key: key } : {}) }
+        : { provider: sel.value, [sel.value + "_key"]: key };
+      const ok = await saveSettings({ search: patch });
       if (!ok) { err.textContent = lastSaveError || "保存失败"; return; } // 服务端说了原因（如「归平台管理员管」）就别用四个字盖掉
       const r = await fetch("/api/search/test").then(x => x.json()).catch(() => ({ ok: false, error: "请求失败" }));
       if (!r.ok) { err.textContent = r.error || "测试失败"; return; }
@@ -1022,12 +1133,12 @@ function renderOnbSearch(body) {
   body.querySelector("#onb-skip-step").onclick = () => { onbState.skipped.add("search"); onbGo(2); };
 }
 
-// ---------- 第三步：生图 / 视频 / 语音 / 看图（可选） ----------
+// ---------- 第三步：生图 / 视频 / 语音 / 看图 / 听写（可选） ----------
 function renderOnbMedia(body) {
   const { st } = onbState;
   const md = st.media || {};
   body.innerHTML = `
-    ${onbHead("生图 · 视频 · 语音 · 看图", "按需开通，都不填也不影响聊天和办公。每项只要一个 OpenAI 兼容的接口地址 + Key + 模型名。", "可选")}
+    ${onbHead("生图 · 视频 · 语音 · 看图 · 听写", "按需开通，不填也不影响聊天办公。每项填接口地址、Key、模型名，本机接口不用 Key。", "可选")}
     <div class="onb-rows" id="onb-media">${ONB_MEDIA.map(([k, icon, name, use]) => `
       <div class="onb-row" data-kind="${k}">
         <div class="onb-row-h"><i class="ic">${ic(icon)}</i><div class="tt"><b>${name}</b><span>${use}</span></div>
@@ -1036,7 +1147,7 @@ function renderOnbMedia(body) {
         <div class="onb-row-b" hidden>
           <div class="onb-presets">${(ONB_MEDIA_PRESETS[k] || []).map(([nm, base, model, voice]) => `<button type="button" class="onb-preset" data-base="${esc(base)}" data-model="${esc(model)}" data-voice="${esc(voice || "")}">${esc(nm)}</button>`).join("")}<span class="onb-tip onb-preset-src"></span></div>
           <input data-f="base_url" placeholder="接口地址（如 https://api.openai.com/v1）">
-          <input data-f="api_key" type="password" placeholder="API Key" autocomplete="off">
+          <input data-f="api_key" type="password" placeholder="API Key（本机接口可空）" autocomplete="off">
           <input data-f="model" placeholder="模型名">
           ${k === "tts" ? '<input data-f="voice" placeholder="默认音色（可空）">' : ""}
           <div class="onb-act"><button type="button" class="btn-brand onb-save" data-kind="${k}">保存</button><span class="err"></span></div>
@@ -1069,7 +1180,8 @@ function renderOnbMedia(body) {
     const err = row.querySelector(".err");
     const patch = {};
     row.querySelectorAll("input[data-f]").forEach(i => { patch[i.dataset.f] = i.value.trim(); });
-    if (!patch.base_url || !patch.api_key) { err.textContent = "接口地址和 Key 都要填"; return; }
+    // 型号也得有：没有型号服务端落不成模型条目，以前这里放过去，存完亮「已配」其实什么都没存下
+    if (!patch.base_url || !patch.model || (!patch.api_key && !isLocalBase(patch.base_url))) { err.textContent = isLocalBase(patch.base_url) ? "接口地址和模型名都要填" : "接口地址、Key、模型名都要填"; return; }
     err.textContent = "";
     save.disabled = true;
     const ok = await saveSettings({ media: { [kind]: patch } });
@@ -1120,7 +1232,7 @@ function renderOnbDone(body) {
     <div class="onb-rows" id="onb-sum">
       ${row("brain", "大模型", st.brain.ok, st.brain.ok ? `${esc(st.brain.name)}${st.brain.model ? " · " + esc(st.brain.model) : ""}` : "还没接上", true)}
       ${row("search", "联网搜索", st.search.has_key, st.search.has_key ? esc(st.search.provider) : "用免费 DuckDuckGo 顶着", !skipped.has("search"))}
-      ${row("palette", "图 / 视频 / 语音 / 看图", mediaN > 0, mediaN ? `${mediaN} / ${ONB_MEDIA.length} 项已配` : "都没配", !skipped.has("media"))}
+      ${row("palette", "图 / 视频 / 语音 / 看图 / 听写", mediaN > 0, mediaN ? `${mediaN} / ${ONB_MEDIA.length} 项已配` : "都没配", !skipped.has("media"))}
       ${row("smartphone", "远程指挥", imN > 0, imN ? `${imN} 个通道已配` : "没接 IM", !skipped.has("im"))}
     </div>
     <label class="onb-lb">工作目录（成果文件都放这儿）</label>
@@ -1263,10 +1375,16 @@ function openPageView(kind) {
 function openAssistView() {
   if (pageKind === "assist") return;
   openPageView("assist");
+  // 上一趟还没回来就不再叠一趟。2026-09-28 实测连接被占满时请求一排半分钟，每 5 秒一条越排越长
+  let busy = false;
   assistTimer = setInterval(async () => {
     if (pageKind !== "assist" || !document.getElementById("im-feed")) { clearInterval(assistTimer); assistTimer = null; return; }
-    renderAssistFeed(await fetch("/im/log").then(r => r.json()).catch(() => []));
-    updateAssistLive();
+    if (busy) return;
+    busy = true;
+    try {
+      renderAssistFeed(await fetch("/im/log").then(r => r.json()).catch(() => []));
+      await updateAssistLive();
+    } finally { busy = false; }
   }, 5000);
 }
 function closeAssistView() {
@@ -1357,11 +1475,13 @@ async function doAssistLocal(text, model) {
     feed.scrollTop = feed.scrollHeight;
   }
   // 等结果期间把「执行中…」气泡变成实时进度（第几步、在用哪个工具），跟飞书状态消息同一份文案
+  let liveBusy = false; // 上一问没回来不叠问：连接占满时 1.5 秒一条，越排越长
   const liveT = setInterval(async () => {
     const el = document.querySelector("#im-pending .im-b");
-    if (!el) return;
-    const p = await fetch("/im/progress").then(r => r.json()).catch(() => null);
-    if (p && p.local_assist && p.local_assist.text) setMsg(el, "hourglass", p.local_assist.text);
+    if (!el || liveBusy) return;
+    liveBusy = true;
+    const p = await fetch("/im/progress").then(r => r.json()).catch(() => null).finally(() => { liveBusy = false; });
+    if (p && p.local_assist && p.local_assist.text && el.isConnected) setMsg(el, "hourglass", p.local_assist.text);
   }, 1500);
   try {
     // 模型标签上显示的是哪个就真用哪个：以前这里不带 model，助理页选了模型也是白选，

@@ -2649,7 +2649,17 @@ app.whenReady().then(async () => {
       };
       push({ type: "text", delta: "好的，这就重新生成" });
       await 等(300); // 正文每 100ms 渲一次
-      const 直播 = (runningSessions.get(sid) && runningSessions.get(sid).ui.turn.textContent) || "";
+      // 后台回合不在页面上时只攒字不排版（app-01 appendText 那道门），挂回页面时 flush 一次画齐：
+      // 这里照「点回这条对话」那样挂上去、flush 了再读，读完放回原处
+      const 直播 = (() => {
+        const r = runningSessions.get(sid);
+        if (!r) return "";
+        const t = r.ui.turn, home = t.parentNode, next = t.nextSibling;
+        if (!t.isConnected) { document.body.appendChild(t); if (r.ui.flush) r.ui.flush(); }
+        const s = t.textContent || "";
+        if (home) home.insertBefore(t, next); else t.remove();
+        return s;
+      })();
       push({ type: "done" }); ctl.close();
       await p; await 等(100);
       const 跑完 = { 登记了: runningSessions.has(sid), 圆点: 圆点() };
@@ -2692,6 +2702,114 @@ app.whenReady().then(async () => {
   ok(同步.没顶掉, "反向对照：同一条任务正在主界面跑，画布不重复发、不把那边的回合顶掉", 同步.没顶掉);
   ok(同步.回放气泡 === "现在重新生成下啊" && 同步.回放重跑用全文 && 同步.老记录气泡 === "直接打的一句话",
      "回放：有原话显示原话、重新生成仍用全文；老记录照旧显示原文", 同步);
+
+  console.log("\n— 三十六之二、画布对话挂到整页那一条直播上，不再自己攥一条 POST 的流 —");
+  // 2026-09-28 那次一片白（app-02 liveCh 的注释）：Chromium 同一主机最多 6 条连接，画布发的这条 POST 流也占一个坑。
+  // 主聊天框那一波已经改成 detach + 直播，画布这边是 wave 2 补上的。这儿量三件：
+  //   ① 服务端有直播：请求带 detach，POST 当场回话、不留流；过程从 /api/chat/live 来，画布右栏照样逐条收到
+  //   ② 直播 404（服务端没有这个接口）：退回逐条续流，右栏一样收得到、真跑完才收
+  //   ③ 已经知道是老服务端（liveCh.off）：不带 detach，照旧整条 SSE 读到底
+  const 直播 = await run(`
+    (async () => {
+      const sid = canvasTaskSessionId();
+      const 等 = (ms) => new Promise((r) => setTimeout(r, ms));
+      const inner = window.fetch, 发的 = [], 直播请求 = [];
+      let live = null, 续 = null, 跑着 = [], POST流 = 0, 直播模式 = "有";
+      const enc = (o) => new TextEncoder().encode("data: " + JSON.stringify(o) + "\\n\\n");
+      window.fetch = function (u, o) {
+        const s = String(u).split("?")[0];
+        if (s === "/api/chat" && o && o.method === "POST") {
+          const b = JSON.parse(o.body); 发的.push(b);
+          if (b.detach) return Promise.resolve(new Response(JSON.stringify({ accepted: true, sessionId: b.sessionId, rid: "rid-canvas" }), { status: 202, headers: { "Content-Type": "application/json" } }));
+          POST流++;
+          return Promise.resolve(new Response(new ReadableStream({ start(c) {
+            c.enqueue(enc({ type: "text", delta: "整条流回的字" })); c.enqueue(enc({ type: "done" })); c.close();
+          } }), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+        }
+        if (s === "/api/chat/live") {
+          直播请求.push(decodeURIComponent(String(u)));
+          if (直播模式 === "没有") return Promise.resolve(new Response("nope", { status: 404 }));
+          return Promise.resolve(new Response(new ReadableStream({ start(c) { live = c; } }), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+        }
+        if (s === "/api/chat/running") return Promise.resolve(new Response(JSON.stringify(跑着), { status: 200 }));
+        if (s.startsWith("/api/chat/stream/")) return Promise.resolve(new Response(new ReadableStream({ start(c) { 续 = c; } }), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+        return inner.apply(this, arguments);
+      };
+      const log = document.getElementById("canvas-chat-log");
+      const 右栏 = () => log.textContent;
+      const input = document.getElementById("canvas-chat-input");
+      const 原off = liveCh.off;
+      // 跑一趟：run 是要测的那个 canvasChatRun（或者它的变体），推的是直播那头要发的几帧
+      const 跑一趟 = async (run, 话, 推) => {
+        log.innerHTML = ""; live = null; 续 = null; 直播请求.length = 0; POST流 = 0; 发的.length = 0;
+        input.value = 话;
+        const p = run();
+        for (let i = 0; i < 50 && !live && !续 && POST流 === 0; i++) await 等(20);
+        const 跑时 = { 登记了: runningSessions.has(sid), POST流 };
+        await 推();
+        await p;
+        for (let i = 0; i < 50 && runningSessions.has(sid); i++) await 等(20);
+        return { 跑时, 发的: 发的.map((b) => ({ detach: !!b.detach, shown: b.shown })), 直播请求: 直播请求.slice(), POST流, 右栏: 右栏(), 收了: !runningSessions.has(sid) };
+      };
+      const 直播推 = async () => {
+        for (let i = 0; i < 50 && !live; i++) await 等(20);
+        if (!live) return;
+        live.enqueue(enc({ sid, n: 0, t: 6, rid: "rid-canvas", ev: { type: "text", delta: "直播来的回复" } }));
+        live.enqueue(enc({ sid, n: 1, t: -1, ev: { type: "tool_use", name: "canvas_manage" } }));
+        live.enqueue(enc({ sid, n: 2, t: -1, ev: { type: "done" } }));
+        live.enqueue(enc({ sid, end: true }));
+      };
+      // ① 有直播
+      liveCh.off = false;
+      const 有 = await 跑一趟(canvasChatRun, "换个色调", 直播推);
+      // ② 直播 404：keepAttached 自己退回逐条续流
+      liveCh.off = false; 直播模式 = "没有"; 跑着 = [sid];
+      const 没有 = await 跑一趟(canvasChatRun, "再亮一点", async () => {
+        for (let i = 0; i < 100 && !续; i++) await 等(20);
+        const 续时还登记着 = runningSessions.has(sid);
+        if (!续) return;
+        续.enqueue(enc({ type: "text", delta: "续流来的回复" }));
+        跑着 = [];
+        续.enqueue(enc({ type: "done" })); 续.close();
+        window.__续时还登记着 = 续时还登记着;
+      });
+      没有.续时还登记着 = window.__续时还登记着; 没有.off = liveCh.off;
+      // ③ 已经知道是老服务端
+      const 老 = await 跑一趟(canvasChatRun, "老服务端", async () => {});
+      // 反向对照 A：把 detach 那一句拿掉的变体——又回到自己攥一条 POST 流，① 的「没留流」那条断言就是为抓它
+      liveCh.off = false; 直播模式 = "有";
+      const 源 = canvasChatRun.toString();
+      const 没detach源 = 源.replace(", ...(useLive ? { detach: true } : {})", "");
+      const 没detach = 没detach源 === 源 ? null : await 跑一趟(new Function("return (" + 没detach源 + ")")(), "变体一", 直播推);
+      // 反向对照 B：直播挂的是回合本身、不是包了右栏的那一层——回合照画，画布右栏一个字都收不到
+      liveCh.off = false;
+      const 没包源 = 源.replace("await keepAttached(sessionId, ui, turn.rc", "await keepAttached(sessionId, turn.ui, turn.rc");
+      const 没包 = 没包源 === 源 ? null : await 跑一趟(new Function("return (" + 没包源 + ")")(), "变体二", 直播推);
+      liveCh.off = 原off;
+      window.fetch = inner;
+      return { 有, 没有, 老, 没detach, 没包 };
+    })()`);
+  const 有直播 = 直播.有 || {};
+  ok(有直播.发的 && 有直播.发的.length === 1 && 有直播.发的[0].detach && 有直播.POST流 === 0 && 有直播.跑时.POST流 === 0,
+     "★有直播：画布发的这一条带 detach，POST 当场回话，不再自己攥一条流★", 有直播);
+  ok(有直播.直播请求.length >= 1 && 有直播.直播请求[0].endsWith(":rid-canvas"),
+     "过程挂到 /api/chat/live 上，订阅带着这一趟的 rid", 有直播.直播请求);
+  ok(有直播.跑时.登记了 && 有直播.收了, "直播期间侧栏照样挂着运行中，收到收尾帧才撤", 有直播);
+  ok(/直播来的回复/.test(有直播.右栏) && /执行：canvas_manage/.test(有直播.右栏) && /已完成 · 画布已同步/.test(有直播.右栏),
+     "★直播来的回复、工具调用、完成，画布右栏逐条都收到★", 有直播.右栏);
+  const 退回 = 直播.没有 || {};
+  ok(退回.发的 && 退回.发的[0] && 退回.发的[0].detach && 退回.off === true && 退回.续时还登记着 && 退回.收了,
+     "★直播 404：退回逐条续流，续流期间还挂着运行中，跑完才收★", 退回);
+  ok(/续流来的回复/.test(退回.右栏) && /已完成 · 画布已同步/.test(退回.右栏), "退回续流时画布右栏一样收得到回复和完成", 退回.右栏);
+  const 老服 = 直播.老 || {};
+  ok(老服.发的 && 老服.发的[0] && !老服.发的[0].detach && 老服.POST流 === 1 && 老服.直播请求.length === 0 && /整条流回的字/.test(老服.右栏) && 老服.收了,
+     "已经知道是老服务端：不带 detach，照旧整条 SSE 读到底", 老服);
+  const 变体一 = 直播.没detach;
+  ok(!!变体一 && 变体一.POST流 === 1 && !(变体一.发的[0] || {}).detach,
+     "反向对照：拿掉 detach 的变体又攥回一条 POST 流——上面「没留流」那条断言抓得住它", 变体一);
+  const 变体二 = 直播.没包;
+  ok(!!变体二 && !/直播来的回复/.test(变体二.右栏) && !/已完成 · 画布已同步/.test(变体二.右栏) && 变体二.收了,
+     "反向对照：直播只挂回合、不包右栏的变体，右栏收不到回复——上面「逐条都收到」那条抓得住它", 变体二 && 变体二.右栏);
 
   console.log("\n— 三十七、出视频带上时长 / 画幅：新建短剧定的、卡上写的，都要真发出去 —");
   const 视频卡 = { id: "vv1", kind: "video", position: { x: 700, y: 40 }, size: { width: 300, height: 260 },

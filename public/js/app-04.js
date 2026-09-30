@@ -953,6 +953,13 @@ function libSearchHtml(data, q, recents) {
 async function renderLibPreview(prev, lib) {
   const { src, name } = libState.pick || {};
   if (!src) return;
+  // 上一份网页预览留下的 blob 和尺寸监听：下面马上要把那个 iframe 换掉，换掉之后当场还回去。
+  // 以前从不 revoke，资料库里每点开一个网页，那一整页文本就在渲染进程里多留一份，直到窗口关掉。
+  // 记在函数自己身上而不是 prev 上：renderLibPage 每次整页重画都换一块新的 #lb-prev，挂在旧节点上的就没人收了
+  const last = renderLibPreview.last;
+  renderLibPreview.last = null;
+  if (last && last.host && last.host._fitAbort) { last.host._fitAbort.abort(); last.host._fitAbort = null; }
+  const dropOldBlob = () => { if (last && last.blob) try { URL.revokeObjectURL(last.blob); } catch {} };
   if (src === "notes") {
     prev.innerHTML = `
       <div style="font-weight:600;margin-bottom:4px">${ic("lightbulb")} 灵感笔记</div>
@@ -964,6 +971,7 @@ async function renderLibPreview(prev, lib) {
       <div>${(lib.notes || []).map(n =>
         `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span><a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a></div></div>`).join("")
         || '<div class="ph">还没有灵感笔记。<br>记一条，如「周报只要三段」，之后每次任务助理都会看到。</div>'}</div>`;
+    dropOldBlob();
     const save = async () => {
       const el = prev.querySelector("#lb-note");
       const text = el.value.trim();
@@ -975,7 +983,7 @@ async function renderLibPreview(prev, lib) {
       renderLibPage();
     };
     prev.querySelector("#lb-note-save").onclick = save;
-    prev.querySelector("#lb-note").onkeydown = (e) => { if (e.key === "Enter") save(); };
+    prev.querySelector("#lb-note").onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) save(); };
     prev.querySelectorAll("a[data-nid]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
       const r = await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" })
@@ -1005,6 +1013,7 @@ async function renderLibPreview(prev, lib) {
   </div>
   ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}"${fromTurn == null ? "" : ` data-turn="${fromTurn}"`} title="${fromTurn == null ? "回到产生这份文件的那次对话" : "回到产生这份文件的那次对话，并停在写出它的那一段"}">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em>${fromTurn == null ? "" : `<span class="lib-from-at">第 ${fromTurn + 1} 轮</span>`}</div>` : ""}`;
   prev.innerHTML = bar + '<div class="ph">加载中…</div>';
+  dropOldBlob();
   const body = prev.lastElementChild;
   const wireDel = () => {
     const d = prev.querySelector("#lb-del");
@@ -1057,7 +1066,9 @@ async function renderLibPreview(prev, lib) {
       // 以前这一页没有这条路，同一份 .pptx 在对话里点得开、拖进资料库就变成一屏乱码。
       // 画法和样式都跟对话页那边共用同一套（docHtml / sheetHtml / slidesHtml / .ov-*），不抄第二份。
       const api = src === "lib" ? "/api/library/preview/" : "/api/files/preview/";
-      const r = await fetch(api + fpath(name) + "?t=" + Date.now());
+      // 不再带 ?t=当前时间：每点一次一个新地址，浏览器每次都往磁盘缓存里多存一份存了就再也用不上的副本。
+      // 这个接口不给强缓存（没有 max-age），固定地址每次照样回服务端核对，内容变了当场拿新的
+      const r = await fetch(api + fpath(name));
       if (r.status === 404) body.outerHTML = gonePh;
       else {
         const d = await r.json().catch(() => null);
@@ -1096,7 +1107,10 @@ async function renderLibPreview(prev, lib) {
           // 按宽度缩成整页，理由同工作区预览：1200 宽的卡片塞进这条窄栏，1:1 只能看见左上角一块。
           // 这里读不到 contentDocument（sandbox 没给 allow-same-origin，是故意的），所以往页面尾巴上
           // 挂一小段脚本让它自己把尺寸报出来——只进这个临时 blob，磁盘上那份文件一个字没动
+          // 等页面回来的这段时间里用户可能已经点了别的文件：这一块早被换下来了，别再造一份没人看的 blob
+          if (!body.isConnected) return;
           const blob = URL.createObjectURL(new Blob([text + PV_FIT_REPORTER], { type: "text/html" }));
+          renderLibPreview.last = { blob, host: prev }; // 下一次换预览时 revoke，见本函数开头
           body.outerHTML = `<div class="pv-fit"><iframe src="${blob}" sandbox="allow-scripts" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
           fitPreviewFrame(prev, { selfReport: true });
         }

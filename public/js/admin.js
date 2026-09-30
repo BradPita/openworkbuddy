@@ -23,6 +23,11 @@ const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ic = (name, cls) => `<svg class="i${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 const EN = () => typeof I18N !== "undefined" && I18N.getLang() === "en";
+/** 这一下回车/Esc 是给输入法的（拼音上屏、取消），不是给搜索框的。后台单独一页，没加载 app-00-ui.js，
+ *  所以这儿照抄一份：Chromium 看 isComposing / 229，Safari 先发 compositionend 再发回车，看「拼字刚结束」。 */
+let imeEndAt = -Infinity;
+document.addEventListener("compositionend", () => { imeEndAt = performance.now(); }, true);
+const imeKey = (e) => !!e && (e.isComposing || e.keyCode === 229 || performance.now() - imeEndAt < 50);
 const num = (n) => (+n || 0).toLocaleString(EN() ? "en-US" : "zh-CN");
 /** tokens 这类大数走「万」，一屏里塞得下也读得出量级。英文没有「万」这一档，换成 k / M / B */
 const big = (n) => {
@@ -175,7 +180,7 @@ function modal(opts) {
     sync();
   });
   const close = () => { document.removeEventListener("keydown", onKey); mask.remove(); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const onKey = (e) => { if (e.key === "Escape" && !imeKey(e)) close(); }; // 表单里拼音打一半按 Esc 是取消拼字，不是关掉整张表
   document.addEventListener("keydown", onKey);
   mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
   mask.querySelector("[data-x]").onclick = close;
@@ -322,7 +327,7 @@ function bindFilter(root, f, onChange) {
     // 防抖 300ms：不防的话打一个字发一次请求，一个词打完就是六七次
     let t = 0;
     q.oninput = () => { clearTimeout(t); t = setTimeout(() => onChange({ ...f, q: q.value, offset: 0 }), 300); };
-    q.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); onChange({ ...f, q: q.value, offset: 0 }); } };
+    q.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(t); onChange({ ...f, q: q.value, offset: 0 }); } };
   }
 }
 /**
@@ -608,7 +613,10 @@ PAGES.security = {
       ${note("以下开关<b>即时生效</b>：关命令行后模型不再拿到该工具；缩短登录有效期，已有登录立即作废。")}
       ${card(`${secT("命令行", "关闭后移除 run_shell / run_node，其他工具不受影响。")}
         <div style="margin-top:14px">
-          ${field("允许运行命令行", "允许任务在服务器上执行 shell 和 Node。安全要求高建议关。", sw("allow_shell", s.allow_shell !== false))}
+          ${!PLATFORM && s.allow_shell === false
+            // 租户组织：命令行跑在平台的机器上，关了之后只有平台管理员能再打开（org.tenantHeld）
+            ? field("允许运行命令行", "已关闭。要打开请找平台管理员。", `<label class="ui-switch"><input type="checkbox" data-k="allow_shell" disabled><i></i></label>`)
+            : field("允许运行命令行", PLATFORM ? "允许任务在服务器上执行 shell 和 Node。安全要求高建议关。" : "关掉后要平台管理员才能再打开。", sw("allow_shell", s.allow_shell !== false))}
           ${field("登录有效期", "天数，1 - 365。改小后超期的登录立即失效。", inp("session_days", s.session_days, 'type="number" min="1" max="365" style="width:120px"'))}
         </div>`)}
       ${card(`${secT("密码与二次验证", "只对之后设置的新密码生效。")}
@@ -619,7 +627,7 @@ PAGES.security = {
         </div>`)}
       ${card(`${secT("远程访问与远程操控", "默认都关，只能在本机使用。")}
         <div style="margin-top:14px">
-          ${field("允许远程设备接入", "可在「设置 → 设备」扫码连接手机等设备。<b>关闭后已连设备立即下线。</b>", sw("remote_devices", !!s.remote_devices))}
+          ${field("允许远程设备接入", `开了之后在工作台扫码连手机。<a class="ad-go" href="/#go=settings:security" target="_blank" rel="noopener">去配对${ic("arrow-up-right")}</a><br><b>关闭后已连设备立即下线。</b>`, sw("remote_devices", !!s.remote_devices))}
           ${field("允许远程操控终端任务", "可在网页和手机上查看、插话、审批终端里的任务。", sw("remote_control", !!s.remote_control))}
         </div>`)}
       ${saveBar()}
@@ -647,7 +655,7 @@ PAGES.sub = {
           [
             "到期时间",
             `<span class="v ad-mono">${p.expires_at ? esc(fmtTs(p.expires_at)) : "长期有效"}</span>
-             <div class="fd">${p.expires_at ? "到期后不影响已有数据，只是不能再新建成员。" : "没设到期时间，等于长期有效。"}</div>`,
+             <div class="fd">${!p.expires_at ? "没设到期时间，等于长期有效。" : d.org.id === "default" ? "平台自己的组织，到期只在这里标红，不锁功能。" : "到期后照常登录、看历史、下载成果，但发不起新任务。"}</div>`,
           ],
           [
             "席位",
@@ -801,7 +809,7 @@ PAGES["usage-member"] = {
       // 防抖 250ms：搜的是**整个组织**，每个字发一趟请求，一个词打完就是六七趟
       let t = 0;
       q.oninput = () => { clearTimeout(t); t = setTimeout(() => go({ ...usageMQ, q: q.value, offset: 0 }), 250); };
-      q.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); go({ ...usageMQ, q: q.value, offset: 0 }); } };
+      q.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(t); go({ ...usageMQ, q: q.value, offset: 0 }); } };
     }
     const dry = root.querySelector("[data-dry]");
     if (dry) dry.onclick = () => go({ ...usageMQ, dry: !usageMQ.dry, offset: 0 });
@@ -1001,6 +1009,7 @@ PAGES.members = {
         : `<div class="ad-actions">
             <button class="ui-btn ui-btn--ghost ui-btn--xs" data-edit="${esc(u.username)}">${ic("pencil", "i-sm")} 改</button>
             <button class="ui-btn ui-btn--ghost ui-btn--xs" data-pwd="${esc(u.username)}">${ic("key", "i-sm")} 重置密码</button>
+            ${u.two_factor ? `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-tfa="${esc(u.username)}" title="手机丢了、换了手机：清掉让本人重新绑">${ic("shield", "i-sm")} 解二次验证</button>` : ""}
             ${u.owner || u.status === "disabled" ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-off="${esc(u.username)}" title="一次关掉他手上所有还能用的口子">${ic("log-out", "i-sm")} 办离职</button>`}
             ${u.owner ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-del="${esc(u.username)}">${ic("trash", "i-sm")}</button>`}
           </div>`,
@@ -1093,7 +1102,7 @@ PAGES.members = {
       // 防抖 250ms：搜的是**整个组织**，每个字发一趟请求，一个词打完就是六七趟
       let t = 0;
       mq.oninput = () => { clearTimeout(t); t = setTimeout(() => go({ ...memberQ, q: mq.value, offset: 0 }), 250); };
-      mq.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); go({ ...memberQ, q: mq.value, offset: 0 }); } };
+      mq.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(t); go({ ...memberQ, q: mq.value, offset: 0 }); } };
     }
     for (const k of ["role", "status"]) {
       const el = root.querySelector("[data-m" + k + "]");
@@ -1221,6 +1230,21 @@ PAGES.members = {
           async () => {
             const r = await post("/api/admin/members/" + encodeURIComponent(b.dataset.pwd) + "/reset-password");
             showPassword(b.dataset.pwd, r.password, "新密码");
+          }
+        );
+    });
+
+    // 解二次验证：后端那条接口早就有，以前界面上没有按钮，手机丢了只能上服务器跑命令行
+    root.querySelectorAll("[data-tfa]").forEach((b) => {
+      b.onclick = () =>
+        confirmBox(
+          "解掉「" + b.dataset.tfa + "」的二次验证",
+          "本人下次登录只要密码。组织开了强制二次验证的话，登录后会先让本人重新绑一次。",
+          "解掉",
+          async () => {
+            await post("/api/admin/members/" + encodeURIComponent(b.dataset.tfa) + "/reset-2fa");
+            toast("已解掉，让本人重新绑一次验证器");
+            route(true);
           }
         );
     });
@@ -1478,7 +1502,7 @@ PAGES.roles = {
           )).join("")}
         </div>
         <div class="ad-sec-d" style="margin-top:12px">超级管理员只有一个，只能<b>转让</b>。日常分权请用管理员。</div>
-        ${MULTI ? `<div class="ad-sec-d" style="margin-top:8px"><b>平台超级管理员</b>（默认组织的超管）可新建组织、改套餐席位、为其他组织指派超管。${OWNER ? badge("就是你", "success") : badge("不是你", "outline")}</div>` : ""}`)}
+        ${MULTI ? `<div class="ad-sec-d" style="margin-top:8px"><b>平台超级管理员</b>（默认组织的超管）可新建组织、改套餐席位、给新组织发第一张邀请码、指派超管。${OWNER ? badge("就是你", "success") : badge("不是你", "outline")}</div>` : ""}`)}
       ${cardT(
         headRow(
           secT("管理员和审计员", `共 ${staff.length} 人。${d.owner ? "超级管理员是「" + esc(d.owner) + "」。" : "<b>这个组织还没有超级管理员</b>，找平台超级管理员指派一个。"}`),
@@ -1881,12 +1905,12 @@ PAGES.relay = {
       RO ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-mem="${esc(m.username)}" data-cur="${esc(m.budget_yuan || "")}">${ic("pencil")}</button>`,
     ]);
     const limits = card(`${secT("上限", "按 Key → 个人 → 组织三档判，超限返回 402。员工在界面上的调用同样受限。次数上限在「API 与额度」。")}
-      ${field("整个组织每月封顶", "0 = 不限。这是最后一道闸，谁都绕不过去。",
-        `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="org_yuan" value="${esc(d.budget.org_yuan || "")}" placeholder="不限"${RO ? " disabled" : ""}>`)}
+      ${field("整个组织每月封顶", PLATFORM ? "0 = 不限。这是最后一道闸，谁都绕不过去。" : "由平台管理员设定，这里只能看。",
+        `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="org_yuan" value="${esc(d.budget.org_yuan || "")}" placeholder="不限"${RO || !PLATFORM ? " disabled" : ""}>`)}
       ${field("没单独设过的人，每人每月封顶", "0 = 不限。部门模板有设置的以部门为准。",
         `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="default_user_yuan" value="${esc(d.budget.default_user_yuan || "")}" placeholder="不限"${RO ? " disabled" : ""}>`)}
-      ${field("跟上游谈下来的折扣", "0.8 = 八折，1 = 原价。只影响内部账本。",
-        `<input class="ui-input ad-mono" type="number" min="0.01" max="1" step="0.01" style="width:140px" data-b="price_discount" value="${esc(disc)}"${RO ? " disabled" : ""}>`)}
+      ${field("跟上游谈下来的折扣", PLATFORM ? "0.8 = 八折，1 = 原价。只影响内部账本。" : "由平台管理员设定，这里只能看。",
+        `<input class="ui-input ad-mono" type="number" min="0.01" max="1" step="0.01" style="width:140px" data-b="price_discount" value="${esc(disc)}"${RO || !PLATFORM ? " disabled" : ""}>`)}
       ${RO ? note("你是<b>审计员</b>：这页能看，改不了。", true)
            : `<div class="ad-actions"><button class="ui-btn ui-btn--default ui-btn--sm" id="rl-save-budget">保存上限</button></div>`}`);
     // 人多的时候才出筛选条：三个人的团队顶一条筛选栏在头上，纯属添乱
@@ -1995,7 +2019,7 @@ PAGES.relay = {
       // 防抖 250ms：搜的是整个组织，每个字发一趟，一个词打完就是六七趟
       let rt = 0;
       rq.oninput = () => { clearTimeout(rt); rt = setTimeout(() => goMem({ ...relayMQ, q: rq.value, offset: 0 }), 250); };
-      rq.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(rt); goMem({ ...relayMQ, q: rq.value, offset: 0 }); } };
+      rq.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(rt); goMem({ ...relayMQ, q: rq.value, offset: 0 }); } };
     }
     bindPager(root, relayMQ, RELAY_MEM_PAGE, goMem);
     if (RO) return;
@@ -2319,12 +2343,14 @@ PAGES.orgs = {
   load: () => api("/api/admin/orgs"),
   render: (d) => {
     const rows = d.orgs.map((o) => [
-      `<div style="font-weight:500">${esc(o.name)}</div><div class="fd ad-mono">${esc(o.id)}</div>`,
+      `<div style="font-weight:500">${esc(o.name)}${o.id !== "default" && o.settings.allow_shell !== false ? " " + badge("命令行已开", "outline") : ""}</div><div class="fd ad-mono">${esc(o.id)}</div>`,
       badge(o.label, o.expired ? "destructive" : "secondary"),
       `${o.active} / ${o.seats}`,
       o.expires_at ? `<span class="ad-mono">${esc(fmtDate(o.expires_at))}</span>${o.expired ? " " + badge("已过期", "destructive") : ""}` : "长期",
       `<span class="fd">${esc(o.root_dir || (o.id === "default" ? "默认工作目录" : "自动分配"))}</span>`,
-      RO ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-org="${esc(o.id)}">${ic("pencil", "i-sm")} 改</button>`,
+      RO ? "" : `<div style="display:flex;gap:4px;justify-content:flex-end">${
+        o.id === "default" ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-orginv="${esc(o.id)}">${ic("link", "i-sm")} 邀请</button>`
+      }<button class="ui-btn ui-btn--ghost ui-btn--xs" data-org="${esc(o.id)}">${ic("pencil", "i-sm")} 改</button></div>`,
     ]);
     return `<div class="ad-wrap">
       ${note("<b>租户边界划在工作目录上，不划在整台机器上。</b>真隔离的是：成果文件、会话、账号、席位、用量账本、权限、审计。<b>不隔离</b>的是：引擎和密钥、MCP、技能、专家、记忆库、素材库、定时任务、备份——这些配的是<b>这台服务器</b>，归你（平台管理员）管，各组织共用。")}
@@ -2362,6 +2388,29 @@ PAGES.orgs = {
             route(true);
           },
         });
+    // 新组织里还没人，它自己的邀请码页没人打得开，第一张码得从这儿发
+    root.querySelectorAll("[data-orginv]").forEach((b) => {
+      const o = d.orgs.find((x) => x.id === b.dataset.orginv);
+      b.onclick = () =>
+        modal({
+          title: "邀请人加入「" + o.name + "」",
+          body: `<div class="fd">${o.has_owner
+            ? "这家已有超级管理员，拿管理员码进来的是普通管理员。"
+            : "这家还没有超级管理员。<b>第一个拿管理员码注册的人就是。</b>"}</div>`,
+          fields: [
+            { name: "role", label: "角色", type: "select", value: "admin",
+              options: [{ value: "admin", label: "管理员" }, { value: "auditor", label: "审计员" }, { value: "member", label: "成员" }] },
+            { name: "max_uses", label: "能用几次", type: "number", value: 1 },
+            { name: "days", label: "几天内有效", type: "number", value: 7 },
+          ],
+          ok: "生成",
+          onOk: async (v) => {
+            const inv = await post("/api/admin/orgs/" + encodeURIComponent(o.id) + "/invites", { role: v.role, max_uses: +v.max_uses || 1, days: +v.days || 7 });
+            copyText(inviteLink(inv.code));
+            toast("邀请码 " + inv.code + " 已生成，注册链接已复制");
+          },
+        });
+    });
     root.querySelectorAll("[data-org]").forEach((b) => {
       const o = d.orgs.find((x) => x.id === b.dataset.org);
       b.onclick = () =>
@@ -2372,12 +2421,23 @@ PAGES.orgs = {
             { name: "plan", label: "套餐", type: "select", options: planOpts, value: o.plan },
             { name: "seats", label: "席位上限", type: "number", value: o.seats },
             { name: "expires_at", label: "到期时间", type: "date", value: o.expires_at ? o.expires_at.slice(0, 10) : "", desc: "留空 = 长期有效。" },
+            // 下面三格租户自己改不了（服务端 org.tenantHeld），只能在这儿设。默认组织的在它自己的设置页里改
+            ...(o.id === "default" ? [] : [
+              { name: "allow_shell", label: "允许运行命令行", type: "select", value: o.settings.allow_shell === false ? "0" : "1",
+                options: [{ value: "0", label: "不允许" }, { value: "1", label: "允许" }],
+                desc: "命令行跑在这台服务器上，<b>工作目录那道墙挡不住它</b>。只给信得过的组织开。" },
+              { name: "org_yuan", label: "中转每月封顶（元）", type: "number", value: (o.settings.budget || {}).org_yuan || "", placeholder: "不限" },
+              { name: "price_discount", label: "记账折扣", type: "number", value: o.settings.price_discount, desc: "0.8 = 八折，1 = 原价。" },
+            ]),
           ],
           ok: "保存",
           onOk: async (v) => {
             await post("/api/admin/orgs/" + encodeURIComponent(o.id), {
               name: v.name, plan: v.plan, seats: +v.seats || 1,
               expires_at: v.expires_at ? v.expires_at + "T23:59:59" : "",
+              ...(o.id === "default" ? {} : {
+                settings: { allow_shell: v.allow_shell === "1", budget: { org_yuan: +v.org_yuan || 0 }, price_discount: +v.price_discount || 1 },
+              }),
             });
             toast("已保存");
             route(true);
@@ -2711,6 +2771,8 @@ PAGES.models = {
     for (const p of provs) { const b = baseKey(p); if (b) baseCount.set(b, (baseCount.get(b) || 0) + 1); }
     const dupN = (p) => (baseKey(p) && baseCount.get(baseKey(p)) > 1 ? baseCount.get(baseKey(p)) - 1 : 0);
 
+    // 模型的增删在工作台那边——这儿写成一句「去工作台 → 设置 → 模型」，人得自己关页、回去、再翻三层；做成链接，点了直接开在那个面板上
+    const goModels = (text) => `<a class="ad-go" href="/#go=settings:models" target="_blank" rel="noopener">${esc(text)}${ic("arrow-up-right")}</a>`;
     const provRow = (p) => {
       const chat = models.filter((m) => m.channel === p.id).length;
       const media = medias.filter((m) => m.provider === p.id).length;
@@ -2734,7 +2796,8 @@ PAGES.models = {
              <button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-peek="${esc(p.id)}">显示</button>${link}</div>`
           : `<span class="fd">${p.has_key ? "已填（原文只有平台管理员看得到）" : "还空着"}</span>`,
         `${chanIdle(p) ? badge("还没填 Key", "outline") : badge("已填 Key", "success")}
-         <div class="fd" style="margin-top:4px">${chat} 个对话模型${media ? ` · ${media} 个媒体模型` : ""}</div>`,
+         <div class="fd" style="margin-top:4px">${chat || media ? `${chat} 个对话模型${media ? ` · ${media} 个媒体模型` : ""}`
+           : `<span>还没挂模型</span>${rw ? ` · ${goModels("去挂模型")}` : ""}`}</div>`,
       ];
       // 「改」连地址一起改：换了域名的私有部署、公司内网代理，都是改地址而不是重建一条。
       // 「删」是连坐的，所以放在最右边、走确认框，不做成一点就没。
@@ -2753,7 +2816,7 @@ PAGES.models = {
 
     return `<div class="ad-wrap">
       ${note("这几项配的是<b>整台服务器</b>，不是单个组织——一个部署一套 Key，所有组织的任务都花它。改完立刻生效，<b>已经在跑</b>的任务用的还是旧的那把。")}
-      ${!models.length ? note("<b>还没有对话模型</b>，请先在工作台 → 设置 → 模型 添加。", true)
+      ${!models.length ? note(`<b>还没有对话模型</b>。${rw ? goModels("去工作台添加") : ""}`, true)
         : noKeyNow ? note(`默认模型「<b>${esc(s.active_model)}</b>」的渠道<b>没填 Key</b>，任务会失败。`, true) : ""}
 
       ${cardT(headRow(secT("渠道与 Key", "每个渠道一把 Key，其下模型共用。自建网关点右上角添加。"),
@@ -2768,7 +2831,7 @@ PAGES.models = {
             `<select class="ui-input ui-select" data-sel="failover_model"${rw ? "" : " disabled"} style="min-width:260px">${opts((s.agent || {}).failover_model || "", "不换道（默认）")}</select>`)}
         </div>`)}
 
-      ${cardT(headRow(secT("这台服务器上的模型", "只读核对；增改在工作台 → 设置 → 模型。")),
+      ${cardT(headRow(secT("这台服务器上的模型", "只读核对，增改在工作台。"), rw ? goModels("去工作台增改") : ""),
         table([{ t: "名字" }, { t: "模型 id" }, { t: "挂在哪个渠道" }, { t: "状态" }],
           models.map((m) => {
             const p = provs.find((x) => x.id === m.channel);
@@ -2856,7 +2919,7 @@ PAGES.models = {
           if (i >= 0) list[i] = { ...list[i], ...entry }; else list.push(entry);
           body.providers = list;
           await post("/api/settings", body);
-          toast(p ? "已保存，立刻生效" : "渠道建好了，去工作台 → 设置 → 模型 给它挂模型");
+          toast(p ? "已保存，立刻生效" : "渠道建好了，点它那行的「去挂模型」挂上型号");
           route(true);
         },
       });
@@ -3011,6 +3074,7 @@ function bindNavSearch() {
     renderNav(location.hash.replace(/^#\/?/, "").split("?")[0] || "home");
   };
   box.onkeydown = (e) => {
+    if (imeKey(e)) return; // 拼音打一半：回车是上屏、Esc 是取消拼字，不是跳页、清空
     if (e.key === "Escape") {
       box.value = "";
       box.oninput();

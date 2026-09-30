@@ -77,6 +77,17 @@ function offboard(actor, username, opts = {}) {
     if (!others.length) throw new Error("他是这个组织**唯一**还在职的管理员。先把另一个人提成管理员，再来办他的离职——不然办完谁都进不了后台了");
   }
 
+  // 交接人要在动手之前查：必须是本组织在用的人。不查的话，填错一个字，排期交给了一个不存在的人，
+  // 到点就被当成「负责人已删除」关掉；填成别家的人，这家的任务就跑进别家的工作目录、记在别家账上。
+  // 查不到和别家的人报同一句，不替别家确认「有这个人」
+  const handover = opts.handover ? String(opts.handover).trim() : "";
+  if (handover) {
+    if (handover === name) throw new Error("交接人不能是他自己");
+    const h = account._internals.loadUsers().users.find((u) => u.username === handover);
+    if (!h || org.orgIdOf(h) !== orgId) throw new Error(`交接人「${handover}」不是这个组织的成员`);
+    if ((h.status || "active") !== "active") throw new Error(`交接人「${handover}」的账号现在用不了，换一个人`);
+  }
+
   const receipt = {
     user: name,
     display: before.display || before.username,
@@ -111,12 +122,12 @@ function offboard(actor, username, opts = {}) {
     const stopped = sch.disableOwnedBy(name);
     receipt.revoked.schedules = stopped.length;
     receipt.revoked.schedule_names = stopped.map((t) => t.name);
-    if (opts.handover) {
-      const moved = reassignTo(String(opts.handover), stopped);
+    if (handover) {
+      const moved = reassignTo(handover, stopped);
       if (moved.length) {
-        receipt.handed_to = String(opts.handover);
+        receipt.handed_to = handover;
         receipt.kept.schedules_handed = moved.map((t) => t.name);
-        receipt.warnings.push(`交接过去的 ${moved.length} 条排期仍然是**关着**的，${opts.handover} 确认内容之后自己打开`);
+        receipt.warnings.push(`交接过去的 ${moved.length} 条排期仍然是**关着**的，${handover} 确认内容之后自己打开`);
       }
     } else if (stopped.length) {
       receipt.warnings.push(`有 ${stopped.length} 条定时任务停了但没人接手，别忘了找人认领`);

@@ -294,7 +294,7 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
     ok(ident.indexOf("document.title = assistant.name;") >= 0 && ident.indexOf("syncTitleCount();") > ident.indexOf("document.title = assistant.name;"), "助理改名后立刻补回前缀（不然 Dock 角标跟着清零）");
     const sync = slice(code02, "function syncTitleCount() {", "\n}\n", "syncTitleCount");
     ok(/attnCount\(sessionAttn\) \+ doneWhileAway/.test(sync) && /replace\(\/\^\\\(\\d\+\\\) \//.test(sync), "前缀 = 在等你的题数 + 不在时跑完的；先剥旧前缀再算");
-    ok(/if \(!document\.hidden\) return;/.test(slice(code02, "function bumpDoneWhileAway", "\n}\n", "bumpDoneWhileAway")), "人正看着页面时跑完不记数（不然标题挂个 (1) 没人来清）");
+    ok(/if \(!isAway\(\)\) return;/.test(slice(code02, "function bumpDoneWhileAway", "\n}\n", "bumpDoneWhileAway")), "人正看着页面时跑完不记数（不然标题挂个 (1) 没人来清）");
 
     const EM = read("electron-main.js");
     const title = slice(EM, 'win.on("page-title-updated"', "\n  });", "page-title-updated");
@@ -422,6 +422,68 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
     ok(Number.isFinite(head) && Number.isFinite(li), "计划卡标题和步骤行的间距量得出来", { head, li });
     ok((li * 2) % 4 === 0, "计划卡：步骤和步骤之间落在 4 的倍数上", { li, gap: li * 2 });
     ok((head + li) % 4 === 0, "计划卡：标题到第一步落在 4 的倍数上", { head, li, gap: head + li });
+  });
+
+  await section("【12】人不在（isAway）：窗口收起、失焦都算，通知和标题计数跟着它走", async () => {
+    // 2026-09-28 实测：桌面版窗口收起、最小化以后 document.hidden 一直是 false，「你不在时跑完了」和审批通知一次都没弹过
+    const cls = (on) => ({ classList: { contains: (c) => on && c === "owb-away" } });
+    const awayOf = (doc) => vm.runInNewContext(ATTN + "\n;isAway()", { document: doc });
+    ok(awayOf({ hidden: false, hasFocus: () => true, body: cls(false) }) === false, "看得见、有焦点、没类名：人在（反向对照）");
+    ok(awayOf({ hidden: true, hasFocus: () => true, body: cls(false) }) === true, "标签页切走了：不在");
+    ok(awayOf({ hidden: false, hasFocus: () => false, body: cls(false) }) === true, "窗口开着但失焦（人在别的应用里）：不在");
+    ok(awayOf({ hidden: false, hasFocus: () => true, body: cls(true) }) === true, "桌面版主进程挂了 owb-away（窗口收起来了）：不在");
+    ok(awayOf({ hidden: false, body: null }) === false, "老浏览器没有 hasFocus、body 还没好：不抛，按人在算");
+    ok(vm.runInNewContext(ATTN + "\n;isAway()", {}) === false, "根本没有 document（vm 里、服务端）：不抛");
+
+    const code02 = stripJsComments(read("public", "js", "app-02.js"));
+    const done = slice(code02, "function notifyRunDone(sid, ui, opts) {", "\n}\n", "notifyRunDone");
+    ok(/const away = isAway\(\);/.test(done) && /if \(away\) bumpDoneWhileAway/.test(done) && /if \(away && "Notification" in window\)/.test(done), "跑完的通知和标题计数都按 isAway 判");
+    ok(!/document\.hidden/.test(done), "  └ notifyRunDone 里不再单看 document.hidden");
+    ok(/fresh\.length && isAway\(\) && "Notification" in window/.test(slice(code02, "async function pollApprovals() {", "\n}\n", "pollApprovals")), "审批的系统通知也按 isAway 判");
+    ok(/document\.addEventListener\("visibilitychange", backFromAway\)/.test(code02) && /window\.addEventListener\("focus", backFromAway\)/.test(code02), "「回来了」两头都听：切回标签页、窗口拿回焦点");
+    ok(/if \(sid === sessionId && !isAway\(\)\) return;/.test(stripJsComments(ATTN)), "人正看着的那条跑完不记「没看」：也按 isAway 判");
+
+    // 真的 endRun / notifyRunDone：窗口收起来时眼前这条跑完了，要记「没看」、记标题计数、发系统通知
+    const APP02_SRC = read("public", "js", "app-02.js");
+    const endRunSrc = slice(APP02_SRC, "function endRun(sid, ui, opts) {", "\n}\n", "endRun") + "\n}\n";
+    const doneSrc = slice(APP02_SRC, "function notifyRunDone(sid, ui, opts) {", "\n}\n", "notifyRunDone") + "\n}\n";
+    const run = (awayCls) => {
+      const T = { toasts: [], away: 0, notes: [] };
+      function Notification(title, o) { T.notes.push([title, o && o.body]); }
+      Notification.permission = "granted";
+      const ctx = {
+        sessions: [{ id: "web1", title: "周报" }], runningSessions: new Map([["web1", {}]]), cliLiveRows: [], cliWatch: null,
+        sessionId: "web1", activeLane: "office", settingsCache: null, sessionQueues: new Map(),
+        document: { hidden: false, hasFocus: () => true, body: cls(awayCls), querySelectorAll: () => [], querySelector: () => null },
+        window: { Notification }, Notification, chatCol: { querySelectorAll: () => [] }, inputEl: { focus() {} },
+        renderHistory() {}, syncTitleCount() {}, updateSendUI() {}, drainQueue() {}, renderLaneTabs() {},
+        stripSceneTag: (x) => x || "", esc: (x) => x, toast: (m) => T.toasts.push(m),
+        bumpDoneWhileAway: () => { T.away++; },
+      };
+      const A = vm.runInNewContext(ATTN + "\n" + endRunSrc + doneSrc + "\n;({ sessionAttn, endRun })", ctx);
+      A.endRun("web1", { finish() {}, stats: () => null }, {});
+      return { T, unseen: !!(A.sessionAttn.get("web1") && A.sessionAttn.get("web1").unseen) };
+    };
+    const off = run(true);
+    ok(off.unseen && off.T.away === 1 && off.T.notes.length === 1, "窗口收起时眼前这条跑完：记「没看」、标题计数 +1、弹系统通知", JSON.stringify(off));
+    const on = run(false);
+    ok(!on.unseen && on.T.away === 0 && on.T.notes.length === 0, "人正看着：什么都不记、不弹（反向对照）", JSON.stringify(on));
+
+    // 回来的那一下：拿回焦点就清掉「不在时跑完了」并说一句；还没焦点（只是 owb-away 摘了）不算
+    const backSrc = slice(APP02_SRC, "function backFromAway() {", "\n}\n", "backFromAway") + "\n}\n";
+    const back = (focused) => {
+      const T = { toasts: [], seen: [] };
+      const ctx = {
+        document: { hidden: false, hasFocus: () => focused }, sessionId: "web1", lastDoneName: "周报", doneWhileAway: 2,
+        attnSeen: (s) => T.seen.push(s), syncTitleCount() {}, toast: (m) => T.toasts.push(m),
+      };
+      vm.runInNewContext("var doneWhileAway = 2, lastDoneName = \"周报\";\n" + backSrc + "\nbackFromAway(); this.left = doneWhileAway;", ctx);
+      return { ...T, left: ctx.left };
+    };
+    const b1 = back(true);
+    ok(b1.left === 0 && b1.seen[0] === "web1" && /你不在的时候跑完了 2 个任务/.test(b1.toasts[0] || ""), "拿回焦点：清零、眼前这条算看过、说一句跑完了几个", JSON.stringify(b1));
+    const b2 = back(false);
+    ok(b2.left === 2 && !b2.toasts.length && !b2.seen.length, "还没焦点：不清、不说（反向对照）", JSON.stringify(b2));
   });
 
   finished = true;

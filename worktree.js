@@ -28,7 +28,8 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { spawnSync } = require("child_process");
+const childProcess = require("child_process");
+const { spawnSync } = childProcess;
 
 const BRANCH_PREFIX = "owb/";
 const SEED_MAX_FILES = 200;            // 没跟踪的文件带过去的上限
@@ -60,8 +61,19 @@ function realOf(p) {
   return path.resolve(p);
 }
 
+/*
+ * IGNORED_NOTE：被仓库 .gitignore 挡掉的目录不算这个仓库的工作区，repoOf 一律答 null。
+ *
+ * 2026-09-29 查「分身目录在仓库里面，不能这么放」这句报错从哪来：开发态数据根就是应用仓库本身
+ * （paths.js），默认工作空间 <仓库>/workspace 在 .gitignore 里。git 对被挡掉的目录照样答
+ * 「在工作区里」，于是两条对话同时在默认工作空间跑，就被判成「撞同一个仓库」，第二条去开分身，
+ * 分身仓库 <仓库>/data/worktrees 又在同一个仓库里，open() 当场拦下——每回多开都白问一趟 git、
+ * 日志里多一条 warn。就算没拦住也是错的：分身只带跟踪的文件，任务文件夹根本不在里面。
+ * 被挡掉的目录里的东西 git 一个字不管，两条任务各写各的「任务_」文件夹就够隔离了。
+ */
+
 /**
- * dir 属于哪个仓库。不是仓库 / 没装 git / 裸仓库一律返回 null。
+ * dir 属于哪个仓库。不是仓库 / 没装 git / 裸仓库 / 被 .gitignore 挡掉的目录一律返回 null。
  * key 认的是**主仓库**（git-common-dir 的上一级）：主工作区和它的所有分身算同一个仓库，
  * 「这俩任务在不在动同一份代码」问的就是这个。
  */
@@ -71,6 +83,7 @@ function repoOf(dir) {
   if (out(git(dir, ["rev-parse", "--is-inside-work-tree"])) !== "true") return null;
   const root = out(git(dir, ["rev-parse", "--show-toplevel"]));
   if (!root) return null;
+  if (realOf(dir) !== realOf(root) && git(dir, ["check-ignore", "-q", "--", "."]).status === 0) return null; // 见 IGNORED_NOTE
   // 必须站在仓库根上问：从子目录问，git 答的是相对子目录的 ../../.git，
   // 而我们只有仓库根能当基准——算出来就会是仓库外面某个地方，于是「同一个仓库」认不出来了
   const common = path.resolve(root, out(git(root, ["rev-parse", "--git-common-dir"])) || ".git");
@@ -91,6 +104,73 @@ function plan(dir, { session, busy } = {}) {
     return cache.get(d);
   };
   const clash = (busy || []).filter((b) => b && b.dir && b.session !== session && keyFor(b.dir) === me.key);
+  if (!clash.length) return { need: false, why: "没有别的任务在改这个仓库", repo: me };
+  return { need: true, why: `另有 ${clash.length} 条任务正在改这个仓库`, repo: me, clash: clash.map((b) => b.session) };
+}
+
+/**
+ * 服务端每一轮开头走的是下面这套异步 + 缓存的，不是上面那两个同步的。
+ *
+ * 2026-09-28 实测：macOS 上 git 是 /usr/bin/git 那个 xcrun 转发壳，spawnSync 一次 rev-parse
+ * 中位 29ms、最慢 132ms；plan 自己问 3 次，名单里每多一个别的目录再问 3 次。服务端跟窗口
+ * 同一个线程，于是工作目录一指到仓库上，**每开一轮整个应用就定住约 90ms**——另外几条对话的
+ * 流、拖窗口、点菜单一起卡；六条对话同开一个仓库（这个功能本来就是为它做的）卡得最狠。
+ *
+ * 两件事：git 改成 execFile 不占主线程；同一个目录 60 秒内问过「是哪个仓库」就不再问，
+ * 并发的几问共用同一个 Promise。只记「是仓库」：「不是仓库」不记，用户刚 git init 完下一轮
+ * 就得认出来。目录还在不在每次都现查（分身收掉之后那个路径就不该再算仓库了）。
+ * 同步的 repoOf/plan 原样留着：命令行、测试、开分身那几步还在用，它们不在窗口线程上。
+ */
+const REPO_TTL = 60 * 1000;
+const REPO_CACHE_MAX = 64;
+const repoCache = new Map(); // 绝对路径 → { at, p }
+
+function gitAsync(cwd, args, opt) {
+  return new Promise((resolve) => {
+    childProcess.execFile("git", ["-C", cwd, ...args], {
+      encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, ...opt,
+    }, (err, stdout, stderr) => {
+      // 跟 spawnSync 的返回长一个样，out() 两边通用：没起来（没装 git / 超时被杀）算非 0
+      resolve({ status: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr });
+    });
+  });
+}
+
+/** repoOf 的异步版，一步不差地照抄：是不是仓库、仓库根、主仓库，三问 */
+async function repoOfAsync(dir) {
+  if (!dir) return null;
+  try { if (!(await fs.promises.stat(dir)).isDirectory()) return null; } catch { return null; }
+  if (out(await gitAsync(dir, ["rev-parse", "--is-inside-work-tree"])) !== "true") return null;
+  const root = out(await gitAsync(dir, ["rev-parse", "--show-toplevel"]));
+  if (!root) return null;
+  if (realOf(dir) !== realOf(root) && (await gitAsync(dir, ["check-ignore", "-q", "--", "."])).status === 0) return null; // 见 IGNORED_NOTE
+  const common = path.resolve(root, out(await gitAsync(root, ["rev-parse", "--git-common-dir"])) || ".git");
+  const main = path.basename(common) === ".git" ? path.dirname(common) : common;
+  return { root: path.resolve(root), main, key: keyOf(main) };
+}
+
+async function repoOfCached(dir) {
+  if (!dir) return null;
+  const k = path.resolve(dir);
+  try { if (!(await fs.promises.stat(k)).isDirectory()) { repoCache.delete(k); return null; } } catch { repoCache.delete(k); return null; }
+  const hit = repoCache.get(k);
+  if (hit && Date.now() - hit.at < REPO_TTL) return hit.p;
+  const ent = { at: Date.now(), p: null };
+  const drop = () => { if (repoCache.get(k) === ent) repoCache.delete(k); };
+  ent.p = repoOfAsync(k).then((r) => { if (!r) drop(); return r; }, () => { drop(); return null; });
+  repoCache.set(k, ent);
+  if (repoCache.size > REPO_CACHE_MAX) repoCache.delete(repoCache.keys().next().value);
+  return ent.p;
+}
+
+/** plan 的异步版：判法、返回的每个字都跟 plan 一样，只是问 git 的方式换了 */
+async function planAsync(dir, { session, busy } = {}) {
+  const hit = await repoOfCached(dir);
+  if (!hit) return { need: false, why: "工作目录不是 git 仓库，成果目录那套隔离就够了" };
+  const me = { ...hit }; // 缓存里那份是几轮共用的，交出去的给一份拷贝，谁改了也串不到下一轮
+  const others = (busy || []).filter((b) => b && b.dir && b.session !== session);
+  const keys = await Promise.all(others.map((b) => repoOfCached(b.dir).then((r) => (r || {}).key || "")));
+  const clash = others.filter((b, i) => keys[i] === me.key);
   if (!clash.length) return { need: false, why: "没有别的任务在改这个仓库", repo: me };
   return { need: true, why: `另有 ${clash.length} 条任务正在改这个仓库`, repo: me, clash: clash.map((b) => b.session) };
 }
@@ -140,18 +220,28 @@ function seedFrom(src, dst) {
   return note;
 }
 
-/** 开一个分身。同一个会话再来就接着用上次那个（改到一半的东西不能丢） */
-function open(store, { repo, session, seed = true } = {}) {
+/**
+ * 开一个分身。同一个会话再来就接着用上次那个（改到一半的东西不能丢）。
+ * legacy：以前的分身仓库（defaultStore 挪走之前那个）。新地方没有、老地方有，就接着用老地方那个。
+ */
+function open(store, { repo, session, seed = true, legacy = [] } = {}) {
   if (!repo || !repo.root) return { error: "不是 git 仓库" };
   const root = path.resolve(store);
   // 分身放在仓库里等于让 git 自己观察自己，况且清理时一个手滑就删到人家代码上
-  const real = realOf(root), main = realOf(repo.main);
-  if (real === main || real.startsWith(main + path.sep)) return { error: "分身目录在仓库里面，不能这么放" };
+  const main = realOf(repo.main);
+  const inRepo = (p) => { const r = realOf(p); return r === main || r.startsWith(main + path.sep); };
+  if (inRepo(root)) return { error: "分身目录在仓库里面，不能这么放" };
   const name = safeName(session);
   const dir = path.join(root, repo.key, name);
-  if (fs.existsSync(path.join(dir, ".git"))) {
-    const m = readMeta(dir);
-    return { dir, branch: m.branch || out(git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])), base: m.base || "", repo: repo.main, reused: true };
+  // 2026-09-29 复审：defaultStore 把分身仓库从 <应用>/data/worktrees 挪到 ~/.openworkbuddy/worktrees 以后，
+  // 老地方已经开着的分身（别的仓库的，改到一半、分支 owb/<会话> 还挂着）新地方看不见，同一条对话再来就另开
+  // owb/<会话>-2，上次的改动留在老分身里没人接。先在新地方找，再挨个看老地方，找到就接着用；
+  // 老地方落在这个仓库里的一律不认（跟上面同一条护栏）
+  const found = [dir, ...(legacy || []).filter((l) => l && !inRepo(l)).map((l) => path.join(path.resolve(l), repo.key, name))]
+    .find((d) => fs.existsSync(path.join(d, ".git")));
+  if (found) {
+    const m = readMeta(found);
+    return { dir: found, branch: m.branch || out(git(found, ["rev-parse", "--abbrev-ref", "HEAD"])), base: m.base || "", repo: repo.main, reused: true };
   }
   const head = out(git(repo.root, ["rev-parse", "HEAD"]));
   if (!head) return { error: "这个仓库还没有第一次提交，开不出分身" };
@@ -173,6 +263,27 @@ function open(store, { repo, session, seed = true } = {}) {
   const meta = { session: String(session || ""), repo: repo.main, branch, base: head, at: new Date().toISOString(), seed_sig: sigOf(dir) };
   try { fs.writeFileSync(metaPath(dir), JSON.stringify(meta, null, 2)); } catch {}
   return { ...meta, dir, seeded };
+}
+
+/**
+ * 默认的分身仓库放哪。调用方传的是 dataPath("data", "worktrees")。
+ *
+ * 2026-09-29：开发态数据根就是应用仓库本身，这个默认值天生落在应用仓库里。用户拿 OpenWorkBuddy
+ * 改 OpenWorkBuddy 自己的源码（工作目录指到应用仓库），两条对话一撞，open() 就拦下「分身目录在仓库里面」
+ * ——默认位置本身就过不了护栏，这台机器上一个分身都开不出来。
+ * 默认位置在某个仓库的工作区里（被挡掉的也算，git 看得见就算），就挪到 ~/.openworkbuddy/worktrees/<数据根键>，
+ * 每个数据根一格，几份实例互不串。挪过去还在同一个仓库里（家目录本身就是那个仓库），没有干净地方可放，
+ * 原样交回，让 open() 如实拦。这里只管默认值：调用方直接交给 open() 的路径护栏照旧。
+ */
+function defaultStore(store, { home } = {}) {
+  const st = path.resolve(store);
+  let probe = st;
+  for (let i = 0; i < 40 && !fs.existsSync(probe); i++) probe = path.dirname(probe);
+  if (out(git(probe, ["rev-parse", "--is-inside-work-tree"])) !== "true") return st;
+  const top = realOf(out(git(probe, ["rev-parse", "--show-toplevel"])) || probe);
+  const alt = path.join(home || require("os").homedir(), ".openworkbuddy", "worktrees", keyOf(path.dirname(path.dirname(st))));
+  const a = realOf(alt);
+  return a === top || a.startsWith(top + path.sep) ? st : alt;
 }
 
 /** 工作区此刻的样子，按指纹比。只用来回答「跟刚开出来的时候比，变了没有」 */
@@ -322,7 +433,7 @@ function hint(info) {
 }
 
 module.exports = {
-  repoOf, plan, open, list, status, close, release, sweep, hint, commitAll, markOf,
+  repoOf, plan, repoOfAsync, planAsync, open, defaultStore, list, status, close, release, sweep, hint, commitAll, markOf,
   BRANCH_PREFIX, KEEP_DAYS,
-  _internals: { git, seedFrom, keyOf, safeName, metaPath, readMeta, SEED_MAX_FILES, SEED_MAX_BYTES },
+  _internals: { git, gitAsync, repoOfCached, repoCache, REPO_TTL, seedFrom, keyOf, safeName, metaPath, readMeta, SEED_MAX_FILES, SEED_MAX_BYTES },
 };

@@ -798,7 +798,7 @@ async function openCliLive(row) {
   stopCliWatch();
   sessionId = row.id;
   resetCtxMeter(); // 上一条对话的上下文余量别挂到这趟终端任务头上
-  pvPanel.classList.remove("show"); pvCurrent = null;
+  closePreview(false, { now: true }); // 换对话：面板里的网页/音视频当场拆，不等滑完，见 app-01 closePreview
   document.getElementById("files-panel").classList.remove("show");
   document.getElementById("session-title").textContent = stripSceneTag(row.title) || "终端里的任务";
   chatCol.innerHTML = "";
@@ -949,6 +949,10 @@ let histNote = "";        // 这次是靠什么找的，如实说
 let histErr = "";         // 搜挂了要说，不能拿「没搜到」糊过去——那是两件事
 let histTimer = null;
 let histSeq = 0;
+const histStopping = new Set(); // 侧栏行上点了「停」、服务端已收下、还没真收尾的那几条（见 stopRowRun）
+// 侧栏停下的那一趟：sid → 当时那份 ui。收尾时 notifyRunDone 认出是它就不再报「已完成」——
+// 2026-09-29 刚弹完「已停下「X」」紧跟一条「「X」已完成，点侧栏查看」，两句话打架。按 ui 认，免得误伤同一条对话的下一趟
+const histStopQuiet = new Map();
 function histMatch(t) {
   const q = histQuery.trim().toLowerCase();
   return !q || String(t || "").toLowerCase().includes(q);
@@ -993,6 +997,40 @@ function histHitRow(h, activeId) {
     + (snip ? `<div class="hsnip">${snip}</div>` : "")
     + `</div>`;
 }
+/**
+ * 侧栏按行对着改：同一个 key、同一段 HTML 的行原样留着（节点还是那个节点），
+ * 只有真变了的那几行重新生成，多出来的删掉，顺序照 rows 摆。
+ *
+ * 以前每次都是整片 innerHTML 重铺。attnChanged、标题回填、切会话都会走到这里，
+ * 6 路并跑时每一轮开头结尾各来一次——每次整张列表样式重算、重排，
+ * 每个正在跑的那颗脉冲点（.hrun）都被拆了重建，动画从头闪；
+ * 键盘用户 Tab 停在某一行上，焦点也跟着被整片冲掉。
+ * 这里不做 rAF 合批：好几处调用完马上就读侧栏的顺序（nextAttn 按行序挑下一条），得同步落地。
+ */
+function patchHistRows(host, rows, fallback) {
+  if (!rows.length) { host.innerHTML = fallback; return; }
+  const old = new Map();
+  for (const el of host.children) if (el._hk && !old.has(el._hk)) old.set(el._hk, el);
+  const tpl = document.createElement("template");
+  const next = [];
+  for (const [k, html] of rows) {
+    let el = old.get(k);
+    old.delete(k); // 万一同一个 key 出现两次，第二次老老实实新建，别把同一个节点挪来挪去
+    if (!el || el._hh !== html) {
+      tpl.innerHTML = html;
+      el = tpl.content.firstElementChild;
+      if (!el) continue;
+      el._hk = k; el._hh = html;
+    }
+    next.push(el);
+  }
+  // 先摘掉不要的（被删/被筛/变了要换的旧行、上一趟的空态、搜索那一版的行），再按序摆。
+  // 顺序反过来的话，换掉的旧行还占着位子，后面没变的行会被 insertBefore 挪一下——
+  // 挪一下就是摘下来再插回去，焦点照样丢（2026-09-29 实测：改 b 的标题，c 行按钮上的焦点没了）。
+  const keep = new Set(next);
+  for (const el of [...host.children]) if (!keep.has(el)) el.remove();
+  next.forEach((el, i) => { if (host.children[i] !== el) host.insertBefore(el, host.children[i] || null); });
+}
 function renderHistory() {
   const all = projectSessions();
   // 服务端的命中列表回来了就由它接管：它找的是正文和意思，本地这层只认标题
@@ -1015,15 +1053,16 @@ function renderHistory() {
   // 卡着等你回答/批准的那几条顶到最上面，其余照原来的顺序（sort 是稳定的）。
   // 人扫一眼侧栏最想知道的就是「哪条在等我」，它沉在第八行，点亮了也等于没亮
   const askFirst = (id) => (attnPick(sessionAttn.get(id), false) === "ask" ? 0 : 1);
-  const rows = list.slice().sort((a, b) => askFirst(a.id) - askFirst(b.id)).map(s =>
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${attnDotHtml(s.id)}<button type="button" class="hx" title="删除该任务" aria-label="删除该任务">${ic("x")}</button></div>`);
+  for (const id of histStopping) if (!runningSessions.has(id)) histStopping.delete(id); // 真收尾了，「正在停」这个态跟着撤
+  const rows = list.slice().sort((a, b) => askFirst(a.id) - askFirst(b.id)).map(s => ["i:" + s.id,
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${attnDotHtml(s.id)}${histStopHtml(s)}<button type="button" class="hx" title="删除该任务" aria-label="删除该任务">${ic("x")}</button></div>`]);
   // 终端里正在跑的那几条，直接排在同一张列表的最上面，不再单开一撮。
   // 以前这里是「任务历史 → 10 → 终端里（openworkbuddy 命令行） → 才轮到内容」，三行铺垫才见着第一条任务。
   // Claude Cowork 和 Codex 的做法是一张扁平列表：来路和状态用行内的小图标表示，
   // 正在跑的排前面，不为一种来路单开一节。分组标题只有在「有好几组」时才帮得上忙，
   // 这儿永远只有一组，那行字就是纯占地方。
   // 「怎么一开始显示：任务历史 10 终端里（命令行） 然后是具体的内容了」（原话里是改名前的旧命令名）
-  let head = "";
+  let head = [];
   if (activeLane === "cli") {
     const known = new Set(all.map((s) => s.id));
     const live = cliLiveRows.filter((r) => !known.has(r.id) && histMatch(stripSceneTag(r.title) || "终端里的任务"));
@@ -1032,18 +1071,71 @@ function renderHistory() {
     head = ordered.map((r) => {
       const t = stripSceneTag(r.title) || "终端里的任务";
       const tip = r.live ? "正在跑——点开能看见它在干什么，也能插话" : (r.died ? "终端被关掉了，没跑完" : "刚跑完");
-      return `<div class="hist-item ${r.id === sessionId ? "active" : ""}" data-cli="${esc(r.id)}" title="${esc(t + "\n" + (r.cwd || "") + "\n" + "来自终端（openworkbuddy 命令行）· " + tip)}">`
+      return ["c:" + r.id, `<div class="hist-item ${r.id === sessionId ? "active" : ""}" data-cli="${esc(r.id)}" title="${esc(t + "\n" + (r.cwd || "") + "\n" + "来自终端（openworkbuddy 命令行）· " + tip)}">`
         + `<span class="hsrc" title="${esc("在终端里起的（openworkbuddy 命令行）")}" aria-label="${esc("来自终端")}">${ic("terminal")}</span>`
-        + `<span class="ht">${esc(t)}</span>${attnDotHtml(r.id, !!r.live)}</div>`;
-    }).join("");
+        + `<span class="ht">${esc(t)}</span>${attnDotHtml(r.id, !!r.live)}</div>`];
+    });
   }
   const empty = histQuery.trim()
     ? (histErr ? esc(histErr) : `没有名字里带「${esc(histQuery.trim())}」的任务——正文还在找`)
     : (activeLane === "cli"
       ? "还没有终端任务。在终端跑 <code>openworkbuddy 你的活儿</code> 就会出现在这里。"
       : (projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务"));
-  document.getElementById("history").innerHTML = head + rows.join("")
-    || `<div class="hist-empty">${empty}</div>`;
+  patchHistRows(document.getElementById("history"), head.concat(rows), `<div class="hist-empty">${empty}</div>`);
+}
+/**
+ * 侧栏每条在跑的任务，行上一颗「停」，只停这一条。
+ *
+ * 以前要停一条后台任务，得先点开它（整段记录重放一遍）、再点输入框那颗停止键——
+ * 几条并跑时想停掉跑偏的那一条，点开它那一下就把正在看的那条换走了，停完还得再点回来。
+ * 这颗键直接对着 /api/chat/stop 发这一条的 sessionId：不打开、不换走眼前这条，别的任务一概不碰。
+ * 服务端收下以后，这一行先挂「正在停」，等流里真收尾（endRun → renderHistory）再撤。
+ * 用 aria-disabled 而不是 disabled：键盘用户按完 Enter 焦点还留在这颗键上，不被甩回页首。
+ */
+function histStopHtml(s) {
+  if (!runningSessions.has(s.id)) return "";
+  const t = stripSceneTag(s.title) || "任务";
+  return histStopping.has(s.id)
+    ? `<button type="button" class="hstop is-stopping" aria-disabled="true" title="正在停…" aria-label="${esc(`正在停「${t}」`)}">${ic("square")}</button>`
+    : `<button type="button" class="hstop" title="停下这个任务" aria-label="${esc(`停下「${t}」`)}">${ic("square")}</button>`;
+}
+async function stopRowRun(sid) {
+  if (!sid || histStopping.has(sid) || !runningSessions.has(sid)) return;
+  const s = sessions.find((x) => x.id === sid);
+  const t = stripSceneTag(s && s.title) || "任务";
+  const name = t.length > 16 ? t.slice(0, 16) + "…" : t;
+  const host = document.getElementById("history");
+  const hadFocus = !!(document.activeElement && document.activeElement.closest && document.activeElement.closest(".hstop"));
+  const refocus = () => {
+    if (!hadFocus || !host) return;
+    const b = host.querySelector(`.hist-item[data-id="${CSS.escape(sid)}"] .hstop`);
+    if (b) b.focus();
+  };
+  histStopping.add(sid);
+  renderHistory();
+  refocus();
+  let r = null;
+  try {
+    const resp = await fetch("/api/chat/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: sid }) });
+    r = await resp.json();
+  } catch {
+    histStopping.delete(sid);
+    renderHistory();
+    refocus();
+    toast("没连上服务端，停止的指令没送出去", "circle-x");
+    return;
+  }
+  if (r && r.ok) {
+    const cur = runningSessions.get(sid);
+    if (cur && cur.ui) histStopQuiet.set(sid, cur.ui);
+    toast(`已停下「${name}」，别的任务照常跑`);
+    return;
+  }
+  histStopping.delete(sid);
+  renderHistory();
+  refocus();
+  // 服务端没给 error 就只说没停成，不替人猜「可能已经跑完了」
+  toast((r && r.error) || "没停下来，服务端没说原因", "circle-x");
 }
 /* 放大镜：展开就聚焦，收起就顺手清掉过滤词——不然收起来之后列表还少一半，
    用户会以为任务丢了。Esc 也收（跟其他弹层一个手感）。 */
@@ -1059,7 +1151,7 @@ function renderHistory() {
   };
   btn.addEventListener("click", () => open(q.hidden));
   q.addEventListener("input", () => { histQuery = q.value; renderHistory(); histSearchSoon(); });
-  q.addEventListener("keydown", (e) => { if (e.key === "Escape") { open(false); btn.focus(); } });
+  q.addEventListener("keydown", (e) => { if (e.key === "Escape" && !imeKey(e)) { open(false); btn.focus(); } });
 })();
 document.getElementById("history").addEventListener("click", async (e) => {
   const item = e.target.closest(".hist-item");
@@ -1069,6 +1161,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
     if (row) await openCliLive(row);
     return;
   }
+  if (e.target.closest(".hstop")) { await stopRowRun(item.dataset.id); return; } // 只停这一条，不打开它
   if (e.target.closest(".hx")) {
     if (!(await askConfirm({ title: "删掉这个任务？", hint: "它的对话记录一起没，找不回来。", ok: "删掉", danger: true }))) return;
     const id = item.dataset.id;
@@ -1095,7 +1188,10 @@ document.getElementById("history").addEventListener("click", async (e) => {
  * 后者看起来像功能坏了，前者只是没帮上忙。
  */
 function jumpToTurn(n) {
-  const el = chatCol.querySelectorAll(".turn")[n];
+  // 要跳的那一轮还收在「显示更早的」里：先补画到它露出来（补多少轮就是差多少轮）
+  const hidden = turnsHidden();
+  if (n < hidden) showOlderTurns(hidden - n);
+  const el = chatCol.querySelectorAll(".turn")[n - turnsHidden()];
   if (!el) return false;
   el.scrollIntoView({ block: "start", behavior: "smooth" });
   el.classList.remove("turn-jumped");
@@ -1107,11 +1203,136 @@ function jumpToTurn(n) {
 }
 
 /**
+ * 长对话打开时只先画最后 TURN_WINDOW 轮，前面的收在顶上一颗「显示更早的 N 轮」里，点一下往前补一批。
+ *
+ * 2026-09-29 量的：本机最长的两条对话 26 轮/2486 个事件、20 轮/2378 个事件，工具结果预览各二十万字上下，
+ * 点开时整段同步回放，真页面（真 server.js + 真 markdown 渲染，离屏窗口）量出来一口气画一万七千多个节点、HTML 约 1.2MB；
+ * 而人点开一条对话要看的几乎总是最后几轮。只先画 10 轮后：26 轮那条 17461→7822 个节点，
+ * 点开到画完第一帧中位数 139ms→76ms；20 轮那条 17092→10330、137ms→89ms。往前补 10 轮约 16ms。
+ * 收着的几轮不是没了：从资料库跳到第几轮（jumpToTurn）、⌘F 搜到收着的那段（runChatSearch），
+ * 都先补画到那一轮再跳；👍👎 的轮次号把收着的也数上（app-01 turnOrdinal）。
+ */
+var TURN_WINDOW = 10; // var：测试从外面改得到
+
+/** 把记录切成一轮一轮：每轮从一条 user 开始。第一条 user 之前的零碎回放本来就不画（没有回合可挂） */
+function splitTurns(transcript) {
+  const turns = [];
+  for (const e of transcript) {
+    if (!e) continue;
+    if (e.type === "user") turns.push([e]);
+    else if (turns.length) turns[turns.length - 1].push(e);
+  }
+  return turns;
+}
+
+/** 回放若干轮，into 见 createTurnUI。返回最后那一问没等到回答的回合，要不要标「中断」由调用点定 */
+function replayTurns(turns, sid, into) {
+  let ui = null, 未收尾 = null, bad = 0;
+  for (const turn of turns) {
+    for (const entry of turn) {
+      if (entry.type === "user") {
+        ui = createTurnUI(entry.text, entry.mode, undefined, entry.shown, into);
+        未收尾 = ui;
+      } else if (entry.type === "assistant" && ui) {
+        // 一条事件画挂了只丢这一条：以前整段回放跟着停，后半截对话和正在跑的那一轮都没接上
+        for (const ev of entry.events || []) {
+          try { ui.handleEvent(ev); } catch (e) { if (!bad++) console.warn("[回放] " + sid + " 有事件没画出来：" + (ev && ev.type), e); }
+        }
+        ui.finish();
+        未收尾 = null;
+      }
+    }
+  }
+  return 未收尾;
+}
+
+/** 一轮里人看得见的字（气泡那句、正文、报错），⌘F 判「收着的那几轮里有没有」用。按记录原文判，不求跟画出来的一字不差 */
+function turnSearchText(turn) {
+  let s = "";
+  for (const e of turn) {
+    if (e.type === "user") { s += "\n" + (e.shown || e.text || ""); continue; }
+    for (const ev of e.events || []) {
+      if (ev && ev.type === "text") s += ev.delta || "";
+      else if (ev && ev.type === "error") s += "\n出错了：" + (ev.message || "");
+    }
+  }
+  return s.toLowerCase();
+}
+
+/** 顶上那颗按钮。收着的轮次挂在按钮身上：换对话时 chatCol 整个清掉，它跟着没了，串不到别的对话里去 */
+function makeTurnsMore(sid, turns, feedback) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "turns-more";
+  b._older = { sid, turns, feedback: feedback || [] };
+  b.innerHTML = ic("chevron-up") + "<span></span>";
+  b.onclick = () => showOlderTurns(TURN_WINDOW);
+  labelTurnsMore(b);
+  return b;
+}
+function labelTurnsMore(b) {
+  b.lastChild.textContent = `显示更早的 ${Math.min(TURN_WINDOW, b._older.turns.length)} 轮`;
+}
+
+/**
+ * 往前补画 count 轮（剩下的不够就全补），返回补了几轮。
+ * 补画的几轮装进一个 .turns-older 盒子（display:contents，排版跟直接挂着一样）插在按钮后面。
+ * 顶上多出一截会把下面整体往下推：补完按「原来最上面那一轮」离视口顶的距离把滚动条拨回去，人眼前那一屏不动
+ */
+function showOlderTurns(count) {
+  const more = chatCol.querySelector(":scope > .turns-more");
+  if (!more || !(count > 0)) return 0;
+  const o = more._older;
+  if (o.sid !== sessionId) return 0; // chatCol 里画的永远是眼前这条；对不上就别往里补
+  const batch = o.turns.splice(Math.max(0, o.turns.length - count)); // 先从按钮上摘：补画时 turnOrdinal 数的就是摘完的
+  const anchor = chatCol.querySelector(".turn");
+  const top0 = anchor ? anchor.getBoundingClientRect().top : 0;
+  const box = document.createElement("div");
+  box.className = "turns-older";
+  more.after(box);
+  const wasReplaying = isReplaying, wasFeedback = replayFeedback, wasOlder = replayingOlder;
+  isReplaying = true;
+  replayingOlder = true; // 补的是旧轮：余量条、余额、滚动条都不许动（见 app-01 replayingOlder）
+  replayFeedback = new Map(o.feedback.filter((f) => f && f.turn != null).map((f) => [f.turn, f]));
+  try { replayTurns(batch, o.sid, box); } finally { isReplaying = wasReplaying; replayFeedback = wasFeedback; replayingOlder = wasOlder; }
+  // 这一批后面还有更晚的轮：「重新生成」只留给整段对话的最后一轮
+  box.querySelectorAll(".turn-actions [data-a=regen]").forEach((b) => b.remove());
+  if (o.turns.length) labelTurnsMore(more);
+  else more.remove();
+  if (anchor) chatScroll.scrollTop += anchor.getBoundingClientRect().top - top0;
+  return batch.length;
+}
+
+/**
  * 打开一个会话并回放它的对话（历史列表点击 / 评测页「打开对话」都走这里）。
  * opts.turn 给的是「停在第几回合」：从资料库点一份产出过来的人，要找的是
  * 写出这份东西的那几句话，落在对话最底下等于还得自己翻一遍。
  */
+// 2026-09-28 实测：连接被占满时 /api/session 排了半分钟，用户等不及点了另一条，
+// 结果先回来的 A 画进了 B 的对话里，还把 A 的文件夹和模型记到了 B 头上（下一句就发到别人的文件夹去了）。
+// 所以每次点开都领一个号，await 回来号不对就什么都不做；上一次还在路上的请求直接掐掉。
+let openSeq = 0;
+let openCtl = null;
+var OPEN_SESSION_TIMEOUT_MS = 15000; // 测试里会改小；var 是为了让测试从外面改得到
+function openNote(text, retry) {
+  const d = document.createElement("div");
+  d.className = "open-note";
+  d.style.cssText = "text-align:center;color:var(--owb-text-3);font-size:13px;padding:20px";
+  d.textContent = text;
+  if (retry) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "btn-plain"; b.style.marginLeft = "8px";
+    b.textContent = "重试";
+    b.onclick = retry;
+    d.appendChild(b);
+  }
+  return d;
+}
 async function openSession(id, opts) {
+  const sid = id;
+  const tok = ++openSeq;
+  if (openCtl) openCtl.abort();
+  const ctl = openCtl = new AbortController();
   closeAssistView();
   stopCliWatch(); // 换了会话就别再往上一趟里塞事件了
   sessionId = id;
@@ -1119,7 +1340,7 @@ async function openSession(id, opts) {
   attnSeen(id); // 点开了就算看过：侧栏上那颗「出错了/跑完了」熄掉
   // 上个会话开着的预览/文件面板不带进来
   resetCtxMeter(); // 余量条也是：先收回去，下面回放到本会话自己的 context 事件再填
-  pvPanel.classList.remove("show"); pvCurrent = null;
+  closePreview(false, { now: true }); // 换对话：面板里的网页/音视频当场拆，不等滑完，见 app-01 closePreview
   document.getElementById("files-panel").classList.remove("show");
   const s = sessions.find(x => x.id === sessionId);
   // 从别处打开的对话（搜索、评测页「打开对话」）可能属于另一条工作线：标签跟着切过去，
@@ -1132,40 +1353,62 @@ async function openSession(id, opts) {
   }
   document.getElementById("session-title").textContent = s ? stripSceneTag(s.title) : "任务";
   renderHistory();
-  // 回放服务端保存的完整对话（含工具执行过程）
+  // 回放服务端保存的完整对话（含工具执行过程）。
+  // 记录还在路上时先写一句「在载」，正在跑的那一轮手上本来就有，先接上——
+  // 以前是清空了干等，等的那几秒（占满时是半分钟）整列空白，看着像对话丢了
+  const live0 = runningSessions.get(sid);
   chatCol.innerHTML = "";
-  const data = await fetch("/api/session/" + encodeURIComponent(sessionId)).then(r => r.json()).catch(() => ({ transcript: [] }));
+  const loading = openNote("正在载入这段对话…");
+  chatCol.appendChild(loading);
+  if (live0) { chatCol.appendChild(live0.ui.turn); live0.ui.flush?.(); }
+  updateSendUI(); // 忙/闲条先跟着换过来，不等记录
+  let data = null, failed = null, timedOut = false;
+  const tmo = setTimeout(() => { timedOut = true; ctl.abort(); }, OPEN_SESSION_TIMEOUT_MS);
+  try {
+    const r = await fetch("/api/session/" + encodeURIComponent(sid), { signal: ctl.signal });
+    // 回的不是 JSON（旧版本、代理页）照旧当空记录；读到一半被掐的得算失败
+    data = await r.json().catch((e) => { if (ctl.signal.aborted) throw e; return { transcript: [] }; });
+  } catch (e) { failed = e; } finally { clearTimeout(tmo); }
+  if (tok !== openSeq || sessionId !== sid) return; // 人已经换到别的对话了，这份记录谁都不给
+  if (failed) {
+    // 只说知道的：超时就是等了多久没回来，别的错照原文给前 40 个字
+    const msg = timedOut ? `等了 ${Math.round(OPEN_SESSION_TIMEOUT_MS / 1000)} 秒没等到这段对话的记录`
+      : "这段对话的记录没取回来：" + String((failed && failed.message) || failed).slice(0, 40);
+    loading.replaceWith(openNote(msg, () => openSession(sid, opts)));
+    return;
+  }
   // 侧栏里没有这一条时（自动化的「看执行过程」、搜索结果、评测页点进来的），标题从服务端取。
   // 不然点开一趟定时任务的执行过程，顶上写的是光秃秃一个「任务」，认不出是哪条任务的哪一次。
   if (!s && data.title) document.getElementById("session-title").textContent = (data.kind === "schedule" ? "定时 · " : "") + stripSceneTag(data.title);
-  if (data.dir && sessionDirs.get(sessionId) !== data.dir) { sessionDirs.set(sessionId, data.dir); openDirs.add(data.dir); renderFiles(filesCache); }
-  if (data.model) sessionModels.set(sessionId, data.model); else sessionModels.delete(sessionId);
+  // 下面这几张表一律按 sid 写：await 期间全局 sessionId 已经可能变过（上面的号挡住了，这里再兜一层）
+  if (data.dir && sessionDirs.get(sid) !== data.dir) { sessionDirs.set(sid, data.dir); openDirs.add(data.dir); }
+  else if (data.dir === null) sessionDirs.delete(sid); // 服务端说这对话在当前根下没有自己的那格（换过根），别拿旧的去筛
+  if (data.att_dir) sessionAttachDirs.set(sid, data.att_dir); else sessionAttachDirs.delete(sid);
+  filesAllScope = false; // 成果区跟着换到这个对话自己的那一格
+  renderFiles(filesCache);
+  if (data.model) sessionModels.set(sid, data.model); else sessionModels.delete(sid);
   updateModelLabel();
-  if (data.goal) sessionGoals.set(sessionId, data.goal); else sessionGoals.delete(sessionId);
+  if (data.goal) sessionGoals.set(sid, data.goal); else sessionGoals.delete(sid);
   renderGoalCard();
   let transcript = data.transcript || [];
   // 该会话有任务正在后台跑：回放只到本轮之前，正在跑的这轮把"活的"回合元素接回来
-  // （它切走期间一直在后台收事件更新，接上就是完整直播，不用回放+续流拼接）
-  const live = runningSessions.get(sessionId);
+  // （它切走期间一直在后台收事件更新，接上就是完整直播，不用回放+续流拼接）。
+  // 等记录那会儿刚好跑完的，live0 手上那一轮也是完整的，照样用它
+  const live = runningSessions.get(sid) || live0;
+  chatCol.innerHTML = "";
   if (live) {
     const lastUser = transcript.map(e => e.type).lastIndexOf("user");
     if (lastUser >= 0) transcript = transcript.slice(0, lastUser);
   }
-  let ui = null;
-  let 未收尾 = null;
+  // 只先画最后 TURN_WINDOW 轮，前面的挂到顶上那颗按钮上（见 showOlderTurns）。
+  // 按钮得先挂上再回放：回放时 👍👎 按 turnOrdinal 对号，它要数上收着的那几轮
+  const turns = splitTurns(transcript);
+  const cut = Math.max(0, turns.length - Math.max(1, TURN_WINDOW));
   isReplaying = true;
   replayFeedback = new Map((data.feedback || []).filter(f => f && f.turn != null).map(f => [f.turn, f]));
   try {
-    for (const entry of transcript) {
-      if (entry.type === "user") {
-        ui = createTurnUI(entry.text, entry.mode, undefined, entry.shown);
-        未收尾 = ui;
-      } else if (entry.type === "assistant" && ui) {
-        for (const ev of entry.events || []) ui.handleEvent(ev);
-        ui.finish();
-        未收尾 = null;
-      }
-    }
+    if (cut) chatCol.appendChild(makeTurnsMore(sid, turns.slice(0, cut), data.feedback));
+    const 未收尾 = replayTurns(cut ? turns.slice(cut) : turns, sid);
     // 最后一问没有对应的回答（跑到一半进程没了、服务重启了）：也得收尾。
     // 不收的话这一轮会一直转着「运行中…」，而 runningSessions 里根本没有它，用户找不到任何能停的地方
     if (未收尾) 未收尾.finish({ interrupted: true });
@@ -1173,6 +1416,7 @@ async function openSession(id, opts) {
   if (live) {
     document.getElementById("empty")?.remove();
     chatCol.appendChild(live.ui.turn);
+    live.ui.flush?.(); // 切走期间攒着没画的字，接上这一下一次画齐
   } else if (!transcript.length) {
     chatCol.innerHTML = '<div style="text-align:center;color:var(--owb-text-3);font-size: 13px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
   }
@@ -1190,8 +1434,9 @@ document.getElementById("new-task").onclick = () => {
   updateModelLabel();
   renderGoalCard();
   resetCtxMeter(); // 新对话的上下文是空的，别让上一条那个百分比留在屏幕上吓人
-  pvPanel.classList.remove("show"); pvCurrent = null;
+  closePreview(false, { now: true }); // 换对话：面板里的网页/音视频当场拆，不等滑完，见 app-01 closePreview
   document.getElementById("files-panel").classList.remove("show");
+  filesAllScope = false; renderFiles(filesCache); // 新对话还没产出：成果区别摆上一个对话的
   updateSendUI(); // 新对话不是忙态：别的对话在跑也能立刻并行发任务
   document.getElementById("session-title").textContent = "新任务";
   chatCol.innerHTML = "";
@@ -1308,11 +1553,23 @@ function syncSendBtn() {
   sendBtn.classList.toggle("stop", stopMode);
   sendBtn.classList.toggle("interject", (busy || cli) && draft && !queueMode);
   sendBtn.classList.toggle("queued", queueMode);
-  sendBtn.innerHTML = ic(stopMode ? "square" : queueMode ? "hourglass" : "arrow-up");
-  sendBtn.title = stopMode ? "让我停下（Esc）"
+  // 每敲一个字都走到这里，而图标和说法十有八九跟上一下一样。以前照样整颗 svg 拆了重建、title 重写：
+  // 2026-09-29 实测打 200 个字就是 200 次子树替换 + 200 次属性写，每次都得重算样式再排一遍版。
+  // 只在真变了的时候写（比的是我们上次写进去的那份，别拿 innerHTML 读回来比——序列化出来的字符串跟原文不一定一样）。
+  // 还得认一下那颗图标是不是还在：stopTask 会先把按钮换成「…」，那之后必须重画
+  const icon = stopMode ? "square" : queueMode ? "hourglass" : "arrow-up";
+  const touched = !sendBtn._iconEl || sendBtn.firstElementChild !== sendBtn._iconEl;
+  if (sendBtn._icon !== icon || touched) {
+    sendBtn.innerHTML = ic(icon);
+    sendBtn._icon = icon; sendBtn._iconEl = sendBtn.firstElementChild;
+  }
+  const title = stopMode ? "让我停下（Esc）"
     : cli ? "插一句给终端里的它（Enter）"
     : queueMode ? "排到队尾：不打断现在这件事，做完了自己开始（Enter）"
     : busy ? "插一句进去，我做完这一步就看（Enter）" : "发送（Enter）";
+  // title 也比我们上次写的那份：英文界面上词典会把它原地换成英文，拿 sendBtn.title 比就永远对不上、每个字照写。
+  // stopTask 换「正在停…」时连按钮内容一起换了（touched），那一下照样重写
+  if (sendBtn._title !== title || touched) { sendBtn.title = title; sendBtn._title = title; }
 }
 function updateSendUI() {
   syncSendBtn();
@@ -1354,11 +1611,8 @@ function bindComposer() {
   sendBtn.onclick = () => (!cliBusy() && curBusy() && !hasDraft() ? stopTask() : send());
   inputEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
-      // 输入法正处合成态（中文选词／候选），这一下回车是「确认字」不是「发送」。
-      // isComposing/229 只在合成中才真，普通输入下恒假，不影响英文直接回车发出。
-      if (e.isComposing || e.keyCode === 229) return;
-      e.preventDefault();
-      send();
+      if (imeKey(e)) return; // 输入法选词上屏的那个回车，不是发送
+      e.preventDefault(); send();
     }
   });
   inputEl.addEventListener("input", syncSendBtn);
@@ -1491,6 +1745,10 @@ function makeRecCounter() {
       if (!st.lastIsText) { st.n++; st.lastIsText = true; st.textLen = 0; }
       st.textLen += String(ev.delta || "").length;
     } else if (KEEP.includes(ev.type)) { st.n++; st.lastIsText = false; }
+    // files 服务端也记，只是只记有变更的那批（空的收尾清单不记）。以前这里漏了它：
+    // 数少一条、而且还当最后一条是文本，重连时从前一段文字的半截补发——2026-09-28 查四份正在跑的记录，
+    // 接回来时分别重放了 14、14、5 条事件，同一段过程在屏幕上画两遍
+    else if (ev.type === "files" && (ev.changed || []).length) { st.n++; st.lastIsText = false; }
   };
   return st;
 }
@@ -1508,19 +1766,136 @@ async function pumpStream(resp, ui, rc) {
     buf = parts.pop();
     for (const part of parts) {
       if (!part.startsWith("data: ")) continue;
-      try {
-        const ev = JSON.parse(part.slice(6));
-        if (ev.type === "done") sawDone = true;
-        rc.feed(ev);
-        ui.handleEvent(ev);
-      } catch {}
+      let ev = null;
+      try { ev = JSON.parse(part.slice(6)); } catch { continue; } // 半截 JSON：丢这一条，流接着读
+      if (ev.type === "done") sawDone = true;
+      rc.feed(ev);
+      // 画的时候抛错以前被一个空 catch 吞了，屏幕上少了一段谁也不知道。现在留个痕，流照样往下读
+      try { ui.handleEvent(ev); } catch (e) { console.warn("[直播] 这条事件没画出来：" + ev.type, e); }
     }
   }
   return sawDone;
 }
 
+/**
+ * 整页合用的一条直播连接（服务端见 server.js 的 /api/chat/live）。
+ *
+ * 2026-09-28 实测：同时跑 6 个对话，每个对话各攥着一条长连接（发任务那条 POST 的 SSE、断线后的续流），
+ * Chromium 对同一主机最多开 6 条——占满以后点开别的对话、点停止、开预览全在后面排队，
+ * 聊天区和预览一片白，看着像卡死。现在不管几条对话在跑，这一页只占这一条。
+ *
+ * 订阅有增减就整条重开（服务端只管开和关）。每帧带着服务端记录里的位置，前端拿它校正计数，
+ * 重开时从这里续，不重不漏。老服务端没有这个接口（404）就退回每条对话各接各的老办法——
+ * 桌面版的页面直接从仓库读，刷新后新页面对着的可能还是没重启过的老服务端。
+ */
+const liveCh = { subs: new Map(), off: false, ctrl: null, gen: 0, timer: 0, lastByte: 0, fails: 0 };
+const LIVE_IDLE_MS = 60000; // 服务端 25 秒一次心跳；60 秒一个字节都没来就当这条连接已经死了
+const LIVE_SIDE_TYPES = new Set(["dir", "goal", "title", "sweep", "files", "done"]); // 不进记录、重连会再补一遍的那几种
+
+/** 跟一趟任务，直到它收尾。结果："end" 跑完 / "gone" 服务端没有这趟 / "fallback" 老服务端，走老路 / {netErr} 连不上了 */
+function liveFollow(sid, ui, rc, rid) {
+  return new Promise((resolve) => {
+    const old = liveCh.subs.get(sid);
+    if (old) { liveCh.subs.delete(sid); old.resolve("gone"); } // 同一条对话只挂一份（旧的那份交给 endRun 按 ui 对不上处理）
+    liveCh.subs.set(sid, { ui, rc, rid: rid || "", resolve, seen: new Map() });
+    liveReopen(0);
+  });
+}
+function liveSettle(sid, result) {
+  const s = liveCh.subs.get(sid);
+  if (!s) return;
+  liveCh.subs.delete(sid);
+  s.resolve(result);
+  if (!liveCh.subs.size) { clearTimeout(liveCh.timer); liveCh.gen++; if (liveCh.ctrl) liveCh.ctrl.abort(); liveCh.ctrl = null; }
+}
+function liveSettleAll(result) { for (const sid of [...liveCh.subs.keys()]) liveSettle(sid, result); }
+// 同一轮事件循环里连着订好几条（刷新后一口气接回几趟）只重开一次
+function liveReopen(delay) { clearTimeout(liveCh.timer); liveCh.timer = setTimeout(liveConnect, delay || 0); }
+
+async function liveConnect() {
+  const gen = ++liveCh.gen;
+  if (liveCh.ctrl) liveCh.ctrl.abort();
+  liveCh.ctrl = null;
+  if (!liveCh.subs.size) return;
+  const ctrl = new AbortController();
+  liveCh.ctrl = ctrl;
+  const items = [...liveCh.subs].map(([sid, s]) => {
+    const pos = s.rc.lastIsText ? `${s.rc.n - 1}:${s.rc.textLen}` : `${s.rc.n}:0`;
+    return `${encodeURIComponent(sid)}:${pos}${s.rid ? ":" + s.rid : ""}`;
+  });
+  let failed = null;
+  try {
+    const resp = await fetch("/api/chat/live?subs=" + encodeURIComponent(items.join(",")), { signal: ctrl.signal, cache: "no-store" });
+    if (gen !== liveCh.gen) return;
+    if (resp.status === 404 || (resp.ok && !/event-stream/.test(resp.headers.get("content-type") || ""))) {
+      liveCh.off = true; // 老服务端：以后都走老路，别每次都先撞一下
+      liveSettleAll("fallback");
+      return;
+    }
+    if (!resp.ok) { liveSettleAll("gone"); return; } // 跟老的续流一个处理：接不上就收尾，不在这儿报错
+    liveCh.lastByte = Date.now();
+    const dog = setInterval(() => {
+      if (Date.now() - liveCh.lastByte > LIVE_IDLE_MS) ctrl.abort(new Error("60 秒没收到任何数据"));
+    }, 5000);
+    try {
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        liveCh.lastByte = Date.now();
+        liveCh.fails = 0;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) if (part.startsWith("data: ")) liveFrame(part.slice(6));
+      }
+    } finally { clearInterval(dog); }
+    failed = new Error("直播连接被关掉了");
+  } catch (e) {
+    failed = e;
+  }
+  if (gen !== liveCh.gen || !liveCh.subs.size) return; // 页面自己重开的 / 全都收尾了：不算断
+  // 真断了。先问一句服务端还在不在（服务端重启只要一两秒，问一次就放弃会把活着的任务当成断了）；
+  // 在的话整条重开——刚跑完的那几趟服务端还留着 60 秒，重开时会把漏掉的尾巴和收尾一起补过来
+  const still = await probeRunning();
+  if (gen !== liveCh.gen) return;
+  if (still === null) { liveSettleAll({ netErr: failed }); return; }
+  liveReopen(Math.min(15000, 500 * 2 ** liveCh.fails++));
+}
+
+function liveFrame(txt) {
+  let f = null;
+  try { f = JSON.parse(txt); } catch { return; }
+  const s = f && liveCh.subs.get(f.sid);
+  if (!s) return;
+  if (f.end) { liveSettle(f.sid, f.gone ? "gone" : "end"); return; }
+  const ev = f.ev;
+  if (!ev || typeof ev !== "object") return;
+  if (f.rid && !s.rid) s.rid = f.rid; // 刷新后接回的那趟一开始不知道 rid，第一帧补上，重连时就不会接到同一条对话的下一趟
+  // 不进记录的那几种，每次重开服务端都会再补一遍最新的：跟上次一模一样的不再交给回合
+  if (LIVE_SIDE_TYPES.has(ev.type) && !(ev.type === "files" && (ev.changed || []).length)) {
+    const key = JSON.stringify(ev);
+    if (s.seen.get(ev.type) === key) return;
+    s.seen.set(ev.type, key);
+  }
+  if (Number.isInteger(f.n)) { s.rc.n = f.n; s.rc.lastIsText = f.t >= 0; s.rc.textLen = Math.max(0, f.t | 0); }
+  s.rc.feed(ev);
+  try { s.ui.handleEvent(ev); } catch (e) { console.warn("[直播] 这条事件没画出来：" + ev.type, e); }
+}
+
 /** 主流断了但服务端任务可能还在跑（电脑睡眠/网络抖动/页面刚刷新）：从断点续流接回，直到任务真结束 */
-async function keepAttached(sid, ui, rc, sawDone, netErr) {
+async function keepAttached(sid, ui, rc, sawDone, netErr, rid) {
+  if (sawDone) return;
+  // 先挂到整页那一条直播上（见 liveCh）；老服务端没有它才往下走每条各接各的老路
+  if (!liveCh.off) {
+    const r = await liveFollow(sid, ui, rc, rid);
+    if (r !== "fallback") {
+      if (r && r.netErr) ui.handleEvent({ type: "error", message: "连接中断：" + r.netErr.message + "。任务可能仍在后台运行，刷新即可接回；别点重新生成，会重复执行" });
+      return;
+    }
+  }
   while (!sawDone) {
     // 「还在跑吗」这一问**不能只问一次**。它失败最常见的原因不是网断了，是服务端正好在重启
     // （改了配置、装了依赖、Electron 自己重载），那只有一两秒。问一次就放弃的话，用户看到
@@ -1561,6 +1936,9 @@ async function probeRunning(tries = 4) {
 /** 一轮任务收尾（正常结束/出错/被停止都走这里）。opts.quiet：发起的那一页自己已经报过「完成」了，别再弹 toast */
 function endRun(sid, ui, opts) {
   ui.finish();
+  // 这条对话名下挂着的已经是另一个回合了（重复接回时被顶掉的那份）：只收自己，别把活着的那份从账上抹掉、再报一遍「已完成」
+  const cur = runningSessions.get(sid);
+  if (cur && cur.ui && cur.ui !== ui) return;
   runningSessions.delete(sid);
   attnRunEnded(sid); // 被停了、断了的那一轮，流里没等到回答的题一起作废
   if (!(sessionQueues.get(sid) || []).length) attnFlag(sid, "unseen"); // 人正看着这条的话 attnFlag 自己不记
@@ -1573,14 +1951,21 @@ function endRun(sid, ui, opts) {
 /** 并行任务多了得知道哪个跑完了：后台会话完成弹 toast；窗口失焦时发系统通知 */
 function notifyRunDone(sid, ui, opts) {
   if (typeof attnGone !== "undefined" && attnGone.has(sid)) return; // 删掉了的会话收尾：不报「已完成」
+  if (typeof histStopQuiet !== "undefined" && histStopQuiet.has(sid)) {
+    const stopped = histStopQuiet.get(sid) === ui;
+    histStopQuiet.delete(sid);
+    if (stopped) return; // 侧栏上亲手停的：「已停下」已经说过了，不再报「已完成」
+  }
   const s = sessions.find((x) => x.id === sid);
   const name = stripSceneTag(s && s.title) || "任务";
   // 长跑完成通知带上战报：用时/步数/产出件数，长任务离开视线也知道干了多少活
   const st = ui && ui.stats ? ui.stats() : null;
   const detail = st ? `用时 ${st.dur}${st.steps ? ` · ${st.steps} 步` : ""}${st.rounds ? ` · 续跑 ${st.rounds} 轮` : ""}${st.outs ? ` · 产出 ${st.outs} 件` : ""}` : "";
   if (sid !== sessionId && !(opts && opts.quiet)) toast(`「${name}」已完成${detail ? `（${detail}）` : ""}，点侧栏查看`, "circle-check");
-  if (document.hidden) bumpDoneWhileAway(name);
-  if (document.hidden && "Notification" in window) {
+  // isAway 而不是 document.hidden：桌面版窗口收起来以后 hidden 一直是 false（见 app-01-attention.js）
+  const away = isAway();
+  if (away) bumpDoneWhileAway(name);
+  if (away && "Notification" in window) {
     try {
       if (Notification.permission === "granted") {
         const n = new Notification(name, { body: detail || "任务已完成" });
@@ -1602,7 +1987,7 @@ let doneWhileAway = 0;
 let lastDoneName = "";
 function bumpDoneWhileAway(name) {
   // 终端那趟收尾不看人在不在都会调进来；人正看着页面就不记，不然标题上挂个 (1) 没人来清
-  if (!document.hidden) return;
+  if (!isAway()) return;
   doneWhileAway++;
   lastDoneName = name || lastDoneName;
   syncTitleCount();
@@ -1619,8 +2004,14 @@ function syncTitleCount() {
   const want = n ? `(${n}) ${base}` : base;
   if (document.title !== want) document.title = want;
 }
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) return;
+/**
+ * 人回来了：切回标签页（visibilitychange），或者窗口重新拿到焦点（focus）。
+ * 只听 visibilitychange 的话，「窗口开着、人在别的应用里」那段跑完的活永远等不到这一下——
+ * isAway 把失焦也算作不在，回来的这一下就得两头都听。拿回焦点那一刻 owb-away 可能还没摘（主进程
+ * 摘类名是异步的），所以这里不问 isAway，只问「看不看得见、有没有焦点」。
+ */
+function backFromAway() {
+  if (document.hidden || (typeof document.hasFocus === "function" && !document.hasFocus())) return;
   if (sessionId) attnSeen(sessionId); // 切回来眼前这条就算看过了
   if (!doneWhileAway) return;
   const n = doneWhileAway;
@@ -1628,39 +2019,76 @@ document.addEventListener("visibilitychange", () => {
   syncTitleCount();
   toast(n === 1 ? `你不在的时候，「${lastDoneName || "任务"}」跑完了` : `你不在的时候跑完了 ${n} 个任务`);
   lastDoneName = "";
-});
+}
+document.addEventListener("visibilitychange", backFromAway);
+window.addEventListener("focus", backFromAway);
 
-/** 页面加载时找回还在后台跑的任务：回放已记录的过程 + 断点续流接上直播（刷新不再丢任务画面） */
+/**
+ * 页面加载时找回还在后台跑的任务：回放已记录的过程 + 断点续流接上直播（刷新不再丢任务画面）。
+ *
+ * 「正在接」单独记一张表，不往 runningSessions 里先占个空位：那张表里的每一项别处都直接拿 .ui 用。
+ * 以前是 await 之前查一次 has、await 之后才 set——开机那次接回和撞 409 的那次接回叠在一起时，
+ * 两边都查到「没有」，同一趟接了两条流，跑完还收尾两遍（两个「已完成」、排队的话被放出去两次）。
+ * 取记录并发最多 3 条：以前一条条排着取，第 8 条要等前 7 条都回来才开始接。
+ */
+const reattaching = new Map(); // sid -> 这一趟正在接的 promise
+const REATTACH_PAR = 3;
+let reattachActive = 0;
+const reattachWait = [];
 async function reattachRunning() {
   let ids = [];
   try { const r = await fetch("/api/chat/running"); if (r.ok) ids = await r.json(); } catch {}
+  const jobs = [];
   for (const sid of ids) {
+    if (reattaching.has(sid)) { jobs.push(reattaching.get(sid)); continue; } // 已经有人在接：等它，不另开一条
     if (runningSessions.has(sid)) continue;
-    let data = null;
-    try { data = await fetch("/api/session/" + encodeURIComponent(sid)).then((r) => r.json()); } catch {}
-    if (data && data.dir) sessionDirs.set(sid, data.dir);
-    if (data && data.model) sessionModels.set(sid, data.model);
-    if (data && data.goal) sessionGoals.set(sid, data.goal);
-    const t = (data && data.transcript) || [];
-    const lastUser = t.map((e) => e.type).lastIndexOf("user");
-    if (lastUser < 0) continue;
-    const evs = (t[lastUser + 1] && t[lastUser + 1].events) || [];
-    const ui = createTurnUI(t[lastUser].text, t[lastUser].mode, sid, t[lastUser].shown);
-    const rc = makeRecCounter();
-    isReplaying = true;
-    try { for (const ev of evs) { rc.feed(ev); ui.handleEvent(ev); } } finally { isReplaying = false; }
-    runningSessions.set(sid, { ui });
-    // 用户手快已经点进了这个会话：把静态回放出来的最后一轮换成活的回合元素
-    if (sid === sessionId) {
-      const turns = chatCol.querySelectorAll(".turn");
-      if (turns.length) turns[turns.length - 1].remove();
-      document.getElementById("empty")?.remove();
-      chatCol.appendChild(ui.turn);
-      scrollBottom(true);
-    }
-    updateSendUI();
-    keepAttached(sid, ui, rc, false, null).then(() => endRun(sid, ui)); // 各会话各自接，互不等待
+    const p = (async () => {
+      if (reattachActive >= REATTACH_PAR) await new Promise((r) => reattachWait.push(r)); else reattachActive++;
+      try { await reattachOne(sid); } finally { const next = reattachWait.shift(); if (next) next(); else reattachActive--; }
+    })().catch((e) => console.warn("[接回] " + sid + " 没接上", e)).finally(() => reattaching.delete(sid));
+    reattaching.set(sid, p);
+    jobs.push(p);
   }
+  await Promise.all(jobs); // adoptBusyRun 要等接完了才知道接没接上
+}
+async function reattachOne(sid) {
+  let data = null;
+  const ctl = new AbortController();
+  const tmo = setTimeout(() => ctl.abort(), OPEN_SESSION_TIMEOUT_MS);
+  try { data = await fetch("/api/session/" + encodeURIComponent(sid), { signal: ctl.signal }).then((r) => r.json()); } catch {} finally { clearTimeout(tmo); }
+  if (runningSessions.has(sid)) return; // 等记录那会儿这一趟已经从别处接上了（本页刚发的、另一次接回）
+  if (data && data.dir) sessionDirs.set(sid, data.dir);
+  else if (data && data.dir === null) sessionDirs.delete(sid);
+  if (data && data.att_dir) sessionAttachDirs.set(sid, data.att_dir);
+  if (data && data.model) sessionModels.set(sid, data.model);
+  if (data && data.goal) sessionGoals.set(sid, data.goal);
+  const t = (data && data.transcript) || [];
+  const lastUser = t.map((e) => e.type).lastIndexOf("user");
+  if (lastUser < 0) return;
+  const evs = (t[lastUser + 1] && t[lastUser + 1].events) || [];
+  // 用户手快已经点进了这个会话：静态回放出来的最后一轮要换成活的。得在建新回合之前记下是哪一轮——
+  // createTurnUI 对眼前这条会把新回合直接挂到最后，以前挂完再找「最后一轮」，删掉的正是活的那份，留下一轮死的
+  const stale = sid === sessionId ? [...chatCol.querySelectorAll(".turn")].pop() || null : null;
+  const ui = createTurnUI(t[lastUser].text, t[lastUser].mode, sid, t[lastUser].shown);
+  const rc = makeRecCounter();
+  let bad = 0;
+  isReplaying = true;
+  try {
+    for (const ev of evs) {
+      rc.feed(ev); // 先记数再画：画挂了也不能让续流的起点跟服务端对不上
+      try { ui.handleEvent(ev); } catch (e) { if (!bad++) console.warn("[接回] " + sid + " 有事件没画出来：" + (ev && ev.type), e); }
+    }
+  } finally { isReplaying = false; }
+  runningSessions.set(sid, { ui });
+  if (sid === sessionId) {
+    if (stale && stale !== ui.turn) stale.remove();
+    document.getElementById("empty")?.remove();
+    chatCol.appendChild(ui.turn);
+    ui.flush?.();
+    scrollBottom(true);
+  }
+  updateSendUI();
+  keepAttached(sid, ui, rc, false, null).then(() => endRun(sid, ui)); // 各会话各自接，互不等待
 }
 
 /**
@@ -1702,12 +2130,13 @@ async function runTurn(sid, text, mode, regen, shown, retried) {
   if (sid === sessionId) scrollBottom(true);
 
   const rc = makeRecCounter();
-  let sawDone = false, netErr = null;
+  let sawDone = false, netErr = null, rid = "";
   try {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: sid, message: text, ...(shown ? { shown } : {}), mode, regen: !!regen, lane: laneOfSession(sessions.find(x => x.id === sid)), lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh" }),
+      // detach：服务端收下就回话，过程走整页那一条直播（liveCh），这条请求不再攥着一个连接跑完全程
+      body: JSON.stringify({ sessionId: sid, message: text, ...(shown ? { shown } : {}), mode, regen: !!regen, lane: laneOfSession(sessions.find(x => x.id === sid)), lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh", ...(liveCh.off ? {} : { detach: true }) }),
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));
@@ -1715,13 +2144,15 @@ async function runTurn(sid, text, mode, regen, shown, retried) {
       ui.handleEvent({ type: "error", message: d.error || `请求失败（HTTP ${resp.status}）` });
       if (resp.status === 401) showAuth(!!d.setup);
       sawDone = true; // 请求根本没被受理，没有可续的流
+    } else if (/event-stream/.test(resp.headers.get("content-type") || "")) {
+      sawDone = await pumpStream(resp, ui, rc); // 老服务端不认 detach，照旧整条流读到底
     } else {
-      sawDone = await pumpStream(resp, ui, rc);
+      rid = ((await resp.json().catch(() => null)) || {}).rid || "";
     }
   } catch (e) {
     netErr = e;
   }
-  await keepAttached(sid, ui, rc, sawDone, netErr);
+  await keepAttached(sid, ui, rc, sawDone, netErr, rid);
   endRun(sid, ui);
 }
 bindComposer();
@@ -1940,6 +2371,10 @@ const SHORTCUT_ACTIONS = {
 };
 document.addEventListener("keydown", (e) => {
   if (window.__scRebinding) return; // 设置页改绑捕获中，不触发动作
+  // 中文/日文输入法正在拼字（候选框开着）：这一下是给输入法的，不是给我们的。
+  // 不拦的话拼音打一半按 Esc 想关候选框，Esc 落到「让我停下」把正在跑的任务叫停了；
+  // imeKey 三样都认：isComposing、keyCode 229（起头那一下 isComposing 还是 false），和 Safari 先发 compositionend 的那种顺序
+  if (imeKey(e)) return;
   const acc = accelFromEvent(e);
   if (!acc) return;
   const canon = canonAccel(acc);
@@ -1967,6 +2402,7 @@ function openChatSearch() {
     document.querySelector(".main").appendChild(bar);
     bar.querySelector("#cs-input").oninput = runChatSearch;
     bar.querySelector("#cs-input").addEventListener("keydown", (e) => {
+      if (imeKey(e)) return;
       if (e.key === "Enter") { e.preventDefault(); csNav(e.shiftKey ? -1 : 1); }
       if (e.key === "Escape") { e.stopPropagation(); closeChatSearch(); }
     });
@@ -1993,6 +2429,12 @@ function runChatSearch() {
   const q = document.getElementById("cs-input").value.trim().toLowerCase();
   const cnt = document.getElementById("cs-count");
   if (!q) { cnt.textContent = ""; return; }
+  // 顶上收着没画的那几轮也得搜得到（见 showOlderTurns）：记录里有这个词，就补画到最早提到它的那一轮
+  const more = chatCol.querySelector(":scope > .turns-more");
+  if (more) {
+    const first = more._older.turns.findIndex((t) => turnSearchText(t).includes(q));
+    if (first >= 0) showOlderTurns(more._older.turns.length - first);
+  }
   for (const el of chatCol.querySelectorAll(".u-msg .bubble, .a-text")) {
     if (el.textContent.toLowerCase().includes(q)) csMatches.push(el);
   }
@@ -2021,7 +2463,7 @@ async function pollApprovals() {
   const fresh = list.filter(a => !apSeen.has(a.id));
   if (apSeen.size > 500) apSeen = new Set();
   list.forEach(a => apSeen.add(a.id));
-  if (fresh.length && document.hidden && "Notification" in window && Notification.permission === "granted") {
+  if (fresh.length && isAway() && "Notification" in window && Notification.permission === "granted") {
     const a = fresh[0];
     try { new Notification("OpenWorkBuddy 等你审批", { body: `${a.source ? `「${a.source}」· ` : ""}${a.kind}：${(a.text || "").slice(0, 80)}` }); } catch {}
   }
@@ -2923,7 +3365,7 @@ const PLUS_RENDER = {
       box.focus();
       box.setSelectionRange(box.value.length, box.value.length);
       box.oninput = () => { plusSkillQ = box.value; PLUS_RENDER.skill(sub); };
-      box.onkeydown = (e) => { if (e.key === "Escape") { e.stopPropagation(); plusClose(); } };
+      box.onkeydown = (e) => { if (e.key === "Escape" && !imeKey(e)) { e.stopPropagation(); plusClose(); } };
     }
     sub.querySelectorAll(".pm-it").forEach((it) => (it.onclick = (e) => {
       e.stopPropagation();

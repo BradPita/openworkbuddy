@@ -120,11 +120,18 @@ function createImSessionStore({ dir, maxEntries = 120 } = {}) {
       const want = filter ? new Set(hit.map((k) => path.basename(fileOf(k)))) : null;
       let names = [];
       try { names = fs.readdirSync(dir); } catch {}
+      // 正本旁边那几份（.bak / .corrupt / .corrupt-时间戳）跟着一起删。以前只删 .json：
+      // 2026-09-28 实测每个 IM 会话都剩一份孪生 .bak，还有一个正本早没了的 local_assist.json.bak——
+      // 用户点了「清空上下文」，上一版对话原样躺在盘上。更糟的是同名新正本头一次写盘若断电成 0 字节，
+      // readJson 会拿这份 .bak 顶上，清掉的上下文又回来了。
+      // 全清（不带 filter）时正本已经没了的孤儿 .bak 也一起走；按人清时只认这个人名下那几个文件名
+      const mainOf = (f) => f.replace(/\.(?:bak|corrupt(?:-\d+)?)$/, "");
       for (const f of names) {
-        if (!f.endsWith(".json")) continue;
-        if (want && !want.has(f)) continue;
+        const main = mainOf(f);
+        if (!main.endsWith(".json")) continue;
+        if (want && !want.has(main)) continue;
         try { fs.unlinkSync(path.join(dir, f)); } catch (e) { console.warn(`[IM会话] 删不掉 ${f}：${e.message}`); }
-        probe.delete(f);
+        if (f === main) probe.delete(f);
       }
       if (!filter) probe.clear();
       return n;

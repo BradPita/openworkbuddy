@@ -552,5 +552,61 @@ console.log("\n【15】0.2 之前的老配置：只搬填了 Key 的那家，不
   eq(both[0].provider, "anthropic", "provider 写着 anthropic 的，Claude 排前面当默认");
 }
 
+// ---------------------------------------------------------------- 16
+console.log("\n【16】向导里「自己填地址」：中转站 / 自建网关第一步就能接上");
+{
+  eq(cm.trimEndpoint("https://relay.example.com/v1/chat/completions/"), "https://relay.example.com/v1", "整条接口路径贴进来 → 剥到 /v1");
+  eq(cm.trimEndpoint(" https://relay.example.com/v1/messages "), "https://relay.example.com/v1", "Anthropic 的 /messages 也剥");
+  eq(cm.trimEndpoint("https://relay.example.com/v1"), "https://relay.example.com/v1", "反向对照：本来就对的地址原样不动");
+
+  const c = { models: [], providers: [] };
+  eq(!!cm.planCustom(c, { base_url: "relay.example.com", model: "gpt-5" }).err, true, "没写 http(s) → 报错，不瞎猜协议");
+  eq(!!cm.planCustom(c, { base_url: "https://relay.example.com/v1", model: " " }).err, true, "模型名空着 → 报错");
+
+  const p = cm.planCustom(c, { base_url: "https://relay.example.com/v1/chat/completions", model: "gpt-5" });
+  eq(p.err, undefined, "填全了 → 不报错");
+  eq(p.t.kind, "custom", "认不出的地址记成自定义");
+  eq(p.t.base_url, "https://relay.example.com/v1", "渠道上存的是剥干净的地址");
+  eq(p.t.api, "", "OpenAI 格式就是自定义的默认格式，渠道上不另记");
+  eq(p.alt, "", "地址带了路径 → 不给 /v1 备选");
+  eq(p.row.model, "gpt-5", "模型名照填");
+
+  const bare = cm.planCustom(c, { base_url: "https://relay.example.com", model: "gpt-5" });
+  eq(bare.alt, "https://relay.example.com/v1", "只填了域名 → 备一个 /v1 的，验活 404 再试它");
+  eq(cm.planCustom(c, { base_url: "https://relay.example.com", model: "claude-sonnet-5", api: "anthropic" }).alt, "", "反向对照：Anthropic 格式自己会补 /v1，不另备");
+
+  const row = cm.commitTemplate(c, p, "sk-relay");
+  eq(c.providers.length, 1, "落一个渠道");
+  eq(c.providers[0].kind, "custom", "渠道是自定义");
+  eq(c.providers[0].api_key, "sk-relay", "Key 在渠道上");
+  eq(row.channel, c.providers[0].id, "模型挂在它下面");
+
+  // 同一个中转再加一个模型：挂同一个渠道，名字不撞
+  const p2 = cm.planCustom(c, { base_url: "https://relay.example.com/v1", model: "gpt-5-mini" });
+  eq(p2.prov && p2.prov.id, c.providers[0].id, "同地址同格式 → 复用那个渠道");
+  cm.commitTemplate(c, p2, "sk-relay");
+  eq(c.providers.length, 1, "反向对照：没多出第二个渠道");
+  eq(new Set(c.models.map((m) => m.name)).size, c.models.length, "两行模型名字不撞");
+
+  // 同一个中转说 Anthropic 格式：另起一个渠道，而且 normalize 之后格式还在
+  const pa = cm.planCustom(c, { base_url: "https://relay.example.com", model: "claude-sonnet-5", api: "anthropic" });
+  eq(pa.prov, null, "同地址不同格式 → 不并进 OpenAI 那个渠道");
+  eq(pa.t.api, "anthropic", "格式跟自定义的默认不一样 → 记在渠道上");
+  const ra = cm.commitTemplate(c, pa, "sk-relay");
+  cm.normalize(c);
+  const ch = c.providers.find((x) => x.id === ra.channel);
+  eq(ch && ch.api, "anthropic", "渠道上记着 Anthropic");
+  eq(c.models.find((m) => m.model === "claude-sonnet-5").provider, "anthropic", "normalize 之后这行还按 Anthropic 发");
+  eq(c.models.find((m) => m.model === "gpt-5").provider, "openai", "反向对照：OpenAI 那两行没被带跑");
+
+  // 把官方地址贴进了「自己填」：按那家记，渠道卡上的名字才对
+  const ds = cm.planCustom({ models: [], providers: [] }, { base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" });
+  eq(ds.t.kind, "deepseek", "认得出是 DeepSeek 官方 → 记成 DeepSeek");
+
+  // 本机接口不要 Key
+  eq(cm.planCustom(c, { base_url: "http://127.0.0.1:1234/v1", model: "qwen3" }).t.local, true, "本机地址 → 标成本机，Key 可不填");
+  eq(p.t.local, false, "反向对照：外网中转不算本机");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1); // 少了这一行，这个套件挂了也是绿的——CI 看的是退出码，不是这段话

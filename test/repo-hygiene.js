@@ -856,7 +856,7 @@ console.log("\n【12】技能说明书里的 JS 例子，不许写顶层 await")
 // ---------------------------------------------------------------------------
 console.log("\n【13】自有 JS 文件开头都带 SPDX 版权头，协议写对");
 // COMMERCIAL-LICENSE.md 把「源码文件带 SPDX 版权头」列为版权声明的一部分：文档这么写了，
-// 代码里就得真有——少一份就是文档在说假话。MIT 那几块（LICENSE-ECOSYSTEM.md）标 MIT，别的标 PolyForm。
+// 代码里就得真有——少一份就是文档在说假话。MIT 那几块（COMMERCIAL-LICENSE.md「按 MIT 授权的部分」）标 MIT，别的标 PolyForm。
 // 头要放在 shebang 和 `// @ts-check` 后面：@ts-check 只认文件开头的注释（typecheck 测试也钉着）。
 {
   const MIT = (f) => /^scripts\//.test(f) || f === "eval/tasks.js" || /^skills\/skill-creator\//.test(f) || /^deploy\//.test(f);
@@ -883,7 +883,7 @@ console.log("\n【13】自有 JS 文件开头都带 SPDX 版权头，协议写�
   ok(headOf("#!/usr/bin/env node\n// @ts-check\n" + NC + "x").id === "PolyForm-Noncommercial-1.0.0", "  └ 反向对照：shebang 和 @ts-check 后面的头认得出");
   ok(!headOf("const a = 1;\n" + NC).id, "  └ 反向对照：头不在开头的不算");
   ok(!headOf("// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0\nconst a = 1;\n").notice, "  └ 反向对照：只有 SPDX 没有版权行的抓得到");
-  ok(want("scripts/issue-license.js") === "MIT" && want("server.js") === "PolyForm-Noncommercial-1.0.0", "  └ 反向对照：MIT 和 PolyForm 的分界跟 LICENSE-ECOSYSTEM.md 一致");
+  ok(want("scripts/issue-license.js") === "MIT" && want("server.js") === "PolyForm-Noncommercial-1.0.0", "  └ 反向对照：MIT 和 PolyForm 的分界跟 COMMERCIAL-LICENSE.md 里那份清单一致");
 }
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

@@ -210,7 +210,7 @@ bash deploy.sh --domain buddy.example.com # Docker + automatic HTTPS
 ```
 
 Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin first** — the first account becomes super admin.
-→ [部署](docs/部署.md) · [ops handbook](deploy/README.md) · [多人协作](docs/多人协作.md) (Chinese)
+→ [部署](docs/部署.md) · [ops handbook](deploy/README.md) · [多人协作](docs/多人协作.md) · [账号与部署运维](docs/账号与部署运维.md) (Chinese)
 
 ## Models
 
@@ -260,6 +260,14 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 30** Outputs get a folder per conversation in more places: projects without a folder, Feishu/WeChat chats and schedules no longer overwrite each other
+- **Sep 30** Templates can be added, edited and deleted: "Mine" is private to you; "Company" is shared across the org and only admins can change it
+- **Sep 30** Many open conversations no longer slow the window: they share one live channel, and saving and screenshots moved off the main thread
+- **Sep 30** First-run setup accepts a custom endpoint; Enter no longer sends while an input method is still composing
+- **Sep 30** One server can host several companies: the platform owner creates an org and sends its first invite; an expired org can't start new tasks but keeps its history
+- **Sep 30** Multi-user permission fixes: members can't see connector URLs, tenant admins can't turn the shell on, and re-enabling a member checks seats
+- **Sep 30** Scheduled tasks run as their owner and stop when the owner is disabled or offboarded; every sign-in attempt is logged
+- **Sep 30** New guide [账号与部署运维](docs/账号与部署运维.md) (Chinese): accounts, offboarding, password recovery, backups, running several orgs
 - **Sep 28** License terms spelled out: free for personal non-commercial use; company use (even internal only) and individual commercial use need a commercial license from the author, and companies can try it free for 30 days
 - **Sep 28** The admin console has a Commercial License page: enter a license code and it is verified on this machine, offline, with no features locked
 - **Sep 28** Memory embeddings on a Qwen (DashScope) channel are no longer marked "unavailable": requests are split to each provider's limit
@@ -271,12 +279,6 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 - **Sep 27** Ready-made recipes: promo video, product demo, Xiaohongshu carousel, multi-platform posting; web demos can be screen-recorded, with local details masked before anything is published
 - **Sep 27** The library gains a Workspace tab you can click through folder by folder, so every workspace file is findable; "this turn's output" lists deeply nested files too
 - **Sep 27** Feishu: mp4s go out as video, compressed first if too big; the card shows what the run cost, or "price unknown" when there is no official price; IM file errors no longer leak local paths
-- **Sep 25** Multi-line input in the CLI: pastes wait for Enter, `\` + Enter or `Ctrl+J` adds a line, `Ctrl+G` opens your editor, `Ctrl+R` searches history; the running line shows time and tokens, and Esc stops the run
-- **Sep 25** CLI: after a plan, pick "go" or "keep editing"; `!command` runs shell and hands the output to the agent; with nobody at the terminal approvals are denied at once (`--allow` approves ahead); AGENTS.md / CLAUDE.md read up to the repo root
-- **Sep 25** Any file an answer mentions is clickable if it exists in the workspace, not just the ones made in that turn
-- **Sep 24** CLI approvals are picked with ↑↓ and Enter; tool calls show as `● Shell(command)` with `└ output` beneath, like Claude Code
-- **Sep 24** Canvas video: a job the provider already accepted is no longer retried automatically, so you are not charged twice; it sends the card's length, aspect ratio and resolution
-- **Sep 24** Chatting on the canvas shows up in task history right away, marked running; the input box hints `@` to reference files and `/` for skills
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 
@@ -322,6 +324,7 @@ Most docs are in Chinese; the code and comments are the source of truth.
 | [扩展](docs/扩展.md) | Skills, MCP, plugins, experts | [路线图](docs/路线图.md) | What's next, what counts as done |
 | [IM与定时任务](docs/IM与定时任务.md) | Feishu / QQ / WeCom / WeChat / DingTalk | [实现细节](docs/实现细节.md) | How the agent loop actually runs |
 | [安全基线](docs/安全基线.md) | Where data lands, who can read it, what isn't covered | [远程访问](docs/远程访问.md) | Reaching your machine from outside; both switches off by default |
+| [账号与部署运维](docs/账号与部署运维.md) | Accounts, offboarding, password recovery, backups, running several orgs | | |
 
 ## Also by the same author
 
@@ -329,18 +332,9 @@ Most docs are in Chinese; the code and comments are the source of truth.
 
 ## License
 
-**Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use require a paid commercial license. Companies may evaluate free for 30 days (not yet used in real business); long-term use requires a license.**
-[PolyForm Noncommercial 1.0.0](LICENSE); for a commercial license email [contact@aijentra.com](mailto:contact@aijentra.com) (terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)). The name "OpenWorkBuddy" and its logo are not covered by any of these licenses.
+**Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use need a commercial license.** Companies may evaluate free for 30 days. To buy one, email [contact@aijentra.com](mailto:contact@aijentra.com).
 
-**What happens with unlicensed commercial use** (short version; full legal basis in [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果), Chinese):
-
-- Commercial use is outside what the license permits. The first time you're notified in writing, you have 32 days to come into full compliance and take practical steps to correct past violations; otherwise all licenses granted under it end.
-- Civil liability under Articles 53 and 54 of China's Copyright Law: damages follow actual loss or illegal gains; where hard to calculate, the license fee (i.e. the commercial license price) is the reference; 1 to 5 times for willful, serious infringement; statutory damages of RMB 500 to 5 million where none of these can be determined, plus reasonable enforcement costs.
-- Internal-only company use, and client companies receiving an unlicensed delivery from a vendor, are covered too: Article 19 of the Supreme People's Court copyright interpretation (Fa Shi [2026] No. 18). (A holder who didn't know, and had no reasonable grounds to know, that the copy was infringing owes no damages but must stop using it; if stopping would cause major losses, it may keep using it after paying a reasonable fee: Art. 30 of the Computer Software Protection Regulations.) In court, a user who claims no liability must show it holds a license (Copyright Law Art. 59, para. 2).
-- Removing or altering copyright notices, the license or the licensing notice without permission may itself infringe (Copyright Law Art. 51(1) and Art. 53(7)). Changing the code for a non-commercial purpose is allowed by the license, but copies you pass on must keep the license and the Required Notice.
-- For-profit copying and distribution, making it available to the public over a network (e.g. downloads) or resale, above the thresholds, may fall under Article 217 of the Criminal Law; plain internal company use generally does not constitute this crime.
-
-**What the software does**: the login page, About page and onboarding state the licensing terms; when the admin console sees signs of team use such as multiple accounts or organizations, it posts a to-do asking an admin to declare the use or enter a license code, and records the answer in the audit log. License codes are verified offline with Ed25519; no feature locks, no network calls, no data collected. Details: [软件里的版权保护措施](COMMERCIAL-LICENSE.md#软件里的版权保护措施) (Chinese).
+[PolyForm Noncommercial 1.0.0](LICENSE); terms and what unlicensed commercial use leads to are in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Deploy configs, scripts and skill templates are also MIT ([the list](COMMERCIAL-LICENSE.md#按-mit-授权的部分)); the name and logo aren't licensed.
 
 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
@@ -362,6 +356,14 @@ An independent open-source project, not affiliated with Tencent or its WorkBuddy
 
 <p align="center">
  <sub>Pass it to one colleague who hand-builds decks, weekly reports and meeting notes — worth more than a hundred impressions.</sub>
+</p>
+
+<p align="center">
+ <img src="docs/images/tip-wechat.png" width="280" alt="Tip the author via WeChat Pay">
+</p>
+
+<p align="center">
+ <sub>If it saves you time, buy the author a coffee (WeChat Pay). A tip is a thank-you, not a commercial license — companies, see <a href="#commercial-license--enterprise-services">Commercial license</a>.</sub>
 </p>
 
 ## Contributors

@@ -413,8 +413,8 @@ function canvasBindTimeline(page) {
     const input = bar.querySelector("[data-canvas-find-input]");
     input.addEventListener("input", canvasFindRun);
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); canvasFindStep(e.shiftKey ? -1 : 1); }
-      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); canvasFindClose(); }
+      if (e.key === "Enter" && !imeKey(e)) { e.preventDefault(); canvasFindStep(e.shiftKey ? -1 : 1); }
+      else if (e.key === "Escape" && !imeKey(e)) { e.preventDefault(); e.stopPropagation(); canvasFindClose(); }
     });
     bar.querySelectorAll("[data-canvas-find-nav]").forEach((b) => b.addEventListener("click", () => canvasFindStep(Number(b.dataset.canvasFindNav))));
     bar.querySelector("[data-canvas-find-close]").addEventListener("click", canvasFindClose);

@@ -230,6 +230,32 @@ async function electronDriver({ width, height, runtime }) {
 }
 
 /**
+ * 服务端在独立服务进程里（2026-09-29 起桌面版默认）：离屏窗口只能由主进程开。
+ * 窗口还是 electronDriver 那一个（主进程 bridge-main 按 sid 管着），这边每一步问一次主进程。
+ * 截图回来是 BGRA 裸像素（nativeImage 过不了进程），要 PNG 时在这边用 bgraToPng 编。
+ * @param {{ width: number, height: number, runtime: string }} o
+ * @returns {Promise<Driver>}
+ */
+async function remoteElectronDriver({ width, height, runtime }) {
+  const bridge = require("./electron-bridge");
+  const sid = await bridge.call("motion.open", { width, height, runtime }, { timeoutMs: 60000 });
+  const T = { timeoutMs: 180000 };
+  return {
+    backend: "electron",
+    format: "bgra",
+    async load(url, ms) { await bridge.call("motion.load", { sid, url }, { timeoutMs: (ms || LOAD_TIMEOUT_MS) + 30000 }); },
+    async evaluate(expr) { return bridge.call("motion.eval", { sid, expr }, T); },
+    async capture() {
+      const buf = bridge.toBuf(await bridge.call("motion.capture", { sid }, T));
+      if (!buf || buf.length !== width * height * 4) throw new Error(`主进程截回来的画面大小不对（${buf ? buf.length : 0} 字节，要 ${width * height * 4}）`);
+      return { buf, png: () => bridge.bgraToPng(buf, width, height) };
+    },
+    hang() { bridge.notify("motion.hang", { sid }); },
+    async close() { await bridge.call("motion.close", { sid }, { timeoutMs: 15000 }).catch(() => undefined); },
+  };
+}
+
+/**
  * 命令行 / 服务端：拉一个一次性的无头 Chrome，开一个标签页。
  * 顺序是钉死的：先注时钟脚本、再定视口，最后才导航——反过来的话页面脚本先跑，拿到的是真时间。
  * @param {{ width: number, height: number, runtime: string }} o
@@ -462,7 +488,7 @@ async function doRender(files, opts) {
       }
     }
     const runtime = M.runtimeSource({ seed: opts.seed, epoch: opts.epochMs });
-    const make = av.backend === "electron" ? electronDriver : chromeDriver;
+    const make = av.backend === "electron" ? (require("./electron-bridge").isRemote() ? remoteElectronDriver : electronDriver) : chromeDriver;
     // 开浏览器这一下不接「停止」：半路撒手的话它开出来的窗口 / Chrome 就没人关了，等它开完再判
     driver = await make({ width, height, runtime });
     const drv = driver;
@@ -559,4 +585,4 @@ async function doRender(files, opts) {
   }
 }
 
-module.exports = { available, renderMotion, prepareFfmpeg, NO_BROWSER, _internals };
+module.exports = { available, renderMotion, prepareFfmpeg, NO_BROWSER, _internals, electronDriver, remoteElectronDriver };

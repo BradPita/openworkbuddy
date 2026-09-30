@@ -67,7 +67,7 @@ function makeRecipeFormCard(ev, turnSid, submit, ctx) {
       inp.placeholder = f.hint || "";
       inp.value = vals[f.name] || "";
       inp.oninput = () => { vals[f.name] = inp.value; say(""); };
-      inp.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); go(); } };
+      inp.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { e.preventDefault(); go(); } };
       ctl.appendChild(inp);
       // 品牌档案里的产品摆成一排，点一下填进去，不用再敲一遍
       const sug = (Array.isArray(f.suggest) ? f.suggest : []).map(String).filter(Boolean).slice(0, 8);

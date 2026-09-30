@@ -75,7 +75,7 @@ const IC_STUB = UI00_SRC.slice(UI00_SRC.indexOf("function ic(name, cls)"), UI00_
 // 所以统一在最前面垫一层：夹具自己注了就什么都不做（函数声明会提升，这里看到的就已经是 function），
 // 没注过才把真源码那一份挂到 window 上。挂 window 而不是声明顶层变量，免得跟夹具自己那份撞名。
 const IC_BOOT = 'if (typeof ic === "undefined") { (function(){\n' + IC_STUB
-  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS;\n})(); }\n';
+  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS; window.imeKey = imeKey;\n})(); }\n';
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 两条工作线"); // 附件段的下一段（以前是会话历史，中间插进了工作线）
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
@@ -227,6 +227,11 @@ const FEV0 = APP02X.indexOf('} else if (ev.type === "files") {');
 const FEV1 = APP02X.indexOf('} else if (ev.type === "sweep")', FEV0);
 if (FEV0 < 0 || FEV1 <= FEV0) throw new Error("app-01.js 里 files 事件那一支找不到了，前端测试没法验接线");
 const FILES_EV_SRC = APP02X.slice(FEV0, FEV1);
+// dir 事件那一支：本对话的成果文件夹是哪一格。空串 = 这一轮在根上读写（中途换成了自选文件夹）
+const DEV0 = APP02X.indexOf('if (ev.type === "dir") {');
+const DEV1 = APP02X.indexOf('} else if (ev.type === "goal")', DEV0);
+if (DEV0 < 0 || DEV1 <= DEV0) throw new Error("app-01.js 里 dir 事件那一支找不到了，前端测试没法验接线");
+const DIR_EV_SRC = APP02X.slice(DEV0, DEV1) + "}";
 
 const TURNOUT_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body></body>";
 
@@ -463,7 +468,10 @@ const TURNOUT_CHECKS = `
   ok("反向对照：dirWithSlash 改回 dirOf，同名检查当场量得出来", DUP_FNS_OLD.some((d) => d.startsWith("dirOf @ app-01.js:")), DUP_FNS_OLD.join("；"));
 
   // 事故原样重演：8 个擦水印用的中间文件 + 1 张最终成品
-  const mid = ["海报.png","_corner.png","_tab3.png","_tab2.png","_tab1.png","_bottom.png","海报v2.png","_wm2.png"].map((n) => F(n));
+  // 原事故里这几个叫 _tab1.png 那样的下划线名字。现在下划线开头的图压根不上卡（isDebugDraft，
+  // 2026-09-28 小游戏那次加的），所以这里把下划线去掉——测的是「删掉的撤卡、腾位给成品」这条机制本身，
+  // 它对 tab1.png、角标2.png 这种不带记号的中间图照样得管用
+  const mid = ["海报.png","corner.png","tab3.png","tab2.png","tab1.png","bottom.png","海报v2.png","wm2.png"].map((n) => F(n));
   const clean = F("海报_clean.png");
 
   // ── 负向控制：不传完整列表 = 修好之前那条代码路径，必须能把 bug 原样复现出来。
@@ -485,7 +493,7 @@ const TURNOUT_CHECKS = `
     renderTurnOutputs(b, [clean], [clean]);   // 磁盘上现在只剩成品
     ok("已从磁盘删掉的中间文件，卡片跟着撤掉", !cards(b).some((n) => n !== "海报_clean.png"), JSON.stringify(cards(b)));
     ok("腾出位置后成品补进了卡片区", cards(b).includes("海报_clean.png"));
-    const gone = b.querySelector('.out-row[data-name="_wm2.png"]');
+    const gone = b.querySelector('.out-row[data-name="wm2.png"]');
     ok("变更清单留痕：行还在，但打上已删除、摘掉下载和定位入口",
       gone && gone.classList.contains("gone") && !gone.querySelector(".dl") && !gone.querySelector(".rv"));
     ok("留痕行的大小位改成了「已删除」", gone.querySelector(".sz").textContent === "已删除");
@@ -899,6 +907,21 @@ const TURNOUT_CHECKS = `
     ok("带语种后缀的 README / PROGRESS 也算脚手架，不上产出卡",
       !isDeliverable("README.en.md") && !isDeliverable("PROGRESS.zh-CN.md") && !isDeliverable("README.md"));
     ok("  ← 别误伤真交付物", isDeliverable("方案.md") && isDeliverable("README_对外版.md") && isDeliverable("年报.en.md"));
+
+    // 2026-09-28：做网页小游戏的任务在成果区摆了 21 个文件，成品只有一个 html，
+    // 其余是 _probe.js/_diag.js/check_02.png。用户：「怎么产出给我一个文件夹啊？？？？？」
+    {
+      const b2 = document.createElement("div");
+      const G = "任务_0928_小游戏/";
+      const 成品 = F(G + "鹈鹕鹕飞车.html", 60000), 截图 = F(G + "check_02.png", 4000), 探针 = F(G + "_probe.js", 1200), 转储 = F(G + "_dump.txt", 300);
+      renderTurnOutputs(b2, [成品, 截图, 探针, 转储], [成品, 截图, 探针, 转储], { root: "r1" });
+      const cs = cards(b2);
+      ok("★调试草稿不上产出卡★ check_02.png / _dump.txt 只进清单", !cs.some((c) => /check_02|_dump|_probe/.test(JSON.stringify(c))), JSON.stringify(cs));
+      ok("  ← 反向对照：成品 html 照样有卡", cs.some((c) => /鹈鹕鹕飞车/.test(JSON.stringify(c))), JSON.stringify(cs));
+      ok("草稿名认得出来，也不算够格上卡", isDebugDraft(G + "check_02.png") && isDebugDraft(G + "_probe.js") && !isDeliverable("_notes.txt") && !cardWorthy(G + "check_02.png"));
+      ok("  ← 反向对照：checklist.png / 普通截图 / _final.html 照样上卡",
+        cardWorthy(G + "checklist.png") && cardWorthy(G + "截图1.png") && cardWorthy(G + "_final.html"));
+    }
   }
 
   // ── 对话里的图和右侧面板必须是同一份字节（用户：「对话里预览的图和右边打开的不一样」）。
@@ -967,6 +990,8 @@ const TURNOUT_CHECKS = `
       FILES_EV.includes("const pool = outPool(ev);") && FILES_EV.includes("pool.filter(f => ev.changed.includes(f.name))")
         && FILES_EV.includes("renderTurnOutputs(body, turnOut, pool, ev)") && FILES_EV.includes("renderFiles(ev.files)"), FILES_EV.slice(0, 400));
     ok("接线：角标只数面板里点得到的（outputArrivalPlan 收 listed: ev.files，面板只画 ev.files）", FILES_EV.includes("listed: ev.files"), FILES_EV.slice(FILES_EV.indexOf("outputArrivalPlan")));
+    ok("接线：只有眼前这个对话的回合才重画成果区（后台对话只更新缓存）",
+      FILES_EV.includes("if (!isReplaying && turnSid === sessionId) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }"), FILES_EV.slice(FILES_EV.indexOf("renderFiles") - 200, FILES_EV.indexOf("renderFiles") + 200));
     const p = outPool({ files: [F("a.md"), F("任务/b.png", 1)], turn_files: [F("任务/b.png", 2), F("任务/x/y/z/深.png", 3)] });
     ok("outPool：并起来、按名字去重（files 那份优先）", p.map((f) => f.name).join() === "a.md,任务/b.png,任务/x/y/z/深.png" && p[1].size === 1, JSON.stringify(p));
     ok("  ← 老记录没有 turn_files：原样就是 files", outPool({ files: [F("a.md")] }).length === 1 && outPool({}).length === 0);
@@ -1020,6 +1045,80 @@ const TURNOUT_CHECKS = `
 })()
 `;
 
+// ---- 打不开本机文件夹的人回放历史：每一轮的产出都得画出来（BCP-3） ----
+// 上面那组把 revealBtn 桩成了永远有按钮，所以一直没人发现：多人服务器的成员（platform_owner:false）、
+// 或者设置还没拉回来（settingsCache 为 null）时 revealBtn 返回空串，产出那一行的
+// row.querySelector("[data-rv]").onclick 直接对 null 赋值抛错。回放循环没有逐条兜底，
+// 整段对话画到第一张产出清单就断了——实测一条 75016 字的对话只画出 1 轮、1785 字。
+// 这里用真的 revealBtn + canOpenOnHost + amPlatformOwner，按回放的样子一轮轮喂下去。
+// ★反向对照★ 把空值判断摘掉（eval 出一份修之前的 renderTurnOutputs），同一段回放在第一轮就断。
+const REVEALBTN_STUB = `const revealBtn = (name) => '<span class="dl rv" data-rv="' + esc(name) + '">RV</span>';`;
+const TURNOUT_STUBS_REALRV = (() => {
+  if (!TURNOUT_STUBS.includes(REVEALBTN_STUB)) throw new Error("TURNOUT_STUBS 里 revealBtn 的桩子改过了，BCP-3 那组没法换成真源码");
+  return TURNOUT_STUBS.replace(REVEALBTN_STUB, srcLine("const revealBtn = (name) =>")) + "\n" + HOSTCAP_SRC + "\nvar settingsCache = null;";
+})();
+const REPLAY_NOHOST_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const REVEALED = [];
+  revealFile = (n) => { REVEALED.push(n); };
+  const F = (name, size) => ({ name, size: size || 100, mtime: "2026-09-05T00:00:00.000Z" });
+  // 一段 6 轮的对话，每轮都落了文件——回放时 files 事件一条接一条进 renderTurnOutputs
+  const TURNS = [1, 2, 3, 4, 5, 6].map((i) => [F("第" + i + "轮/报告.md", 100 + i), F("第" + i + "轮/图.png", 200 + i)]);
+  // 修之前 openSession 的回放循环长这样：try/finally、没有 catch，一条抛了整段就停
+  const replay = (render) => {
+    const boxes = [];
+    let threw = "";
+    try {
+      for (const files of TURNS) {
+        const box = document.createElement("div");
+        box.className = "turn";
+        document.body.appendChild(box);
+        boxes.push(box);
+        render(box, files, null, { root: "" });
+      }
+    } catch (e) { threw = String((e && e.message) || e); }
+    const drawn = boxes.filter((b) => b.querySelectorAll(".out-row").length === 2).length;
+    const rv = boxes.reduce((n, b) => n + b.querySelectorAll("[data-rv]").length, 0);
+    for (const b of boxes) b.remove();
+    return { threw, drawn, rv, boxes: boxes.length };
+  };
+
+  for (const [label, sc] of [["成员（platform_owner:false）", { platform_owner: false }], ["设置还没拉回来（null）", null]]) {
+    settingsCache = sc;
+    ok(label + "：真的判成了打不开本机文件夹", canOpenOnHost() === false && revealBtn("x") === "");
+    const r = replay(renderTurnOutputs);
+    ok(label + "：6 轮回放一轮不落，每轮两行产出都画出来", !r.threw && r.boxes === 6 && r.drawn === 6, JSON.stringify(r));
+    ok(label + "：一颗「打开所在位置」都不画（点了也打不开）", r.rv === 0, JSON.stringify(r));
+  }
+
+  // 平台管理员那一档：按钮照旧有、点得动
+  settingsCache = { platform_owner: true };
+  {
+    const box = document.createElement("div");
+    document.body.appendChild(box);
+    renderTurnOutputs(box, TURNS[0], null, { root: "" });
+    const b = box.querySelector(".out-row [data-rv]");
+    if (b) b.click();
+    ok("平台管理员：每行照旧有「打开所在位置」，点下去真去开",
+      !!b && box.querySelectorAll(".out-row [data-rv]").length === 2 && REVEALED.length === 1 && TURNS[0].some((f) => f.name === REVEALED[0]), JSON.stringify(REVEALED));
+    box.remove();
+  }
+
+  // ★反向对照★ 修之前那一句：直接 .onclick
+  settingsCache = { platform_owner: false };
+  const src = renderTurnOutputs.toString();
+  const re = /const rv = row\\.querySelector\\("\\[data-rv\\]"\\);\\s*if \\(rv\\) rv\\.onclick/;
+  ok("反向对照的前提：真源里那句空值判断还在", re.test(src));
+  (0, eval)(src.replace(re, 'row.querySelector("[data-rv]").onclick').replace("function renderTurnOutputs(", "function renderTurnOutputsOld("));
+  const old = replay(renderTurnOutputsOld);
+  ok("反向对照：修之前那份，成员回放在第一轮就抛错，后面 5 轮一轮都没画", !!old.threw && old.boxes === 1 && old.drawn === 0, JSON.stringify(old));
+  settingsCache = null;
+  return names;
+})()
+`;
+
 // 设置页「底层引擎」那三张卡。装了 Claude Code / Codex 的人，得能在**切过去之前**
 // 知道它到底跑不跑得起来。旧版唯一一条说实话的通道（测试连接）长在展开区里，
 // 而展开区只对**已经选中**的引擎渲染——等于"想知道它行不行，先切过去用它"。
@@ -1042,7 +1141,11 @@ function esc(s){ const d=document.createElement("div"); d.textContent = s==null?
 function ic(name){ return '<svg class="i" aria-hidden="true"><use href="#i-' + name + '"></use></svg>'; }
 var lastSaveError = "";
 window.SAVES = [];
-async function saveSettings(p){ window.SAVES.push(JSON.stringify(p)); return true; }
+// SAVE_FAIL 给了就当服务端拒了（成员存 bin 会是 403 那种），lastSaveError 跟真 saveSettings 一样被写上
+async function saveSettings(p){ window.SAVES.push(JSON.stringify(p)); if (window.SAVE_FAIL) { lastSaveError = window.SAVE_FAIL; return false; } return true; }
+// 真的 amPlatformOwner 就是读这一格（app-01），这里照抄判据，谁是管理员由各节自己拨
+var settingsCache = { platform_owner: true };
+function amPlatformOwner(){ return !!(settingsCache && settingsCache.platform_owner); }
 `;
 
 const ENG_CHECKS = `
@@ -1170,6 +1273,73 @@ const ENG_CHECKS = `
   await wait();
   ok("反向对照：点卡片正文确实切得过去，不是把整张卡点死了",
     window.SAVES.length >= 1 && window.SAVES[0].indexOf("codex") >= 0, window.SAVES);
+
+  // ⑧ 装在别处的：报错叫人「在设置里填绝对路径」，可路径框以前只画在选中的卡里，
+  // 没找到的那条又选不中——框永远出不来。现在没找到的卡上直接给一行填路径的
+  const URLS = [];
+  const fetch0 = window.fetch;
+  window.fetch = async (u, o) => { URLS.push(String(u)); return fetch0(u, o); };
+  const binRow = (id) => card(id).querySelector(".eng-bin");
+  const renderWith = async (cur, bin) => { window.__P = PAY(cur); window.__P.engines[2].options = bin ? { bin } : {}; window.SAVES = []; await renderEngineCard(box); };
+  settingsCache.platform_owner = true;
+  await renderWith("builtin", "/opt/x/gemini");
+  ok("★没找到的那条卡上就有填路径的一行★（管理员）", !!binRow("gemini") && !!binRow("gemini").querySelector('[data-act="bin"]'));
+  ok("  ← 框里是上回存的路径", binRow("gemini").querySelector("input").value === "/opt/x/gemini", binRow("gemini").querySelector("input").value);
+  ok("  ← 找得到的卡上不多这一行（路径在选中后的展开区里改）", !binRow("claude-code") && !binRow("codex"));
+  window.SAVES = [];
+  binRow("gemini").querySelector("input").click();
+  await wait(60);
+  ok("点进框里打字不算「选这条引擎」", window.SAVES.length === 0, window.SAVES);
+  binRow("gemini").querySelector("input").value = "  /usr/local/bin/gemini ";
+  URLS.length = 0;
+  binRow("gemini").querySelector('[data-act="bin"]').click();
+  await wait();
+  ok("★点「按这个路径找」只存这一格★", window.SAVES.length === 1
+    && window.SAVES[0] === JSON.stringify({ agent: { engine_options: { gemini: { bin: "/usr/local/bin/gemini" } } } }), window.SAVES);
+  ok("  ← 存完真去重新探一遍（带 force，不读 60 秒缓存）", URLS.includes("/api/engines?force=1"), URLS);
+  // 清空再点 = 改回自动找
+  await renderWith("builtin", "/opt/x/gemini");
+  binRow("gemini").querySelector("input").value = "";
+  binRow("gemini").querySelector('[data-act="bin"]').click();
+  await wait();
+  ok("框清空再点：存空串，改回自动找", window.SAVES[0] === JSON.stringify({ agent: { engine_options: { gemini: { bin: "" } } } }), window.SAVES);
+  // 存失败：原样说服务端那句，不重探
+  await renderWith("builtin", "");
+  window.SAVE_FAIL = "只有平台管理员能改这一项";
+  URLS.length = 0;
+  binRow("gemini").querySelector("input").value = "/x/gemini";
+  binRow("gemini").querySelector('[data-act="bin"]').click();
+  await wait();
+  window.SAVE_FAIL = "";
+  ok("存失败：原样说服务端那句，也不去重探", box.querySelector("#ag-eng-msg").textContent === "只有平台管理员能改这一项"
+    && !URLS.some((u) => u.includes("force")), [box.querySelector("#ag-eng-msg").textContent, URLS]);
+  // 管理员选中的那张：展开区照旧有路径框，按钮也说自己存路径
+  await renderWith("claude-code", "");
+  const xa = card("claude-code").querySelector(".eng-x");
+  ok("管理员：选中那张的展开区照旧有路径框", !!xa.querySelector('input[data-k="bin"]') && /路径/.test(xa.querySelector('[data-act="save"]').textContent));
+
+  // 成员：路径是整台机器的（server 级），成员存它服务端回 403——带着它的话连模型和思考档也一起存不下
+  settingsCache.platform_owner = false;
+  await renderWith("claude-code", "/opt/x/gemini");
+  ok("★成员看不到任何路径框★", box.querySelectorAll(".eng-bin, [data-k=bin]").length === 0, box.querySelectorAll(".eng-bin, [data-k=bin]").length);
+  const xm = card("claude-code").querySelector(".eng-x");
+  ok("  ← 按钮也不说「保存路径」", xm.querySelector('[data-act="save"]').textContent === "保存模型 / 思考档", xm.querySelector('[data-act="save"]').textContent);
+  xm.querySelector('input[data-k="model"]').value = "opus";
+  window.SAVES = [];
+  xm.querySelector('[data-act="save"]').click();
+  await wait(60);
+  const body = JSON.parse(window.SAVES[0] || "{}");
+  const opts = ((body.agent || {}).engine_options || {})["claude-code"] || {};
+  ok("★成员存模型：发出去的只有模型和思考档，没有 bin★", opts.model === "opus" && !("bin" in opts) && Object.keys(opts).sort().join() === "model,thinking", window.SAVES);
+  // ★反向对照★ 同一个按钮换成管理员：bin 是跟着发的（空串也发）——上面那条的「没有」不是按钮压根不读框
+  settingsCache.platform_owner = true;
+  await renderWith("claude-code", "");
+  window.SAVES = [];
+  card("claude-code").querySelector('.eng-x [data-act="save"]').click();
+  await wait(60);
+  const optsA = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {})["claude-code"] || {};
+  ok("★反向对照★ 管理员存同一处：bin 跟着发（空串也发）", "bin" in optsA, window.SAVES);
+  window.fetch = fetch0;
 
   return names;
 })()
@@ -1302,6 +1472,7 @@ const FILELIST_CHECKS = `
     f("任务_0805_老的/稿.docx", new Date(t0.getFullYear(), t0.getMonth() - 1, 5).getTime()),
     f("散在根目录的.txt", t0.getTime() - 60 * D),
   ];
+  filesAllScope = true; // 下面这一大段验的是「全部对话」那一档的整库视图；默认「本对话」那档在后面单独验
   renderFiles(data);
   ok("清单一刷新就去补回答里的文件链接（对的是整列对话）", window.RELINKS.length === 1 && window.RELINKS[0] === window.chatCol, String(window.RELINKS.length));
   const el = document.getElementById("file-list");
@@ -1351,6 +1522,51 @@ const FILELIST_CHECKS = `
   [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").click();
   ok("再点一下展开回来", between("今天").join() === "任务_0903_本对话", JSON.stringify(between("今天")));
 
+  // ── 「本对话 / 全部对话」：默认只摆本对话那一格。几个对话一起跑，打开成果区满眼别人的产出，看着就是「串了」
+  filesAllScope = false;
+  renderFiles(data);
+  const scopeSeg = () => [...document.querySelectorAll("#fp-scope .fp-seg")];
+  ok("默认只摆本对话文件夹里的，别的对话的一个不见", dirs().length === 1 && /本对话/.test(dirs()[0]) && !el.querySelector(".time-head")
+    && !/昨天干的|上周的|老的|工作空间根目录/.test(el.textContent), JSON.stringify(dirs()));
+  ok("顶上摆出「本对话 / 全部对话」，各带条数", scopeSeg().map((b) => b.textContent).join("|") === "本对话 2|全部对话 6" && scopeSeg()[0].classList.contains("on"),
+    scopeSeg().map((b) => b.textContent).join("|"));
+  scopeSeg()[1].click();
+  ok("点「全部对话」整个工作空间回来", heads().length === 4 && dirs().some((d) => d.includes("上周的")) && scopeSeg()[1].classList.contains("on"), JSON.stringify(dirs()));
+  scopeSeg()[0].click();
+  ok("点回「本对话」又只剩自己的", dirs().length === 1 && /本对话/.test(dirs()[0]), JSON.stringify(dirs()));
+  // 新对话还没建文件夹：默认工作空间里就该是空的，而不是把别的对话的摆上来
+  window.sessionId = null; window.settingsCache = { platform_owner: true, workspace_is_default: true };
+  renderFiles(data);
+  ok("新对话还没产出：给一句人话，不摆别的对话的文件", /这个对话还没产出文件/.test(el.textContent) && !el.querySelector(".dir-head, .file-item"), el.textContent.slice(0, 80));
+  ok("  └ 想看全部也有路：「全部对话」那档在", scopeSeg().length === 2 && scopeSeg()[0].textContent === "本对话 0", scopeSeg().map((b) => b.textContent).join("|"));
+  // 没填目录的项目（应用替人建在 projects/<名>）也按对话分：认的是服务端报的 workspace_per_chat，不只是「默认工作空间」
+  window.settingsCache = { platform_owner: true, workspace_is_default: false, workspace_per_chat: true };
+  renderFiles(data);
+  ok("应用替项目建的目录：新对话一样只摆本对话那一格", /这个对话还没产出文件/.test(el.textContent) && scopeSeg()[0].textContent === "本对话 0", el.textContent.slice(0, 80));
+  window.settingsCache = { platform_owner: true, workspace_is_default: false, workspace_per_chat: false };
+  renderFiles(data);
+  ok("反向对照：用户自选的文件夹不分对话，原样全摊开", document.getElementById("fp-scope").hidden && !/这个对话还没产出文件/.test(el.textContent), el.textContent.slice(0, 80));
+  // 对话中途换到自选文件夹：服务端那一轮发 dir ""。旧的那格不清掉，成果区就摆「本对话 0」，新产出全被筛掉
+  {
+    window.sessionId = "s_now"; window.settingsCache = { platform_owner: true, workspace_per_chat: false };
+    const wasOpen = openDirs.has("任务_0903_本对话"); // dir 事件会顺手把文件夹设成展开，测完放回原样，别影响后面几节
+    const onDir = new Function("ev", "turnSid", ${JSON.stringify(DIR_EV_SRC)});
+    onDir({ type: "dir", dir: "" }, "s_now");
+    ok("dir 空串：把这个对话记的旧文件夹清掉", !sessionDirs.has("s_now"), JSON.stringify([...sessionDirs]));
+    renderFiles(data);
+    ok("  └ 清掉之后成果区摊开根上的文件，不再摆「本对话 0」", document.getElementById("fp-scope").hidden && el.querySelectorAll(".dir-head, .file-item").length > 0, el.textContent.slice(0, 80));
+    onDir({ type: "dir", dir: "任务_0903_本对话" }, "s_now");
+    ok("换回来又发了文件夹名：照样记上", sessionDirs.get("s_now") === "任务_0903_本对话");
+    onDir({ type: "dir", dir: "" }, "s_bg");
+    ok("反向对照：别的对话发的空串不动这个对话的", sessionDirs.get("s_now") === "任务_0903_本对话");
+    if (!wasOpen) openDirs.delete("任务_0903_本对话");
+    window.sessionId = null; window.settingsCache = { platform_owner: true, workspace_is_default: true };
+  }
+  // 反向对照：本对话之外一个文件都没有时不摆这组开关——切了看不出差别
+  window.sessionId = "s_now"; window.settingsCache = { platform_owner: true };
+  renderFiles(data.slice(0, 2));
+  ok("反向对照：全是本对话的文件时不摆「本对话 / 全部对话」", document.getElementById("fp-scope").hidden, document.getElementById("fp-filter").innerHTML.slice(0, 160));
+
   // 用户自选工作目录：压根不建对话文件夹，文件全在根目录，那才是正文，得原样摊开
   window.sessionDirs = new Map();
   renderFiles([f("甲.txt", t0.getTime()), f("乙.txt", t0.getTime())]);
@@ -1378,6 +1594,9 @@ const FILELIST_CHECKS = `
     byName("方案.pptx").classList.contains("res") && byName("配图.png").classList.contains("res") &&
     !byName("raw1.json").classList.contains("res") && !byName("抓取.py").classList.contains("res"));
   ok("PROGRESS.md 是过程账本，不算成果", !byName("PROGRESS.md").classList.contains("res"));
+  // 2026-09-28 小游戏任务：_probe.js、check_02.png 是模型的调试草稿，跟成品混排在一起，用户以为交了一堆东西
+  ok("调试草稿（_probe.js / check_02.png）不算成果", !isResultFile(DIR + "/check_02.png") && !isResultFile(DIR + "/_probe.js"));
+  ok("  ← 反向对照：checklist.png、_final.html 照样算成果", isResultFile(DIR + "/checklist.png") && isResultFile(DIR + "/_final.html"));
   // 真样式：只加类名不加样式的话，用户看到的还是一模一样的一行
   const w = (it) => getComputedStyle(it.querySelector(".name")).fontWeight;
   ok("成果的文件名真的更重（" + w(byName("方案.pptx")) + " vs " + w(byName("抓取.py")) + "）",
@@ -1872,6 +2091,11 @@ const F0 = APP02X.indexOf("  // 官方式回复操作条");
 const F1 = APP02X.indexOf("  // Plan 模式：把执行计划解析成任务列表卡片");
 if (F0 < 0 || F1 <= F0) throw new Error("app-01.js 里的回复操作条段找不到了（段标题被改过？），前端测试没法定位真源码");
 const FB_SRC = APP02X.slice(F0, F1);
+// 👍👎 记的轮次号走 turnOrdinal（长对话顶上收着的几轮也数上），它和 turnsHidden 住在 app-01 末尾，一起注真源
+const TOR0 = APP02X.indexOf("/** 长对话顶上还收着几轮没画");
+const TOR1 = APP02X.indexOf("// ================= 空状态", TOR0);
+if (TOR0 < 0 || TOR1 <= TOR0) throw new Error("app-01.js 里的 turnsHidden / turnOrdinal 那段找不到了（改名/挪窝了？），前端测试没法定位真源码");
+const TURN_ORD_SRC = APP02X.slice(TOR0, TOR1);
 
 const FB_HTML = "<!doctype html><meta charset='utf-8'><body><div id='chat-col'></div></body>";
 
@@ -1886,6 +2110,7 @@ const FB_STUBS = [
   "const toast = () => {};",
   "const curBusy = () => false;",
   "const doSend = () => {};",
+  TURN_ORD_SRC,
 ].join("\n");
 
 // 真源码里 turn/body/turnSid 是 createTurnUI 里每个回合各自的局部变量，测试得把这层作用域还原出来。
@@ -2033,6 +2258,7 @@ const TRAIL_SRC = [
   // 过程区那些「说一句」的提示行（并发了几个、压缩了几条、自动续跑…）都由它画
   APP02X.slice(APP02X.indexOf("function procNote(icon, text, cls)"), APP02X.indexOf("const runningSessions = new Map()")),
   "let replayFeedback = null;",
+  "let replayingOlder = false;",
   // 流式正文的分段渲染是真源码（不是桩）：回合里那些 endText() 收尾点必须真的把两截合回去
   APP02X.slice(APP02X.indexOf("const BAL_TAG"), APP02X.indexOf("\n// 【任务类型：X】")),
   APP02X.slice(TR0, TR1),
@@ -2091,6 +2317,514 @@ const TRAIL_STUBS = [
   // 右侧清单：收尾时拿它认「盘上本来就有的文件」。默认空，第 7 节有几条会往里放东西
   "var filesCache = []; var filesRoot = '';",
 ].join("\n");
+
+// ================= 长对话分批画（打开只画最后 TURN_WINDOW 轮，顶上「显示更早的 N 轮」往前补） =================
+// 2026-09-29 查本机 284 条对话：最长 26 轮、2486 个事件，点开时整段同步回放，画完之前整页不响应。
+// 分批以后要守住四件事，每件都拿真源码跑：① 打开时画的节点数封顶，不跟着对话变长；② 往前补的时候
+// 人眼前那一屏不动；③ 从资料库跳第几轮、⌘F 搜到收着的那段，照样到得了；④ 👍👎 的轮次号把收着的也数上——
+// 这个号是落库的，数错了评测页上的好评差评就记到别的轮头上去了。
+// openSession / jumpToTurn / showOlderTurns 从 app-02 切真源，createTurnUI 用轨迹条那一份（TRAIL_SRC）
+const WN0 = APP02.indexOf("/**\n * 滚到第 n 个回合并让它亮一下");
+const WN1 = APP02.indexOf('document.getElementById("new-task").onclick', WN0);
+const WN2 = APP02.indexOf("let csMatches = [], csIdx = -1;");
+const WN3 = APP02.indexOf("// ================= 命令审批条", WN2);
+if (WN0 < 0 || WN1 <= WN0 || WN2 < 0 || WN3 <= WN2) throw new Error("app-02.js 里 jumpToTurn～openSession 或 ⌘F 那段找不到了（改名/挪窝了？），前端测试没法定位真源码");
+if (!/function showOlderTurns\(/.test(APP02.slice(WN0, WN1))) throw new Error("切出来的那段里没有 showOlderTurns——长对话分批画没被测到");
+const WIN_SRC = TRAIL_SRC + "\n" + APP02.slice(WN0, WN1) + "\n" + APP02.slice(WN2, WN3);
+// 真的 chatStick / syncScrollGuides / scrollBottom（app-01 原文）。第 5 节「补画的旧轮不许拽滚动条」换上它，别的节照旧用桩
+const SB0 = APP02X.indexOf("let chatStick = true;");
+const SB1 = APP02X.indexOf('document.getElementById("to-bottom").onclick', SB0);
+if (SB0 < 0 || SB1 <= SB0 || !/function scrollBottom\(force\)/.test(APP02X.slice(SB0, SB1))) throw new Error("app-01.js 里 chatStick～scrollBottom 那段找不到了，前端测试没法定位真源码");
+const WIN_SCROLL_SRC = APP02X.slice(SB0, SB1);
+const SB_GUARD = "if (replayingOlder) return;";
+if (!WIN_SCROLL_SRC.includes(SB_GUARD)) throw new Error("[长对话分批画·反向对照] scrollBottom 里找不到要去掉的那句（写法变了？）：" + SB_GUARD);
+// 一份一个闭包：各有各的 chatStick、各挂各的 scroll 监听，跟 app-01 里一样由滚动位置算出来
+const scrollKit = (src) => "(function () {\n" + src + "\nreturn { scrollBottom };\n})()";
+// 第 6 节「往上翻」：↑ 连着点、人手往上滚自动补。切 app-01 滚动引导那段到「出错的步骤」之前（带上自动补那截），
+// 每个变体在测试里现 eval 一份、挂上自己的 scroll 监听，用完摘掉。几份监听都去拨同一颗 #to-top，
+// 最后挂上的那份说了算——所以现挂现摘，谁在测谁最后挂
+const GT0 = APP02X.indexOf("let chatStick = true;");
+const GT1 = APP02X.indexOf("// 执行过程里出错的步骤", GT0);
+if (GT0 < 0 || GT1 <= GT0 || !/function autoLoadOlder\(/.test(APP02X.slice(GT0, GT1)) || !/function goTop\(/.test(APP02X.slice(GT0, GT1))) throw new Error("app-01.js 里 goTop / autoLoadOlder 那段找不到了，前端测试没法定位真源码");
+const GT_BASE = APP02X.slice(GT0, GT1);
+const gtKit = (src) => "(function () {\n" + src + "\nreturn { goTop, syncScrollGuides, autoLoadOlder };\n})()";
+const gtSwap = (pairs) => gtKit(pairs.reduce((out, [a, b]) => {
+  if (!out.includes(a)) throw new Error("[往上翻·反向对照] app-01.js 里找不到要改的那句（写法变了？）：" + a);
+  return out.split(a).join(b);
+}, GT_BASE));
+const GT_SRC = {
+  real: gtKit(GT_BASE),
+  // 改之前：翻过一屏半才给按钮，到了顶就收
+  oldShow: gtSwap([["older || st > chatScroll.clientHeight * 1.5", "st > chatScroll.clientHeight * 1.5"]]),
+  // 改之前：点了只往顶上滚，不补
+  oldClick: gtSwap([["if (turnsHidden() > 0 && (chatScroll.scrollTop < 40 || toTopFlying === sessionId)) {", "if (false) {"]]),
+  // 只认「已经在顶上」，不认「正往顶上滚」：连着点第二下就只是再滚一次
+  noFly: gtSwap([["(chatScroll.scrollTop < 40 || toTopFlying === sessionId)", "chatScroll.scrollTop < 40"]]),
+  // 补完不记下被拨回去的位置：下一帧的 scroll 把它当成人往下滚了，旗子提前倒
+  noReset: gtSwap([["lastScrollTop = chatScroll.scrollTop; // 补完", "// 补完"]]),
+  // 半路补完只要一次平滑滚动、不盯：Chromium 把它当成刚被掐掉的那趟，不理
+  noWatch: gtSwap([["if (added) keepGoingTop(sessionId);", ""]]),
+  // 往下滚不倒旗
+  noDown: gtSwap([["(st <= 0 || st > lastScrollTop)", "(st <= 0)"]]),
+  // 旗子不记是哪条对话、往下滚也不倒：半路换了对话，那边的第一下跟着补
+  noSess: gtSwap([["(st <= 0 || st > lastScrollTop)", "(st <= 0)"], ["toTopFlying === sessionId", "toTopFlying"]]),
+  // 自动补不看是不是人手在滚：程序发起的平滑滚动半路被补画掐断
+  noGate: gtSwap([["if (!scrollBarDrag && performance.now() - userScrollAt > 300) return;", ""]]),
+  // 往下滚也补
+  noUp: gtSwap([["if (!up || st > chatScroll.clientHeight || replayingOlder) return;", "if (st > chatScroll.clientHeight || replayingOlder) return;"]]),
+};
+const WIN_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0;width:900px'><div id='session-title'></div>"
+  + "<div id='chat-scroll' style='height:600px;flex:none'><div class='chat-col' id='chat-col'></div></div>"
+  + "<button id='to-bottom'></button><button id='to-top'></button>"
+  + "<div id='preview-panel'></div><div id='files-panel'></div><input id='cs-input'><span id='cs-count'></span></body>";
+const WIN_STUBS = TRAIL_STUBS + "\n" + [
+  "var chatScroll = document.getElementById('chat-scroll');",
+  "var closeAssistView = () => {}, stopCliWatch = () => {}, attnSeen = () => {}, resetCtxMeter = () => {}, closePreview = () => {}, renderCtxMeter = () => {};",
+  "var sessions = [], activeLane = 'work', laneOfSession = () => activeLane, renderLaneTabs = () => {}, renderHistory = () => {};",
+  "var runningSessions = new Map(), updateSendUI = () => {}, planPlaceholder = '';",
+  "var sessionDirs = new Map(), sessionAttachDirs = new Map(), openDirs = new Set(), filesAllScope = false, renderFiles = () => {};",
+  "var sessionModels = new Map(), updateModelLabel = () => {}, sessionGoals = new Map(), renderGoalCard = () => {};",
+  "var currentUser = null, renderUserChip = () => {};",
+  "var SCROLL_REAL = " + scrollKit(WIN_SCROLL_SRC) + ";",
+  "var SCROLL_OLD = " + scrollKit(WIN_SCROLL_SRC.replace(SB_GUARD, "")) + ";", // 改之前：补画时照样叫
+  "var GT_SRC = " + JSON.stringify(GT_SRC) + ";",
+  // /api/session/<id> 回 SESS 里那份（深拷一份，跟真接口一样每次是新对象）；👍👎 记下发出去的 payload
+  "window.SESS = {}; window.FB_POSTS = [];",
+  "window.fetch = async (url, init) => {",
+  "  const u = String(url);",
+  "  if (u.startsWith('/api/session/')) { const d = window.SESS[decodeURIComponent(u.slice(13))]; return { ok: !!d, json: async () => JSON.parse(JSON.stringify(d || {})) }; }",
+  "  if (u === '/api/feedback') window.FB_POSTS.push(JSON.parse(init.body));",
+  "  return { ok: true, json: async () => ({ ok: true }) };",
+  "};",
+].join("\n");
+const WIN_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  // 每轮进场有 .24s 的上浮动效（owbRise，transform 往上走 6px），过程区顶上那行「正在干什么」也是隔一拍才刷：
+  // 量位置、比 DOM 都得等它们走完，不然量到的是动画/刷新走了几帧，不是排版挪没挪、画得一不一样
+  const settle = () => new Promise((r) => setTimeout(r, 320));
+  // 回放里单个事件画挂只 console.warn 一声就接着画——不盯着的话，fixture 里哪种事件没画出来这里也是一片绿
+  const WARN = [];
+  const warn0 = console.warn;
+  console.warn = (...a) => { WARN.push(String(a[0])); warn0.apply(console, a); };
+  // 反向对照：把真函数的源码改一句重新挂上去，跑完换回来。改不动（那句写法变了）当场报错，不许静默变成没对照
+  const mutate = (fn, pairs) => {
+    const src = fn.toString();
+    let out = src;
+    for (const [a, b] of pairs) {
+      if (!out.includes(a)) throw new Error("[长对话分批画·反向对照] " + fn.name + " 里找不到要改的那句（写法变了？）：" + a);
+      out = out.replace(a, b);
+    }
+    (0, eval)(out);
+    return () => (0, eval)(src);
+  };
+  // 照本机真记录的样子造：每轮八十几个事件（上下文 24、工具调用/结果各 24、正文十几段），工具结果预览三百来字。
+  // 第 3 轮藏两个只在那一轮出现的词：问句里的 zeta、回复里的 omega，⌘F 那一节用
+  const mkT = (n) => {
+    const t = [];
+    for (let i = 0; i < n; i++) {
+      t.push({ type: "user", text: "第" + i + "问" + (i === 3 ? " zeta" : ""), mode: "craft" });
+      const ev = [];
+      for (let k = 0; k < 24; k++) {
+        const name = k % 3 ? "read_file" : "run_shell";
+        ev.push({ type: "context", used: 1000 * k, budget: 128000, threshold: 0.8, pct: k });
+        ev.push({ type: "tool_use", id: i + "_" + k, name, purpose: "看第 " + k + " 份", input_preview: '{"path":"a' + k + '.md"}', at: 1000 + k * 10 });
+        ev.push({ type: "tool_result", id: i + "_" + k, name, preview: ("第" + i + "轮第" + k + "个结果 ").repeat(30), at: 1005 + k * 10 });
+        if (k % 2) ev.push({ type: "text", delta: "第" + i + "轮的第" + k + "段。" });
+      }
+      ev.push({ type: "text", delta: "第" + i + "轮的结论" + (i === 3 ? "，还有 omega" : "") });
+      ev.push({ type: "usage", model: "m", provider: "p", prompt: 100, completion: 10, elapsed_ms: 4200 });
+      t.push({ type: "assistant", events: ev });
+    }
+    return t;
+  };
+  SESS.S_LONG = { transcript: mkT(26), feedback: [{ turn: 3, verdict: "up" }, { turn: 20, verdict: "down" }] };
+  SESS.S_HUGE = { transcript: mkT(60) };
+  SESS.S_TEN = { transcript: mkT(10) };
+  SESS.S_ELEVEN = { transcript: mkT(11) };
+  const turns = () => [...chatCol.querySelectorAll(".turn")];
+  const no = (t) => { const m = ((t && t.querySelector(".u-msg .bubble")) || {}).textContent; const k = /^第(\\d+)问/.exec(m || ""); return k ? +k[1] : -1; };
+  const nos = () => turns().map(no).join(",");
+  const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i).join(",");
+  const more = () => chatCol.querySelector(":scope > .turns-more");
+  const label = () => (more() ? more().textContent.trim() : "");
+  const regens = () => [...chatCol.querySelectorAll(".turn-actions [data-a=regen]")];
+  const lit = (t, a) => t.querySelector("[data-a=" + a + "]").classList.contains("on");
+  const nodes = () => chatCol.querySelectorAll("*").length;
+  const open = async (id, opts) => { const t0 = performance.now(); await openSession(id, opts); return performance.now() - t0; };
+
+  // ---------- 1. 打开：只画最后 10 轮，节点数封顶 ----------
+  ok("窗口默认 10 轮", TURN_WINDOW === 10, String(TURN_WINDOW));
+  const msWin = await open("S_LONG");
+  const nWin = nodes();
+  ok("26 轮的对话打开只画最后 10 轮", turns().length === 10, turns().length + " 轮");
+  ok("  └ 画的是第 16～25 问，顺序没乱", nos() === range(16, 25), nos());
+  ok("  └ 顶上一颗「显示更早的 10 轮」", label() === "显示更早的 10 轮" && chatCol.firstElementChild === more(), label());
+  ok("  └ 「重新生成」只在最后一轮上", regens().length === 1 && turns()[9].contains(regens()[0]), regens().length + " 颗");
+  ok("  └ 第 20 轮之前点过的 👎 亮回来了（轮次号数上了收着的 16 轮）", lit(turns()[4], "down") && !lit(turns()[3], "up"));
+  FB_POSTS.length = 0;
+  turns()[0].querySelector("[data-a=up]").click(); await tick();
+  ok("  └ 在最上面那轮点 👍，记的是第 16 轮", FB_POSTS.length === 1 && FB_POSTS[0].turn === 16, JSON.stringify(FB_POSTS.map((p) => p.turn)));
+  await open("S_HUGE");
+  const nHuge = nodes();
+  ok("节点数封顶：60 轮的打开时跟 26 轮的画得一样多（" + nHuge + " / " + nWin + "）", turns().length === 10 && Math.abs(nHuge - nWin) <= nWin * 0.05);
+  await open("S_TEN");
+  ok("正好 10 轮的不挂按钮", turns().length === 10 && !more() && turnsHidden() === 0);
+  await open("S_ELEVEN");
+  ok("11 轮的：「显示更早的 1 轮」", turns().length === 10 && label() === "显示更早的 1 轮", label());
+  // ★反向对照★ 窗口放开 = 改之前那样整段回放
+  TURN_WINDOW = Infinity;
+  const msFull = await open("S_LONG");
+  const nFull = nodes();
+  await settle();
+  const fullSnap = turns().map((t) => t.outerHTML);
+  await open("S_HUGE");
+  const nHugeFull = nodes();
+  TURN_WINDOW = 10;
+  ok("★反向对照★ 窗口放开（改之前）：26 轮全画 " + nFull + " 个节点，60 轮涨到 " + nHugeFull, fullSnap.length === 26 && nFull > nWin * 2 && nHugeFull > nFull * 2, JSON.stringify({ nWin, nFull, nHugeFull }));
+  window.WIN_STATS = { nWin, nFull, nHuge, nHugeFull, msWin: Math.round(msWin), msFull: Math.round(msFull) };
+  // ★反向对照★ 轮次号只数屏幕上的
+  {
+    const undo = mutate(turnOrdinal, [["return i < 0 ? i : i + turnsHidden();", "return i;"]]);
+    FB_POSTS.length = 0;
+    try {
+      await open("S_LONG");
+      turns()[0].querySelector("[data-a=up]").click(); await tick();
+      ok("★反向对照★ 轮次号不数收着的：第 20 轮的 👎 没亮，第 3 轮的 👍 亮到了第 19 轮头上，点 👍 记成第 0 轮",
+        !lit(turns()[4], "down") && lit(turns()[3], "up") && FB_POSTS.length === 1 && FB_POSTS[0].turn === 0, JSON.stringify(FB_POSTS.map((p) => p.turn)));
+    } finally { undo(); }
+  }
+
+  // ---------- 2. 往前补：一批 10 轮，人眼前那一屏不动 ----------
+  const expand = async (st) => {
+    chatScroll.scrollTop = st || 0; await settle();
+    const a = turns()[0], y0 = a.getBoundingClientRect().top;
+    more().click(); await frame(); await settle();
+    return a.getBoundingClientRect().top - y0;
+  };
+  await open("S_LONG");
+  const d1 = await expand();
+  ok("点一下往前补 10 轮：第 6～25 问", nos() === range(6, 25), nos());
+  ok("  └ 按钮跟着改成「显示更早的 6 轮」", label() === "显示更早的 6 轮", label());
+  ok("  └ 原来最上面那轮在屏幕上没挪（差 " + Math.round(d1) + "px）", Math.abs(d1) <= 1);
+  ok("  └ 补进来的那几轮不带「重新生成」", regens().length === 1 && turns()[19].contains(regens()[0]), regens().length + " 颗");
+  const d2 = await expand();
+  ok("再点一下补完剩下 6 轮，按钮收掉", turns().length === 26 && !more() && turnsHidden() === 0 && Math.abs(d2) <= 1, nos());
+  ok("  └ 第 3 轮之前点过的 👍 亮回来了", lit(turns()[3], "up") && lit(turns()[20], "down"));
+  const diff = turns().map((t) => t.outerHTML).findIndex((h, i) => h !== fullSnap[i]);
+  ok("  └ 全补开以后跟一次画完逐轮一样（26 轮 outerHTML 逐个相等）", diff < 0, "第 " + diff + " 轮不一样");
+  // 滚动条不在顶上的时候浏览器自己的滚动锚定也会出手：跟这边手动拨的那一下叠起来，眼前那一屏就被拨过头
+  // （按钮露一半 30px、按钮整个滚出去 200px 两种都量；键盘 Tab 到按钮上按回车就是后一种）
+  const dAt = [];
+  for (const st of [30, 200]) { await open("S_LONG"); dAt.push(await expand(st)); }
+  ok("  └ 往下滚了一点再点（30px / 200px）：原来那轮照样没挪（差 " + dAt.map(Math.round).join(" / ") + "px）", dAt.every((d) => Math.abs(d) <= 1));
+  // ★反向对照★ 不拨回滚动条
+  {
+    const undo = mutate(showOlderTurns, [["if (anchor) chatScroll.scrollTop += anchor.getBoundingClientRect().top - top0;", ""]]);
+    let d;
+    try { await open("S_LONG"); d = await expand(); } finally { undo(); }
+    ok("★反向对照★ 补完不拨回滚动条：原来最上面那轮被顶下去 " + Math.round(d) + "px", d > 200, String(d));
+  }
+  {
+    const undo = mutate(showOlderTurns, [['box.querySelectorAll(".turn-actions [data-a=regen]").forEach((b) => b.remove());', ""]]);
+    let n;
+    try { await open("S_LONG"); await expand(); n = regens().length; } finally { undo(); }
+    ok("★反向对照★ 补进来的不撤「重新生成」：屏幕上挂着 " + n + " 颗（中间那颗一点，是把那一问摘掉、在末尾重发一遍）", n === 2);
+  }
+
+  // ---------- 3. 从资料库跳到收着的那一轮 ----------
+  await open("S_LONG", { turn: 2 });
+  let j = chatCol.querySelector(".turn-jumped");
+  ok("跳第 2 轮：先补画到它露出来再跳", no(j) === 2 && nos() === range(2, 25) && label() === "显示更早的 2 轮", no(j) + " / " + label());
+  await open("S_LONG", { turn: 20 });
+  j = chatCol.querySelector(".turn-jumped");
+  ok("  └ 要跳的那轮本来就在眼前：不多补", no(j) === 20 && turnsHidden() === 16, no(j) + " / 收着 " + turnsHidden());
+  {
+    const undo = mutate(jumpToTurn, [["if (n < hidden) showOlderTurns(hidden - n);", ""], ['[n - turnsHidden()]', "[n]"]]);
+    try { await open("S_LONG", { turn: 2 }); j = chatCol.querySelector(".turn-jumped"); } finally { undo(); }
+    ok("★反向对照★ 不补画、照旧按屏幕上的下标数：跳到了第 " + no(j) + " 问", no(j) === 18);
+  }
+
+  // ---------- 4. ⌘F 搜到收着的那几轮 ----------
+  const search = (w) => { document.getElementById("cs-input").value = w; runChatSearch(); return document.getElementById("cs-count").textContent; };
+  await open("S_LONG");
+  ok("搜只在第 3 问里出现的词（ZETA，大小写不论）：补画到第 3 轮，搜得到", search("ZETA") === "1/1" && no(csMatches[0].closest(".turn")) === 3 && nos() === range(3, 25), nos());
+  await open("S_LONG");
+  ok("  └ 回复正文里的词（omega）也搜得到", search("omega") === "1/1" && no(csMatches[0].closest(".turn")) === 3);
+  await open("S_LONG");
+  ok("  └ 只在眼前几轮里的词不补画", search("第20问") === "1/1" && turnsHidden() === 16, "收着 " + turnsHidden());
+  {
+    const undo = mutate(runChatSearch, [["if (first >= 0) showOlderTurns(more._older.turns.length - first);", ""]]);
+    let r;
+    try { await open("S_LONG"); r = search("ZETA"); } finally { undo(); }
+    ok("★反向对照★ 搜的时候不管收着的：ZETA 搜成「" + r + "」", r === "无结果");
+  }
+
+  // ---------- 5. 往前补画的是旧轮：全界面只有一份的东西不许被它改，滚动条也不许被它拽 ----------
+  // 2026-09-29 复审：补画是后画的。旧轮里的 context / credits 事件把最后一轮的余量、余额盖回几轮之前；
+  // 每个旧事件还叫一声 scrollBottom()——人在底下时排一帧滚到底，把 ⌘F 正在滚过去的命中拽回来；人在上面时亮一个假的「有新内容」
+  {
+    const mkC = (n) => {
+      const t = [];
+      for (let i = 0; i < n; i++) {
+        t.push({ type: "user", text: "第" + i + "问" + (i === 3 ? " kappa" : ""), mode: "craft" });
+        const ev = [];
+        for (let k = 0; k < 4; k++) ev.push({ type: "text", delta: ("第" + i + "轮的第" + k + "段。").repeat(12) });
+        ev.push({ type: "context", used: 1000 * (i + 1), budget: 128000, threshold: 100000, pct: i + 1 });
+        ev.push({ type: "credits", spent: 3, balance: 1000 - i });
+        ev.push({ type: "text", delta: "第" + i + "轮的结论" + (i === 3 ? "，还有 kappa" : "") });
+        t.push({ type: "assistant", events: ev });
+      }
+      return t;
+    };
+    SESS.S_CTX = { transcript: mkC(26) };
+    const CTXS = [], CHIPS = [];
+    const ctx0 = renderCtxMeter, chip0 = renderUserChip, sb0 = scrollBottom;
+    renderCtxMeter = (ev) => CTXS.push(ev.pct);
+    renderUserChip = () => CHIPS.push(currentUser.credits);
+    currentUser = { username: "u", credits: 0 };
+    const toBottom = document.getElementById("to-bottom");
+    // 打开时画的最后一轮是第 25 轮：余量 26%、余额 975。补画完第 6～15 轮以后还得是它
+    const meterRun = async () => {
+      await open("S_CTX");
+      const at0 = { pct: CTXS[CTXS.length - 1], credits: currentUser.credits };
+      CTXS.length = 0; CHIPS.length = 0;
+      more().click(); await frame();
+      return { at0, pct: CTXS.length ? CTXS[CTXS.length - 1] : at0.pct, credits: currentUser.credits, calls: CTXS.length + CHIPS.length, shown: nos() };
+    };
+    const scrollRun = async (impl) => {
+      scrollBottom = impl;
+      try {
+        // 人在上面看历史，点「显示更早」
+        await open("S_CTX"); await frame(); await settle();
+        chatScroll.scrollTop = 0; await settle();
+        toBottom.classList.remove("new");
+        more().click(); await frame(); await settle();
+        const badge = toBottom.classList.contains("new");
+        // 人在底下，⌘F 搜收着的第 3 轮里才有的词：命中得真滚到眼前
+        await open("S_CTX"); await frame(); await settle();
+        const r = search("kappa");
+        const trace = [Math.round(chatScroll.scrollTop)];
+        // 平滑滚动走完：连着三拍（300ms）没再动才量。机器忙时这段动画会拖长，写死等多久会时红时绿
+        for (let i = 0, still = 0; i < 50 && still < 3; i++) {
+          await new Promise((res) => setTimeout(res, 100));
+          const y = Math.round(chatScroll.scrollTop);
+          still = y === trace[trace.length - 1] ? still + 1 : 0;
+          trace.push(y);
+        }
+        const hit = csMatches[0];
+        const hr = hit.getBoundingClientRect(), cr = chatScroll.getBoundingClientRect();
+        const seen = hr.bottom > cr.top && hr.top < cr.bottom;
+        const atBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 2;
+        return { badge, r, seen, atBottom, no: no(hit.closest(".turn")), hitTop: Math.round(hr.top), box: [Math.round(cr.top), Math.round(cr.bottom)], sh: chatScroll.scrollHeight, trace: trace.join(",") };
+      } finally { scrollBottom = sb0; }
+    };
+    try {
+      const m = await meterRun();
+      ok("（打开时余量条、余额是最后一轮的：26% / 975）", m.at0.pct === 26 && m.at0.credits === 975, JSON.stringify(m.at0));
+      ok("★补画第 6～15 轮：余量条、余额一次都没被叫到，还是最后一轮的★", m.shown === range(6, 25) && m.calls === 0 && m.pct === 26 && m.credits === 975, JSON.stringify(m));
+      const s = await scrollRun(SCROLL_REAL.scrollBottom);
+      ok("★人在上面看历史时补画：右下角不亮「有新内容」★", !s.badge, JSON.stringify(s));
+      ok("★人在底下时 ⌘F 搜到收着的第 3 轮：命中真滚到眼前，没被拽回底部★", s.r === "1/2" && s.no === 3 && s.seen && !s.atBottom, JSON.stringify(s));
+      {
+        const undo = mutate(showOlderTurns, [["replayingOlder = true;", ";"]]);
+        let m2, s2;
+        try { m2 = await meterRun(); s2 = await scrollRun(SCROLL_REAL.scrollBottom); } finally { undo(); }
+        ok("★反向对照★ 补画时不立这个旗（改之前）：余量条退回 " + m2.pct + "%、余额退回 " + m2.credits, m2.pct === 16 && m2.credits === 985, JSON.stringify(m2));
+        ok("★反向对照★ 同上：补画亮出假的「有新内容」、⌘F 的命中被拽回底部", s2.badge && !s2.seen && s2.atBottom, JSON.stringify(s2));
+      }
+      {
+        const undo = mutate(createTurnUI, [
+          ["if (turnSid === sessionId && !replayingOlder) renderCtxMeter(ev);", "if (turnSid === sessionId) renderCtxMeter(ev);"],
+          ["if (currentUser && !replayingOlder) {", "if (currentUser) {"],
+        ]);
+        let m3;
+        try { m3 = await meterRun(); } finally { undo(); }
+        ok("★反向对照★ 只去掉 context / credits 那两处判断：余量条、余额照样被第 15 轮的旧数盖掉", m3.pct === 16 && m3.credits === 985, JSON.stringify(m3));
+      }
+      const s3 = await scrollRun(SCROLL_OLD.scrollBottom);
+      ok("★反向对照★ 只去掉 scrollBottom 里那一句：假的「有新内容」、命中被拽回底部都回来了", s3.badge && !s3.seen && s3.atBottom, JSON.stringify(s3));
+    } finally { renderCtxMeter = ctx0; renderUserChip = chip0; currentUser = null; scrollBottom = sb0; }
+  }
+
+  // ---------- 6. 往上翻：↑ 连着点、人手往上滚自动补 ----------
+  // 用户原话：长对话点一下向上，到了顶还得手动去点「显示更早的 10 轮」，那个向上的按钮应该一直在、能连着点。
+  {
+    const tt = document.getElementById("to-top");
+    const fire = () => chatScroll.dispatchEvent(new Event("scroll"));
+    const shownTop = () => tt.classList.contains("show");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 平滑滚动一帧一帧走，等它落到顶；落不到就明说
+    const toZero = async () => {
+      for (let i = 0; i < 150 && chatScroll.scrollTop > 0; i++) await tick();
+      fire(); await tick();
+      if (chatScroll.scrollTop > 0) throw new Error("等了 3 秒还没滚到顶：scrollTop=" + chatScroll.scrollTop + "（上一条过的是「" + names[names.length - 1] + "」，收着 " + turnsHidden() + " 轮）");
+    };
+    // 等滚动停下来（连着三拍没动）
+    const still = async () => { let y = -1; for (let i = 0, n = 0; i < 150 && n < 3; i++) { await tick(); n = chatScroll.scrollTop === y ? n + 1 : 0; y = chatScroll.scrollTop; } fire(); await tick(); };
+    // 等那趟平滑滚动真动起来（离开起点往上走了）：Chromium 只在动画真在走的时候，才把「掐断后紧接着再要一次」当重复的扔掉
+    const moving = async () => { const y = chatScroll.scrollTop; for (let i = 0; i < 120 && chatScroll.scrollTop >= y; i++) await new Promise((r) => requestAnimationFrame(r)); };
+    const atBottom = async (id) => { await open(id); chatScroll.scrollTop = chatScroll.scrollHeight; fire(); await tick(); };
+    // 人手滚一下：先来一个滚轮事件，再把滚动条挪过去
+    const wheelTo = (y) => { chatScroll.dispatchEvent(new WheelEvent("wheel", { deltaY: y < chatScroll.scrollTop ? -100 : 100 })); chatScroll.scrollTop = y; fire(); };
+    const withKit = async (key, fn) => {
+      const K = (0, eval)(GT_SRC[key]);
+      await sleep(350); // 上一份留下的「人刚滚过」过期
+      try { return await fn(K); } finally {
+        chatScroll.removeEventListener("scroll", K.syncScrollGuides);
+        chatScroll.removeEventListener("scroll", K.autoLoadOlder);
+      }
+    };
+    await withKit("real", async (K) => {
+      await atBottom("S_HUGE");
+      ok("60 轮的对话：打开收着 50 轮", turnsHidden() === 50, String(turnsHidden()));
+      ok("  └ 贴底时 ↑ 就在，提示是「往上翻」", shownTop() && tt.title === "往上翻", tt.className + " / " + tt.title);
+      K.goTop(); await toZero();
+      ok("离顶远的第一下只回到眼前这批的顶上，不补（不然一下跳过好几屏）", turnsHidden() === 50 && no(turns()[0]) === 50, nos());
+      ok("  └ 到顶了按钮还在（以前这时就收了）", shownTop());
+      ok("  └ 这一路是程序在滚、人手没动：没被自动补掐断在半路", chatScroll.scrollTop === 0);
+      K.goTop();
+      ok("到顶再点：补出更早的 10 轮", turnsHidden() === 40 && nos() === range(40, 59), nos());
+      await toZero();
+      ok("  └ 接着滚到新补那批的顶上", no(turns()[0]) === 40 && shownTop());
+      // 连着点：第二下落在平滑滚动的半路上（先证明真在半路，不然这条测的是「又在顶上」）
+      K.goTop();
+      const mid = chatScroll.scrollTop;
+      K.goTop();
+      ok("连点两下不等滚完：两下都补（第二下在半路 scrollTop=" + Math.round(mid) + "）", mid > 40 && turnsHidden() === 20, turnsHidden() + " / mid=" + mid);
+      // 半路隔了一帧再点：补完那一下把滚动条往下拨了，这不能被当成「人往下滚了」
+      await toZero();
+      K.goTop(); await moving();
+      const mid2 = chatScroll.scrollTop;
+      K.goTop();
+      ok("  └ 滚动已经在走了再点也照样补、照样接着滚（scrollTop=" + Math.round(mid2) + "）", mid2 > 40 && turnsHidden() === 0 && !more(), turnsHidden() + " / mid2=" + mid2);
+      await toZero();
+      ok("一路点到最开头：停在第 0 问", no(turns()[0]) === 0 && turns().length === 60, nos());
+      ok("  └ 真到了最前，按钮收起、提示换回「回到最前」", !shownTop() && tt.title === "回到最前", tt.className + " / " + tt.title);
+      // 半路人自己往下拖：这趟不算「正往顶上去」了，再点只是往上滚
+      await atBottom("S_HUGE");
+      K.goTop(); await toZero(); K.goTop();
+      const mid3 = chatScroll.scrollTop;
+      chatScroll.scrollTop = chatScroll.scrollHeight; fire(); await tick();
+      K.goTop();
+      ok("半路往下拖回底部再点：只往上滚，不补（" + Math.round(mid3) + "）", mid3 > 40 && turnsHidden() === 40, String(turnsHidden()));
+      await toZero();
+      // 半路换了条对话：那条贴底，第一下不许跟着上一条的「正往顶上去」一起补
+      await atBottom("S_HUGE");
+      K.goTop(); await toZero(); K.goTop();
+      const mid4 = chatScroll.scrollTop;
+      await atBottom("S_LONG");
+      K.goTop();
+      ok("半路换到 26 轮那条贴底点第一下：不补，还收着 16 轮（" + Math.round(mid4) + "）", mid4 > 40 && turnsHidden() === 16, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("real", async (K) => {
+      // 人手往上滚到离顶一屏以内：自动补一批，眼前那一屏不动
+      await atBottom("S_HUGE");
+      const a = turns()[0];
+      wheelTo(chatScroll.clientHeight + 200); await tick();
+      ok("（前提：离顶一屏开外滚着不补）", turnsHidden() === 50, String(turnsHidden()));
+      chatScroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      chatScroll.scrollTop = 300;
+      const y0 = a.getBoundingClientRect().top;
+      fire();
+      const y1 = a.getBoundingClientRect().top;
+      ok("人手往上滚到离顶一屏以内：自动补出更早的 10 轮", turnsHidden() === 40 && no(turns()[10]) === 50, nos());
+      ok("  └ 原来最上面那轮在屏幕上没挪（差 " + Math.round(y1 - y0) + "px）", Math.abs(y1 - y0) <= 1);
+      // 程序挪的（没滚轮、没拖滚动条）：往上挪到离顶很近也不补
+      await sleep(350);
+      chatScroll.scrollTop = 100; fire(); await tick();
+      ok("程序挪到离顶很近（人手没动）：不补", turnsHidden() === 40, String(turnsHidden()));
+      // 离顶一屏以内，人往下滚：不补
+      wheelTo(300); await tick();
+      ok("离顶近但人是往下滚：不补", turnsHidden() === 40, String(turnsHidden()));
+      // 拖滚动条：pointerdown 落在滚动容器本身上
+      chatScroll.scrollTop = chatScroll.clientHeight * 0.8; fire(); await tick();
+      chatScroll.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await sleep(350);
+      chatScroll.scrollTop = 20; fire(); await tick();
+      dispatchEvent(new PointerEvent("pointerup"));
+      ok("拖着滚动条往上到顶附近：也自动补", turnsHidden() === 30, String(turnsHidden()));
+      // 一路往上滚：用不着点任何按钮就翻到最开头
+      for (let i = 0; i < 200 && (turnsHidden() > 0 || chatScroll.scrollTop > 0); i++) { wheelTo(Math.max(0, chatScroll.scrollTop - 1500)); await tick(); }
+      ok("一路往上滚就翻到了最开头，一下按钮都没点", turnsHidden() === 0 && !more() && no(turns()[0]) === 0 && chatScroll.scrollTop === 0, turnsHidden() + " / " + chatScroll.scrollTop);
+    });
+    // ★反向对照★ 每条改回一处，上面对应那条就得红
+    await withKit("oldShow", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero();
+      ok("★反向对照★ 改回「翻过一屏半才给」：到了顶按钮就收了", !shownTop() && turnsHidden() === 50);
+    });
+    await withKit("oldClick", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await toZero();
+      ok("★反向对照★ 改回「点了只滚不补」：在顶上再点什么也没多出来", turnsHidden() === 50, String(turnsHidden()));
+    });
+    await withKit("noFly", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop();
+      const mid = chatScroll.scrollTop; K.goTop();
+      ok("★反向对照★ 不认「正往顶上滚」：半路第二下没补（scrollTop=" + Math.round(mid) + "）", mid > 40 && turnsHidden() === 40, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("noReset", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await frame();
+      const mid = chatScroll.scrollTop; K.goTop();
+      ok("★反向对照★ 补完不记下拨回的位置：隔一帧再点被当成人往下滚了，没补", mid > 40 && turnsHidden() === 40, turnsHidden() + " / mid=" + mid);
+      await toZero();
+    });
+    // 半路补完紧接着那次「平滑滚到 0」：Chromium 有时扔、有时不扔，看合成线程掐完没有。真浏览器那条上面测过了，
+    // 这里把「扔」钉死——下一次 scrollTo 直接吞掉——才测得准是谁把它救回来的
+    const dropNextScroll = () => { let armed = true; chatScroll.scrollTo = function (...a) { if (armed) { armed = false; return; } return Element.prototype.scrollTo.apply(this, a); }; };
+    const undoDrop = () => { delete chatScroll.scrollTo; };
+    await withKit("real", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await moving();
+      dropNextScroll();
+      try {
+        K.goTop();
+        await toZero();
+        ok("半路那次平滑滚动被浏览器扔了：盯着的那几帧补发一次，照样滚到顶", chatScroll.scrollTop === 0 && turnsHidden() === 30, turnsHidden() + " / " + chatScroll.scrollTop);
+      } finally { undoDrop(); }
+    });
+    await withKit("noWatch", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop(); await moving();
+      dropNextScroll();
+      const mid = chatScroll.scrollTop;
+      try { K.goTop(); await still(); } finally { undoDrop(); }
+      ok("★反向对照★ 半路补完只发一次平滑滚动、不盯着：停在半路不动了（停在 " + Math.round(chatScroll.scrollTop) + "）", mid > 40 && turnsHidden() === 30 && chatScroll.scrollTop > 40, turnsHidden() + " / " + chatScroll.scrollTop);
+      chatScroll.scrollTop = 0; fire(); await tick();
+    });
+    await withKit("noDown", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop();
+      chatScroll.scrollTop = chatScroll.scrollHeight; fire(); await tick();
+      K.goTop();
+      ok("★反向对照★ 往下滚不倒旗：拖回底部再点，一下补了", turnsHidden() === 30, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("noSess", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await toZero(); K.goTop();
+      await atBottom("S_LONG"); K.goTop();
+      ok("★反向对照★ 旗子不记是哪条：换到贴底的那条，第一下就补了", turnsHidden() === 6, String(turnsHidden()));
+      await toZero();
+    });
+    await withKit("noGate", async (K) => {
+      await atBottom("S_HUGE"); K.goTop(); await still();
+      ok("★反向对照★ 自动补不看人手：点 ↑ 滚的半路被补画插一脚（收着 " + turnsHidden() + " 轮、停在 " + Math.round(chatScroll.scrollTop) + "）", turnsHidden() < 50);
+    });
+    await withKit("noUp", async (K) => {
+      await atBottom("S_HUGE"); wheelTo(chatScroll.clientHeight + 200); await sleep(350);
+      chatScroll.scrollTop = 100; fire(); await tick();
+      ok("（前提：程序挪过来的没补）", turnsHidden() === 50, String(turnsHidden()));
+      wheelTo(300); await tick();
+      ok("★反向对照★ 往下滚也补：离顶近往下滚了一下就补了", turnsHidden() < 50, String(turnsHidden()));
+    });
+  }
+
+  console.warn = warn0;
+  ok("整个过程回放没有哪个事件画挂", !WARN.some((w) => w.includes("[回放]")), WARN.join(" | "));
+  return names;
+})()`;
 
 // ================= 本机引擎在跑时的模型选择器 =================
 // 真毛病是那段说明塞在 .mi 里，
@@ -2451,6 +3185,155 @@ function testCompactWiring() {
   return names;
 }
 
+// ================= 多开那两波的英文 =================
+// 2026-09-28/29 两波多开改动加的字，大多是 textContent / toast / title 直接写的——e2e 的覆盖率闸门
+// 只扫模板里的 >文字<，扫不到，漏了英文界面就冒一句中文。这里逐句过真词典（i18n.js 的 tr），
+// 每句的固定部分还得真在前端源码里，源码改了措辞这里当场红，不许词典和界面各说各的
+const MULTIRUN_I18N_CASES = [
+  // [界面上真出现的那句, 源码里必须有的固定部分]。用户自己起的名字、服务端原话用英文占位——「一个汉字不剩」查的是我们写的那部分
+  ["正在载入这段对话…"], ["正在载入页面…"], ["20 秒没等到应用回话，这次没启动"],
+  ["只看这个对话自己文件夹里的"], ["整个工作空间，含别的对话的产出"], ["这个对话还没产出文件，做出来就在这里"],
+  ["在 Finder 中打开这个文件夹"], ["60 秒没收到任何数据"], ["直播连接被关掉了"], ["双击复制这张图"],
+  ["停下这个任务"], ["正在停…"], ["没连上服务端，停止的指令没送出去"], ["这条任务已经不在跑了"], ["没停下来，服务端没说原因"], ["该会话没有正在运行的任务"],
+  ["等了 20 秒没等到这段对话的记录", "秒没等到这段对话的记录"],
+  ["这段对话的记录没取回来：HTTP 500", "这段对话的记录没取回来："],
+  ["这次没启动：EADDRINUSE", "这次没启动："],
+  ["本对话 3", "本对话 "], ["全部对话 12", "全部对话 "],
+  ["没有名字里带「report」的文件。只找了本对话的，切到「全部对话」再找找", "只找了本对话的，切到「全部对话」再找找"],
+  ["这个对话里还没有成果文件（4 个中间材料已折起）", "个中间材料已折起"],
+  ["连接中断：60 秒没收到任何数据。任务可能仍在后台运行，刷新即可接回；别点重新生成，会重复执行", "任务可能仍在后台运行，刷新即可接回"],
+  ["停下「weekly」", "停下「"], ["正在停「weekly」", "正在停「"],
+  ["已停下「weekly」，别的任务照常跑", "别的任务照常跑"],
+  ["显示更早的 12 轮", "显示更早的"],
+];
+function testMultiRunI18n() {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const jsDir = path.join(__dirname, "..", "public", "js");
+  const fe = fs.readdirSync(jsDir).filter((f) => f.endsWith(".js") && f !== "i18n.js").map((f) => fs.readFileSync(path.join(jsDir, f), "utf8")).join("\n");
+  const HAN = /[一-鿿]/;
+  const I18N_MOD = require(path.join(jsDir, "i18n.js"));
+  const miss = (mod) => MULTIRUN_I18N_CASES.filter(([s]) => { const o = mod.tr(s, "en"); return o === s || HAN.test(o); }).map(([s]) => s);
+  for (const [s, frag] of MULTIRUN_I18N_CASES) ok("源码里真有这句：" + s.slice(0, 16), fe.includes(frag || s), "前端源码里找不到「" + (frag || s) + "」——措辞改过？词典跟着改");
+  const m0 = miss(I18N_MOD);
+  ok(`英文界面全翻得动（${MULTIRUN_I18N_CASES.length} 句，一个汉字不剩）`, m0.length === 0, "还剩中文：" + m0.join(" ／ "));
+  // 嵌套的那句：断线原因也得一起翻，不许半句英文半句中文
+  ok("  └ 断线那句连原因一起翻", /no data for 60 s/.test(I18N_MOD.tr(MULTIRUN_I18N_CASES.find(([s]) => s.startsWith("连接中断"))[0], "en")));
+  // 11 轮的对话收着的正好 1 轮：单复数跟着数走（对照：12 轮那句还是复数）
+  ok("  └ 「显示更早的 1 轮」是单数，12 轮是复数", I18N_MOD.tr("显示更早的 1 轮", "en") === "Show 1 earlier round" && I18N_MOD.tr("显示更早的 12 轮", "en") === "Show 12 earlier rounds",
+    I18N_MOD.tr("显示更早的 1 轮", "en") + " ／ " + I18N_MOD.tr("显示更早的 12 轮", "en"));
+  // ★反向对照★ 把 i18n.js 里「多开对话那两波」那一节摘掉再加载：这套断言得真红，而且红的就是这一节管的那些句子——
+  // 证明上面过得了是靠这一节，不是别处某条宽正则顺手吃掉的
+  const src = fs.readFileSync(path.join(jsDir, "i18n.js"), "utf8");
+  const a = src.indexOf("// ---------- 多开对话那两波"), b = src.indexOf("// 套餐名在句首");
+  ok("i18n.js 里那一节找得到（节标题没改）", a > 0 && b > a);
+  const mod = { exports: {} };
+  new Function("module", "window", src.slice(0, a) + src.slice(b))(mod, undefined);
+  const m1 = miss(mod.exports);
+  ok(`反向对照：摘掉那一节，${m1.length}/${MULTIRUN_I18N_CASES.length} 句当场露中文`, m1.length === MULTIRUN_I18N_CASES.length, "只红了 " + m1.length + " 句：" + m1.join(" ／ "));
+  return names;
+}
+
+// 拼音打一半按回车/Esc：回车是把字母上屏、Esc 是取消拼字——这两下都是给输入法的。
+// 没过 imeKey 的回车会把半截拼音当整条发出去、把搜索跳到拼音字母匹配的那页；
+// 没过的 Esc 会把整张表单关掉、把画布上正在跑的那轮叫停。
+// 一处处补永远补不全，所以钉整个 public/js：每个认 Enter/Escape 的地方要么过 imeKey，要么在下面白名单里写明为什么不用
+const IME_EXEMPT = [
+  ["app-00-ui.js", "resetHistH(); e.preventDefault(); return;", "拖输入框高度的那根把手，不是文字框"],
+  ["app-01.js", "done(false); }", "确认框：只有按钮，没有文字框"],
+  ["app-01.js", 'a.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") open(e); };', "可点的卡片，不是文字框"],
+  ["app-03.js", 'getElementById("auth-pair").addEventListener', "配对码，只有字母数字"],
+  ["app-03.js", 'getElementById("auth-pass").addEventListener', "密码框：系统不给开输入法"],
+  ["app-03.js", 'getElementById("auth-invite").addEventListener', "邀请码，只有字母数字"],
+  ["app-05.js", ".ck-save[data-chan=", "API Key，只有 ASCII"],
+  ["app-06.js", "#tfa-pw-go", "密码框：系统不给开输入法"],
+  ["app-06.js", "#tfa-enable", "六位验证码"],
+  ["app-06.js", "#tfa-rc-go", "恢复码，只有字母数字"],
+  ["app-06.js", "!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) { cleanup(); return; }", "录快捷键：录的就是按键本身，不是文字"],
+  ["app-07-canvas-board.js", 'finish(""); } };', "追加/替换二选一：只有按钮"],
+  ["app-07-canvas-board.js", 'close("later"); } };', "盘上/我的冲突框：只有按钮"],
+  ["app-07-canvas-generate.js", 'if (evt.key === "Escape") close(); };', "看大图：没有文字框"],
+  ["app-07-canvas-nodes.js", 'if (event.key === "Escape") close(); };', "右键菜单：没有文字框"],
+  ["app-07-canvas-timeline.js", "canvasPlaybackStop(); return; }", "播放条：没有文字框"],
+  ["app-07-canvas-viewport.js", "canvasState.selectedIds.size || canvasState.marqueeMode", "焦点在输入框里时这个处理函数一进来就 return 了"],
+];
+/** 扫一遍：files 是 [[文件名, 源码]]。返回 { hits, guarded, bare }，bare 是既没过 imeKey 也不在白名单里的 */
+function scanImeGuards(files) {
+  const hits = [], bare = [];
+  let guarded = 0;
+  for (const [f, src] of files) {
+    const L = src.split("\n");
+    L.forEach((line, i) => {
+      if (!/\.key\s*===?\s*"(Enter|Escape)"/.test(line)) return;
+      hits.push(f + ":" + (i + 1));
+      if (/imeKey\(/.test(line)) { guarded++; return; }
+      // 守卫写在处理函数开头（if (imeKey(e)) return;）：往上找到这个处理函数的头，头到这一行（再往下带两行）之间有就算
+      let h = i;
+      while (h > 0 && i - h < 40 && !/keydown|function onKey|const onKey|Handler = \(/.test(L[h])) h--;
+      if (L.slice(h, i + 3).some((p) => /if \(imeKey\(\w+\)\) return/.test(p))) { guarded++; return; }
+      if (IME_EXEMPT.some(([ef, snip]) => ef === f && line.includes(snip))) return;
+      bare.push(f + ":" + (i + 1) + "  " + line.trim().slice(0, 120));
+    });
+  }
+  return { hits, guarded, bare };
+}
+function testImeGuardCoverage() {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const jsDir = path.join(__dirname, "..", "public", "js");
+  const files = fs.readdirSync(jsDir).filter((f) => f.endsWith(".js") && f !== "i18n.js").sort()
+    .map((f) => [f, fs.readFileSync(path.join(jsDir, f), "utf8")]);
+  const r = scanImeGuards(files);
+  ok(`认回车/Esc 的 ${r.hits.length} 处：${r.guarded} 处过 imeKey，其余 ${r.hits.length - r.guarded} 处都在白名单里写了为什么`, r.bare.length === 0,
+    "这几处拼音打一半按回车/Esc 会被当真：\n" + r.bare.join("\n"));
+  ok("  └ 扫得到东西（不是正则没对上一处都没扫）", r.guarded >= 25 && r.hits.length >= 40, r.guarded + " / " + r.hits.length);
+  const stale = IME_EXEMPT.filter(([ef, snip]) => !files.some(([f, src]) => f === ef && src.includes(snip)));
+  ok("  └ 白名单里每条都还对得上源码（改过的那处得重新判一次要不要守卫）", stale.length === 0, stale.map((e) => e[0] + "  " + e[1]).join("\n"));
+  // 这一轮补上的几处，逐个点名：以前拼字中按 Esc 会叫停画布那轮、关掉整张表、把 @ 菜单的回车当成挑技能
+  const must = [
+    ["app-07-canvas.js", 'else if (evt.key === "Escape" && !imeKey(evt))'],
+    ["app-01.js", "@ 后面接着打拼音"],
+    ["admin.js", 'if (e.key === "Escape" && !imeKey(e)) close();'],
+    ["admin.js", "if (imeKey(e)) return; // 拼音打一半"],
+  ];
+  const lost = must.filter(([ef, snip]) => !files.some(([f, src]) => f === ef && src.includes(snip)));
+  ok("画布聊天的 Esc、@ 菜单、后台表单和导航搜索都过了 imeKey", lost.length === 0, lost.map((e) => e.join("  ")).join("\n"));
+  // ★反向对照★ 把画布聊天那句守卫摘掉：扫描当场点名这一行
+  const cv = files.map(([f, src]) => [f, f === "app-07-canvas.js" ? src.replace('evt.key === "Escape" && !imeKey(evt)', 'evt.key === "Escape"') : src]);
+  const rr = scanImeGuards(cv);
+  ok("★反向对照★ 摘掉画布聊天 Esc 那句守卫：扫描点名 app-07-canvas.js", rr.bare.length === 1 && rr.bare[0].startsWith("app-07-canvas.js:"), rr.bare.join("\n"));
+  // ★反向对照★ 摘掉 @ 菜单开头那句：回车/Tab/Esc 三处一起露出来
+  const am = files.map(([f, src]) => [f, f === "app-01.js" ? src.replace("  if (imeKey(e)) return;\n  const items", "  const items") : src]);
+  const ra = scanImeGuards(am);
+  ok("★反向对照★ 摘掉 @ 菜单开头那句守卫：回车/Tab 和 Esc 两处被点名", ra.bare.length === 2 && ra.bare.every((b) => b.startsWith("app-01.js:")), ra.bare.join("\n"));
+  // 后台那一页没加载 app-00-ui.js，自己抄了一份 imeKey：抄的这份也得三样都认
+  const adm = files.find(([f]) => f === "admin.js")[1];
+  const a0 = adm.indexOf("let imeEndAt"), a1 = adm.indexOf("\n", adm.indexOf("const imeKey"));
+  ok("后台那份 imeKey 找得到", a0 > 0 && a1 > a0);
+  let endCb = null, now = 1000;
+  const doc = { addEventListener: (t, cb) => { if (t === "compositionend") endCb = cb; } };
+  const imeK = new Function("document", "performance", adm.slice(a0, a1) + "\nreturn imeKey;")(doc, { now: () => now });
+  ok("  └ 拼字中（isComposing）认", imeK({ isComposing: true, keyCode: 13 }) === true);
+  ok("  └ 起头那一下（keyCode 229）认", imeK({ isComposing: false, keyCode: 229 }) === true);
+  ok("  └ 平常的回车不认", imeK({ isComposing: false, keyCode: 13 }) === false);
+  endCb(); now += 10;
+  ok("  └ Safari 那种：拼字刚结束 10ms 的回车认", imeK({ isComposing: false, keyCode: 13 }) === true);
+  now += 100;
+  ok("  └ 结束 110ms 之后再按回车：是人要发送，不认", imeK({ isComposing: false, keyCode: 13 }) === false);
+  return names;
+}
+
+// 预览面板：点 × 是滑出去、滑完再拆；换对话、开新任务必须当场拆（上一个对话的网页一帧都不许留到下一个对话里跑）。
+// 那几处调用在 app-02.js，跑不起来，只能钉源码
+function testPreviewCloseSites(src) {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const now = (src.match(/closePreview\(false, \{ now: true \}\)/g) || []).length;
+  const other = (src.match(/closePreview\((?!false, \{ now: true \}\))/g) || []).length;
+  ok("换对话 / 开新任务那三处收面板都是当场拆（now:true）", now === 3 && other === 0, `now:true ${now} 处，别的写法 ${other} 处`);
+  return names;
+}
+
 // ================= 助理设置页：分区 + 双栏卡片 + 连接/取消连接 =================
 // 这里验的是行为不是措辞：连上的卡真收起（display:none）、
 // 状态灯颜色真变、「连接」先保存再测活、「取消连接」两步确认且只清自己那组凭证、
@@ -2705,7 +3588,7 @@ const MEM_CHECKS = `
     { id: "i1", scope: "xiaoyuan", text: "小袁的周报只要三段", source: "auto" },
     { id: "i2", scope: SHARED, text: "全公司统一用飞书日历", source: "user" },
   ];
-  let calls = [], nextDel = { ok: true, removed: 1 }, view = {};
+  let calls = [], nextDel = { ok: true, removed: 1 }, nextTest = { ok: true, dims: 1024 }, nextSave = { ok: true, body: { ok: true } }, view = {};
   window.toasts = [];
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
@@ -2716,7 +3599,10 @@ const MEM_CHECKS = `
     const j = (v) => Promise.resolve({ ok: true, json: () => Promise.resolve(v) });
     if (url === "/api/memory" && (!opt || !opt.method || opt.method === "GET"))
       return j({ items: ITEMS.slice(), shared_tag: SHARED, content: "老板写的背景", limits: { max_items: 120 },
-                 vectors: { enabled: false }, can_share: !!view.can_share, can_edit_manual: !!view.can_edit_manual });
+                 vectors: view.vectors || { enabled: false }, can_share: !!view.can_share, can_edit_manual: !!view.can_edit_manual,
+                 embedding: view.embedding === undefined ? null : view.embedding });
+    if (url === "/api/embedding/test") return j(nextTest);
+    if (url === "/api/settings") return Promise.resolve({ ok: nextSave.ok, json: () => Promise.resolve(nextSave.body) });
     if (url.startsWith("/api/memory/item/")) return j(nextDel);
     if (url === "/api/memory/item") return j({ ok: true, note: "记住了" });
     if (url === "/api/memory/import/scan") return j({ sources: [] });
@@ -2773,6 +3659,65 @@ const MEM_CHECKS = `
   await q("#mem-add").onclick();
   const add2 = calls.find((c) => c.url === "/api/memory/item" && c.method === "POST");
   ok("反向对照：他勾了共享，请求里就带 shared:true", add2 && add2.body.shared === true, JSON.stringify(add2 && add2.body));
+
+  // ⑤ 嵌入接口：提示语以前叫人去「设置 → 模型 配一条 embeddings 渠道」，那地方根本不存在
+  const vecText = () => (q("#mem-vec") || {}).textContent || "";
+  const lastPost = (u) => calls.filter((c) => c.url === u && c.method === "POST").pop();
+  await draw({ can_share: false, can_edit_manual: false, embedding: null });
+  ok("普通成员：没有嵌入接口那张表（存了也是 403）", !q("#emb-card"));
+  ok("普通成员：提示说由平台管理员配，不指向一个不存在的地方", /平台管理员/.test(vecText()) && !/设置 → 模型/.test(pane.textContent), vecText());
+  await draw({ can_share: true, can_edit_manual: true, embedding: { base_url: "", model: "", api_key: "", has_key: false } });
+  ok("平台管理员：嵌入接口那张表画出来了", !!q("#emb-card") && !!q("#emb-base") && !!q("#emb-key") && !!q("#emb-model"));
+  ok("平台管理员：提示指向下面这张表", /在下面填一个嵌入接口/.test(vecText()) && !/设置 → 模型/.test(pane.textContent), vecText());
+  ok("没存过就不画「清空」", !q("#emb-clear"));
+  // 缺模型名：拦在前端，一个请求都不发
+  q("#emb-base").value = "https://relay.example.com/v1"; q("#emb-model").value = "";
+  calls = [];
+  await q("#emb-save").onclick();
+  ok("没填模型名就不发保存", !lastPost("/api/settings") && /都要填/.test(q("#emb-msg").textContent), q("#emb-msg").textContent);
+  // 点预设：地址和模型一起填上
+  const sf = [...pane.querySelectorAll("[data-emb-base]")].find((c) => /硅基流动/.test(c.textContent));
+  sf.onclick();
+  ok("点「硅基流动」把地址和模型都填上了", q("#emb-base").value === "https://api.siliconflow.cn/v1" && q("#emb-model").value === "BAAI/bge-m3");
+  q("#emb-key").value = "sk-sf";
+  calls = []; nextTest = { ok: true, dims: 1024 };
+  await q("#emb-test").onclick();
+  const t1 = lastPost("/api/embedding/test");
+  ok("测一下发的是表单里这三样", t1 && t1.body.base_url === "https://api.siliconflow.cn/v1" && t1.body.api_key === "sk-sf" && t1.body.model === "BAAI/bge-m3", JSON.stringify(t1 && t1.body));
+  ok("通了说几维", /1024/.test(q("#emb-msg").textContent), q("#emb-msg").textContent);
+  nextTest = { ok: false, status: 401, error: "401：Incorrect API key provided" };
+  await q("#emb-test").onclick();
+  ok("没通就原样显示上游的话", /Incorrect API key provided/.test(q("#emb-msg").textContent), q("#emb-msg").textContent);
+  calls = [];
+  await q("#emb-save").onclick();
+  const sv = lastPost("/api/settings");
+  ok("保存：只发 embedding 这一项", sv && Object.keys(sv.body).join() === "embedding" && sv.body.embedding.model === "BAAI/bge-m3" && sv.body.embedding.api_key === "sk-sf", JSON.stringify(sv && sv.body));
+  ok("存成了就重画这一页", calls.some((c) => c.url === "/api/memory" && c.method === "GET"));
+  // 存过 Key 的：回来是八颗星；一改地址，星号就清掉（不能把这家的 Key 带去另一家）
+  await draw({ can_share: true, can_edit_manual: true, embedding: { base_url: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3", api_key: "********", key_hint: "sk-…f2a", has_key: true },
+               vectors: { enabled: true, failed: true, model: "BAAI/bge-m3", source: "设置里显式指定的嵌入渠道", have: 0, total: 3 } });
+  ok("存过 Key：输入框是八颗星 + 提示末几位", q("#emb-key").value === "********" && /f2a/.test(q("#emb-key").placeholder));
+  ok("全挂了就说调不通，不说「开着」", /调不通/.test(vecText()) && !/开着/.test(vecText()), vecText());
+  ok("说出现在走的是哪一条", /设置里显式指定的嵌入渠道/.test((q("#emb-src") || {}).textContent || ""));
+  q("#emb-base").value = "https://other.example.com/v1";
+  q("#emb-base").dispatchEvent(new Event("input"));
+  ok("改了地址，星号清掉让人重填 Key", q("#emb-key").value === "");
+  // 反向对照：不改地址，星号原样留着
+  await draw({ can_share: true, can_edit_manual: true, embedding: { base_url: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3", api_key: "********", has_key: true } });
+  q("#emb-model").value = "BAAI/bge-large-zh-v1.5";
+  calls = [];
+  await q("#emb-save").onclick();
+  ok("反向对照：只改模型，Key 仍传八颗星（= 没改）", lastPost("/api/settings").body.embedding.api_key === "********");
+  // 后端拒了要说出来，不重画
+  nextSave = { ok: false, body: { error: "换了接口地址，Key 要重新填一遍" } };
+  calls = [];
+  await q("#emb-save").onclick();
+  ok("后端 400 就显示原话、不重画", /重新填/.test(q("#emb-msg").textContent) && !calls.some((c) => c.url === "/api/memory" && c.method === "GET"), q("#emb-msg").textContent);
+  nextSave = { ok: true, body: { ok: true } };
+  calls = [];
+  await q("#emb-clear").onclick({ preventDefault() {} });
+  const cl = lastPost("/api/settings");
+  ok("清空：三样都发空串", cl && cl.body.embedding.base_url === "" && cl.body.embedding.model === "" && cl.body.embedding.api_key === "", JSON.stringify(cl && cl.body));
   return names;
 })()
 `;
@@ -5124,7 +6069,58 @@ const STREAM_CHECKS = `
 })()
 `;
 
-const IMPANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
+// ---- 带图的回答也得能边写边定稿（FE-1） ----
+// 2026-09-28 实测：data 里最长那条带 7 张图的回答（2 万字）从头到尾定稿 0 字——图的 id 是全局自增，
+// 同一段正文渲两遍 id 就不同，paintStream「整份重渲以已定稿那截为前缀」这条永远不成立，
+// 每 100ms 把整篇连图带字推倒重建，写到 2 万字时一帧 22.8ms。现在 id 按图的源码定（SvgFig.figUid）。
+// 用真的 svgfig.js（STREAM 那组把 SvgFig 换成了空壳，那组验不到图）。
+// ★反向对照★ 把 extractSvgFigures 里按源码给 id 的那一处摘掉（退回自增号），「越过第一张图」必须当场红。
+const SVGFIG_UID_NEEDLE = "svgFigureHtml(code, growing, live, figUid(code))";
+const SVGFIG_SEQ_MUTANT = (() => {
+  if (!SVGFIG.includes(SVGFIG_UID_NEEDLE)) throw new Error("svgfig.js 里按源码给图 id 的那一处找不到了，反向对照没法做");
+  return SVGFIG.replace(SVGFIG_UID_NEEDLE, "svgFigureHtml(code, growing, live)");
+})();
+const SVG_STREAM_CHECKS = `
+(() => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const el = document.getElementById("t"), ref = document.getElementById("ref");
+  const fig = (i) => '<svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg"><style>.t{fill:#333;font-size:12px}</style>'
+    + '<rect x="4" y="4" width="' + (60 + i * 10) + '" height="30" rx="4" fill="#4a7"/><text class="t" x="10" y="60">第 ' + i + ' 张图</text></svg>';
+  const para = (i) => ("第 " + i + " 段说明：把上面那张图里的数字挨个讲一遍，顺便交代口径和出处。").repeat(30);
+  const parts = [];
+  for (let i = 1; i <= 7; i++) parts.push(para(i), fig(i));
+  parts.push(para(8));
+  const text = parts.join("\\n\\n");
+
+  ok("图的 id 按源码定：同一张图两次同号、不同的图不同号、还是 svgfig<数字> 的老形状",
+    SvgFig.figUid(fig(1)) === SvgFig.figUid(fig(1)) && SvgFig.figUid(fig(1)) !== SvgFig.figUid(fig(2)) && /^svgfig\\d+$/.test(SvgFig.figUid(fig(1))));
+  ok("同一段带图的正文渲两遍一字不差（定稿判据的前提）", renderMd(text, null, true) === renderMd(text, null, true));
+
+  el._raw = ""; el._split = null;
+  let firstDone = null;
+  for (let p = 120; ; p += 120) {
+    const cut = Math.min(text.length, p);
+    el._raw = text.slice(0, cut);
+    paintStream(el);
+    if (!firstDone && el._split.done.querySelector(".svg-fig")) firstDone = el._split.done.querySelector(".svg-fig");
+    if (cut >= text.length) break;
+  }
+  const doneFigs = el._split.done.querySelectorAll(".svg-fig").length;
+  const ratio = el._split.raw.length / text.length;
+  ok("带 7 张图的回答边写边定稿：已定稿那截越过了第一张图（" + doneFigs + " 张已定稿）", doneFigs >= 2,
+    "已定稿 " + doneFigs + " 张图、" + el._split.raw.length + "/" + text.length + " 字");
+  ok("定稿到了全文的大半（" + Math.round(ratio * 100) + "%），每帧只重画尾巴", ratio > 0.5, el._split.raw.length + "/" + text.length);
+  ok("第一张定稿的图全程没被重建过", !!firstDone && firstDone.isConnected && el._split.done.contains(firstDone));
+  ref.innerHTML = renderMd(el._raw);
+  ok("边写边渲的结果跟一次渲染一模一样", el._split.done.innerHTML + el._split.live.innerHTML === ref.innerHTML);
+  const ids = [...el.querySelectorAll(".svg-fig svg")].map((s) => s.id);
+  ok("7 张图各有各的 id", ids.length === 7 && new Set(ids).size === 7, ids.join(","));
+  return { names, fails };
+})()
+`;
+
+const IMPANE_HTML ="<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
 const IMPANE_STUBS = `
   ${IC_STUB}
 var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -5469,7 +6465,7 @@ const ONB_STUBS = `
     // 第一步最上面那张授权卡只要 /api/auth/state 里公开的 license 一块；LIC_DOWN = 服务端拿不到
     if (url === "/api/auth/state") { if (LIC_DOWN) throw new Error("down"); return j({ license: LIC }); }
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
-      const nm = body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
+      const nm = body.custom ? "自定义中转" : body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
     if (url === "/api/provider-models") { POSTS.push(["provider-models", body]); return j(OLLAMA_LIST === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: OLLAMA_LIST.map((id) => ({ id })) }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
@@ -5621,6 +6617,39 @@ const ONB_CHECKS = `
   ok("选模板验活：POST 的是 {kind, api_key}，没有 model", POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ark" && b.api_key === "sk-bad2" && !("model" in b)), JSON.stringify(POSTS));
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
+  // ---- 自己填地址（中转站 / 自建网关）：以前第一步没有这条路，得先跳过、进了界面再去设置里找 ----
+  const cGrp = [...body.querySelectorAll("#onb-model optgroup")].find((g) => g.label.includes("列表里没有"));
+  ok("下拉框最后有「自己填地址」一项", cGrp && cGrp.querySelector("option[value='custom:']") && /自己填地址/.test(cGrp.textContent), cGrp && cGrp.outerHTML);
+  ok("反向对照：没选它时地址、格式、模型名三栏都收着", q("#onb-crow").hidden && q("#onb-crow2").hidden);
+  q("#onb-model").value = "custom:"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("选「自己填地址」：地址、格式、模型名露出来，Key 框能填，本机型号那行收着", !q("#onb-crow").hidden && !q("#onb-crow2").hidden && !q("#onb-key").disabled && q("#onb-mrow").hidden);
+  const fmtIds = [...q("#onb-cfmt").options].map((o) => o.value);
+  ok("接口格式能选，默认 OpenAI 兼容，Anthropic 也在", fmtIds[0] === "openai" && fmtIds.includes("anthropic"), fmtIds.join());
+  POSTS.length = 0;
+  q("#onb-go").click(); await tick();
+  ok("地址空着点验活：提醒填地址，不发请求", /接口地址/.test(q("#onb-err").textContent) && !POSTS.some(([k]) => k === "onboarding"));
+  q("#onb-curl").value = "https://relay.example.com/v1/chat/completions"; q("#onb-key").value = "sk-relay";
+  q("#onb-curl").dispatchEvent(new Event("change")); await tick(); await tick();
+  const listAsk = POSTS.find(([k]) => k === "provider-models");
+  ok("填完地址就去问它有哪些模型：地址剥到 /v1、带着填的 Key", listAsk && listAsk[1].base_url === "https://relay.example.com/v1" && listAsk[1].api_key === "sk-relay", JSON.stringify(POSTS));
+  ok("问到的模型挂进模型名的下拉提示", q("#onb-cmodels").querySelectorAll("option").length === OLLAMA_LIST.length && /列出了 3 个模型/.test(q("#onb-ctip").textContent), q("#onb-ctip").textContent);
+  POSTS.length = 0;
+  q("#onb-go").click(); await tick();
+  ok("模型名空着点验活：提醒填模型名，不发请求", /模型名/.test(q("#onb-err").textContent) && !POSTS.some(([k]) => k === "onboarding"));
+  q("#onb-cmodel").value = "gpt-5"; q("#onb-cfmt").value = "anthropic";
+  q("#onb-go").click(); await tick(); await tick();
+  const cPost = (POSTS.find(([k]) => k === "onboarding") || [])[1] || {};
+  ok("验活 POST 的是 {custom:{地址, 格式, 模型名}, api_key}，不带 kind / model", cPost.custom && cPost.custom.base_url === "https://relay.example.com/v1/chat/completions" && cPost.custom.api === "anthropic" && cPost.custom.model === "gpt-5" && cPost.api_key === "sk-relay" && !("kind" in cPost) && !("model" in cPost), JSON.stringify(cPost));
+  ok("验活没过：留在第一步、原因写出来", q("#onb-err").textContent.includes("401") && steps.querySelector(".onb-step.cur").textContent.includes("大模型"));
+  // 只填了域名、第一趟没问到：再补 /v1 问一次（中转的接口多半挂在 /v1 下）
+  const keepList = OLLAMA_LIST; OLLAMA_LIST = null; POSTS.length = 0;
+  q("#onb-curl").value = "https://relay2.example.com"; q("#onb-curl").dispatchEvent(new Event("change")); await tick(); await tick(); await tick();
+  const asks = POSTS.filter(([k]) => k === "provider-models").map(([, b]) => b.base_url);
+  ok("只填域名问不到：再补 /v1 问一次；还是没有就叫他照文档填", asks.join() === "https://relay2.example.com,https://relay2.example.com/v1" && /照接口文档/.test(q("#onb-ctip").textContent), JSON.stringify(asks));
+  OLLAMA_LIST = keepList;
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("选回云端渠道：那三栏收起来", q("#onb-crow").hidden && q("#onb-crow2").hidden);
+
   // ---- 走本机 CLI：先真连再切引擎 ----
   q("#onb-seg button[data-v=local]").click();
   ok("切到本机：云端表单藏起来、本机表单露出来", q("#onb-cloud").hidden && !q("#onb-local").hidden);
@@ -5655,12 +6684,32 @@ const ONB_CHECKS = `
   q("#onb-sp-key").value = "tvly-1"; q("#onb-go").click(); await tick(); await tick();
   ok("搜索测试失败：保存过但留在本步、原因写出来", POSTS[0][0] === "settings" && POSTS[0][1].search.provider === "tavily" && POSTS[0][1].search.tavily_key === "tvly-1" && POSTS[1][0] === "search-test" && q("#onb-err").textContent.includes("0 条") && steps.querySelector(".onb-step.cur").textContent.includes("联网搜索"));
   ok("搜索 payload 只带所选那家的 key（不把别家的 key 清空）", !("jina_key" in POSTS[0][1].search));
+  // ---- 搜索也能自己填地址（阿里云 IQS、秘塔、自建 SearXNG……）：设置里一直有，向导里以前没有 ----
+  ok("反向对照：选的不是自定义时，地址栏收着", q("#onb-sp-custom").hidden);
+  q("#onb-sp").value = "custom"; q("#onb-sp").dispatchEvent(new Event("change"));
+  ok("搜索服务商里有「自定义接口」：选了露出地址和字段名，Key 标成可留空", q("#onb-sp").value === "custom" && !q("#onb-sp-custom").hidden && /留空/.test(q("#onb-sp-klb").textContent) && q("#onb-sp-key").placeholder === "可留空");
+  POSTS.length = 0; q("#onb-sp-key").value = "";
+  q("#onb-go").click(); await tick();
+  ok("自定义没填地址：提醒填地址，不存", /接口地址/.test(q("#onb-err").textContent) && !POSTS.some(([k]) => k === "settings"));
+  q("#onb-sp-url").value = "https://search.example.com/api"; q("#onb-go").click(); await tick(); await tick();
+  const sPatch = ((POSTS.find(([k]) => k === "settings") || [])[1] || {}).search || {};
+  ok("自定义不填 Key 也能存：只带地址，不带空 Key（空 Key 会把设置里填过的冲掉）", sPatch.provider === "custom" && sPatch.custom_url === "https://search.example.com/api" && !("custom_key" in sPatch) && !("custom_query_field" in sPatch) && POSTS.some(([k]) => k === "search-test"), JSON.stringify(sPatch));
+  POSTS.length = 0; q("#onb-sp-key").value = "k-1"; q("#onb-sp-field").value = "q"; q("#onb-go").click(); await tick(); await tick();
+  const sPatch2 = ((POSTS.find(([k]) => k === "settings") || [])[1] || {}).search || {};
+  ok("反向对照：填了 Key 和字段名就一起带上", sPatch2.custom_key === "k-1" && sPatch2.custom_query_field === "q", JSON.stringify(sPatch2));
+  onbState.st = { ...onbState.st, search: { provider: "custom", has_key: true } };
+  renderOnbSearch(body);
+  ok("配过自定义再回来：下拉停在自定义，顶上写「自定义接口」而不是 custom", q("#onb-sp").value === "custom" && /自定义接口/.test((q(".onb-ok") || {}).textContent || ""));
+  onbState.st = { ...onbState.st, search: { provider: "", has_key: false } };
+  renderOnbSearch(body);
+  q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
+  q("#onb-sp-key").value = "tvly-1";
   SEARCH_TEST_OK = true; POSTS.length = 0;
   q("#onb-go").click(); await tick(); await tick(); await tick();
   ok("搜索测活通过：翻到第三步", steps.querySelector(".onb-step.cur").textContent.includes("图/视频/语音"));
 
   // ---- 第三步：多媒体 ----
-  ok("四行能力：生图已配、其余未配，输入框默认收起", body.querySelectorAll(".onb-row").length === 4 && q(".onb-row[data-kind=image] .onb-chip").classList.contains("ok") && !q(".onb-row[data-kind=video] .onb-chip").classList.contains("ok") && [...body.querySelectorAll(".onb-row-b")].every((b) => b.hidden));
+  ok("五行能力（跟设置里的五路对齐，含听写）：生图已配、其余未配，输入框默认收起", body.querySelectorAll(".onb-row").length === 5 && q(".onb-row[data-kind=asr]") && q(".onb-row[data-kind=image] .onb-chip").classList.contains("ok") && !q(".onb-row[data-kind=video] .onb-chip").classList.contains("ok") && [...body.querySelectorAll(".onb-row-b")].every((b) => b.hidden));
   ok("第三步整屏文字克制（<300 字）", body.innerText.length < 300, body.innerText.length);
   POSTS.length = 0;
   q(".onb-row[data-kind=tts] .onb-fill").click();
@@ -5674,6 +6723,18 @@ const ONB_CHECKS = `
   ok("地址/Key 没填就保存：当场拦下", q(".onb-row[data-kind=tts] .err").textContent.includes("都要填") && !POSTS.some(([k]) => k === "settings"));
   q(".onb-row[data-kind=tts] input[data-f=base_url]").value = "https://x/v1"; q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
   ok("只填了地址没填 Key：照样拦", q(".onb-row[data-kind=tts] .err").textContent.includes("都要填") && !POSTS.some(([k]) => k === "settings"));
+  q(".onb-row[data-kind=tts] input[data-f=api_key]").value = "k"; q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
+  ok("有地址有 Key 没型号：也拦（没型号服务端落不成模型，以前放过去会亮一个假的「已配」）", /模型名/.test(q(".onb-row[data-kind=tts] .err").textContent) && !POSTS.some(([k]) => k === "settings"));
+  q(".onb-row[data-kind=tts] input[data-f=api_key]").value = "";
+  // 本机转写服务：不填 Key 照样能存
+  q(".onb-row[data-kind=asr] .onb-fill").click();
+  const asrRow = q(".onb-row[data-kind=asr]");
+  ok("听写一行有预设、没有音色框", asrRow.querySelectorAll(".onb-preset").length >= 1 && !asrRow.querySelector("input[data-f=voice]"));
+  asrRow.querySelector("input[data-f=base_url]").value = "http://127.0.0.1:9000/v1"; asrRow.querySelector("input[data-f=model]").value = "whisper-large-v3";
+  asrRow.querySelector(".onb-save").click(); await tick(); await tick();
+  const asrPost = (POSTS.find(([k, p]) => k === "settings" && p.media && p.media.asr) || [])[1];
+  ok("本机接口不填 Key 也能存，行变「已配」", asrPost && asrPost.media.asr.base_url === "http://127.0.0.1:9000/v1" && asrPost.media.asr.api_key === "" && asrRow.querySelector(".onb-chip").classList.contains("ok"), JSON.stringify(asrPost));
+  POSTS.length = 0;
   q(".onb-row[data-kind=tts] input[data-f=base_url]").value = "https://x/v1"; q(".onb-row[data-kind=tts] input[data-f=api_key]").value = "k"; q(".onb-row[data-kind=tts] input[data-f=model]").value = "tts-1";
   q(".onb-row[data-kind=tts] .onb-save").click(); await tick(); await tick();
   ok("保存语音：只发 media.tts 一块，行变「已配」并收起", POSTS.some(([k, p]) => k === "settings" && p.media && Object.keys(p.media).join() === "tts" && p.media.tts.model === "tts-1") && q(".onb-row[data-kind=tts] .onb-chip").classList.contains("ok") && q(".onb-row[data-kind=tts] .onb-row-b").hidden);
@@ -5689,10 +6750,10 @@ const ONB_CHECKS = `
 
   // ---- 第五步：完成 ----
   const sum = q("#onb-sum");
-  ok("清单四行：大模型 ✓ codex、搜索 ✓ tavily、多媒体 2/4、IM 1 个", sum.querySelectorAll(".onb-row").length === 4 && sum.innerText.includes("codex") && sum.innerText.includes("tavily") && sum.innerText.includes("2 / 4") && sum.innerText.includes("1 个通道"));
+  ok("清单四行：大模型 ✓ codex、搜索 ✓ tavily、多媒体 3/5（生图 + 语音 + 听写）、IM 1 个", sum.querySelectorAll(".onb-row").length === 4 && sum.innerText.includes("codex") && sum.innerText.includes("tavily") && sum.innerText.includes("3 / 5") && sum.innerText.includes("1 个通道"));
   ok("工作目录占位符是当前目录", q("#onb-dir").placeholder === "/tmp/ws");
   ok("大脑接上后步骤条能回跳", (steps.querySelectorAll(".onb-step")[1].click(), steps.querySelector(".onb-step.cur").textContent.includes("联网搜索")));
-  ok("已配的搜索步：显示已配、按钮变下一步", q(".onb-ok").textContent.includes("tavily") && q("#onb-go").textContent === "下一步");
+  ok("已配的搜索步：显示已配（写的是家名 Tavily，不是内部代号）、按钮变下一步", q(".onb-ok").textContent.includes("Tavily") && q("#onb-go").textContent === "下一步", (q(".onb-ok") || {}).textContent);
   q("#onb-go").click(); await tick(); q("#onb-go").click(); await tick(); q("#onb-go").click(); await tick();
   DONE_OK = false; POSTS.length = 0;
   q("#onb-dir").value = "/tmp/ws2"; q("#onb-go").click(); await tick(); await tick();
@@ -7331,6 +8392,28 @@ const TRAIL_CHECKS = `
   u6.handleEvent({ type: "tool_result", name: "web_search", isError: true, preview: "超时" });
   ok("没 id 的结果也标到徽章上", chips(u6.turn)[0].classList.contains("err") && !chips(u6.turn)[0].classList.contains("run"));
 
+  // ---- 6b. 后台对话的产出不许刷掉眼前这个对话的成果区 ----
+  //          出过的事：几个对话一起跑，成果区一会儿是这个对话的、一会儿是那个的
+  {
+    const RF = [];
+    const keep = [window.renderFiles, window.renderTurnOutputs, window.outputArrivalPlan, window.applyOutputArrival];
+    window.renderFiles = (f) => RF.push(f);
+    window.renderTurnOutputs = () => {};
+    window.outputArrivalPlan = () => ({ snapshot: false, badge: 0, refresh: null });
+    window.applyOutputArrival = () => {};
+    const F = (name) => ({ name, size: 1, mtime: "2026-09-28T08:00:00.000Z" });
+    const bgT = createTurnUI("后台那条", "craft", "s_other");
+    bgT.handleEvent({ type: "files", files: [F("任务_别的/博物馆.png")], changed: ["任务_别的/博物馆.png"] });
+    ok("后台对话的产出不重画眼前的成果区", RF.length === 0, JSON.stringify(RF));
+    ok("  └ 清单缓存照样跟上（切过去时是新的）", filesCache.length === 1 && filesCache[0].name === "任务_别的/博物馆.png", JSON.stringify(filesCache));
+    const fgT = createTurnUI("眼前这条", "craft", sessionId);
+    fgT.handleEvent({ type: "files", files: [F("任务_本/图.png")], changed: ["任务_本/图.png"] });
+    ok("反向对照：眼前这个对话的产出照常刷新成果区", RF.length === 1 && RF[0][0].name === "任务_本/图.png", JSON.stringify(RF));
+    bgT.finish(); fgT.finish();
+    [window.renderFiles, window.renderTurnOutputs, window.outputArrivalPlan, window.applyOutputArrival] = keep;
+    filesCache = [];
+  }
+
   // ---- 7. 跑完这一趟：正文里的文件名能点开，成品自动摊在右边 ----
   //          「不仅结束了没有预览，还看到这个文件夹」
   // ARRIVAL 那块验的是 fileLinkTargets / finishPreviewPlan 这几个纯函数本身；
@@ -8397,6 +9480,241 @@ const PREVIEW_CHECKS = `
     ok("源码里的标签被转义，不许真进 DOM", evil.indexOf("&lt;script&gt;") >= 0 && !body.querySelector("script"), evil.slice(0, 240));
   }
 
+  // ---- 迟到的内容不许盖屏 ----
+  // 出过的事：几个对话一起跑、请求排队，在 A 对话点开的文件等了半天才回来，
+  // 这时人已经在 B 对话了——面板被重新亮出来，B 对话里冒出 A 对话的网页
+  {
+    const realFetch = window.fetch;
+    const hold = () => { let go; const p = new Promise((r) => { go = r; }); return { p, go }; };
+    let g = hold();
+    window.fetch = async (url, init) => { if (String(url).includes("慢的.md")) await g.p; return realFetch(url, init); };
+    window.PV_FILES["慢的.md"] = { body: "A 对话的内容", total: 20 };
+    window.PV_FILES["快的.md"] = { body: "B 对话的内容", total: 20 };
+    const slow = previewFile("慢的.md");
+    await previewFile("快的.md");
+    g.go(); await slow;
+    ok("先点的慢、后点的快：慢的回来不许盖掉后点的那份", /B 对话的内容/.test(body.innerHTML) && !/A 对话的内容/.test(body.innerHTML), body.innerHTML.slice(0, 160));
+    ok("  └ 标题栏也还是后点的那个", document.getElementById("pv-name").textContent === "快的.md", document.getElementById("pv-name").textContent);
+    g = hold();
+    const slow2 = previewFile("慢的.md");
+    pvPanel.classList.remove("show"); pvCurrent = null; // 切对话（openSession）做的就是这两步
+    g.go(); await slow2;
+    ok("面板已经收了（切到别的对话）：迟到的内容不许把它再亮出来", !pvPanel.classList.contains("show"), pvPanel.className);
+    g = hold();
+    const slow3 = previewFile("慢的.md");
+    g.go(); await slow3;
+    ok("反向对照：没人打断时照常显示", pvPanel.classList.contains("show") && /A 对话的内容/.test(body.innerHTML), body.innerHTML.slice(0, 160));
+    window.fetch = realFetch;
+  }
+
+  // ---- 收面板 = 里面在跑的网页/音视频当场拆掉（FE-3 / FE-8） ----
+  // 2026-09-28 实测：关掉一个小游戏网页的预览后，2 秒里它照样跑了 125 次 setInterval、242 帧 rAF——
+  // 面板收起只是 CSS 把宽度收成 0，iframe 一点没停。切对话、开新任务也只是收面板。
+  {
+    window.PV_FILES["小游戏.html"] = { body: "<p>游戏</p>", total: 12 };
+    await previewFile("小游戏.html");
+    const fr = body.querySelector("iframe"), ac = body._fitAbort;
+    ok("网页预览开着：iframe 在、量高度的监听挂着", !!fr && fr.isConnected && !!ac && !ac.signal.aborted);
+    // ★反向对照★ 老的收法（切对话时 openSession 以前就做这两步）：iframe 还挂在树上接着跑，监听也没撤
+    pvPanel.classList.remove("show"); pvCurrent = null;
+    ok("反向对照：只把面板收起来，iframe 还挂在树上、监听还挂着", fr.isConnected && !!body.querySelector("iframe") && !ac.signal.aborted);
+    await previewFile("小游戏.html");
+    ok("换一份预览：上一份先指到 about:blank 再摘掉，它的监听一起撤", !fr.isConnected && fr.getAttribute("src") === "about:blank" && ac.signal.aborted,
+      fr.getAttribute("src"));
+    const fr2 = body.querySelector("iframe"), ac2 = body._fitAbort;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.getElementById("pv-close").click();
+    // 点 × 是滑出去：面板收的那 0.28 秒里内容还在（不然滑走的是一块空白），滑完（最多 400ms）才拆
+    ok("点 × 关面板：面板先收，滑的这一下 iframe 还在", !pvPanel.classList.contains("show") && pvCurrent === null && fr2.isConnected, body.innerHTML.slice(0, 120));
+    await wait(450);
+    ok("  └ 滑完就拆：iframe 卸掉，面板里什么都不剩", !body.querySelector("iframe") && !fr2.isConnected && fr2.getAttribute("src") === "about:blank" && body.innerHTML === "",
+      body.innerHTML.slice(0, 120));
+    ok("  └ 量高度的监听跟着撤了（message 监听、ResizeObserver 不再挂在 window 上）", !!ac2 && ac2.signal.aborted && !body._fitAbort);
+
+    // 面板宽度那条过渡一结束就拆，不用干等 400ms；别的属性（visibility 等）结束不算
+    await previewFile("小游戏.html");
+    const fr3 = body.querySelector("iframe");
+    closePreview(true);
+    const te = (prop) => { const ev = new Event("transitionend"); ev.propertyName = prop; pvPanel.dispatchEvent(ev); };
+    te("visibility");
+    ok("别的属性过渡结束：不拆（宽度还在收）", fr3.isConnected);
+    te("width");
+    ok("宽度过渡结束：当场拆，不等 400ms", !fr3.isConnected && body.innerHTML === "", body.innerHTML.slice(0, 120));
+
+    // 滑的这一下又点开一份：排着的那次拆不许把新开的这份也拆了
+    await previewFile("小游戏.html");
+    closePreview(true);
+    await previewFile("小游戏.html");
+    const fr4 = body.querySelector("iframe");
+    await wait(450);
+    ok("收到一半又点开：新开的这份留着", pvPanel.classList.contains("show") && !!fr4 && fr4.isConnected, body.innerHTML.slice(0, 120));
+    // ★反向对照★ 只是 setTimeout(unloadPreview, 400)、不看面板是不是又亮了：新开的这份 400ms 后被拆
+    {
+      const realClose = closePreview;
+      closePreview = (byUser) => { pvPanel.classList.remove("show"); pvCurrent = null; setTimeout(unloadPreview, 400); };
+      closePreview(true);
+      await previewFile("小游戏.html");
+      const fr5 = body.querySelector("iframe");
+      await wait(450);
+      closePreview = realClose;
+      ok("反向对照：干等 400ms 就拆，收到一半又点开的那份也被拆了", !!fr5 && !fr5.isConnected && body.innerHTML === "", body.innerHTML.slice(0, 120));
+    }
+
+    window.PV_FILES["口播.mp3"] = { body: "", total: 0 };
+    await previewFile("口播.mp3");
+    let au = body.querySelector("audio"), paused = 0;
+    au.pause = () => { paused++; };
+    document.getElementById("pv-close").click();
+    ok("点 × 关音频：声音当场停，不等面板滑完", paused === 1 && au.isConnected, JSON.stringify({ paused }));
+    await wait(450);
+    // 这页里的音频地址是假的，滑的那 0.4 秒里它多半已经报错、被「解不了」的提示换下去了——所以只认结果：节点没了、面板空了
+    ok("  └ 滑完：音频节点摘掉，面板里什么都不剩", !au.isConnected && body.innerHTML === "", body.innerHTML.slice(0, 120));
+
+    await previewFile("口播.mp3");
+    au = body.querySelector("audio"); paused = 0;
+    au.pause = () => { paused++; };
+    closePreview(false, { now: true }); // 切对话 / 开新任务走的是这个
+    ok("切对话收面板：不等滑，音频先停、撤掉 src，节点当场摘掉", !!au && paused === 1 && !au.hasAttribute("src") && !au.isConnected, JSON.stringify({ paused, src: au && au.getAttribute("src") }));
+    await wait(80); // 媒体的 error 是异步派发的，等它一拍
+    ok("  └ 撤 src 不会把「解不了这个编码」的提示翻出来", body.innerHTML === "", body.innerHTML.slice(0, 120));
+
+    await previewFile("小游戏.html");
+    ok("关过之后再点开：照常显示", pvPanel.classList.contains("show") && !!body.querySelector("iframe") && body.querySelector("iframe").isConnected);
+    closePreview(false, { now: true });
+  }
+
+  // ---- 预览地址按「这一版文件」定（DG-2） ----
+  // 2026-09-28 实测：340MB 的浏览器缓存里 178MB 是 ?t= 副本，同一个 mp3 存了 10 份、一张 png 9 份——
+  // 以前每点一次预览就用 Date.now() 造一个新地址。现在同一版文件同一个地址，改过了地址跟着变。
+  {
+    const MT0 = "2026-09-28T01:02:03.000Z", MT1 = "2026-09-28T02:00:00.000Z";
+    window.filesRoot = "";
+    window.filesCache = [{ name: "图.png", mtime: MT0, size: 10 }, { name: "说明.txt", mtime: MT0, size: 5 }];
+    window.PV_FILES["说明.txt"] = { body: "hello", total: 5 };
+    const imgSrc = async (root) => { await previewFile("图.png", root); return body.querySelector("img").getAttribute("src"); };
+    const txtUrl = async () => {
+      const n0 = window.reqs.length;
+      await previewFile("说明.txt");
+      return (window.reqs.slice(n0).find((r) => String(r.url).includes("/api/files/view/")) || {}).url;
+    };
+    const a1 = await imgSrc(), a2 = await imgSrc();
+    ok("同一版文件点两次：地址一字不差（浏览器缓存里只存一份）", a1 === a2 && /[?&]v=/.test(a1) && !/[?&]t=\\d/.test(a1), a1 + " / " + a2);
+    ok("  └ 版本号 = mtime~大小：跟服务端「v 正好等于 mtime 才给 7 天强缓存」对不上，每次回去核对一次", decodeURIComponent(a1).includes(MT0 + "~10"), a1);
+    const t1 = await txtUrl(), t2 = await txtUrl();
+    ok("文本预览：同一版文件请求地址也不变", !!t1 && t1 === t2 && /[?&]v=/.test(t1), t1 + " / " + t2);
+    window.filesCache[0] = { name: "图.png", mtime: MT1, size: 10 };
+    const a3 = await imgSrc();
+    ok("文件改过（mtime 变了）：地址跟着变，拿到的是新的", a3 !== a1 && decodeURIComponent(a3).includes(MT1), a3);
+    window.filesCache[0] = { name: "图.png", mtime: MT1, size: 11 };
+    ok("同一秒里改了大小：地址也跟着变", (await imgSrc()) !== a3);
+    window.filesRoot = "/别的工作目录";
+    const a5 = await imgSrc("/这个工作目录");
+    ok("清单是别的工作目录的：不拿它的版本号，老老实实给 v=0", /[?&]v=0(&|$)/.test(a5), a5);
+    window.filesRoot = "";
+    // ★反向对照★ 版本号换回每次现取的时间戳（修之前的 ?t=Date.now() 就是这样）：同一版文件两次地址不一样
+    const realVer = pvVer;
+    pvVer = () => String(Date.now()) + "." + Math.random();
+    const b1 = await imgSrc(), b2 = await imgSrc();
+    pvVer = realVer;
+    ok("反向对照：版本号每次现取，同一版文件两次地址就不一样了", b1 !== b2, b1 + " / " + b2);
+    delete window.filesCache; delete window.filesRoot;
+    ok("没有清单（老页面、还没拉回来）：v=0，照样打得开", /[?&]v=0(&|$)/.test(await imgSrc()));
+    closePreview();
+  }
+
+  // ---- 图片、音视频重开拿的是盘上这一版（S5） ----
+  // 2026-09-29 复审：同一页面里同地址的 <img>/<audio> 浏览器直接用内存那份、一个请求都不发；
+  // 清单慢一拍（IM、定时任务改了文件；换过工作目录 v 恒为 0）时重开预览一直是改之前那张图。
+  // 现在先 HEAD 问一句这一版（ETag），拼进地址
+  {
+    const realFetch = window.fetch;
+    const tags = {}; // 文件名 → 服务端此刻答的 ETag
+    let headMode = "ok", gate = null;
+    window.fetch = async (url, init) => {
+      if (!init || init.method !== "HEAD") return realFetch(url, init);
+      window.reqs.push({ url, init });
+      if (headMode === "throw") throw new TypeError("Failed to fetch");
+      if (headMode === "404") return { ok: false, status: 404, headers: { get: () => null } };
+      if (headMode === "slow") await gate;
+      const n = decodeURIComponent((String(url).split("/api/files/view/")[1] || "").split("?")[0]);
+      return { ok: true, status: 200, headers: { get: (h) => {
+        h = h.toLowerCase();
+        return h === "etag" ? tags[n] || null : h === "last-modified" ? window.PV_LM || null : null;
+      } } };
+    };
+    const heads = () => window.reqs.filter((r) => r.init && r.init.method === "HEAD");
+    const src = async (n, sel, root) => { await previewFile(n, root); const el = body.querySelector(sel); return el ? el.getAttribute("src") : null; };
+    const MT = "2026-09-29T01:00:00.000Z";
+    window.filesRoot = "";
+    window.filesCache = [{ name: "封面.png", mtime: MT, size: 10 }, { name: "旁白.mp3", mtime: MT, size: 20 }];
+    tags["封面.png"] = 'W/"a-1"'; tags["旁白.mp3"] = 'W/"b-1"';
+
+    const h0 = heads().length;
+    const i1 = await src("封面.png", "img"), i2 = await src("封面.png", "img");
+    ok("同一版点两次：地址一字不差，带着这一版的 e=（缓存里照样只存一份）", !!i1 && i1 === i2 && /&e=/.test(i1) && decodeURIComponent(i1).includes('W/"a-1"'), i1 + " / " + i2);
+    const hs = heads().slice(h0);
+    ok("  └ 每次点开都问一句，问的是同一个 view 地址，而且绕开缓存（no-store）",
+      hs.length === 2 && hs.every((r) => r.init.cache === "no-store" && String(r.url).includes("/api/files/view/")), JSON.stringify(hs.map((r) => r.init)));
+    tags["封面.png"] = 'W/"a-2"'; // 盘上改了，清单还是老的（mtime、大小都没跟上）
+    const i3 = await src("封面.png", "img");
+    ok("★盘上改了、清单还没跟上：地址照样换，看到的是新图★", i3 !== i1 && decodeURIComponent(i3).includes('W/"a-2"'), i1 + " → " + i3);
+    // ★反向对照★ 不问服务端（修之前就是这样）：清单没变，盘上改了地址也一字不差，浏览器拿内存里那张旧的
+    const realTag = pvFreshTag;
+    pvFreshTag = async () => "";
+    const r1 = await src("封面.png", "img");
+    tags["封面.png"] = 'W/"a-3"';
+    const r2 = await src("封面.png", "img");
+    pvFreshTag = realTag;
+    ok("反向对照：不问服务端，盘上改了地址也一字不差（复审看到的旧图就是这么来的）", !!r1 && r1 === r2, r1 + " / " + r2);
+
+    window.filesRoot = "/别的工作目录";
+    const w1 = await src("封面.png", "img", "/这个工作目录");
+    tags["封面.png"] = 'W/"a-4"';
+    const w2 = await src("封面.png", "img", "/这个工作目录");
+    ok("换过工作目录（v 恒为 0）：盘上改了地址也跟着变", /[?&]v=0&/.test(w1) && /&e=/.test(w1) && w1 !== w2, w1 + " / " + w2);
+    window.filesRoot = "";
+    const a1 = await src("旁白.mp3", "audio");
+    tags["旁白.mp3"] = 'W/"b-2"';
+    const a2 = await src("旁白.mp3", "audio");
+    ok("音频同理：改过了地址跟着变", !!a1 && a1 !== a2 && decodeURIComponent(a2).includes('W/"b-2"'), a1 + " / " + a2);
+    delete tags["封面.png"]; window.PV_LM = "Tue, 29 Sep 2026 01:00:00 GMT";
+    ok("没有 ETag 就用 Last-Modified", decodeURIComponent(await src("封面.png", "img")).includes(window.PV_LM));
+    delete window.PV_LM;
+
+    headMode = "404";
+    const f1 = await src("封面.png", "img");
+    headMode = "throw";
+    const f2 = await src("封面.png", "img");
+    headMode = "ok";
+    ok("问不到（老服务端 404、断网）：退回原来的地址，照样打得开", !!f1 && f1 === f2 && /[?&]v=/.test(f1) && !/&e=/.test(f1), f1 + " / " + f2);
+
+    const h1 = heads().length;
+    await previewFile("小游戏.html");
+    await previewFile("说明.txt");
+    ok("网页、文本不问：它们本来就每次回去核对", heads().length === h1 && !!body.textContent);
+
+    // 问的这一下慢，用户已经点了别的：慢回来的那张图不许盖掉现在这份
+    tags["封面.png"] = 'W/"a-5"';
+    let open = null;
+    gate = new Promise((r) => { open = r; });
+    headMode = "slow";
+    const late = previewFile("封面.png");
+    headMode = "ok";
+    await previewFile("说明.txt");
+    open(); await late;
+    ok("问的时候已经换成别的文件：慢回来的图不上屏", !body.querySelector("img") && document.getElementById("pv-name").textContent === "说明.txt", body.innerHTML.slice(0, 120));
+    gate = new Promise((r) => { open = r; });
+    headMode = "slow";
+    const alone = previewFile("封面.png");
+    headMode = "ok";
+    open(); await alone;
+    ok("★反向对照★ 同样慢、中间没换别的：图照常上屏", !!body.querySelector("img") && /&e=/.test(body.querySelector("img").getAttribute("src")));
+
+    window.fetch = realFetch;
+    delete window.filesCache; delete window.filesRoot;
+    closePreview();
+  }
+
   return names;
 })()`;
 
@@ -8422,7 +9740,10 @@ const SCROLLGUIDE_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_
   + "<div class='step-card'><div class='head'><span class='tag'>C</span><span class='tag ok'>完成</span></div><pre>ok-c</pre></div>"
   + "<div class='step-card failed'><div class='head'><span class='tag'>D</span><span class='tag err'>失败</span></div><pre>err-d</pre></div>"
   + "</div></div></body>";
-const SCROLLGUIDE_STUBS = `const chatScroll = document.getElementById("chat-scroll");`;
+// replayingOlder 是 app-01 顶上那个全局（往前补画旧轮时才为真，见「长对话分批画」第 5 节）；这一屏不补画，恒为假
+// turnsHidden / showOlderTurns / TURN_WINDOW 是「长对话分批画」那边的；这一屏没有收着的轮次，那节自己拿真源测
+const SCROLLGUIDE_STUBS = `const chatScroll = document.getElementById("chat-scroll"); let replayingOlder = false;
+var turnsHidden = () => 0, showOlderTurns = () => 0, TURN_WINDOW = 10, sessionId = null;`;
 const SCROLLGUIDE_CHECKS = `
 (async () => {
   const names = [];
@@ -8841,6 +10162,37 @@ const COMPOSER_CHECKS = `
   ok("排队中的消息显示成 chip，提示仍在", bar.querySelectorAll(".q-chip").length === 1 && bar.querySelector(".q-chip .qt").textContent.includes("页脚") && !!bar.querySelector(".qb-hint"));
   bar.querySelector(".q-chip .qx").click();
   ok("点 ✕ 取消这条排队消息", bar.querySelectorAll(".q-chip").length === 0 && sessionQueues.get("s1").length === 0);
+
+  // ---- 输入法选词时的回车：是上屏，不是发送 ----
+  // 拼音打到一半按回车，是把字母原样放进框里；以前这一下直接当发送，半截拼音成了一整条消息
+  const imeEnter = (init, code229) => {
+    const e = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+    if (code229) Object.defineProperty(e, "keyCode", { get: () => 229 });
+    inputEl.dispatchEvent(e);
+    return e;
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  typeIn("nihao");
+  let n0 = CALLS.length, ev = imeEnter({ isComposing: true });
+  ok("★拼字中按回车上屏：不发送，也不拦默认行为（字母得留在框里）★", CALLS.length === n0 && !ev.defaultPrevented && inputEl.value === "nihao", CALLS.join(","));
+  ev = imeEnter({}, true);
+  ok("★keyCode 229 的回车（被输入法吃掉的那一下）：不发送★", CALLS.length === n0 && !ev.defaultPrevented, CALLS.join(","));
+  // Safari 的顺序反过来：先 compositionend，再来一个 isComposing 已经是 false 的回车
+  inputEl.dispatchEvent(new CompositionEvent("compositionend", { data: "你好", bubbles: true }));
+  ev = imeEnter({});
+  ok("★Safari 的顺序（compositionend 先到）：紧跟着的这个回车也不发★", CALLS.length === n0 && !ev.defaultPrevented, CALLS.join(","));
+  await sleep(80);
+  ev = imeEnter({});
+  ok("反向对照：词选完了再按回车，照常发出去", CALLS.length === n0 + 1 && ev.defaultPrevented && sentText() === "nihao", CALLS.join(","));
+  // ★反向对照★：让 imeKey 永远说「不是输入法的」，同一下拼字中的回车就发出去了——拦住它的就是这一个判断
+  const ime0 = imeKey;
+  imeKey = () => false;
+  try {
+    typeIn("zhongwen"); n0 = CALLS.length;
+    imeEnter({ isComposing: true });
+    ok("★反向对照★：不认输入法，拼字中的回车把半截拼音当整条消息发出去了", CALLS.length === n0 + 1 && sentText() === "zhongwen", CALLS.join(","));
+  } finally { imeKey = ime0; }
+  typeIn("");
 
   // ---- 任务结束 ----
   BUSY = false; updateSendUI();
@@ -9273,6 +10625,19 @@ const ARRIVAL_CHECKS = `
   CALLS.pv.length = 0;
   tC.querySelector(".file-ln").click();
   ok("点补上的链接照样在右边打开", CALLS.pv.length === 1 && CALLS.pv[0] === "架构层次定位.png", CALLS.pv.join("|"));
+  // 清单没变就连扫都不扫（FE-5）：renderFiles 一趟任务里要走好多次，
+  // 2026-09-28 实测 40 轮的对话每来一条 files 事件这里要 17ms，名字表每次重算、每张回答每次重对
+  {
+    const realLink = linkTurn;
+    let scanned = 0;
+    linkTurn = (t, m, r) => { if (m && m.size) scanned++; return realLink(t, m, r); };
+    relinkAnswers(scope);
+    ok("清单没变：名字表只算一次，已经对过的回答连扫都不扫", scanned === 0 && listingTargets(filesCache) === listingTargets(filesCache), "扫了 " + scanned + " 张");
+    filesCache = filesCache.slice(); // renderFiles 每次拉回来都是一份新数组
+    relinkAnswers(scope);
+    ok("反向对照：清单换了一份，同一个工作目录的两张回答重新对一遍", scanned === 2, "扫了 " + scanned + " 张");
+    linkTurn = realLink;
+  }
   scope.remove();
   filesCache = []; filesRoot = "";
 
@@ -10059,6 +11424,245 @@ const LANE_CHECKS = `
   attnForget("t6");
   runningSessions = new Set();
   return names;
+})()
+`;
+// ================= 侧栏按行改，不整片重铺（CF-6） =================
+// attnChanged、标题回填、切会话都走 renderHistory。以前每次整片 innerHTML：
+// 6 路并跑时每轮开头结尾各重铺一遍，每颗「在跑」脉冲点（.hrun）被拆了重建、动画从头闪，
+// Tab 停在某一行上的焦点也被冲掉。这组验：改一行只动那一行，别的行还是原来那个节点；
+// 同时每一步的 DOM 必须跟老的整片重铺一字不差（顺序、空态、搜索那一版都不许走样）。
+// ★反向对照★ 把 patchHistRows 换回整片 innerHTML，「别的行还是原节点」那几条必须当场红。
+const HIST_KEYED_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const hist = document.getElementById("history");
+  if (window.__histMutant) patchHistRows = function (host, rows, fb) { host.innerHTML = rows.map((r) => r[1]).join("") || fb; };
+  // 每一步都拿「老办法会铺出来的样子」对一遍：同一个序列化器出来的两份 innerHTML 必须相等
+  const realPatch = patchHistRows;
+  let want = "";
+  patchHistRows = function (host, rows, fb) {
+    const d = document.createElement("div");
+    d.innerHTML = rows.map((r) => r[1]).join("") || fb;
+    want = d.innerHTML;
+    return realPatch(host, rows, fb);
+  };
+  const same = () => hist.innerHTML === want;
+  const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
+  const order = () => [...hist.querySelectorAll(".hist-item")].map((e) => e.dataset.id).join(",");
+  activeLane = "office"; activeProject = "默认项目"; projectsLocked = false; sessionId = "a";
+  histQuery = ""; histHits = null;
+  sessions = ["a", "b", "c", "d"].map((id, i) => ({ id, title: "任务" + id, at: 10 - i, project: "默认项目", lane: "office" }));
+  runningSessions = new Set(["a"]);
+  renderHistory();
+  ok("按行改·首铺跟整片重铺一字不差", same() && order() === "a,b,c,d", order());
+  const A = row("a"), B = row("b"), C = row("c"), D = row("d"), RUN = A.querySelector(".hrun");
+  // 焦点落在 c 行自己的删除键上（真 Tab 走得到的那颗），不给行加 tabindex——加了 DOM 就跟重铺那份对不上了
+  const CX = C.querySelector(".hx");
+  CX.focus();
+  const focused0 = document.activeElement === CX;
+
+  // ① 只改 b 的标题：a/c/d 还是原节点，a 那颗在跑的点没被重建，c 上的焦点还在
+  sessions[1].title = "任务b改了名";
+  renderHistory();
+  ok("按行改·改一条标题：DOM 跟整片重铺一字不差", same() && order() === "a,b,c,d", order());
+  ok("按行改·改一条标题：只有那一行换了", row("b") !== B && row("b").textContent.includes("任务b改了名"));
+  ok("按行改·改一条标题：别的行还是原来那个节点", row("a") === A && row("c") === C && row("d") === D);
+  ok("按行改·在跑那颗点没被拆了重建（动画不从头闪）", row("a").querySelector(".hrun") === RUN && RUN.isConnected);
+  ok("按行改·焦点停在别的行上没被冲掉", focused0 && document.activeElement === CX,
+    "起手" + (focused0 ? "聚上了" : "没聚上") + "·现在在 " + (document.activeElement ? document.activeElement.tagName + "." + document.activeElement.className : "无"));
+
+  // ② d 来了一道题：它顶到最上面，其余照原顺序，a/b/c 节点不换
+  const B2 = row("b");
+  attnAsk("d", "q1", { text: "选哪个？" });
+  renderHistory();
+  ok("按行改·有题要答的顶到最上：顺序对、DOM 一字不差", same() && order() === "d,a,b,c", order());
+  ok("按行改·挪位置不重建：a/b/c 还是原节点", row("a") === A && row("b") === B2 && row("c") === C);
+  attnForget("d");
+
+  // ③ 删掉 b：b 没了，其余不换
+  sessions = sessions.filter((s) => s.id !== "b");
+  renderHistory();
+  ok("按行改·删一条：DOM 一字不差", same() && order() === "a,c,d", order());
+  ok("按行改·删一条：剩下的还是原节点", row("a") === A && row("c") === C && !row("b"));
+
+  // ④ 切会话（active 换人）：只有新旧两行换，其余不动
+  sessionId = "c";
+  renderHistory();
+  ok("按行改·切会话：高亮跟着换、DOM 一字不差", same() && row("c").classList.contains("active") && !row("a").classList.contains("active"));
+
+  // ⑤ 搜索那一版照旧整片铺，退回来行都回得来、没有搜索行残留
+  histQuery = "任务"; histHits = [{ id: "a", title: "任务a", why: "标题" }];
+  renderHistory();
+  ok("按行改·搜索命中那一版照旧", hist.querySelectorAll(".hist-item.found").length === 1);
+  histQuery = ""; histHits = null;
+  renderHistory();
+  ok("按行改·退出搜索：行全回来、没留搜索行", same() && order() === "a,c,d" && !hist.querySelector(".found"), hist.innerHTML.slice(0, 200));
+
+  // ⑥ 一条都没有：空态；再来一条：空态消失
+  const keep = sessions; sessions = [];
+  renderHistory();
+  ok("按行改·空了显示空态", same() && !!hist.querySelector(".hist-empty"));
+  sessions = keep;
+  renderHistory();
+  ok("按行改·又有了：空态收走", same() && !hist.querySelector(".hist-empty") && order() === "a,c,d", order());
+
+  // ⑦ 同一个 id 重复出现（坏数据）：两行都画，别把一个节点挪来挪去只剩一行
+  sessions = keep.concat([{ id: "a", title: "任务a", at: 0, project: "默认项目", lane: "office" }]);
+  renderHistory();
+  ok("按行改·同一 id 出现两次也画两行", same() && order() === "a,c,d,a", order());
+  sessions = keep;
+  renderHistory();
+  runningSessions = new Set();
+  patchHistRows = realPatch;
+  return { names, fails };
+})()
+`;
+// ================= 侧栏行上的「停」：只停这一条 =================
+// 以前要停一条后台任务，得先点开它、再点输入框那颗停止键；几条并跑时想停掉跑偏的那条，
+// 点开那一下就把正在看的那条换走了。现在每条在跑的行上一颗「停」，对着 /api/chat/stop 只发这一条的 id。
+// 这组验：点 B 行的停，A、C 照常跑；不打开 B、不换走眼前这条；行上先挂「正在停」，真收尾了才撤；
+// 送不出去 / 服务端说没在跑，照实说、行恢复可点。
+// ★反向对照★ 三个变体，各自红在自己那条上：停全部（全局停止）、停眼前这条（拿 sessionId 当目标）、
+// 点停顺手把它打开（监听里那条分支摘掉）。
+const HIST_CLICK_SRC = (() => {
+  const a = APP02.indexOf('document.getElementById("history").addEventListener("click"');
+  const b = APP02.indexOf("/**\n * 滚到第 n 个回合", a);
+  if (a < 0 || b <= a) throw new Error("app-02.js 里的侧栏点击监听找不到了，前端测试没法定位真源码");
+  return APP02.slice(a, b);
+})();
+const HSTOP_MUTANTS = {
+  onscreen: (src) => src.replace("stopRowRun(item.dataset.id)", "stopRowRun(sessionId)"),
+  opens: (src) => src.replace(/\n[ \t]*if \(e\.target\.closest\("\.hstop"\)\)[^\n]*/, ""),
+};
+// 收尾那句「「X」已完成，点侧栏查看」也切真源码：2026-09-29 侧栏停下一条后台任务，
+// 刚弹完「已停下「X」」紧跟着又报「「X」已完成」，两句话打架。
+// ★反向对照★ noisy：把 notifyRunDone 里认「侧栏亲手停的」那段摘掉，★不再跟一句已完成★ 当场红
+const NOTIFY_DONE_SRC = (() => {
+  const a = APP02.indexOf("function notifyRunDone(");
+  const b = APP02.indexOf("\n}\n", a);
+  if (a < 0 || b <= a) throw new Error("app-02.js 里的 notifyRunDone 找不到了，前端测试没法定位真源码");
+  return APP02.slice(a, b + 3) + "\nvar bumpDoneWhileAway = () => {};\n";
+})();
+const HSTOP_NOTIFY_MUTANTS = {
+  noisy: (src) => src.replace(/\n[ \t]*if \(typeof histStopQuiet !== "undefined" && histStopQuiet\.has\(sid\)\) \{[\s\S]*?\n[ \t]*\}\n/, "\n"),
+};
+const HSTOP_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const hist = document.getElementById("history");
+  const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); }; // 这页的 setTimeout 被替身接走了，只能按微任务等
+  const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
+  const stopBtn = (id) => row(id) && row(id).querySelector(".hstop");
+  if (window.__hstopMutant === "global") {
+    // 全局停止：把在跑的全停了（输入框那颗停止键要是被接到这里，就是这个样子）
+    stopRowRun = async (sid) => {
+      for (const id of [...runningSessions.keys()]) await fetch("/api/chat/stop", { method: "POST", body: JSON.stringify({ sessionId: id }) });
+      toast("已停下「" + sid + "」，别的任务照常跑");
+    };
+  }
+  // 服务端替身：真在跑的那几条记在 server 里，/api/chat/stop 跟真服务端一样回话
+  const server = new Set(), stops = [];
+  let mode = "ok";
+  fetch = async (u, init) => {
+    const k = String(u).split("?")[0];
+    __CALLS.push(k);
+    if (k === "/api/chat/stop") {
+      const sid = JSON.parse(init.body).sessionId;
+      stops.push(sid);
+      if (mode === "throw") throw new TypeError("Failed to fetch");
+      const had = server.delete(sid);
+      return { ok: true, json: async () => (had ? { ok: true } : { ok: false, error: "该会话没有正在运行的任务" }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  activeLane = "office"; activeProject = "默认项目"; projectsLocked = false; histQuery = ""; histHits = null;
+  sessions = [["a", "写周报"], ["b", "把这个表里重复的行挑出来并且导出一份干净的"], ["c", "查日志"], ["d", "上周那条"]]
+    .map(([id, title], i) => ({ id, title, at: 10 - i, project: "默认项目", lane: "office" }));
+  const uiOf = { a: { n: "a" }, b: { n: "b" }, c: { n: "c" } };
+  runningSessions = new Map([["a", { ui: uiOf.a }], ["b", { ui: uiOf.b }], ["c", { ui: uiOf.c }]]);
+  ["a", "b", "c"].forEach((id) => server.add(id));
+  isAway = () => false; // 离屏窗口没焦点，真 isAway 会当人走开了，顺手去弹系统通知
+  sessionId = "a"; __OPENED.length = 0; __TOASTS.length = 0;
+  renderHistory();
+
+  // ① 画法：在跑的每一行一颗，没在跑的没有；键盘够得着、读屏念得出是停哪条
+  ok("在跑的三行各一颗「停」，没在跑的那行没有", !!stopBtn("a") && !!stopBtn("b") && !!stopBtn("c") && !stopBtn("d"), hist.innerHTML.slice(0, 300));
+  const B0 = stopBtn("b");
+  ok("是真按钮（Tab 走得到），读屏念得出停的是哪条", B0.tagName === "BUTTON" && B0.getAttribute("type") === "button"
+    && B0.getAttribute("aria-label") === "停下「把这个表里重复的行挑出来并且导出一份干净的」", B0.outerHTML.slice(0, 200));
+  // 按钮身上挂着全局那条 opacity .18s 的过渡：焦点刚落上去当场读，读到的是过渡起点 0（离屏窗口里时间轴还不走）。
+  // 这页的 setTimeout 又被替身接走了没法干等——直接把跑着的过渡拨到终点，量的是「最后露没露出来」
+  const op = (el) => { el.getAnimations().forEach((a) => a.finish()); return getComputedStyle(el).opacity; };
+  ok("平时透明、点不着（不跟标题抢眼）", op(B0) === "0" && getComputedStyle(B0).pointerEvents === "none", op(B0) + "/" + getComputedStyle(B0).pointerEvents);
+  B0.focus();
+  ok("Tab 一落上去就显形", document.activeElement === B0 && op(B0) === "1", op(B0));
+  // ★反向对照★ 真 CSS 里把「:focus-within 显形」那条摘掉：焦点落上去它还是透明的
+  {
+    let sheet = null, idx = -1, text = "";
+    for (const sh of document.styleSheets) {
+      [...sh.cssRules].forEach((r, i) => { if (r.selectorText && r.selectorText.includes(".hist-item:focus-within .hstop")) { sheet = sh; idx = i; text = r.cssText; } });
+    }
+    ok("真 CSS 里找得到那条显形规则", idx >= 0);
+    if (idx >= 0) {
+      sheet.deleteRule(idx);
+      ok("反向对照：摘掉 :focus-within 那条，Tab 落上去还是透明（键盘用户看不见自己停在哪）", op(B0) === "0", op(B0));
+      sheet.insertRule(text, idx);
+    }
+    // 手机上没有悬停：一直露着，不然摸不着
+    const touch = [...document.styleSheets].flatMap((sh) => [...sh.cssRules]).find((r) => r.media && /hover: none/.test(r.conditionText || r.media.mediaText)
+      && [...r.cssRules].some((x) => x.selectorText === ".hist-item .hstop" && x.style.opacity === "1" && x.style.pointerEvents === "auto"));
+    ok("触屏（没有悬停）上一直露着", !!touch);
+  }
+
+  // ② 点 B 行的停：只停 B，A、C 照常跑，不打开 B，眼前还是 A
+  B0.click();
+  await flush();
+  ok("★只发了一条停止，停的就是点的那一行★", stops.length === 1 && stops[0] === "b", JSON.stringify(stops));
+  ok("★A、C 照常跑★", server.has("a") && server.has("c") && !server.has("b"), JSON.stringify([...server]));
+  ok("★不打开它、不换走眼前这条★", __OPENED.length === 0 && sessionId === "a", JSON.stringify({ opened: __OPENED, sessionId }));
+  ok("停下以后说一句，点名是哪条（长标题截短）", __TOASTS[__TOASTS.length - 1] === "已停下「把这个表里重复的行挑出来并且导出…」，别的任务照常跑", __TOASTS.join(" ／ "));
+  const B1 = stopBtn("b");
+  ok("B 行挂上「正在停」，A、C 行的停照旧能点", !!B1 && B1.classList.contains("is-stopping") && B1.getAttribute("aria-disabled") === "true"
+    && !stopBtn("a").classList.contains("is-stopping") && !stopBtn("c").classList.contains("is-stopping"), hist.innerHTML.slice(0, 400));
+  ok("键盘按的：换成「正在停」那颗后焦点还在它上面，没被甩回页首", document.activeElement === B1,
+    document.activeElement ? document.activeElement.tagName + "." + document.activeElement.className : "无");
+  B1.click();
+  await flush();
+  ok("正在停的时候再点：不重复发", stops.length === 1, JSON.stringify(stops));
+  // 流里真收尾了（endRun 会删掉它再 renderHistory）：那颗停跟着没了
+  runningSessions.delete("b");
+  renderHistory();
+  ok("真收尾了：B 行的停撤掉，A、C 的还在", !stopBtn("b") && !!stopBtn("a") && !!stopBtn("c"));
+  // 收尾那句：endRun → notifyRunDone。B 不在眼前，平时这里要报「「B」已完成，点侧栏查看」
+  const doneToasts = () => __TOASTS.filter((t) => /」已完成/.test(t));
+  const done0 = doneToasts().length;
+  notifyRunDone("b", uiOf.b);
+  ok("★「已停下」之后不再跟一句「已完成」★", doneToasts().length === done0, __TOASTS.join(" ／ "));
+  // 对照：没在侧栏上停的那条照旧报完成（上面那条不是因为「不在眼前的一律不报」才绿的）
+  notifyRunDone("c", uiOf.c);
+  ok("对照：没点停的 C 跑完照旧报「已完成」", doneToasts().length === done0 + 1 && /^「查日志」已完成/.test(doneToasts().pop() || ""), __TOASTS.join(" ／ "));
+  // 停的指令收下了、那一趟却一直没收尾，人又在这条里发了一句：下一趟（另一份 ui）跑完要照常报
+  histStopQuiet.set("b", uiOf.b);
+  notifyRunDone("b", { n: "b2" });
+  ok("同一条对话的下一趟跑完照常报，不被上一趟的「停」捂住", doneToasts().length === done0 + 2 && !histStopQuiet.has("b"), __TOASTS.join(" ／ "));
+
+  // ③ 送不出去 / 服务端说它已经不在跑：照实说，行恢复可点
+  mode = "throw";
+  stopBtn("c").click();
+  await flush();
+  ok("没连上服务端：照实说没送出去", __TOASTS[__TOASTS.length - 1] === "没连上服务端，停止的指令没送出去", __TOASTS.join(" ／ "));
+  ok("  └ 行上的停恢复能点（不挂着一个假的「正在停」）", !!stopBtn("c") && !stopBtn("c").classList.contains("is-stopping"));
+  mode = "ok";
+  server.delete("c"); // 服务端那边这一趟已经完了，前端还没收到收尾
+  stopBtn("c").click();
+  await flush();
+  ok("服务端说它已经不在跑了：原话照搬，不替人猜", __TOASTS[__TOASTS.length - 1] === "该会话没有正在运行的任务", __TOASTS.join(" ／ "));
+  ok("  └ 行上的停恢复能点", !!stopBtn("c") && !stopBtn("c").classList.contains("is-stopping"));
+  ok("  └ 两次都真去问了服务端（前端不自己断定它停没停）", stops.filter((s) => s === "c").length === 2, JSON.stringify(stops));
+  runningSessions = new Set(); sessions = []; renderHistory();
+  return { names, fails };
 })()
 `;
 // 手机上侧栏是一层抽屉（窗口 ≤900px 时 aside 整个收起来，点汉堡才滑出来），拖到底只有 180px。
@@ -10954,6 +12558,46 @@ const MOD_CHECKS = (P) => `
     ok("输入框外 AltGr+U 不是在打字：照样跳", CALLED.join() === "next-attn", CALLED);
   }
 
+  // ---- 输入法拼字中（候选框开着）：键是给输入法的，快捷键一个都不许接 ----
+  // 拼音打一半按 Esc 关候选框，以前 Esc 直接落到「让我停下」，把正在跑的任务叫停了
+  // 构造器里的 keyCode 这台 Chromium 认不认说不准，认不上就钉在事件对象上
+  const imePress = (init, target, code229) => {
+    const ev = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init, ...(code229 ? { keyCode: 229 } : {}) });
+    if (code229 && ev.keyCode !== 229) Object.defineProperty(ev, "keyCode", { get: () => 229 });
+    target.dispatchEvent(ev);
+    return ev;
+  };
+  const busy0 = curBusy;
+  curBusy = () => true; // 任务在跑：这时候 Esc 真落下去就是 stopTask
+  try {
+    CALLED.length = 0;
+    ev = imePress({ key: "Escape", code: "Escape", isComposing: true }, ta);
+    ok("★拼字中按 Esc 关候选框：任务不被叫停、也不拦默认行为★", CALLED.length === 0 && !ev.defaultPrevented, CALLED);
+    CALLED.length = 0;
+    ev = imePress({ key: "Process", code: "KeyB", [flag(M)]: true }, ta, true);
+    ok("★起头那一下（isComposing 还是 false、keyCode 229）：" + M + "+B 也不切左栏★", CALLED.length === 0 && !ev.defaultPrevented, CALLED);
+    CALLED.length = 0;
+    ev = imePress({ key: "Escape", code: "Escape" }, ta);
+    ok("反向对照：没在拼字时输入框里 Esc 照样叫停", CALLED.join() === "stop" && ev.defaultPrevented, CALLED);
+    // 反向对照：把真源码里那句守卫摘掉再装一份，挂在一个不在文档里的输入框上（事件冒不到 document，真分发器看不见）。
+    // 同样的拼字事件，没守卫的那份就会接——证明拦住它的是这一句，不是别的条件碰巧挡了
+    const GUARD = "if (imeKey(e)) return;";
+    const src = ${JSON.stringify(MOD_DISPATCH_SRC)};
+    ok("分发器源码里有这句守卫", src.includes(GUARD));
+    const box = document.createElement("textarea");
+    window.__imeBox = box;
+    (0, eval)(src.replace(GUARD, "").replace('document.addEventListener("keydown"', 'window.__imeBox.addEventListener("keydown"'));
+    CALLED.length = 0;
+    imePress({ key: "Escape", code: "Escape", isComposing: true }, box);
+    ok("★反向对照★：摘掉守卫，同一下拼字中的 Esc 就把任务叫停了", CALLED.join() === "stop", CALLED);
+    CALLED.length = 0;
+    imePress({ key: "Process", code: "KeyB", [flag(M)]: true }, box, true);
+    ok("★反向对照★：摘掉守卫，keyCode 229 的 " + M + "+B 就切了左栏", CALLED.join() === "toggle-sidebar", CALLED);
+    delete window.__imeBox;
+  } finally {
+    curBusy = busy0;
+  }
+
   // ---- 老存档：存着 Meta+J 的照样生效，默认那个键让出来 ----
   settingsCache = { shortcuts: { "toggle-sidebar": "Meta+J" } };
   CALLED.length = 0;
@@ -11555,7 +13199,7 @@ if (!/function quoteReply\(/.test(QUOTE_SRC)) throw new Error("切出来的那�
 const JP0 = APP02.indexOf("/**\n * 滚到第 n 个回合并让它亮一下");
 const JP1 = APP02.indexOf("/**\n * 打开一个会话并回放它的对话");
 if (JP0 < 0 || JP1 <= JP0) throw new Error("app-02.js 里的 jumpToTurn 那段找不到了（函数改名/挪窝了？），前端测试没法定位真源码");
-const JUMP_SRC = APP02.slice(JP0, JP1);
+const JUMP_SRC = APP02.slice(JP0, JP1) + "\n" + TURN_ORD_SRC; // jumpToTurn 先问 turnsHidden 顶上收着几轮
 
 // 按钮本身长在 createTurnUI 里面（闭包，切不出来单跑），但「按钮在不在、连没连上」
 // 是会被一次手滑改没的——补一道源码层的闸，图标名也一起核，免得画出个空框框
@@ -11869,10 +13513,10 @@ const BUBBLE_CHECKS = `
   const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON",
     "turnSid", "attachRel", "attachThumb", "previewFile", "BUBBLE_PIC_RE", "shown", window.__BUBBLE_SRC); // shown：画布那类入口的「人说的那句」，这一屏不传
   // 「这份素材躺在哪儿」那三档用真源码，不用测试自己编一份：编一份的话，线上拼错了这儿照样绿
-  const attachPaths = new Map(), sessionDirs = new Map();
+  const attachPaths = new Map(), sessionDirs = new Map(), sessionAttachDirs = new Map();
   const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
-  const RESOLVE = new Function("attachPaths", "sessionDirs", "fpath", "curStamp",
-    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, fpath, () => "");
+  const RESOLVE = new Function("attachPaths", "sessionDirs", "sessionAttachDirs", "fpath", "curStamp",
+    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, sessionAttachDirs, fpath, () => "");
   let pvOpened = [];
   const previewFile = (rel, root) => { pvOpened.push(rel); };
   const stage = document.createElement("div");
@@ -11994,6 +13638,17 @@ const BUBBLE_CHECKS = `
        btn.classList.contains("gone") && btn.querySelector(".bpic-nm").textContent.includes("截图.png"), btn.outerHTML.slice(0, 200));
     ok("退成名字条时把话说清楚，别让人以为整个功能坏了",
        /改名|移走|删掉/.test(btn.title) && !btn.title.includes("点击预览"), btn.title);
+  }
+  {
+    // 对话中途换了文件夹：成果区那格清空了（新根下还没有这条对话的文件夹），可素材是在老文件夹里传的
+    attachPaths.clear(); sessionDirs.clear();
+    sessionAttachDirs.set("s9", "任务_0930_看图");
+    const btn = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
+    ok("换了文件夹之后：素材照样按它上传时那个文件夹找", btn.dataset.rel === "任务_0930_看图/截图.png", btn.dataset.rel);
+    sessionDirs.set("s9", "任务_0930_新根");
+    const b2 = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
+    ok("反向对照：当前根下有这条对话的文件夹时仍以它为准", b2.dataset.rel === "任务_0930_新根/截图.png", b2.dataset.rel);
+    sessionAttachDirs.clear();
   }
   {
     attachPaths.clear(); sessionDirs.clear();
@@ -12607,6 +14262,12 @@ app.whenReady().then(async () => {
     try {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
       const names3 = await win3.webContents.executeJavaScript(IC_BOOT + PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
+      names3.push(...testPreviewCloseSites(APP02));
+      // ★反向对照★ 随便哪一处退回不带 now 的收法（滑完再拆）：这条当场红
+      let pcRed = "";
+      try { testPreviewCloseSites(APP02.replace("closePreview(false, { now: true })", "closePreview()")); } catch (e) { pcRed = e.message; }
+      if (!pcRed) throw new Error("反向对照没红：换对话那处退回 closePreview()，源码闸门照样放过");
+      names3.push("反向对照：换对话那处退回 closePreview()，源码闸门当场红");
       for (const n of names3) console.log("  ✓ " + n);
       console.log(`✅ 前端：文件预览（路由·音视频·docx/xlsx/pptx/zip 结构化·CSV·兜底）${names3.length} 项通过`);
     } finally {
@@ -12649,6 +14310,16 @@ app.whenReady().then(async () => {
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
     }
+    const winRN = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winRN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
+      const namesRN = await winRN.webContents.executeJavaScript(IC_BOOT + TURNOUT_STUBS_REALRV + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + REPLAY_NOHOST_CHECKS, true)
+        .catch((e) => { throw new Error("[打不开本机文件夹时回放] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesRN) console.log("  ✓ " + n);
+      console.log(`✅ 前端：打不开本机文件夹的人回放历史（成员/设置没回来都一轮不落·不画点不动的按钮·★反向对照★修之前第一轮就断）${namesRN.length} 项通过`);
+    } finally {
+      if (!winRN.isDestroyed()) winRN.destroy();
+    }
     const winEng = mkWin({ show: false, width: 760, height: 900, webPreferences: { offscreen: true } });
     try {
       await winEng.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ENG_HTML));
@@ -12685,6 +14356,17 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 + 收尾接线（正文文件名变可点链接·成品自动摊开·四种情形一律不弹）${names9.length} 项通过`);
     } finally {
       if (!win9.isDestroyed()) win9.destroy();
+    }
+    const winWN = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winWN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(WIN_HTML));
+      const namesWN = await winWN.webContents.executeJavaScript(IC_BOOT + WIN_STUBS + "\n" + WIN_SRC + "\n" + WIN_CHECKS, true);
+      const st = await winWN.webContents.executeJavaScript("window.WIN_STATS", true);
+      for (const n of namesWN) console.log("  ✓ " + n);
+      console.log(`  · 26 轮打开：分批 ${st.nWin} 个节点 ${st.msWin}ms，整段 ${st.nFull} 个节点 ${st.msFull}ms；60 轮：分批 ${st.nHuge}，整段 ${st.nHugeFull}`);
+      console.log(`✅ 前端：长对话分批画（节点数封顶·往前补不跳屏·跳第几轮/⌘F 到得了收着的·👍👎 轮次号数上收着的·补画旧轮不动余量条/余额/滚动条 · 含反向对照）${namesWN.length} 项通过`);
+    } finally {
+      if (!winWN.isDestroyed()) winWN.destroy();
     }
     const winOvf = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
@@ -12934,6 +14616,52 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：侧栏拖到底（180px）时的工作线标签（一行放得下·名字没被挤没·徽标也塞得下）${namesLN2.length} 项通过`);
     } finally { if (!winLN2.isDestroyed()) winLN2.destroy(); }
 
+    for (const mutant of [false, true]) {
+      const winHK = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+      try {
+        await winHK.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+        const hk = await winHK.webContents.executeJavaScript(IC_BOOT + (mutant ? "window.__histMutant = 1;\n" : "")
+          + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + HIST_KEYED_CHECKS, true)
+          .catch((e) => { throw new Error("[侧栏按行改" + (mutant ? "·反向对照" : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (hk.fails.length) throw new Error("[侧栏按行改]\n" + hk.fails.join("\n"));
+          for (const n of hk.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：侧栏按行改不整片重铺（别的行还是原节点·在跑的点不重闪·焦点不丢·DOM 跟老办法一字不差）${hk.names.length} 项通过`);
+        } else {
+          const id = hk.fails.filter((f) => /节点|重建|焦点/.test(f));
+          if (id.length !== 5 || id.length !== hk.fails.length) {
+            throw new Error("★反向对照★ 换回整片 innerHTML 后，「节点不换」那几条应当红 5 条且只红这几条，实际：\n" + (hk.fails.join("\n") || "一条没红"));
+          }
+          console.log(`✅ 前端：★反向对照★ 换回整片 innerHTML，「别的行还是原节点 / 点不重建 / 焦点不丢」当场红 ${id.length} 条（DOM 一字不差那几条照过 ${hk.names.length} 条）`);
+        }
+      } finally { if (!winHK.isDestroyed()) winHK.destroy(); }
+    }
+
+    // 侧栏行上的「停」：真源码一遍，再三个变体各跑一遍，每个变体必须红在它该红的那条上
+    for (const mutant of ["", "global", "onscreen", "opens", "noisy"]) {
+      const clickSrc = HSTOP_MUTANTS[mutant] ? HSTOP_MUTANTS[mutant](HIST_CLICK_SRC) : HIST_CLICK_SRC;
+      if (HSTOP_MUTANTS[mutant] && clickSrc === HIST_CLICK_SRC) throw new Error("[侧栏行上的停·反向对照 " + mutant + "] 变体没改动源码（监听里那行写法变了？）");
+      const notifySrc = HSTOP_NOTIFY_MUTANTS[mutant] ? HSTOP_NOTIFY_MUTANTS[mutant](NOTIFY_DONE_SRC) : NOTIFY_DONE_SRC;
+      if (HSTOP_NOTIFY_MUTANTS[mutant] && notifySrc === NOTIFY_DONE_SRC) throw new Error("[侧栏行上的停·反向对照 " + mutant + "] 变体没改动源码（notifyRunDone 那段写法变了？）");
+      const winHS = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+      try {
+        await winHS.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+        const hs = await winHS.webContents.executeJavaScript(IC_BOOT + (mutant ? "window.__hstopMutant = " + JSON.stringify(mutant) + ";\n" : "")
+          + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + clickSrc + "\n" + notifySrc + "\n" + HSTOP_CHECKS, true)
+          .catch((e) => { throw new Error("[侧栏行上的停" + (mutant ? "·" + mutant : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (hs.fails.length) throw new Error("[侧栏行上的停]\n" + hs.fails.join("\n"));
+          for (const n of hs.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：侧栏行上的「停」（只停这一条·A/C 照常跑·不打开它·正在停挂到真收尾·送不出去照实说·键盘够得着·含反向对照）${hs.names.length} 项通过`);
+          continue;
+        }
+        const must = { global: /★A、C 照常跑★/, onscreen: /★只发了一条停止，停的就是点的那一行★/, opens: /★不打开它、不换走眼前这条★/, noisy: /★「已停下」之后不再跟一句「已完成」★/ }[mutant];
+        const hit = hs.fails.filter((f) => must.test(f));
+        if (!hit.length) throw new Error(`★反向对照★ 变体「${mutant}」应当红在 ${must} 上，实际红的：\n` + (hs.fails.join("\n") || "一条没红"));
+        console.log(`✅ 前端：★反向对照★ 侧栏的停换成「${{ global: "全停了", onscreen: "停眼前这条", opens: "点停顺手打开", noisy: "停完还报已完成" }[mutant]}」，${hit[0].replace(/ ｜.*/, "")} 当场红（共红 ${hs.fails.length} 条）`);
+      } finally { if (!winHS.isDestroyed()) winHS.destroy(); }
+    }
+
     const winGC = mkWin({ show: false, width: 760, height: 600, webPreferences: { offscreen: true } });
     try {
       await winGC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GOAL_HTML));
@@ -12991,6 +14719,18 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：压缩这一步让人看得见它在动（开跑就有一行字·跟着秒数走·压完换掉同一行不摞·压崩如实说·这一轮收尾一律收干净·英文界面翻得动）${namesCMP.length + namesCMW.length} 项通过`);
     } finally { if (!winCMP.isDestroyed()) winCMP.destroy(); }
 
+    {
+      const namesIME = testImeGuardCoverage();
+      for (const n of namesIME) console.log("  ✓ " + n);
+      console.log(`✅ 前端：拼音打一半按回车/Esc 不当真（整个 public/js 每一处认回车/Esc 的地方都过 imeKey 或写明为什么不用·后台那份抄的也三样都认·含反向对照）${namesIME.length} 项通过`);
+    }
+
+    {
+      const namesMRI = testMultiRunI18n();
+      for (const n of namesMRI) console.log("  ✓ " + n);
+      console.log(`✅ 前端：多开那两波的英文（打开对话的等待和失败·预览页载入·成果区分格·侧栏行上的停·含反向对照）${namesMRI.length} 项通过`);
+    }
+
     const winESC = mkWin({ show: false, width: 600, height: 400, webPreferences: { offscreen: true } });
     try {
       await winESC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ESC_HTML));
@@ -13006,7 +14746,7 @@ app.whenReady().then(async () => {
       const namesMEM = await winMEM.webContents.executeJavaScript(IC_BOOT + IC_STUB + "\n" + ESC_SRC + "\n" + MEM_SRC + "\n" + MEM_CHECKS, true)
         .catch((e) => { throw new Error("[记忆页权限] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesMEM) console.log("  ✓ " + n);
-      console.log(`✅ 前端：记忆页按权限画（共享那条不画删·勾选框和保存按钮不画·搬家卡不画·删了不吞返回值·管理员那页一样不少）${namesMEM.length} 项通过`);
+      console.log(`✅ 前端：记忆页按权限画（共享那条不画删·勾选框和保存按钮不画·搬家卡不画·删了不吞返回值·管理员那页一样不少·嵌入接口只给管理员填、测一下原样转述、改地址清 Key）${namesMEM.length} 项通过`);
     } finally { if (!winMEM.isDestroyed()) winMEM.destroy(); }
 
     const winGATE = mkWin({ show: false, width: 1000, height: 900, webPreferences: { offscreen: true } });
@@ -13071,6 +14811,27 @@ app.whenReady().then(async () => {
       for (const n of namesSTM) console.log("  ✓ " + n);
       console.log(`✅ 前端：流式正文分段渲染（已定稿那截不重建·结果跟一次渲染一致·停笔合回整块）${namesSTM.length} 项通过`);
     } finally { if (!winSTM.isDestroyed()) winSTM.destroy(); }
+
+    for (const mutant of [false, true]) {
+      const winSF = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
+      try {
+        await winSF.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(STREAM_HTML));
+        // 真 svgfig.js 放在 STREAM_STUBS 后面，把那份空壳 SvgFig 盖掉
+        const sf = await winSF.webContents.executeJavaScript(IC_BOOT + STREAM_STUBS + "\n;" + (mutant ? SVGFIG_SEQ_MUTANT : SVGFIG)
+          + "\n" + STREAM_SRC + "\n" + SVG_STREAM_CHECKS, true)
+          .catch((e) => { throw new Error("[带图的流式定稿" + (mutant ? "·反向对照" : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (sf.fails.length) throw new Error("[带图的流式定稿]\n" + sf.fails.join("\n"));
+          for (const n of sf.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：带图的回答边写边定稿（图 id 按源码定·定稿越过第一张图·结果跟一次渲染一致）${sf.names.length} 项通过`);
+        } else {
+          const need = [/渲两遍一字不差/, /越过了第一张图/];
+          const miss = need.filter((re) => !sf.fails.some((f) => re.test(f)));
+          if (miss.length) throw new Error("★反向对照★ 图 id 退回自增号后，这几条本该红却过了：" + miss.join(" ") + "\n实际红的：\n" + (sf.fails.join("\n") || "一条没红"));
+          console.log(`✅ 前端：★反向对照★ 图 id 退回全局自增，「渲两遍一字不差 / 定稿越过第一张图」当场红（共红 ${sf.fails.length} 条）`);
+        }
+      } finally { if (!winSF.isDestroyed()) winSF.destroy(); }
+    }
 
     const winEP = mkWin({ show: false, width: 520, height: 600, webPreferences: { offscreen: true } });
     try {

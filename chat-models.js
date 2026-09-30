@@ -29,7 +29,7 @@
  */
 
 const {
-  PROVIDER_KINDS, CATALOG, guessKind, baseOfKind, protoOfKind, protoOfChannel, normApi,
+  PROVIDER_KINDS, CATALOG, guessKind, baseOfKind, protoOfKind, protoOfChannel, normApi, isApiFormat,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
 } = require("./media-models");
 
@@ -164,7 +164,54 @@ function planTemplate(config, kind, modelId) {
   return { t, prov, row };
 }
 
-/** 把 planTemplate 算好的那条落进 config：渠道（带 Key）+ 模型行（挂在它下面）。返回最后那条模型行 */
+/** 贴进来的地址常常多带一截：文档里抄的是整条 …/chat/completions。去掉它，剩下的才是渠道地址 */
+function trimEndpoint(u) {
+  return String(u || "").trim().replace(/\/+$/, "")
+    .replace(/\/(chat\/completions|completions|responses|messages)$/i, "")
+    .replace(/\/+$/, "");
+}
+
+/**
+ * 向导里「自己填地址」那一条：中转站、new-api / one-api 网关、公司内网、本机 vLLM / LM Studio……
+ * 跟 planTemplate 一样只算不落，验活过了再 commitTemplate。
+ *
+ * 以前向导只列目录里那几家，填中转的人得先跳过第一步、进了界面再去设置里找「自定义」——
+ * 可大脑没接上就什么都干不了，第一步正是最需要这条路的地方。
+ *
+ * 地址认得出是哪家官方的（把 DeepSeek 官方地址贴进来了）就按那家记，渠道卡上的名字才对；
+ * 认不出的记成「其它 OpenAI 兼容接口」，名字用域名。
+ * 返回 { t, prov, row, alt } 或 { err }。alt：只填了域名时补上 /v1 的备选——中转站的接口多半挂在 /v1 下。
+ * @param {any} config
+ * @param {{ base_url?: string, model?: string, api?: string }} [input]
+ */
+function planCustom(config, { base_url, model, api } = {}) {
+  const base = trimEndpoint(base_url);
+  let url = null;
+  try { url = new URL(base); } catch {}
+  if (!url || !/^https?:$/.test(url.protocol) || !url.host) return { err: "接口地址要填完整，例如 https://api.example.com/v1" };
+  const modelId = String(model || "").trim();
+  if (!modelId) return { err: "模型名还空着，照这家接口文档填" };
+  const fmt = isApiFormat(api) ? api : "openai";
+  const kind = guessKind(base);
+  const label = nameForKind(kind, base);
+  const providers = Array.isArray(config.providers) ? config.providers : [];
+  const models = Array.isArray(config.models) ? config.models : [];
+  // 同一个地址说两门话（一个中转同时给 OpenAI 和 Anthropic 两种格式）是两条渠道，不能并
+  const prov = providers.find((p) => p.kind === kind && nb(p.base_url) === nb(base) && protoOfChannel(p) === fmt) || null;
+  const short = SHORT_NAME[kind] || label;
+  const taken = new Set(models.map((m) => String(m.name || "")));
+  let name = taken.has(short) ? `${short} ${modelId}` : short;
+  for (let i = 2; taken.has(name); i++) name = `${short} ${modelId} ${i}`;
+  const row = { name, provider: fmt, base_url: baseForUse(base, "chat"), api_key: "", model: modelId };
+  const bare = !url.pathname.replace(/\/+$/, "");
+  const alt = bare && (fmt === "openai" || fmt === "openai-responses") ? base + "/v1" : "";
+  return {
+    t: { kind, label, name: short, base_url: base, api: fmt !== protoOfKind(kind) ? fmt : "", local: isLocalBase(base) },
+    prov, row, alt,
+  };
+}
+
+/** 把 planTemplate / planCustom 算好的那条落进 config：渠道（带 Key）+ 模型行（挂在它下面）。返回最后那条模型行 */
 function commitTemplate(config, plan, key) {
   config.providers = Array.isArray(config.providers) ? config.providers : [];
   config.models = Array.isArray(config.models) ? config.models : [];
@@ -174,7 +221,7 @@ function commitTemplate(config, plan, key) {
   if (prov && String(prov.api_key || "").trim() && k && prov.api_key !== k) prov = null;
   if (!prov) {
     const ids = new Set(config.providers.map((p) => String(p.id)));
-    prov = { id: uniqueId(plan.t.kind, ids), name: plan.t.label, kind: plan.t.kind, base_url: plan.t.base_url, api_key: k };
+    prov = { id: uniqueId(plan.t.kind, ids), name: plan.t.label, kind: plan.t.kind, base_url: plan.t.base_url, api_key: k, ...(plan.t.api ? { api: plan.t.api } : {}) };
     config.providers.push(prov);
   } else if (k) prov.api_key = k;
   const dup = config.models.find((m) => m.channel === prov.id && String(m.model) === String(plan.row.model));
@@ -288,5 +335,5 @@ function modelsOf(config, channelId) {
 
 module.exports = {
   normalize, modelsOf, chanKeyOf, nameForKind, wantsChannel,
-  pruneSeededPresets, SEEDED_PRESETS, templates, planTemplate, commitTemplate, legacyRows,
+  pruneSeededPresets, SEEDED_PRESETS, templates, planTemplate, planCustom, trimEndpoint, commitTemplate, legacyRows, isLocalBase,
 };

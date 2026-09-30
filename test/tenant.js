@@ -247,15 +247,26 @@ async function login(username, password) {
   console.log("\n【4】邀请码进人");
   // 邀请码永远发给「发码人所属的组织」——总部发的码只能把人拉进总部，拉不进分公司。
   // 这条要钉住：要是哪天改成能指定组织，一张泄露的码就能把人塞进任意租户
-  r = await call("POST", "/api/admin/invites", { cookie: boss, body: { role: "member", max_uses: 5 } });
+  r = await call("POST", "/api/admin/invites", { cookie: boss, body: { role: "member", max_uses: 5, org: org2 } });
   eq(r.status, 200, "总部发码成功");
-  eq(r.json.org, "default", "总部发的码属于默认组织，指定不了别家");
+  eq(r.json.org, "default", "总部发的码属于默认组织，请求里塞了别家的 id 也没用");
   const hqInv = r.json.code;
   r = await call("POST", "/api/auth/register", { body: { username: "hqguy", password: "pw-hq-12345", invite: hqInv } });
   eq(r.json.user.org, "default", "用总部的码注册，人落在总部");
 
-  // 分公司的码由分公司自己发。这里先用 org 层直接发一张，把分公司的第一个管理员放进去
-  const inv = org.createInvite(org2, { role: "admin", max_uses: 5, days: 7, actor: "laoban" });
+  // 分公司刚建好一个人都没有，它自己的邀请码页没人打得开。第一张码由平台管理员从组织列表发，
+  // 走的是另一条只有平台超管进得去的路由，而且组织 id 必须真的存在
+  r = await call("POST", "/api/admin/orgs/o_meiyou/invites", { cookie: boss, body: {} });
+  eq(r.status, 400, "发给不存在的组织：拒绝");
+  ok(!org.listInvites("default").some((i) => i.role === "admin"), "打错组织 id 不会退回去给总部发一张管理员码", org.listInvites("default"));
+  r = await call("GET", "/api/admin/orgs", { cookie: boss });
+  eq((r.json.orgs.find((o) => o.id === org2) || {}).has_owner, false, "组织列表看得出分公司还没有超管");
+  r = await call("POST", `/api/admin/orgs/${org2}/invites`, { cookie: boss, body: {} });
+  eq(r.status, 200, "平台管理员给分公司发第一张码");
+  eq(r.json.org, org2, "码属于分公司");
+  eq(r.json.role, "admin", "默认是管理员码");
+  eq(r.json.max_uses, 1, "默认只能用一次");
+  const inv = r.json;
   r = await call("POST", "/api/auth/register", { body: { username: "fenboss", password: "pw-fen-1234", invite: inv.code } });
   eq(r.status, 200, "拿分公司邀请码注册成功");
   const fen = r.cookie;
@@ -263,6 +274,14 @@ async function login(username, password) {
   // 分公司的第一个管理员级别的人 = 这个组织的超管。以前 owner 只给全站第一个人，
   // 分公司一个超管都没有，于是那儿的管理员可以互相停用——「管理员权限太大」最狠的一处
   eq(r.json.user.role, "owner", "分公司第一个管理员就是分公司的超级管理员");
+  r = await call("POST", "/api/auth/register", { body: { username: "fenboss2", password: "pw-fen-1234", invite: inv.code } });
+  eq(r.status, 400, "一次性的码第二个人用不了");
+  r = await call("GET", "/api/admin/orgs", { cookie: boss });
+  eq((r.json.orgs.find((o) => o.id === org2) || {}).has_owner, true, "有人进来之后组织列表跟着变");
+  r = await call("POST", `/api/admin/orgs/${org2}/invites`, { cookie: fen, body: {} });
+  eq(r.status, 403, "分公司的超管也走不了这条路由（它能指定组织）");
+  r = await call("POST", `/api/admin/orgs/default/invites`, { cookie: fen, body: { role: "admin" } });
+  eq(r.status, 403, "分公司的超管不能往总部发管理员码");
 
   const memInv = org.createInvite(org2, { role: "member", max_uses: 5, days: 7, actor: "fenboss" });
   r = await call("POST", "/api/auth/register", { body: { username: "xiaoyuan", password: "pw-yuan-1234", invite: memInv.code } });
@@ -844,7 +863,8 @@ async function login(username, password) {
   ok(writeTbl.includes("/api/skills"), "反向对照：技能还在写表里（那个才是真共用的）");
   ok(readTbl.includes("/api/schedules") && readTbl.includes("/api/eval"), "读表里还留着真该拦的那两个");
   // 光改表不改根就是把库直接敞开了。这两条钉住「根确实按人分」这件事本身
-  ok(/app\.use\(admin\.tenantScope\(\{[\s\S]{0,400}?withLibraryBase/.test(SERVER_SRC),
+  // 中间件先起了名字（定时任务那条没有请求的路要复用同一个），再 app.use 它
+  ok(/const (\w+) = admin\.tenantScope\(\{[\s\S]{0,400}?withLibraryBase[\s\S]{0,200}?\napp\.use\(\1\)/.test(SERVER_SRC),
      "server.js 真把资料库根接进了 tenantScope（不接就是所有人共用一个根，而写闸刚被拿掉）");
   const TL = srcLib.src("tools");
   ok(/function libBase\(\)/.test(TL) && /libBaseStore\.getStore\(\) \|\| LIB_DIR/.test(TL),
@@ -1898,6 +1918,155 @@ async function login(username, password) {
     }
   }
 
+
+  console.log("\n【29】删掉的成员：他的对话只归原组织管，名字也不许被新人拿走");
+  {
+    // 判据原样从 server.js 切出来跑，别抄一份——抄的那份会在 server.js 改坏之后继续给绿灯
+    const SRC23 = srcLib.src("server");
+    const i0 = SRC23.indexOf("function sessionOwner(s) {");
+    const i1 = SRC23.indexOf("function guardSession(");
+    ok(i0 > 0 && i1 > i0, "从 server.js 里切得出 sessionOwner + sessionAllowed", { i0, i1 });
+    const sessionAllowed23 = new Function("account", "org", "ownsGlobalWorkspace", "legacySessionOwner",
+      SRC23.slice(i0, i1) + "\nreturn sessionAllowed;")(account, org, admin.ownsGlobalWorkspace, () => "");
+    const who = (n) => account._internals.loadUsers().users.find((u) => u.username === n);
+    const fenU = who("fenboss");
+    account.createMember(fenU, { username: "linshigong", role: "member" });
+    const sess = { user: "linshigong", transcript: [{ role: "user", content: "分公司的内部事" }] };
+    ok(sessionAllowed23(fenU, sess), "人还在的时候，本组织管理员看得了（对照组）");
+    ok(!sessionAllowed23(who("laoban"), sess), "人还在的时候，别家管理员看不了（对照组）");
+    account.removeMember(fenU, "linshigong");
+    ok(sessionAllowed23(fenU, sess), "删掉以后，原组织的管理员照样看得了（离职交接要翻）");
+    ok(!sessionAllowed23(who("laoban"), sess),
+      "★删掉以后别家管理员也能翻他的对话★ 原来这里「找不到主人就放行」");
+    ok(!sessionAllowed23(who("xiaoyuan"), sess), "删掉以后，同组织的普通成员照样看不了");
+    const ghost = { user: "从来没有过这个人", transcript: [{ role: "user", content: "x" }] };
+    ok(sessionAllowed23(who("laoban"), ghost), "查无此人的老对话：平台管理员看得了（总得有人能收拾）");
+    ok(!sessionAllowed23(fenU, ghost), "查无此人的老对话：分公司管理员看不了");
+
+    let err = "";
+    try { account._internals.register("linshigong", "pw-new-12345", { org: org2 }); } catch (e) { err = e.message; }
+    ok(/已删除/.test(err), "删掉的登录名不许再注册（不然新人一登录就接手了前人的对话和记忆）", err);
+    err = "";
+    try { account._internals.renameUser("xiaoyuan", "linshigong"); } catch (e) { err = e.message; }
+    ok(/已删除/.test(err), "也不许把别的账号改名成它", err);
+    eq(who("xiaoyuan").username, "xiaoyuan", "改名被拒，原账号名字没动");
+  }
+
+  console.log("\n【30】邀请码的 200 张上限按组织算，一家发满挤不掉别家的码");
+  {
+    const keep = org.createInvite("default", { role: "member", max_uses: 1, days: 7, actor: "laoban" });
+    for (let i = 0; i < 205; i++) org.createInvite(org2, { role: "member", max_uses: 1, days: 1, actor: "fenboss" });
+    ok(org.peekInvite(keep.code) && !org.peekInvite(keep.code).error, "★分公司连发 205 张之后，总部那张还没用的码照样能用★");
+    eq(org.listInvites(org2).length, 200, "分公司自己最多留 200 张");
+  }
+
+  console.log("\n【31】平台握着的几格：租户管理员只能往紧了改，往松了改整单拒掉");
+  {
+    r = await call("POST", "/api/admin/orgs", { cookie: boss, body: { name: "新开的租户", plan: "team" } });
+    eq(org.settingsOf(org.getOrg(r.json.id)).allow_shell, false, "★新开的租户默认不给命令行★ 它跑在平台这台机器上，工作目录那道墙挡不住");
+    eq(org.settingsOf(org.getOrg("default")).allow_shell, true, "默认组织（平台自己）不受影响");
+
+    const s2 = () => org.settingsOf(org.getOrg(org2));
+    const bossSet = (settings) => call("POST", `/api/admin/orgs/${org2}`, { cookie: boss, body: { settings } });
+    r = await bossSet({ allow_shell: false, price_discount: 0.9, budget: { org_yuan: 300 } });
+    eq(r.status, 200, "平台管理员在组织列表里给分公司定：命令行关、九折、每月封顶 300");
+    eq(s2().budget.org_yuan, 300, "封顶存上了");
+
+    r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { allow_shell: true, session_days: 30 } } });
+    eq(r.status, 400, "★分公司超管自己打开命令行：拒绝★");
+    ok(/允许运行命令行/.test(r.json.error), "报错说清是哪一格", r.json.error);
+    eq(s2().allow_shell, false, "命令行还是关着");
+    ok(s2().session_days !== 30, "整单拒掉，同一单里别的格也没改（不悄悄丢一半）");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { price_discount: 0.1 } });
+    eq(r.status, 400, "★自己给自己打一折：拒绝★");
+    eq(s2().price_discount, 0.9, "折扣还是平台定的九折");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { budget: { org_yuan: 99999, default_user_yuan: 5 } } });
+    eq(r.status, 400, "★把组织封顶从 300 抬到 99999：拒绝★");
+    eq(s2().budget.org_yuan, 300, "封顶没动");
+
+    r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { api_quota: { image: { enabled: true, org_daily: 99999 } } } } });
+    eq(r.status, 400, "★自己改付费 API 额度（花的是平台的 Key）：拒绝★");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { budget: { org_yuan: "300", default_user_yuan: "5" }, price_discount: "0.9" } });
+    eq(r.status, 200, "整页表单原样带回平台定的值、只改人均：放行（不能因为带了现值就报错）");
+    eq(s2().budget.default_user_yuan, 5, "人均改上了");
+    r = await call("POST", "/api/admin/relay/budget", { cookie: fen, body: { budget: { default_user_yuan: 8 } } });
+    eq(r.status, 200, "只带人均一格：放行");
+    eq(s2().budget.org_yuan, 300, "★只带人均一格，组织封顶没被补成 0（= 不限）★");
+    eq(s2().budget.default_user_yuan, 8, "人均改上了");
+
+    r = await bossSet({ allow_shell: true, budget: { org_yuan: 500 } });
+    eq(s2().budget.default_user_yuan, 8, "平台只改封顶，租户设的人均没被清掉");
+    r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { allow_shell: false } } });
+    eq(r.status, 200, "平台开了命令行，租户自己关掉：放行（往紧了改随便）");
+    eq(s2().allow_shell, false, "关上了");
+
+    r = await call("POST", "/api/admin/relay/budget", { cookie: boss, body: { price_discount: 0.7 } });
+    eq(r.status, 200, "反向对照：平台管理员改自己组织的折扣照常");
+    eq(org.settingsOf(org.getOrg("default")).price_discount, 0.7, "默认组织的折扣改上了");
+  }
+
+  console.log("\n【32】停用的人重新启用也要过席位");
+  {
+    const seated = () => account._internals.loadUsers().users.filter((u) => u.org === org2 && u.status !== "disabled").length;
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "disabled" } });
+    eq(r.status, 200, "先停用小袁，腾出一个席位");
+    r = await call("POST", `/api/admin/orgs/${org2}`, { cookie: boss, body: { seats: seated() + 1 } });
+    eq(r.status, 200, "平台把席位卡在「只剩一个空位」");
+    // 走账号层建号：这份测试前面注册过很多次，注册口子按 IP 限频了
+    account._internals.register("tibu", "pw-tibu-1234", { org: org2, role: "member", status: "active" });
+    eq(seated(), org.planInfo(org.getOrg(org2)).seats, "招一个新人把空位占上");
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "active" } });
+    eq(r.status, 400, "★席位满了，把停用的人启用回来：拒绝★ 不然停一个、招一个、再启用，席位就被绕过去了");
+    ok(/席位已用满/.test(r.json.error || ""), "报错说的是席位", r.json.error);
+    ok(/平台超管/.test(r.json.error || ""), "★分公司的席位只有平台超管加得了，报错就指到平台超管★ 不然分公司管理员看到的是叫自己找自己", r.json.error);
+    eq(account._internals.loadUsers().users.find((u) => u.username === "xiaoyuan").status, "disabled", "人还是停用着");
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "pending" } });
+    eq(r.status, 400, "改成待审核也占席位，一样拒");
+    r = await call("POST", `/api/admin/orgs/${org2}`, { cookie: boss, body: { seats: seated() + 1 } });
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "active" } });
+    eq(r.status, 200, "反向对照：加了席位就能启用");
+  }
+
+  console.log("\n【33】没登录态的消耗（命令行 / IM / 定时）记在默认组织名下；管理员能在网页上解二次验证");
+  {
+    const rbac = require(path.join(ROOT, "rbac"));
+    const st = account._internals.loadUsers();
+    const t = st.users.find((u) => u.username === "fenboss");
+    const keep = t.created_at;
+    // 平台超管转让过、全站最早的超管落在分公司：以前按全站挑，账和身份就记到别人家去了
+    t.created_at = "2000-01-01T00:00:00.000Z";
+    account._internals.saveUsers(st);
+    const all = account._internals.loadUsers().users;
+    const globalPick = [...all].sort((x, y) => rbac.rankOf(y) - rbac.rankOf(x) || String(x.created_at).localeCompare(String(y.created_at)))[0];
+    eq(globalPick.username, "fenboss", "对照：按全站挑，挑中的是分公司的超管（以前就是这么记错账的）");
+    const d = account.defaultUser();
+    eq(org.orgIdOf(d), org.DEFAULT_ORG, "★defaultUser 落在默认组织★");
+    eq(d.username, "laoban", "默认组织里档次最高的就是平台超管");
+    const st2 = account._internals.loadUsers();
+    st2.users.find((u) => u.username === "fenboss").created_at = keep;
+    account._internals.saveUsers(st2);
+
+    // 解二次验证：接口早就有，以前界面上没有按钮
+    const st3 = account._internals.loadUsers();
+    st3.users.find((u) => u.username === "tibu").totp = { secret: "JBSWY3DPEHPK3PXP", enabled_at: new Date().toISOString() };
+    account._internals.saveUsers(st3);
+    st3.users.find((u) => u.username === "hqguy").totp = { secret: "JBSWY3DPEHPK3PXP", enabled_at: new Date().toISOString() };
+    account._internals.saveUsers(st3);
+    r = await call("POST", "/api/admin/members/tibu/reset-2fa", { cookie: fen });
+    eq(r.status, 200, "分公司超管解得了自家成员的");
+    eq(r.json.was_on, true, "回话里说本来是开着的");
+    ok(!account._internals.loadUsers().users.find((u) => u.username === "tibu").totp, "真清掉了");
+    r = await call("POST", "/api/admin/members/hqguy/reset-2fa", { cookie: fen });
+    eq(r.status, 400, "反向对照：分公司超管解不了总部成员的");
+    ok(!!account._internals.loadUsers().users.find((u) => u.username === "hqguy").totp, "总部那位的二次验证原样在");
+    r = await call("POST", "/api/admin/members/hqguy/reset-2fa", { cookie: boss });
+    eq(r.status, 200, "总部自己的超管解得了");
+    const ui = fs.readFileSync(path.join(ROOT, "public", "js", "admin.js"), "utf8");
+    ok(/data-tfa=/.test(ui) && /\/reset-2fa"/.test(ui), "成员那一行有「解二次验证」按钮，接的就是这条接口");
+  }
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

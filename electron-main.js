@@ -9,6 +9,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { dataPath, seedDataDir, resolvePort } = require("./paths");
+const { throttleWhenAway } = require("./win-away");
 
 // ---------- 桌面壳这一层的文案 ----------
 /**
@@ -135,6 +136,52 @@ function bootLog(...parts) {
 }
 bootLog(`—— OpenWorkBuddy ${require("./package.json").version} 启动 · ${process.platform}/${process.arch} · Electron ${process.versions.electron} ——`);
 
+// ---------- 主线程卡顿记录（常开，见 bridge-main.js createStallWatch） ----------
+// 这个进程就是界面线程。卡过 250ms 记一行：卡了多久、桥上那会儿有哪几件活（只有名字，没有路径和内容）。
+// 行打到控制台（开发壳把它接进 ~/Library/Logs/OpenWorkBuddy.log），同时追加进启动日志；追加走异步，
+// 记卡顿这件事自己不许再卡界面。OWB_MAIN_STALL_MS 给测试调门槛（浸泡测试用 100）
+const MAIN_OPS = require("./bridge-main").createOpTracker();
+const MAIN_STALL = require("./bridge-main").createStallWatch({
+  thresholdMs: Number(process.env.OWB_MAIN_STALL_MS) > 0 ? Number(process.env.OWB_MAIN_STALL_MS) : 250,
+  ops: MAIN_OPS,
+  write: (line) => {
+    console.warn(line);
+    if (BOOT_LOG) fs.appendFile(BOOT_LOG, `[${new Date().toISOString()}] ${line}\n`, () => {});
+  },
+});
+MAIN_STALL.start();
+global.__owbMainStall = MAIN_STALL;   // 浸泡测试跟 electron-main 同一个进程，从这儿读卡顿记录
+global.__owbMainOps = MAIN_OPS;
+
+// ---------- 主进程 CPU 采样（只给测试：OWB_MAIN_PROFILE=要写的 .cpuprofile 路径） ----------
+// 卡顿记录说得出「那会儿有哪几件活」，说不出「卡在哪一帧」。测试宿主要点名到函数时开这个，
+// 退出前（或者 global.__owbMainProfile.stop()）落一份 Chrome DevTools 能直接打开的 .cpuprofile。平时不开：采样本身有开销
+const MAIN_PROFILE = (() => {
+  const out = String(process.env.OWB_MAIN_PROFILE || "");
+  if (!out) return null;
+  try {
+    const s = new (require("inspector").Session)();
+    s.connect();
+    s.post("Profiler.enable");
+    s.post("Profiler.setSamplingInterval", { interval: 500 }); // 0.5ms 一采：100ms 的卡顿能落 200 个样本
+    s.post("Profiler.start");
+    let stopping = null;
+    const stop = () => stopping || (stopping = new Promise((resolve) => {
+      s.post("Profiler.stop", (err, r) => {
+        try { if (!err && r && r.profile) fs.writeFileSync(out, JSON.stringify(r.profile)); } catch {}
+        try { s.disconnect(); } catch {}
+        resolve(err ? "" : out);
+      });
+    }));
+    bootLog(`[采样] 主进程 CPU 采样已开，退出时写到 ${out}`);
+    return { stop };
+  } catch (e) {
+    bootLog("▲ 主进程 CPU 采样没开起来：" + String((e && e.message) || e));
+    return null;
+  }
+})();
+global.__owbMainProfile = MAIN_PROFILE;
+
 // 端口优先级跟服务端共用一份实现（paths.js），各写各的必然漂——漂了的症状是窗口永远等不到人。
 // 端口要在 fatal 之前就位：报错文案里要用它，而异常可能发生在模块还没读完的时候
 let PORT;
@@ -153,6 +200,10 @@ const NO_GPU = process.env.OPENWORKBUDDY_DISABLE_GPU === "1" || (() => {
 if (NO_GPU) {
   try { app.disableHardwareAcceleration(); bootLog("已关闭硬件加速（disable_gpu）"); } catch {}
 }
+// 窗口收起来以后要降频（win-away.js），但不要 Chromium 藏满 5 分钟后那档「计时器一分钟才醒一次」：
+// 前端的断流看门狗、审批倒计时都挂在计时器上，晚一分钟才发现断流，用户切回来看到的是一条早就断了的流。
+// 必须在 ready 之前设
+try { app.commandLine.appendSwitch("disable-features", "IntensiveWakeUpThrottling"); } catch {}
 
 let win;
 let PAGE_UP = false; // 页面真加载出来了：之后再有偶发异常，不该把用户正在做的事掐掉
@@ -165,6 +216,32 @@ let QUIT_STATE = "";
 let SHUTDOWN = null; // shutdown() 那一趟的 Promise：谁来要都给同一个，收尾只做一遍
 let tray = null;     // 托盘图标。得有人一直拿着引用，被垃圾回收掉的话图标会从状态栏上凭空消失
 let trayLang = "";   // 托盘菜单眼下是哪种语言（refreshTray）：没变就不重建
+
+// 服务端跑在哪。2026-09-29 审计：几个对话一起跑时服务端在主进程里把事件循环卡到 p99 68ms、最长 330ms，
+// 窗口、菜单、托盘跟着一顿一顿（用户原话「开几个对话整个应用连带电脑都卡」）。所以默认挪进独立的
+// utilityProcess（server-host.js），这边只管窗口。OWB_SERVER_PROCESS=inproc 走老路子；
+// 独立进程起不来、反复崩，server-supervisor.js 自己退回老路子，日志里写明为什么
+const SERVER_PROCESS = process.env.OWB_SERVER_PROCESS === "inproc" ? "inproc" : "utility";
+let SERVER_REMOTE = false; // 眼下服务端是不是在独立进程里（退回之后变 false）
+let SUPERVISOR = null;     // server-supervisor.js 那个看护
+let SHELL_BRIDGE = null;   // bridge-main.js 那一半：测试宿主的 status 要报它接了几个 call（证明渲染真是过桥做的）
+let approvalNudge = null;  // 来审批了、窗口不在前台时提醒一下；独立进程报过来时调的也是它
+// 测试宿主（test/server-process.js）：不进 Dock、窗口在屏幕外、不弹任何系统框、不抢全局快捷键、不建托盘。
+// 没人去点的框挂在用户桌面上、被抢走的快捷键，都是在打扰一个正在干活的人。平时不设
+const HIDDEN = process.env.OWB_SHELL_HIDDEN === "1";
+if (HIDDEN) {
+  try { if (app.dock) app.dock.hide(); } catch {}
+  dialog.showErrorBox = (title, body) => console.error(`[隐藏运行] 报错框（没弹）：${title} · ${String(body || "").split("\n")[0]}`);
+  dialog.showMessageBox = async (...a) => {
+    const o = a[a.length - 1] || {};
+    console.log(`[隐藏运行] 询问框（没弹，按第一个按钮答）：${o.message || ""}`);
+    return { response: 0, checkboxChecked: false };
+  };
+  // 选文件夹 / 另存为：服务端在这个进程里跑（inproc、退回）时直接调的就是这两个，弹出来就挂在用户桌面上等人点
+  dialog.showOpenDialog = async () => { console.log("[隐藏运行] 选文件框（没弹，按取消答）"); return { canceled: true, filePaths: [] }; };
+  dialog.showSaveDialog = async () => { console.log("[隐藏运行] 存储框（没弹，按取消答）"); return { canceled: true, filePath: "" }; };
+  globalShortcut.register = () => true;
+}
 
 /**
  * 启动阶段的每一声崩溃都得有个出口。
@@ -226,6 +303,9 @@ const LEGACY_USERDATA = ["openbuddy", "workbuddy-clone"];
 // 显示名叫 OpenWorkBuddy（「关于」面板、系统通知的署名），但 userData 目录钉死在 openworkbuddy：
 // app.setName 会连带把 userData 改成 appData/OpenWorkBuddy，那等于第三次改名、用户又被登出一次
 app.setPath("userData", path.join(app.getPath("appData"), "openworkbuddy"));
+// 测试宿主（test/server-process.js）用自己的 userData：单实例锁就在这个目录里，跟用户正开着的那台共用一把锁，
+// 起测试就等于在他那台上触发 second-instance（窗口被拽到前台）。平时不设
+if (process.env.OWB_USER_DATA_DIR) app.setPath("userData", path.resolve(process.env.OWB_USER_DATA_DIR));
 app.setName("OpenWorkBuddy");
 /**
  * 「关于」面板那行版权：许可证和主页都从 package.json 读。
@@ -237,6 +317,7 @@ function aboutCopyright(pkg) {
 }
 app.setAboutPanelOptions({ applicationName: "OpenWorkBuddy", applicationVersion: require("./package.json").version, copyright: aboutCopyright(require("./package.json")) });
 (function migrateUserData() {
+  if (process.env.OWB_USER_DATA_DIR) return; // 测试宿主：用户那几个老目录一个都别碰
   try {
     const base = app.getPath("appData");
     const to = path.join(base, "openworkbuddy");
@@ -373,6 +454,7 @@ app.whenReady().then(async () => {
     width: place.width,
     height: place.height,
     ...(place.x !== undefined ? { x: place.x, y: place.y } : {}), // 不给 x/y 就是居中
+    ...(HIDDEN ? { x: -20000, y: -20000 } : {}),
     minWidth: WIN_SIZE.minWidth,
     minHeight: WIN_SIZE.minHeight,
     title: "OpenWorkBuddy",
@@ -380,9 +462,22 @@ app.whenReady().then(async () => {
     backgroundColor: "#ffffff",
     show: false, // 页面渲染好了再亮相（ready-to-show），不给用户看白屏；下面有兜底定时防止永不出现
     webPreferences: {
-      backgroundThrottling: false, // 窗口隐藏（快捷键收起）时任务还在流式回报，计时器不许被降频
+      // 看得见的时候不降频；收起、最小化时 throttleWhenAway 再打开，拿回来关上（为什么见 win-away.js）
+      backgroundThrottling: false,
     },
   });
+  // 测试宿主：亮相、抢焦点的几个口子全堵上（ready-to-show、3 秒兜底、activate 都会来叫）
+  if (HIDDEN) for (const k of ["show", "showInactive", "focus", "maximize", "moveTop"]) win[k] = () => {};
+  // 窗口不在前台 = 页面认为人走开了，任务一跑完就发系统通知——测试宿主的通知一样会落在用户的通知中心里。
+  // 通知权限整个拒掉（页面看到的是 denied，不会再弹），声音静掉
+  if (HIDDEN) {
+    try {
+      win.webContents.setAudioMuted(true);
+      session.defaultSession.setPermissionCheckHandler((_wc, perm) => perm !== "notifications");
+      session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(perm !== "notifications"));
+    } catch {}
+  }
+  throttleWhenAway(win, { log: bootLog });
   // 窗口挪了、拉大了就记下来；拖动时 move 一秒几十次，停手半秒再写。关窗那一下立刻写
   let saveTimer = null;
   const saveWinState = () => {
@@ -414,6 +509,9 @@ app.whenReady().then(async () => {
   };
   win.on("query-session-end", letSystemQuit); // Windows
   try { powerMonitor.on("shutdown", letSystemQuit); } catch {} // macOS / Linux
+  // 刚醒来那几十秒系统还压着 CPU（DarkWake），计时器迟到是系统干的，不记成界面卡顿
+  try { powerMonitor.on("resume", () => MAIN_STALL.pause(30000)); } catch {}
+  try { powerMonitor.on("suspend", () => MAIN_STALL.pause(30000)); } catch {}
 
   // 首绘打磨：正常流程 ready-to-show 在 ~0.7s 内到，一次干净的整页亮相；
   // 服务端起不来时它可能永远不触发，3 秒兜底强制亮窗，让用户看到报错而不是什么都没有。
@@ -458,6 +556,7 @@ app.whenReady().then(async () => {
         width: 1000, height: 780, backgroundColor: "#ffffff",
         webPreferences: { backgroundThrottling: false },
       });
+      throttleWhenAway(child); // 子窗口收起来一样降频
       child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
       attachContextMenu(child.webContents);
       child.loadURL(url);
@@ -490,7 +589,11 @@ app.whenReady().then(async () => {
   let onBound;
   const bound = new Promise((r) => { onBound = r; });
   global.__wbOnListen = (p, meta) => onBound({ port: p, ...(meta || {}) });
-  try {
+  // 默认先起独立服务进程。走不通（没监听 / 反复崩 / 它自己报错）返回 null，落到下面的老路子：
+  // 在这个进程里 require——同一个错会在这儿再抛一次，由 __wbBootFail 画进窗口，用户不会对着一个死窗口
+  const remote = SERVER_PROCESS === "utility" ? await startServerProcess() : null;
+  if (remote) onBound(remote);
+  else try {
     require(path.join(__dirname, "server.js"));
   } catch (e) {
     console.error("[启动] 服务端起不来:", e);
@@ -549,6 +652,7 @@ app.whenReady().then(async () => {
   win.on("closed", () => {
     win = null;
     global.__wbWin = null; // 留着一个已销毁的引用，server.js 那边取到就会往死对象上调方法
+    pushServerState({ winAlive: false });
     requestQuit(); // 统一出口：会走 will-quit，宠物在那儿 destroy、全局快捷键在那儿注销
   });
 
@@ -561,6 +665,9 @@ app.whenReady().then(async () => {
   win.webContents.on("did-finish-load", syncTrayLang);
   win.on("focus", syncTrayLang);
   win.on("blur", syncTrayLang);
+  // 独立服务进程问「是不是全屏」（/api/app/fullscreen 要切换）拿的是这边推过去的这份
+  win.on("enter-full-screen", () => pushServerState({ fullScreen: true }));
+  win.on("leave-full-screen", () => pushServerState({ fullScreen: false }));
 
   // Dock 角标跟着网页标题走：标题前缀「(n) 」就是「有 n 件事在等你」，网页那边只维护这一个数。
   // 不 preventDefault：窗口标题照旧跟网页走。Windows / 多数 Linux 上 setBadgeCount 是空操作，那边靠下面的闪烁
@@ -570,8 +677,13 @@ app.whenReady().then(async () => {
   });
   // 审批没有宠物那条提醒线（宠物只管 ask_user，而且已经 critical 弹过了），这里补一下轻的。
   // 标题变化时不弹：那会把 ask_user 再弹一遍。跟 server.js 用的是同一个 security 模块实例
+  // 服务端在独立进程里时审批队列也在那边：它报过来（bridge-main 的 approval.open）再走同一个回调
   try {
-    require(path.join(__dirname, "security.js")).watchApprovals((m) => {
+    const watchApprovals = SERVER_REMOTE ? (fn) => { approvalNudge = fn; } : (fn) => {
+      approvalNudge = fn;
+      return require(path.join(__dirname, "security.js")).watchApprovals(fn);
+    };
+    watchApprovals((m) => {
       if (!m || m.type !== "open" || !win || win.isDestroyed() || win.isFocused()) return;
       try {
         if (process.platform === "darwin" && app.dock) app.dock.bounce("informational");
@@ -967,29 +1079,40 @@ function childTree(psOut, root, keep) {
  * 任务被叫停时各自已经在杀自己那棵树了，这一步收的是漏网的——不收的话应用退了，
  * 它们还在后台占着端口和 CPU，下次启动 MCP 还会撞上自己的上一辈。返回送走了几个，只为记日志。
  */
-function killChildren(sig) {
+// 独立服务进程（2026-09-29 起默认）自己带 --type=utility，扫主进程这棵树时它连同底下的 MCP、模型起的
+// 开发服务器会被整枝刨掉——所以它的 pid 另算一个根（extra），它底下的照样收
+function killChildren(sig, extra = typeof serverRoots === "function" ? serverRoots() : []) {
   const cp = require("child_process");
   const keep = [];
   try { for (const m of app.getAppMetrics()) keep.push(m.pid); } catch {}
+  const roots = [process.pid, ...extra];
   try {
     if (process.platform === "win32") {
       // Windows 没有进程组、也没有 ps：PowerShell 列出直接子进程（带命令行，好认出 --type= 的 Electron 自家进程），
       // taskkill /T 连孙子一起带走。不分先礼后兵，一律 /F：走到这一步已经给过它们 3 秒了
-      const r = cp.spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-        `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${process.pid}' | ForEach-Object { [string]$_.ProcessId + ' ${process.pid} 0 ' + $_.Name + ' ' + $_.CommandLine }`],
-      { encoding: "utf8", timeout: 5000, windowsHide: true });
-      const { pids } = childTree(r.stdout, process.pid, keep.concat(r.pid || []));
-      for (const p of pids) {
-        try { cp.spawnSync("taskkill", ["/PID", String(p), "/T", "/F"], { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch {}
+      let n = 0;
+      for (const root of roots) {
+        const r = cp.spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+          `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${root}' | ForEach-Object { [string]$_.ProcessId + ' ${root} 0 ' + $_.Name + ' ' + $_.CommandLine }`],
+        { encoding: "utf8", timeout: 5000, windowsHide: true });
+        const { pids } = childTree(r.stdout, root, keep.concat(r.pid || []));
+        for (const p of pids) {
+          try { cp.spawnSync("taskkill", ["/PID", String(p), "/T", "/F"], { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch {}
+        }
+        n += pids.length;
       }
-      return pids.length;
+      return n;
     }
     // -ww：不截断命令行，--type= 在很长的一串参数后面
     const r = cp.spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,pgid=,args="], { encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
-    const { pids, groups } = childTree(r.stdout, process.pid, keep.concat(r.pid || []));
-    for (const g of groups) { try { process.kill(-g, sig); } catch {} }
-    for (const p of pids) { try { process.kill(p, sig); } catch {} }
-    return pids.length;
+    let n = 0;
+    for (const root of roots) {
+      const { pids, groups } = childTree(r.stdout, root, keep.concat(r.pid || []));
+      for (const g of groups) { try { process.kill(-g, sig); } catch {} }
+      for (const p of pids) { try { process.kill(p, sig); } catch {} }
+      n += pids.length;
+    }
+    return n;
   } catch (e) {
     bootLog("▲ 清子进程出错：" + String((e && e.message) || e));
     return 0;
@@ -1033,6 +1156,8 @@ function shutdown() {
       await new Promise((r) => setTimeout(r, 500));
       killed = killChildren("SIGKILL"); // 重新列一遍：半秒里走掉的不会再挨一下，pid 被别人复用了也伤不着
     }
+    // 独立服务进程最后才停：先停它的话，它底下没收走的子孙立刻过继给 init，上面那两遍就扫不到了
+    if (typeof stopServer === "function") await stopServer();
     bootLog(`退出收尾完：用时 ${Date.now() - t0}ms，子进程 ${termed} 个${killed ? `（其中 ${killed} 个不肯走，硬杀）` : ""}`);
   })().catch((e) => bootLog("▲ 退出收尾出错：" + String((e && e.message) || e)));
   return SHUTDOWN;
@@ -1124,7 +1249,7 @@ function syncTrayLang() {
 }
 
 function createTray() {
-  if (tray) return;
+  if (tray || HIDDEN) return; // 测试宿主不往用户的菜单栏上放图标
   try {
     // 图标用 public/ 那张（装机包里有，build/ 不进包）。给 1x 和 2x 两份，Retina 屏上不糊
     const src = nativeImage.createFromPath(path.join(__dirname, "public", "favicon.png"));
@@ -1144,8 +1269,12 @@ function createTray() {
 }
 
 app.on("will-quit", () => {
+  MAIN_STALL.stop();
+  if (MAIN_PROFILE) MAIN_PROFILE.stop(); // 同一线程上的调试会话是同步回话的：这一行返回时文件已经写好
+  try { if (SHELL_BRIDGE && SHELL_BRIDGE.pixels) SHELL_BRIDGE.pixels.close(); } catch {} // 缩图的临时目录
   // 系统关机那条路不走 shutdown（不拦它），子进程至少发一声 SIGTERM，别留在后台
   if (!SHUTDOWN) killChildren("SIGTERM");
+  if (SUPERVISOR) SUPERVISOR.kill(); // 独立服务进程：收尾那条路已经请它退过了，这里只是兜底
   try {
     globalShortcut.unregisterAll();
   } catch {}
@@ -1172,3 +1301,186 @@ app.on("activate", () => {
 // 宠物开着照样退。这条只在宠物关着（默认就是关着）时顺带触发一次；requestQuit 放行过之后再来就是直接退，重复无害。
 // 启动失败页那条路窗口上没挂 close 的闸，关掉它走的是这里：服务端没起来，问不出在跑的任务，直接收尾退出
 app.on("window-all-closed", () => requestQuit());
+
+// ---------- 独立服务进程（2026-09-29 起桌面版默认，为什么见 SERVER_PROCESS 那段） ----------
+/**
+ * 起独立服务进程，等它报端口。能用返回 {port, reused}；走不通返回 null，调用方退回在这个进程里 require server.js。
+ * dialog / shell / clipboard / 离屏渲染窗口这些只有主进程才有的东西，它发消息过来要（bridge-main.js）。
+ */
+async function startServerProcess() {
+  let electron = null;
+  try { electron = require("electron"); } catch {}
+  if (!electron || !electron.utilityProcess || typeof electron.utilityProcess.fork !== "function") {
+    bootLog("[服务进程] 这个 Electron 没有 utilityProcess，已改回在主进程里运行");
+    return null;
+  }
+  const shellBridge = SHELL_BRIDGE = require("./bridge-main").createShellBridge({
+    electron,
+    getWin: () => win,
+    pet: () => global.__openworkbuddyPet, // 宠物在服务端起来之后才建
+    registerShortcuts,
+    relaunch: relaunchApp,
+    onApproval: (m) => { if (approvalNudge) approvalNudge(m); },
+    bootLog,
+    hidden: HIDDEN,
+    ops: MAIN_OPS,
+    // 缩图三件活挪出界面线程（为什么见 thumb-sips.js）。OWB_MAIN_PIXELS=native 走回主线程 nativeImage，浸泡测试做反向对照用
+    pixels: process.platform === "darwin" && process.env.OWB_MAIN_PIXELS !== "native"
+      ? require("./thumb-sips").createSipsPixels() : null,
+  });
+  // 网页截图的 PNG 编码同理（见 htmlshot.js pngOf）：反向对照时一起退回界面线程上的 toPNG
+  if (process.env.OWB_MAIN_PIXELS === "native") require("./htmlshot")._internals.setEncoder({ native: true });
+  const nice = Number(process.env.OWB_SERVER_NICE);
+  SUPERVISOR = require("./server-supervisor").createServerSupervisor({
+    fork: (env) => electron.utilityProcess.fork(path.join(__dirname, "server-host.js"), [], {
+      serviceName: "OpenWorkBuddy Server", stdio: "pipe", cwd: process.cwd(), env,
+    }),
+    env: () => {
+      const alive = !!(win && !win.isDestroyed());
+      const env = {
+        ...process.env,
+        OWB_BRIDGE: "1",
+        // 服务进程里 app.isPackaged 问不到，数据根却要靠它定（paths.js）；server-host.js 会拿 OWB_DATA_DIR 对一遍账
+        OWB_PACKAGED: app.isPackaged ? "1" : "0",
+        OWB_DATA_DIR: dataPath(),
+        OWB_USER_DATA: app.getPath("userData"),
+        // 服务进程的 process.execPath 是 Electron Helper：拉「当 node 用」的子进程得用主程序（electron-bridge.nodeExec）
+        OWB_NODE_EXEC: process.execPath,
+        OWB_SHELL_PID: String(process.pid),
+        OWB_BRIDGE_STATE: JSON.stringify({
+          caps: { windows: true, pet: !HIDDEN },
+          winAlive: alive,
+          fullScreen: alive && win.isFullScreen(),
+        }),
+      };
+      // 带上它 server.js 会把自己当成 run_node 派生的子进程，不认「个人桌面版」
+      delete env.ELECTRON_RUN_AS_NODE;
+      return env;
+    },
+    shell: shellBridge,
+    log: bootLog,
+    readyMs: Number(process.env.OWB_SERVER_READY_MS) || undefined,
+    nice: Number.isFinite(nice) && nice > 0 ? nice : 5,
+    onPort: (p, reused) => {
+      SERVER_OWN = !reused;
+      SERVER_REMOTE = !reused;
+      if (p === PORT) return;
+      bootLog(`[服务进程] 重启后端口换了：${PORT} → ${p}`);
+      PORT = p;
+      if (win && !win.isDestroyed()) win.loadURL(`http://127.0.0.1:${PORT}`);
+    },
+    onFallback: (why) => fallBackInproc(why),
+  });
+  const r = await SUPERVISOR.start();
+  if (!r) { SUPERVISOR = null; return null; }
+  SERVER_REMOTE = !r.reused;
+  if (SERVER_REMOTE) bootLog(`[服务进程] 服务端在独立进程里（pid ${SUPERVISOR.pid()}），主进程只管窗口`);
+  return r;
+}
+
+/**
+ * 独立服务进程跑起来之后 5 分钟内又崩满 3 次：不再折腾它，在这个进程里接着跑（钉在原来那个口上，窗口不用换地址）。
+ * 这一路跟启动时退回是同一个结果，只是晚一点——用户手上的是一个还能用的应用，不是一个连不上的窗口。
+ */
+function fallBackInproc(why) {
+  SUPERVISOR = null;
+  SERVER_REMOTE = false;
+  if (QUIT_STATE) return; // 正在退：不用再起
+  bootLog(`[服务进程] 改在主进程里接着跑（${why}）`);
+  process.env.PORT = String(PORT);
+  global.__wbOnListen = (p) => {
+    if (p === PORT) return;
+    bootLog(`端口换了：${PORT} → ${p}（原来那个被别的程序占着）`);
+    PORT = p;
+    if (win && !win.isDestroyed()) win.loadURL(`http://127.0.0.1:${PORT}`);
+  };
+  if (approvalNudge) { try { require(path.join(__dirname, "security.js")).watchApprovals(approvalNudge); } catch {} }
+  try {
+    require("./server.js");
+  } catch (e) {
+    console.error("[启动] 服务端起不来:", e);
+    showBootFailure(e);
+  }
+}
+
+/** 窗口在不在、是不是全屏：推给独立服务进程（它那边的 global.__wbWin 就靠这一份） */
+function pushServerState(patch) {
+  if (SUPERVISOR) SUPERVISOR.post({ t: "state", patch });
+}
+
+/** killChildren 要多扫的根 */
+function serverRoots() {
+  return SUPERVISOR ? SUPERVISOR.roots() : [];
+}
+
+/** 退出收尾的最后一步：请独立服务进程自己收尾（停 MCP），等不到就杀 */
+async function stopServer() {
+  if (SUPERVISOR) await SUPERVISOR.stop();
+}
+
+/** 数据恢复之后的「重启应用」（server.js /api/backup/restart 从服务进程发过来） */
+function relaunchApp() {
+  if (HIDDEN) return bootLog("[隐藏运行] 收到重启请求，测试宿主不重启");
+  bootLog("重启应用（数据恢复之后）");
+  try { killChildren("SIGTERM"); } catch {}
+  if (SUPERVISOR) SUPERVISOR.kill();
+  app.relaunch();
+  app.exit(0);
+}
+
+/**
+ * 测试宿主的遥控（只在 OWB_SHELL_HIDDEN=1 时接）：stdin 一行一个命令。
+ * lag 那一份是主进程事件循环的迟到量——CF-2 要证明的就是这个数：服务端挪走以后，对话跑得再多它也不该涨。
+ */
+if (HIDDEN) {
+  const step = 10;
+  // 量迟到用单调钟，另拿墙钟对一下：2026-09-29 浸泡测试里那个 2000ms 是合盖睡了 181 秒（Date.now 睡着也走），
+  // 不是主线程卡住。两个钟差出一秒以上 = 这一拍跨过了睡眠，记进 slept、不算迟到——测试据此判这一轮作废
+  const mono = () => require("perf_hooks").performance.now();
+  let samples = [], max = 0, last = mono(), lastWall = Date.now(), slept = 0;
+  const tick = setInterval(() => {
+    const now = mono(), wallNow = Date.now();
+    const gap = now - last, wallGap = wallNow - lastWall;
+    last = now; lastWall = wallNow;
+    if (wallGap - gap > 1000) { slept++; return; }
+    const d = Math.max(0, Math.round(gap - step));
+    samples.push(d);
+    if (d > max) max = d;
+    if (samples.length > 200000) samples = samples.slice(-100000);
+  }, step);
+  if (tick.unref) tick.unref();
+  const lag = () => {
+    const s = samples.slice().sort((a, b) => a - b);
+    const q = (p) => (s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : 0);
+    return { n: s.length, p50: q(0.5), p99: q(0.99), max, slept };
+  };
+  let buf = "";
+  try {
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (d) => {
+      buf += d;
+      for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) {
+        const cmd = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (cmd === "quit") requestQuit();
+        else if (cmd === "lag-reset") { samples = []; max = 0; slept = 0; last = mono(); lastWall = Date.now(); }
+        else if (cmd === "status") {
+          console.log("OWB_CTL " + JSON.stringify({
+            lag: lag(), remote: SERVER_REMOTE, port: PORT, pageUp: PAGE_UP,
+            serverPid: SUPERVISOR ? SUPERVISOR.pid() : 0, starts: SUPERVISOR ? SUPERVISOR.starts : 0,
+            bridge: SHELL_BRIDGE ? { ...SHELL_BRIDGE.counts } : null,
+            stall: { ...MAIN_STALL.counts, max: MAIN_STALL.maxMs, last: MAIN_STALL.stalls.slice(-5) },
+            ops: MAIN_OPS.stats(),
+            pixels: SHELL_BRIDGE && SHELL_BRIDGE.pixels ? { ...SHELL_BRIDGE.pixels.counts } : null,
+            shot: (() => { try { return { ...require("./htmlshot")._internals.state().stats }; } catch { return null; } })(),
+          }));
+        }
+        else if (cmd === "profile-stop" && MAIN_PROFILE) {
+          MAIN_PROFILE.stop().then((f) => console.log("OWB_CTL " + JSON.stringify({ profile: f })));
+        }
+      }
+    });
+    // 跑测试的那个进程没了：别留一个谁也看不见、谁也不管的应用在后台
+    process.stdin.on("end", () => requestQuit());
+  } catch {}
+}

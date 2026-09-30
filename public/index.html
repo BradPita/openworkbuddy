@@ -335,6 +335,13 @@
      那会儿还写着「↑↓ 挑」是在指一条走不通的路 */
   .mention-menu .mh-k { flex: none; white-space: nowrap; }
   .turn { margin-bottom: 22px; }
+  /* 长对话顶上那颗「显示更早的 N 轮」（app-02 showOlderTurns）。往前补画的几轮装在 .turns-older 里，
+     display:contents 让盒子本身不占位，里面的 .turn 跟直接挂在对话里时排得一模一样 */
+  .turns-older { display: contents; }
+  .turns-more { display: flex; align-items: center; gap: 6px; margin: 0 auto 18px; padding: 5px 14px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: var(--owb-bg); color: var(--owb-text-2); font: inherit; font-size: 13px; cursor: pointer; }
+  .turns-more:hover { background: var(--owb-bg-hover); color: var(--owb-text); }
+  .turns-more:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 2px; }
+  .turns-more .i { width: 14px; height: 14px; }
   /* 从资料库跳过来落在哪一轮，得让人一眼看见。滚过去不标记的话，
      人只知道「页面动了一下」，不知道该看哪儿——尤其那一轮正好在屏幕中间时 */
   /* 高亮用 box-shadow 的扩散而不是一个往外撑的 ::before：两者画出来一模一样（底色 + 四周
@@ -758,6 +765,14 @@
   .hist-item:hover .hx, .hist-item:focus-within .hx { opacity: 1; pointer-events: auto; }
   .hist-item .hx:hover { color: var(--owb-err-text); }
   .hist-item .hx .i { width: 13px; height: 13px; display: block; }
+  /* 在跑那几行的「停」（app-02 histStopHtml）：跟 × 一样平时透明、扫过或 Tab 到才显形；
+     触屏没有 hover，一直显形——不然手机上停不了后台那条。正在停的那一下常亮、不再吃点击 */
+  .hist-item .hstop { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
+  .hist-item:hover .hstop, .hist-item:focus-within .hstop { opacity: 1; pointer-events: auto; }
+  .hist-item .hstop:hover { color: var(--owb-err-text); }
+  .hist-item .hstop .i { width: 11px; height: 11px; display: block; }
+  .hist-item .hstop.is-stopping { opacity: 1; cursor: default; animation: hrun-pulse 1.2s ease-in-out infinite; }
+  @media (hover: none), (pointer: coarse) { .hist-item .hstop { opacity: 1; pointer-events: auto; } }
   /* 工程线顶上那一撮：这台机器的终端此刻正在跑的活儿，跟存下来的历史分开列 */
   /* 空态要能换行：它写的是「在终端里跑 openworkbuddy 你的活儿」，一句话比一行宽 */
   .hist-empty { font-size: 12px; line-height: 1.7; color: var(--owb-text-3); padding: 6px 10px; white-space: normal; }
@@ -1951,6 +1966,33 @@
   .tpl-card .ops { display: flex; gap: 6px; margin-top: auto; }
   .tpl-card .ops button { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--owb-text-2); }
   .tpl-card .ops button.primary { background: var(--owb-brand); border-color: var(--owb-brand-text); color: #fff; }
+  .tpl-card .ops { flex-wrap: wrap; align-items: center; }
+  .tpl-card .ops .sp { flex: 1; }
+  .tpl-card .ops .tpl-del:hover { color: var(--owb-err-text); border-color: var(--owb-err-text); }
+  .tpl-card .ops .tpl-restore { display: inline-flex; align-items: center; gap: 4px; }
+  .tpl-card .ops .tpl-note { font-size: 12px; color: var(--owb-text-3); }
+  /* 来源标签：只给自己加的两层挂，内置的不挂——十几张卡片全挂一个「内置」等于都没挂 */
+  .tpl-card .src { font-size: 12px; border-radius: var(--radius-sm); padding: 1px 7px; color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  .tpl-card .src.org { color: var(--owb-ok-text); background: var(--owb-ok-bg); }
+  .tpl-warn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; font-size: 13px; color: var(--owb-err-text); }
+  .tpl-warn[hidden] { display: none; }
+  .hub-empty .btn-plain { margin-left: 8px; }
+  /* 模板编辑框：askText 那个 400px 的框装不下几百字的提示词 */
+  .ask-box.tpl-ed { width: 600px; max-height: calc(100vh - 40px); overflow: auto; }
+  .tpl-ed .tpl-f { display: block; margin-top: 12px; }
+  .tpl-ed .tpl-f > span { display: block; margin-bottom: 4px; font-size: 12px; color: var(--owb-text-2); }
+  .tpl-ed .tpl-f .ask-in { margin-top: 0; }
+  .tpl-ed .tpl-f2 { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+  .tpl-ed .tpl-f2 .tpl-f { margin-top: 12px; }
+  .tpl-ed textarea.tpl-p { display: block; width: 100%; box-sizing: border-box; min-height: 180px; resize: vertical; padding: 8px 10px; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; color: var(--owb-text); background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-md); outline: none; }
+  .tpl-ed textarea.tpl-p:focus { border-color: var(--owb-brand-text); }
+  .tpl-ed .tpl-icons { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tpl-ed .tpl-ico { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); color: var(--owb-text-2); cursor: pointer; }
+  .tpl-ed .tpl-ico.on { border-color: var(--owb-brand-text); color: var(--owb-brand-text); box-shadow: inset 0 0 0 1px var(--owb-brand-text); }
+  .tpl-ed .tpl-scope { display: inline-flex; border: 1px solid var(--owb-border); border-radius: var(--radius-md); overflow: hidden; }
+  .tpl-ed .tpl-scope button { border: 0; background: var(--owb-bg); padding: 5px 16px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
+  .tpl-ed .tpl-scope button.on { background: var(--owb-brand); color: #fff; }
+  @media (max-width: 560px) { .tpl-ed .tpl-f2 { grid-template-columns: 1fr; gap: 0; } }
 
   /* ===== 项目页 ===== */
   .pg-hero { margin: 4px 0 18px; }
@@ -2335,6 +2377,10 @@
       scroll-behavior: auto !important;
     }
   }
+  /* 桌面版窗口收起来、最小化了（主进程挂上 owb-away，见 win-away.js）：无限循环的呼吸灯、转圈一律停住。
+     2026-09-28 实测：以前窗口藏起来界面照样按 120Hz 在画，侧栏每个在跑的对话一盏呼吸灯，谁也看不见。
+     只停不改：拿回窗口那一下接着转；全项目没人监听 animationend，停着也卡不住谁。 */
+  body.owb-away *, body.owb-away *::before, body.owb-away *::after { animation-play-state: paused !important; }
 
   /* 滚到底之后别把滚动传给外层：文件面板、设置弹窗、聊天流都是独立的一块，
      在里面划到头还继续带动整页（或者在 macOS 上触发返回上一页的橡皮筋），是最出戏的一下。 */
@@ -2485,6 +2531,8 @@
   .eng-x input, .eng-x select { height: var(--owb-ctl-h-sm); font-size: 12.5px; }
   .eng-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .eng-try { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .eng-bin { margin-top: 8px; }
+  .eng-bin input { flex: 1 1 220px; min-width: 0; height: var(--owb-ctl-h-sm); font-size: 12.5px; }
   .eng-r { margin-top: 8px; font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--owb-border); background: var(--owb-bg-hover); }
   .eng-r.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); background: color-mix(in srgb, var(--owb-ok) 6%, transparent); }
   .eng-r.bad { border-color: color-mix(in srgb, var(--owb-err) 34%, transparent); color: var(--owb-err-text); background: color-mix(in srgb, var(--owb-err) 6%, transparent); }
@@ -2983,6 +3031,7 @@
   <div class="rsz l" data-rsz="fp" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整成果文件面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <h2><span><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><a href="#" id="fp-sweep" class="link" style="font-weight:400;font-size: 12px" title="看看哪些是任务跑完剩下的中间文件">整理文件夹</a><span style="flex:1"></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
   <div class="fp-filter" id="fp-filter" hidden>
+    <div class="fp-segs" id="fp-scope" hidden></div>
     <input id="fp-q" class="fp-q" type="search" placeholder="按名字找：文件名、文件夹名…" autocomplete="off" spellcheck="false" aria-label="按名字筛选成果文件" hidden>
     <div class="fp-segs" id="fp-segs" hidden></div>
   </div>

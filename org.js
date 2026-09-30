@@ -144,6 +144,37 @@ function normalizeBudget(v) {
   return { org_yuan: money(v.org_yuan), default_user_yuan: money(v.default_user_yuan) };
 }
 
+/**
+ * 租户组织的管理员能改自己组织的大多数设置，但下面这几格只有平台管理员能往松了改——
+ * 它们要么是平台卖出去的东西，要么动的是整台机器：
+ *   allow_shell     命令行跑在平台的机器上，一开就摸得到别家的目录。关得了，开不了
+ *   price_discount  记账折扣。自己改等于自己给自己打折
+ *   budget.org_yuan 整个组织每月花多少钱的封顶
+ *   api_quota       付费第三方 API 花的是平台的 Key
+ * 跟现值一样的照收不误（整页表单保存时这几格原样带回来，不能因此报错）。
+ * 返回拍过的 settings 和被挡下来的那几格的中文名，路由拿去报错。
+ */
+const TENANT_HELD_LABEL = { allow_shell: "允许运行命令行", price_discount: "记账折扣", org_yuan: "组织每月封顶", api_quota: "付费 API 额度" };
+function tenantHeld(cur, settings) {
+  const out = { ...(settings || {}) };
+  const refused = [];
+  if ("allow_shell" in out && !!out.allow_shell && cur.allow_shell === false) { delete out.allow_shell; refused.push(TENANT_HELD_LABEL.allow_shell); }
+  if ("price_discount" in out && Math.min(1, money(out.price_discount) || 1) !== cur.price_discount) { delete out.price_discount; refused.push(TENANT_HELD_LABEL.price_discount); }
+  if ("api_quota" in out && JSON.stringify(require("./quota").normalizeTable(out.api_quota)) !== JSON.stringify(require("./quota").normalizeTable(cur.api_quota))) {
+    delete out.api_quota;
+    refused.push(TENANT_HELD_LABEL.api_quota);
+  }
+  if ("budget" in out) {
+    const was = normalizeBudget(cur.budget);
+    const b = out.budget;
+    const want = normalizeBudget(b && typeof b === "object" && !Array.isArray(b) ? { ...was, ...b } : b);
+    if (want.org_yuan !== was.org_yuan) refused.push(TENANT_HELD_LABEL.org_yuan);
+    // 只带了人均那一格的话，normalizeBudget 会把组织封顶补成 0（= 不限）。所以这里总是按现值回填
+    out.budget = { ...want, org_yuan: was.org_yuan };
+  }
+  return { settings: out, refused };
+}
+
 /** 有范围的数字开关：存之前夹住，界面上显示的就是真正执行的那个值 */
 const SETTING_RANGE = {
   session_days: [1, 365],
@@ -227,6 +258,10 @@ function rootDirOf(org, baseWorkspace) {
   if (org.root_dir) return path.resolve(org.root_dir);
   return path.join(DATA_DIR, "tenants", org.id);
 }
+/** 没指定目录的租户根都建在这下面一层（应用自己建的，成果按对话分文件夹，见 lib/task-dirs.js） */
+function tenantsDir() {
+  return path.join(DATA_DIR, "tenants");
+}
 
 function createOrg({ name, plan, seats, expires_at, actor }) {
   const db = load();
@@ -244,7 +279,9 @@ function createOrg({ name, plan, seats, expires_at, actor }) {
     expires_at: expires_at || null,
     root_dir: "",
     created_at: new Date().toISOString(),
-    settings: { ...ORG_DEFAULTS, member_monthly_credits: PLANS[p].monthly_credits },
+    // 新租户默认不给命令行：它跑在平台这台机器上，工作目录那道墙挡不住 shell。
+    // 要给的话平台管理员在组织列表里单独打开（租户自己开不了，见 tenantHeld）
+    settings: { ...ORG_DEFAULTS, allow_shell: false, member_monthly_credits: PLANS[p].monthly_credits },
   };
   db.orgs.push(org);
   pushAudit(db, { org: org.id, actor, action: "创建组织", target: org.name, detail: `套餐 ${PLANS[p].label}` });
@@ -297,7 +334,9 @@ function updateOrg(id, patch, actor) {
           // 不能走 String(v) 那条 —— 那会把整张表存成 "[object Object]"。
           : k === "api_quota" ? require("./quota").normalizeTable(v)
           : k === "dept_templates" ? normalizeDeptTemplates(v)
-          : k === "budget" ? normalizeBudget(v)
+          // 只带一格就只改一格：平台在组织列表里改封顶、租户在中转站页改人均，各改各的，
+          // 不能因为请求里没带另一格就把它清成 0（= 不限）
+          : k === "budget" ? normalizeBudget(v && typeof v === "object" && !Array.isArray(v) ? { ...(s.budget || {}), ...v } : v)
           : String(v);
       // 有范围的数字必须在**存进去的时候**就夹住。只在读的那头夹，界面会显示 3、
       // 实际按 6 执行——管理员看到的和系统执行的不是一件事，这种设置比没有还难查。
@@ -316,7 +355,10 @@ function updateOrg(id, patch, actor) {
   return org;
 }
 
-/** 套餐信息 + 有没有过期。过期不锁死功能，只在后台亮红——自建部署里锁死等于自己砸自己的服务 */
+/**
+ * 套餐信息 + 有没有过期。默认组织过期只在后台亮红、不锁任何东西——那是这台机器的主人自己，
+ * 自建部署里锁死等于自己砸自己的服务。租户组织过期之后发不起新任务，见 expiredProblem
+ */
 function planInfo(org) {
   const o = org || getOrg(DEFAULT_ORG);
   const plan = PLANS[o.plan] ? o.plan : "free";
@@ -329,6 +371,20 @@ function planInfo(org) {
     expired: !!(exp && exp < Date.now()),
     days_left: exp ? Math.ceil((exp - Date.now()) / 86400000) : null,
   };
+}
+
+/**
+ * 租户组织到期了：不能再发起新任务——界面、飞书、定时任务、中转 Key 四条路一起停。
+ * 登录、翻历史、下载成果照常：数据是人家的，没续费也不能扣着不给。
+ * 默认组织永远不算（理由见 planInfo）。平台要立刻停掉一家，把到期时间改成今天之前就是。
+ * 返回一句话（后半句按场合换，默认说新任务），没到期返回空串
+ */
+function expiredProblem(orgId, then = "续期后才能发起新任务") {
+  const id = orgId || DEFAULT_ORG;
+  if (id === DEFAULT_ORG) return "";
+  const o = load().orgs.find((x) => x.id === id);
+  if (!o || !planInfo(o).expired) return "";
+  return `「${o.name}」已于 ${String(o.expires_at).slice(0, 10)} 到期，${then}`;
 }
 
 // ---------- 部门 ----------
@@ -381,7 +437,14 @@ function createInvite(orgId, { role, dept, max_uses, days, actor }) {
     created_at: new Date().toISOString(),
   };
   db.invites.unshift(inv);
-  db.invites = db.invites.slice(0, 200);
+  // 200 张是每个组织各自的上限。以前是全站一共 200 张：一家连发 200 张，
+  // 别家已经发出去、还没人用的码就被挤掉了，拿着码的人注册时只看到「邀请码不对」
+  const per = new Map();
+  db.invites = db.invites.filter((i) => {
+    const n = (per.get(i.org) || 0) + 1;
+    per.set(i.org, n);
+    return n <= 200;
+  });
   pushAudit(db, { org, actor, action: "生成邀请码", target: code, detail: `${inv.role} · ${inv.max_uses} 次 · ${new Date(inv.expires_at).toLocaleDateString("zh-CN")} 到期` });
   save(db);
   return inv;
@@ -612,8 +675,8 @@ function listAudit(orgId, opts) {
 
 module.exports = {
   DEFAULT_ORG, PLANS, PLAN_ORDER, ORG_DEFAULTS,
-  listOrgs, getOrg, createOrg, updateOrg, multiTenant, orgIdOf, rootDirOf, settingsOf, planInfo,
-  normalizeBudget, normalizeDeptTemplates,
+  listOrgs, getOrg, createOrg, updateOrg, multiTenant, orgIdOf, rootDirOf, tenantsDir, settingsOf, planInfo, expiredProblem,
+  normalizeBudget, normalizeDeptTemplates, tenantHeld,
   listDepts, addDept, removeDept,
   createInvite, listInvites, peekInvite, consumeInvite, revokeInvite,
   audit, listAudit,

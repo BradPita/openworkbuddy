@@ -25,8 +25,118 @@ const toolward = require("./toolward");
 const log = require("./log");
 
 const SKILLS_DIR = dataPath("skills");
+// 跟 plugins.js 的 PLUGINS_DIR 同一个定义。这里不 require plugins.js：它反过来要 require 本文件（parseFrontmatter）
+const PLUGINS_DIR = dataPath("plugins");
+// 技能开关表（已添加 ≠ 已启用）落在这儿。文件还没有也照样进签名：它一出现，技能表就得重算
+const STATE_FILE = path.join(SKILLS_DIR, ".state.json");
+
+/**
+ * loadSkills 的缓存。
+ *
+ * 一轮对话里 getSkills 至少调 4 次（系统提示词、use_skill、CLI 引擎的技能清单、开工前那道闸），
+ * server.js 还要调一次；每次都 readFileSync 52 个 skill.md（约 297KB）再加插件技能。
+ * 5 个对话一起跑就是每轮 20 多次、上千次同步读，全堵在事件循环上，流式输出跟着一顿一顿。
+ *
+ * 签名只 stat 不读正文：skills/ 和 plugins/ 目录、每个技能目录、每个 skill.md 的 mtime+大小、.state.json。
+ * - 1 秒内直接复用，只比「目录级签名」（3 次 stat + 本文件写盘计数）：新建/删掉/改名一个技能当场就认；
+ * - 过了 1 秒比一遍完整签名，对上了接着用，对不上整张表重读；
+ * - 走本文件的增删改装（saveSkill / deleteSkill / copySkillFolder）当场作废，不等那 1 秒。
+ * 绕开这些路径、就地改写已有 skill.md 的（手改文件、save_skill 工具覆盖同名技能），最多晚 1 秒生效。
+ */
+const CACHE_TTL_MS = 1000;
+const skillsCache = {
+  enabled: true, // 测试的反向对照要关掉它，看每轮读盘次数是不是跟着涨
+  list: null,
+  sig: "",
+  quick: "",
+  checkedAt: 0,
+  gen: 0,
+  stats: { loads: 0, hits: 0, fullChecks: 0, invalidations: 0 },
+};
+
+/** 一个路径的「变没变」：mtime + 大小 + 链接数（目录里多一个子目录 nlink 就 +1，mtime 撞同一个刻度也认得出） */
+function statKey(p) {
+  try {
+    const st = fs.statSync(p);
+    return `${st.mtimeMs}:${st.size}:${st.nlink}`;
+  } catch {
+    return "-";
+  }
+}
+
+function subdirNames(dir, skipDot) {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !(skipDot && e.name.startsWith(".")))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function quickSignature() {
+  return `${skillsCache.gen}|${statKey(SKILLS_DIR)}|${statKey(STATE_FILE)}|${statKey(PLUGINS_DIR)}`;
+}
+
+/** 完整签名：跟 loadSkills / plugins.pluginSkills 读的是同一批文件，只是全用 stat */
+function fullSignature(quick) {
+  const parts = [quick];
+  for (const name of subdirNames(SKILLS_DIR, false)) {
+    const dir = path.join(SKILLS_DIR, name);
+    let file = "";
+    try { file = fs.readdirSync(dir).find((f) => /^skill\.md$/i.test(f)) || ""; } catch {}
+    parts.push(`${name}|${statKey(dir)}|${file ? file + "@" + statKey(path.join(dir, file)) : "-"}`);
+  }
+  for (const name of subdirNames(PLUGINS_DIR, true)) {
+    const root = path.join(PLUGINS_DIR, name);
+    const sdir = path.join(root, "skills");
+    parts.push(`plugin:${name}|${statKey(root)}|${statKey(path.join(root, "plugin.json"))}|${statKey(sdir)}`);
+    let names = [];
+    try { names = fs.readdirSync(sdir).sort(); } catch {}
+    for (const n of names) parts.push(`  ${n}|${statKey(path.join(sdir, n))}|${statKey(path.join(sdir, n, "SKILL.md"))}`);
+  }
+  return parts.join("\n");
+}
+
+/** 走本文件写盘的路径调它：下一次 loadSkills 必定重读 */
+function invalidateSkillsCache() {
+  skillsCache.gen++;
+  skillsCache.list = null;
+  skillsCache.stats.invalidations++;
+}
+
+// 每次给一份新数组、新对象：调用方往里塞字段、排序、截断，都不该改到缓存里那份
+const copySkills = (list) => list.map((s) => ({ ...s }));
 
 function loadSkills() {
+  const c = skillsCache;
+  if (!c.enabled) return readSkillsFromDisk();
+  const quick = quickSignature();
+  const now = performance.now();
+  let sig = null;
+  if (c.list && quick === c.quick) {
+    if (now - c.checkedAt < CACHE_TTL_MS) {
+      c.stats.hits++;
+      return copySkills(c.list);
+    }
+    c.stats.fullChecks++;
+    sig = fullSignature(quick);
+    if (sig === c.sig) {
+      c.checkedAt = now;
+      c.stats.hits++;
+      return copySkills(c.list);
+    }
+  }
+  // 签名先算、正文后读：读的过程中又有人改了盘，下一次签名对不上会再读一遍，不会把旧的当新的留下
+  if (sig === null) sig = fullSignature(quick);
+  const list = readSkillsFromDisk();
+  Object.assign(c, { list, sig, quick, checkedAt: performance.now() });
+  c.stats.loads++;
+  return copySkills(list);
+}
+
+function readSkillsFromDisk() {
   const skills = [];
   if (fs.existsSync(SKILLS_DIR)) {
     for (const entry of fs.readdirSync(SKILLS_DIR, { withFileTypes: true })) {
@@ -58,7 +168,7 @@ function safePluginSkills() {
   }
 }
 
-// ---------- 技能管理（新建/编辑/删除/从 GitHub 安装），getSkills 每次现读磁盘，改完即热生效 ----------
+// ---------- 技能管理（新建/编辑/删除/从 GitHub 安装）。改完当场作废 loadSkills 的缓存，下一次 getSkills 就是新的 ----------
 
 function safeName(name) {
   const n = String(name || "").trim().replace(/[\/\\:*?"<>|\s]+/g, "-").slice(0, 60);
@@ -166,7 +276,12 @@ function saveSkill({ name, description, content, original_name, _scanned, confir
     }
   }
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "skill.md"), body, "utf8");
+  try {
+    fs.writeFileSync(path.join(dir, "skill.md"), body, "utf8");
+  } finally {
+    // 就地改写 skill.md 不动目录的 mtime，1 秒内的目录级签名看不出来：这里当场作废
+    invalidateSkillsCache();
+  }
   if (scan && scan.level !== "ok") writeProvenance(n, { source: "手写", actor, forced: !!force, scan });
   return getSkillFull(n);
 }
@@ -175,7 +290,11 @@ function deleteSkill(name) {
   assertNotPluginSkill(name, "删除");
   const dir = findSkillDir(name);
   if (!dir) return false;
-  fs.rmSync(dir, { recursive: true, force: true });
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } finally {
+    invalidateSkillsCache();
+  }
   return true;
 }
 
@@ -213,7 +332,12 @@ function copySkillFolder(src, destName) {
       }
     }
   };
-  walk(src, dest, "");
+  // 拷到一半抛错也作废：半截目录已经在盘上了，技能表得照盘上的来
+  try {
+    walk(src, dest, "");
+  } finally {
+    invalidateSkillsCache();
+  }
   return { dest, skipped, bytes };
 }
 
@@ -757,5 +881,6 @@ module.exports = {
   parseFrontmatter, dirSize, safeName, adaptLibraryAsSkill, defaultInstallOpts,
   // 安装那道闸的内部件：测试要能直接按住「拷贝之前」这一刻验，
   // 走 installFromGitHub 得先有个 GitHub 仓库，那验的就不是闸而是网络了。
-  _internals: { gate, installedFromDir, writeProvenance, copySkillFolder, discoverSkillDirs },
+  _internals: { gate, installedFromDir, writeProvenance, copySkillFolder, discoverSkillDirs, skillsCache },
+  invalidateSkillsCache,
 };

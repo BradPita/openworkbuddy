@@ -137,7 +137,7 @@ function canvasAskNewBoardName() {
       + `<label><span>生视频模型</span>${modelSelect("videoModel", "video")}<small class="canvas-drama-price" data-drama-price="video"></small></label>`
       + `<div class="canvas-create-board-error" aria-live="polite"></div><div class="canvas-create-board-actions"><button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-canvas-create-cancel>取消</button><button type="submit" class="ui-btn ui-btn--brand ui-btn--sm">创建</button></div></form>`;
     const finish = (value) => { overlay.remove(); document.removeEventListener("keydown", onKey); resolve(value); };
-    const onKey = (event) => { if (event.key === "Escape") finish(""); };
+    const onKey = (event) => { if (event.key === "Escape" && !imeKey(event)) finish(""); }; // 画布名称里拼音打一半按 Esc：取消拼字，不是把整张表关了
     // 单价：换一个模型问一次。问的时候那一格先空着，回来时模型已经又换了就不写（写上去的是上一个的价）
     const fillPrice = async (cap) => {
       const spot = overlay.querySelector(`[data-drama-price="${cap}"]`), select = overlay.querySelector(`select[name="${cap}Model"]`);

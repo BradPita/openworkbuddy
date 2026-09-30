@@ -560,45 +560,62 @@ async function canvasChatRun() {
   const referenceContext = canvasReferenceContext(references);
   const mode = document.querySelector("[data-canvas-chat-mode]")?.value || "craft";
   const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。需要生图、生视频或配音时直接调用对应工具，并把真实产物路径写回当前画布。" + referenceContext + "\n用户指令：" + userText;
-  let answer = "", assistant = null, sawDone = false;
+  let answer = "", assistant = null, sawDone = false, followed = false;
   const turn = canvasTurnStart(sessionId, directive, mode, userText);
   const write = (value) => {
     if (!assistant) assistant = canvasChatAppend("agent", "", "is-live");
     answer += String(value || ""); if (assistant) assistant.textContent = canvasChatDisplayText(answer);
     const log = document.getElementById("canvas-chat-log"); if (log) log.scrollTop = log.scrollHeight;
   };
+  // 画布右栏自己要的那几种事件。POST 的流里来的、整页那条直播里来的，都从这一个口子进
+  const side = (event) => {
+    if (event.type === "done") sawDone = true;
+    if (event.type === "text") write(event.delta);
+    else if (event.type === "title") canvasRenameTask(sessionId, event.title);
+    else if (event.type === "tool_use") canvasChatAppend("agent", `执行：${event.name || event.tool || "工具"}`, "is-status is-running");
+    else if (event.type === "tool_result") canvasChatAppend("agent", `完成：${canvasCompactToolPreview(event.preview)}`, "is-status is-complete");
+    else if (event.type === "error") canvasChatAppend("agent", `失败：${event.message || "执行失败"}`, "is-status is-error");
+    else if (event.type === "done") canvasChatAppend("agent", "已完成 · 画布已同步", "is-status is-complete");
+  };
+  // detach：服务端收下就回话，过程走整页那一条直播（app-02 的 liveCh）。画布以前自己攥着一条 POST 的流跑完全程——
+  // 多开对话时 Chromium 同一主机最多 6 条连接，画布这条也占一个坑（2026-09-28 那次一片白，见 liveCh 的注释）。
+  // 主界面的回合没挂上（画布单独开）、或者已经知道服务端是没有直播的老版本：照旧整条流读到底
+  const useLive = !!turn && typeof liveCh !== "undefined" && !liveCh.off && typeof keepAttached === "function";
   try {
     const row = typeof sessions !== "undefined" ? sessions.find((item) => item.id === sessionId) : null;
-    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, message: directive, shown: userText, mode, lang: "zh", ...(row && row.lane ? { lane: row.lane } : {}) }) });
+    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, message: directive, shown: userText, mode, lang: "zh", ...(row && row.lane ? { lane: row.lane } : {}), ...(useLive ? { detach: true } : {}) }) });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       sawDone = true; // 请求没被受理，没有可续的流
       turn?.feed({ type: "error", message: data.error || `请求失败（HTTP ${response.status}）` });
       throw new Error(data.error || "Agent 请求失败");
     }
-    const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = "";
-    const consume = (chunk) => {
-      buffer += decoder.decode(chunk, { stream: true });
-      const parts = buffer.split("\n\n"); buffer = parts.pop() || "";
-      parts.forEach((part) => {
-        if (!part.startsWith("data: ")) return;
-        let event; try { event = JSON.parse(part.slice(6)); } catch { return; }
-        turn?.feed(event);
-        if (event.type === "done") sawDone = true;
-        if (event.type === "text") write(event.delta);
-        else if (event.type === "title") canvasRenameTask(sessionId, event.title);
-        else if (event.type === "tool_use") canvasChatAppend("agent", `执行：${event.name || event.tool || "工具"}`, "is-status is-running");
-        else if (event.type === "tool_result") canvasChatAppend("agent", `完成：${canvasCompactToolPreview(event.preview)}`, "is-status is-complete");
-        else if (event.type === "error") canvasChatAppend("agent", `失败：${event.message || "执行失败"}`, "is-status is-error");
-        else if (event.type === "done") canvasChatAppend("agent", "已完成 · 画布已同步", "is-status is-complete");
-      });
-    };
-    while (true) { const part = await reader.read(); if (part.done) break; consume(part.value); }
+    if (useLive && !/event-stream/.test(response.headers.get("content-type") || "")) {
+      const rid = ((await response.json().catch(() => null)) || {}).rid || "";
+      // 回合照常画、计数照常记，另外每条也交给画布右栏。直播 404（老服务端）时 keepAttached 自己退回逐条续流，右栏一样收得到
+      const ui = { ...turn.ui, handleEvent(event) { try { turn.ui.handleEvent(event); } catch {} side(event); } };
+      await keepAttached(sessionId, ui, turn.rc, false, null, rid);
+      followed = true; // 已经跟到收尾（或者断了、报过了），收尾那步别再接一遍
+    } else {
+      // 老服务端不认 detach：还是整条 SSE
+      const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = "";
+      const consume = (chunk) => {
+        buffer += decoder.decode(chunk, { stream: true });
+        const parts = buffer.split("\n\n"); buffer = parts.pop() || "";
+        parts.forEach((part) => {
+          if (!part.startsWith("data: ")) return;
+          let event; try { event = JSON.parse(part.slice(6)); } catch { return; }
+          turn?.feed(event);
+          side(event);
+        });
+      };
+      while (true) { const part = await reader.read(); if (part.done) break; consume(part.value); }
+    }
     const latest = await canvasLoadRemote(); if (latest && latest.updatedAt > canvasState.remoteUpdatedAt) { canvasApplySnapshot(latest, { fromRemote: true }); await canvasLoadLibrary(); }
   } catch (error) { write("发送失败：" + String(error.message || error).slice(0, 180)); }
   finally {
     canvasState.chatBusy = false; canvasState.chatStopping = false; canvasSyncChatSendButton();
-    canvasTurnEnd(sessionId, turn, sawDone).catch(() => {});
+    canvasTurnEnd(sessionId, turn, sawDone || followed).catch(() => {});
     if (typeof renderHistory === "function") renderHistory();
   }
 }
@@ -843,6 +860,11 @@ async function canvasGenerate(node, kind) {
   // 也可能人已经切去别的画布。所以现在只记「是谁、在哪张画布」，回来按 id 重新取，
   // 手里这个 node 对象到时候可能已经是个孤儿：往它身上写，屏幕上看不到，存盘也存不进去
   const id = node.id, board = canvasState.canvasName, project = canvasState.workspaceName, graphAtStart = canvasState.graph;
+  // 眼下主区摆的是哪一页（app-03 的 pageKind：画布是 "canvas"，切去对话就回到 null）。
+  // 只拿来比发起时和回来时是不是同一页，所以测试里没加载 app-03、变量压根不存在也照样能比。
+  // 写成本函数里的局部量：有测试按「async function canvasGenerate(」起切这一段源码单独跑
+  const viewKind = () => (typeof pageKind === "undefined" ? "" : String(pageKind || ""));
+  const viewAtStart = viewKind(); // 结尾弹不弹右侧预览要对这个
   if (canvasState.inflight) canvasState.inflight.add(id);
   const startedAt = Date.now();   // 真跑过多久要记下来，不然「还要多久」永远只能靠猜
   let placed = false;
@@ -928,7 +950,10 @@ async function canvasGenerate(node, kind) {
     const swapped = result.fallbackFrom ? canvasT("（{a} 没成，按设置里的备用顺序换成了 {b}）", { a: result.fallbackFrom, b: String(input.model || "") }) : "";
     if (back) canvasToast(`${said}${swapped}，但${back}`, "triangle-alert", "err");
     else canvasToast(`${said}${swapped}`, swapped ? "triangle-alert" : "circle-check");
-    if (typeof previewFile === "function") previewFile(canvasResolvedFileName(file));
+    // 人还在这张画布这一页才开右侧预览。离开画布去看对话时 canvasState 不拆（图、画布名都还在），
+    // 光看上面的 here 认不出来，结果一枪几分钟的视频生完，预览面板直接弹在他正看着的那条对话上
+    if (typeof previewFile === "function" && viewKind() === viewAtStart
+      && canvasState.canvasName === board && canvasState.workspaceName === project) previewFile(canvasResolvedFileName(file));
     // 回写分镜表没成也算「做好了」：画布上这一格确实有了，重跑只会再花一次钱
     return { ok: true };
   } catch (error) {
