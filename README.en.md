@@ -330,7 +330,7 @@ Most docs are in Chinese; the code and comments are the source of truth.
 ## License
 
 **Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use require a paid commercial license. Companies may evaluate free for 30 days (not yet used in real business); long-term use requires a license.**
-[PolyForm Noncommercial 1.0.0](LICENSE); for a commercial license email [contact@aijentra.com](mailto:contact@aijentra.com) (terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)). The name "OpenWorkBuddy" and its logo are not covered by any of these licenses.
+[PolyForm Noncommercial 1.0.0](LICENSE); for a commercial license email [contact@aijentra.com](mailto:contact@aijentra.com) (terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([the list](COMMERCIAL-LICENSE.md#按-mit-授权的部分)). The name "OpenWorkBuddy" and its logo are not covered by any of these licenses.
 
 **What happens with unlicensed commercial use** (short version; full legal basis in [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果), Chinese):
 

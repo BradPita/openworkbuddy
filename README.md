@@ -342,7 +342,7 @@ OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 ## 协议
 
 **个人非商用、学校公益免费；公司使用（哪怕只在内部用）和个人商用，必须买商业授权。公司可免费试用 30 天（还没用在实际业务上），长期用必须买。**
-协议 [PolyForm Noncommercial 1.0.0](LICENSE)，商业授权请邮件 [contact@aijentra.com](mailto:contact@aijentra.com)，细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。买授权不解锁功能——只有这一份代码。部署配置、脚本、技能模板等另按 MIT 发布（[LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)）。名称「OpenWorkBuddy」和图标不在任何一份授权范围内。
+协议 [PolyForm Noncommercial 1.0.0](LICENSE)，商业授权请邮件 [contact@aijentra.com](mailto:contact@aijentra.com)，细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。买授权不解锁功能——只有这一份代码。部署配置、脚本、技能模板等另按 MIT 发布（[清单](COMMERCIAL-LICENSE.md#按-mit-授权的部分)）。名称「OpenWorkBuddy」和图标不在任何一份授权范围内。
 
 **没授权就商用会怎样**（精简版，完整依据见 [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果)）：
 

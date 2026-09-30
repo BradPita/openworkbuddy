@@ -15,7 +15,8 @@ Exception: parts of this repository are ADDITIONALLY licensed under the MIT
 License and may be used commercially — deployment and CI configs, helper
 scripts, the evaluation task set and baseline, the skill-writing template, and
 the code samples and format specifications in the documentation. The exact
-list is in LICENSE-ECOSYSTEM.md.
+list and the MIT License text are in COMMERCIAL-LICENSE.md (section
+"按 MIT 授权的部分").
 
 Anything you write yourself — skills, plugins, connector configs, workflows,
 prompts — is your own work, not a derivative of this project, and this license
