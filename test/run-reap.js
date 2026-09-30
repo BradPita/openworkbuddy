@@ -254,12 +254,13 @@ function fakeChild() {
     const SRV = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
     const CLI = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
     const chatFinally = (s) => /finally \{[\s\S]{0,400}releaseOwner\(sessionId\)[\s\S]{0,300}releaseRun\(sessionId, \{ browser: false \}\)/.test(s);
-    const accounted = (s) => /function accountedRuntime[\s\S]{0,4000}holdRun\(rest\.sessionId\)[\s\S]{0,1500}\} finally \{ release\(\); \}/.test(s);
+    // finally 里除了放手还会收这一趟的空文件夹（settleRunDir），所以只认「finally 一进来先 release()」
+    const accounted = (s) => /function accountedRuntime[\s\S]{0,4000}holdRun\(rest\.sessionId\)[\s\S]{0,1500}\} finally \{\s*release\(\);/.test(s);
     const cliRel = (s) => /releaseRun\(sessionId\)/.test(s);
     ok(chatFinally(SRV), "网页对话的 finally：收标签页之后收后台进程");
     ok(accounted(SRV), "IM / 定时任务（accountedRuntime）：hold 住、finally 里放手");
     ok(cliRel(CLI), "命令行每一轮跑完收尾");
-    ok(!chatFinally(SRV.replace("releaseRun(sessionId, { browser: false })", "noop()")) && !accounted(SRV.replace("} finally { release(); }", "}")) && !cliRel(CLI.replace(/releaseRun\(sessionId\)/g, "x()")),
+    ok(!chatFinally(SRV.replace("releaseRun(sessionId, { browser: false })", "noop()")) && !accounted(SRV.replace(/\} finally \{\s*release\(\);/g, "} finally {")) && !cliRel(CLI.replace(/releaseRun\(sessionId\)/g, "x()")),
       "三条守卫各自认得出漏接（反向对照）");
     // 标签页的闲置关页 / 到顶腾位要认得「还在跑」：网页对话看 activeRuns，IM / 定时任务看 holdRun
     const activeWired = (s) => /require\("\.\/cdp"\)\.setActivePredicate\(\(sid\) => activeRuns\.has\(sid\) \|\| require\("\.\/tools"\)\.runHeld\(sid\)\)/.test(s);
