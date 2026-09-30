@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 30** Templates can now be added, edited and deleted. Anyone can add to "Mine", which only they can see; only admins can add, edit or delete "Company" templates, which the whole org sees, and every change goes to the org audit log. Editing a built-in template saves a copy and hides the original; anything hidden can be put back from "Hidden". The personal desktop app only has "Mine"
 - **Sep 30** Many open conversations no longer slow things down: they share one live channel and each uses its own browser tab; the server moved off the UI thread, and saving, thumbnails and screenshots no longer block the main thread; each sidebar row can be stopped on its own
 - **Sep 30** First-run setup accepts any OpenAI-compatible endpoint (relays, self-hosted gateways, local vLLM), and retries with /v1 when a bare domain returns 404; Enter no longer sends half-typed pinyin while an input method is composing; long conversations scroll up continuously
 - **Sep 30** One server can now host several companies: the platform owner creates an org under Organizations and sends its first invite from that row; whoever signs up with it becomes that org's owner. An expired org can't start new tasks (web, IM, schedules and relay keys all stop) but can still sign in, read history and download results; to suspend one right away, set its expiry to a past date

@@ -260,6 +260,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 30** Templates can be added, edited and deleted: "Mine" is private to you; "Company" is shared across the org and only admins can change it
 - **Sep 30** Many open conversations no longer slow the window: they share one live channel, and saving and screenshots moved off the main thread
 - **Sep 30** First-run setup accepts a custom endpoint; Enter no longer sends while an input method is still composing
 - **Sep 30** One server can host several companies: the platform owner creates an org and sends its first invite; an expired org can't start new tasks but keeps its history

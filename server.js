@@ -32,6 +32,7 @@ const canvasRoutes = require("./routes/canvas"); // 画布读写 + 短剧素材�
 const dramaRoutes = require("./routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
 const { createComposeRouter } = require("./routes/compose"); // 一键合成的两条接口
 const libraryRoutes = require("./routes/library"); // 资料库的封面、正文摘录、收藏
+const { createPromptTplsRouter } = require("./routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createComposeJobs } = require("./lib/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
@@ -1391,6 +1392,13 @@ app.use(dramaRoutes.createDramaRouter({
   canvasAssetNear: canvasRoutes.canvasAssetNear,
 }));
 app.use(libraryRoutes.createLibraryRouter({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, thumbsDir: path.join(dataPath("data"), "thumbs"), busy: () => activeRuns.size > 0 }));
+app.use(createPromptTplsRouter({
+  isSolo: admin.isSoloDesktop,
+  canEditOrg: (u) => require("./rbac").can(u, "admin.write"),
+  orgIdOf: org.orgIdOf,
+  orgName: (u) => (org.getOrg(org.orgIdOf(u)) || {}).name || "",
+  audit: org.audit,
+}));
 
 // 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
 app.get("/api/assistant", (_req, res) => res.json(config.assistant));

@@ -1966,6 +1966,33 @@
   .tpl-card .ops { display: flex; gap: 6px; margin-top: auto; }
   .tpl-card .ops button { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--owb-text-2); }
   .tpl-card .ops button.primary { background: var(--owb-brand); border-color: var(--owb-brand-text); color: #fff; }
+  .tpl-card .ops { flex-wrap: wrap; align-items: center; }
+  .tpl-card .ops .sp { flex: 1; }
+  .tpl-card .ops .tpl-del:hover { color: var(--owb-err-text); border-color: var(--owb-err-text); }
+  .tpl-card .ops .tpl-restore { display: inline-flex; align-items: center; gap: 4px; }
+  .tpl-card .ops .tpl-note { font-size: 12px; color: var(--owb-text-3); }
+  /* 来源标签：只给自己加的两层挂，内置的不挂——十几张卡片全挂一个「内置」等于都没挂 */
+  .tpl-card .src { font-size: 12px; border-radius: var(--radius-sm); padding: 1px 7px; color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  .tpl-card .src.org { color: var(--owb-ok-text); background: var(--owb-ok-bg); }
+  .tpl-warn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; font-size: 13px; color: var(--owb-err-text); }
+  .tpl-warn[hidden] { display: none; }
+  .hub-empty .btn-plain { margin-left: 8px; }
+  /* 模板编辑框：askText 那个 400px 的框装不下几百字的提示词 */
+  .ask-box.tpl-ed { width: 600px; max-height: calc(100vh - 40px); overflow: auto; }
+  .tpl-ed .tpl-f { display: block; margin-top: 12px; }
+  .tpl-ed .tpl-f > span { display: block; margin-bottom: 4px; font-size: 12px; color: var(--owb-text-2); }
+  .tpl-ed .tpl-f .ask-in { margin-top: 0; }
+  .tpl-ed .tpl-f2 { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+  .tpl-ed .tpl-f2 .tpl-f { margin-top: 12px; }
+  .tpl-ed textarea.tpl-p { display: block; width: 100%; box-sizing: border-box; min-height: 180px; resize: vertical; padding: 8px 10px; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; color: var(--owb-text); background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-md); outline: none; }
+  .tpl-ed textarea.tpl-p:focus { border-color: var(--owb-brand-text); }
+  .tpl-ed .tpl-icons { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tpl-ed .tpl-ico { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); color: var(--owb-text-2); cursor: pointer; }
+  .tpl-ed .tpl-ico.on { border-color: var(--owb-brand-text); color: var(--owb-brand-text); box-shadow: inset 0 0 0 1px var(--owb-brand-text); }
+  .tpl-ed .tpl-scope { display: inline-flex; border: 1px solid var(--owb-border); border-radius: var(--radius-md); overflow: hidden; }
+  .tpl-ed .tpl-scope button { border: 0; background: var(--owb-bg); padding: 5px 16px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
+  .tpl-ed .tpl-scope button.on { background: var(--owb-brand); color: #fff; }
+  @media (max-width: 560px) { .tpl-ed .tpl-f2 { grid-template-columns: 1fr; gap: 0; } }
 
   /* ===== 项目页 ===== */
   .pg-hero { margin: 4px 0 18px; }
