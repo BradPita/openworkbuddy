@@ -3064,17 +3064,30 @@ app.get("/api/mcp/catalog", (_req, res) => {
   res.json({ ...cat, items: cat.items.map((it) => ({ ...it, configured: configured.has(it.name) })) });
 });
 
+/**
+ * 给非平台管理员看的连接器地址：只留「协议 + 主机」。
+ * 很多托管 MCP 把密钥直接拼在地址里（路径里一截 sk-…、查询串 ?api_key=…、user:pass@），
+ * 启动参数里也常有 --token=…。redactGuard 只认字段名，url/args 这两个名字它不管，
+ * 原来多人部署下普通成员 GET 一下就能拿到原文。
+ */
+function mcpPublicUrl(u) {
+  try { const x = new URL(String(u || "")); return x.protocol + "//" + x.host; } catch { return u ? "（地址已隐藏）" : ""; }
+}
 app.get("/api/mcp", (req, res) => {
+  const full = isPlatformOwner(req);
   const view = (s, plugin) => {
     const client = mcpManager.clients.get(s.name);
     const failure = mcpManager.failures.find((f) => f.name === s.name);
     return {
       name: s.name,
-      command: s.command || "",
-      args: s.args || [],
+      // 本机路径和启动参数只给平台管理员：成员反正改不了（POST /api/mcp 在平台写表里），用不着原文
+      command: full ? s.command || "" : path.basename(String(s.command || "")),
+      args: full ? s.args || [] : [],
+      args_hidden: full ? 0 : (s.args || []).length,
       // 环境变量里基本都是 API Key，和请求头一样只回键名，不回值
       env_keys: Object.keys(s.env || {}),
-      url: s.url || "",
+      url: full ? s.url || "" : mcpPublicUrl(s.url),
+      masked: !full,
       // 请求头里常有 token，界面上只说有几个，不回传值
       header_keys: Object.keys(s.headers || {}),
       transport: s.transport || (s.command ? "stdio" : "streamable-http"),

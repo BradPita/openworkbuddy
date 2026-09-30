@@ -6293,9 +6293,11 @@ async function testConnectorToggleAndTools() {
   const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.example.json"), "utf8"));
   cfg.mcp_servers = [
     // 进程起来就死：最常见的「连不上」，一秒之内就有结果，不拖慢这条测试
-    { name: "deadproc", transport: "stdio", command: process.execPath, args: ["-e", "process.exit(3);"] },
-    // 远端回 401：界面上要显示成「授权已过期」，跟上面那台分得开
-    { name: "expired", transport: "streamable-http", url: `http://127.0.0.1:${denyPort}/mcp` },
+    // 末尾那个参数是个假密钥：不少 MCP 就是这么把 Key 塞进启动参数的，下面拿它验成员看不看得见
+    { name: "deadproc", transport: "stdio", command: process.execPath, args: ["-e", "process.exit(3);", "sk-e2e-secret-arg"] },
+    // 远端回 401：界面上要显示成「授权已过期」，跟上面那台分得开。
+    // 地址里拼了假密钥（路径 + 查询串），托管 MCP 常这么干
+    { name: "expired", transport: "streamable-http", url: `http://127.0.0.1:${denyPort}/mcp/sk-e2e-secret-path?api_key=sk-e2e-secret-query` },
   ];
   fs.writeFileSync(CFG, JSON.stringify(cfg, null, 2));
 
@@ -6365,6 +6367,17 @@ async function testConnectorToggleAndTools() {
     const asMember = await call(port, "GET", "/api/mcp", null, member);
     assert(asMember.code === 200 && asMember.json.can_toggle === false,
       "成员那边 can_toggle 该是 false：" + asMember.body.slice(0, 200));
+    // 地址和启动参数里常夹着密钥，redactGuard 只认字段名管不到这两个——成员只该看到主机
+    assert(!/sk-e2e-secret/.test(asMember.body),
+      "★普通成员从连接器列表里读到了地址/参数里的密钥★：" + (asMember.body.match(/.{0,60}sk-e2e-secret.{0,20}/) || [""])[0]);
+    const mm = byName(asMember);
+    assert(mm.expired.url === `http://127.0.0.1:${denyPort}` && mm.expired.masked === true,
+      "成员看到的远程地址该只剩协议+主机：" + JSON.stringify(mm.expired.url));
+    assert(Array.isArray(mm.deadproc.args) && mm.deadproc.args.length === 0 && mm.deadproc.args_hidden === 3,
+      "成员看到的启动参数该清空、只报个数：" + JSON.stringify({ args: mm.deadproc.args, n: mm.deadproc.args_hidden }));
+    // 反向对照：平台管理员要改连接器，必须拿得到原文，否则存回去就把地址洗没了
+    assert(/sk-e2e-secret-query/.test(first.body) && m0.deadproc.args.length === 3 && !m0.expired.masked,
+      "平台管理员那边的地址/参数不该被抹：" + JSON.stringify({ url: m0.expired.url, args: m0.deadproc.args }));
 
     // ---- ③ 权限：连接器是整台机器一份的 ----
     const denied = await call(port, "POST", "/api/mcp/toggle", { name: "deadproc", enabled: false }, member);
