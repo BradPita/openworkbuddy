@@ -1952,6 +1952,14 @@ async function login(username, password) {
     eq(who("xiaoyuan").username, "xiaoyuan", "改名被拒，原账号名字没动");
   }
 
+  console.log("\n【30】邀请码的 200 张上限按组织算，一家发满挤不掉别家的码");
+  {
+    const keep = org.createInvite("default", { role: "member", max_uses: 1, days: 7, actor: "laoban" });
+    for (let i = 0; i < 205; i++) org.createInvite(org2, { role: "member", max_uses: 1, days: 1, actor: "fenboss" });
+    ok(org.peekInvite(keep.code) && !org.peekInvite(keep.code).error, "★分公司连发 205 张之后，总部那张还没用的码照样能用★");
+    eq(org.listInvites(org2).length, 200, "分公司自己最多留 200 张");
+  }
+
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });

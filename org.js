@@ -381,7 +381,14 @@ function createInvite(orgId, { role, dept, max_uses, days, actor }) {
     created_at: new Date().toISOString(),
   };
   db.invites.unshift(inv);
-  db.invites = db.invites.slice(0, 200);
+  // 200 张是每个组织各自的上限。以前是全站一共 200 张：一家连发 200 张，
+  // 别家已经发出去、还没人用的码就被挤掉了，拿着码的人注册时只看到「邀请码不对」
+  const per = new Map();
+  db.invites = db.invites.filter((i) => {
+    const n = (per.get(i.org) || 0) + 1;
+    per.set(i.org, n);
+    return n <= 200;
+  });
   pushAudit(db, { org, actor, action: "生成邀请码", target: code, detail: `${inv.role} · ${inv.max_uses} 次 · ${new Date(inv.expires_at).toLocaleDateString("zh-CN")} 到期` });
   save(db);
   return inv;
