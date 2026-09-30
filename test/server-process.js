@@ -553,7 +553,9 @@ async function isolation(L, port, label) {
     ok(!!st && st.serverPid !== oldPid && st.starts === before.starts + 1 && st.port === a.port, `重启了：新 pid ${st && st.serverPid}（旧 ${oldPid}），第 ${st && st.starts} 次起，还是 ${a.port}`, st);
     const reaped = await waitFor(() => !kRow(), 15000, 300);
     ok(reaped, `重启出来的服务进程开机收账：孤儿 sleep ${mkK} 按账本认回来收掉了`, kRow());
-    ok(/\[收尾\] 上次没收干净的后台进程组 \d+ 个已收掉：sleep \d+/.test(A.log), "日志留了一行「上次没收干净的后台进程组 … 已收掉」", A.tail(900));
+    // 那行字在杀完、删完账本之后才打，还要从服务进程经管道转到这边：进程没了不等于字到了，得等一下
+    const said = await waitFor(() => /\[收尾\] 上次没收干净的后台进程组 \d+ 个已收掉：sleep \d+/.test(A.log), 5000, 100);
+    ok(said, "日志留了一行「上次没收干净的后台进程组 … 已收掉」", A.tail(900));
     const back = await req(a.port, "GET", "/api/info");
     ok(back.status === 200, "重启后同一个口照样应答", back.status);
     ok(/\[服务进程\] 独立服务进程退出了（退出码 [^）]*），\d+ms 后重启/.test(A.log) && new RegExp(`\\[服务进程\\] 重启好了，监听 ${a.port}`).test(A.log), "日志写明：退出码、几毫秒后重启、重启好了监听哪个口", A.tail(900));
