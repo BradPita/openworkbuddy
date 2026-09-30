@@ -2008,6 +2008,27 @@ async function login(username, password) {
     eq(org.settingsOf(org.getOrg("default")).price_discount, 0.7, "默认组织的折扣改上了");
   }
 
+  console.log("\n【32】停用的人重新启用也要过席位");
+  {
+    const seated = () => account._internals.loadUsers().users.filter((u) => u.org === org2 && u.status !== "disabled").length;
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "disabled" } });
+    eq(r.status, 200, "先停用小袁，腾出一个席位");
+    r = await call("POST", `/api/admin/orgs/${org2}`, { cookie: boss, body: { seats: seated() + 1 } });
+    eq(r.status, 200, "平台把席位卡在「只剩一个空位」");
+    // 走账号层建号：这份测试前面注册过很多次，注册口子按 IP 限频了
+    account._internals.register("tibu", "pw-tibu-1234", { org: org2, role: "member", status: "active" });
+    eq(seated(), org.planInfo(org.getOrg(org2)).seats, "招一个新人把空位占上");
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "active" } });
+    eq(r.status, 400, "★席位满了，把停用的人启用回来：拒绝★ 不然停一个、招一个、再启用，席位就被绕过去了");
+    ok(/席位已用满/.test(r.json.error || ""), "报错说的是席位", r.json.error);
+    eq(account._internals.loadUsers().users.find((u) => u.username === "xiaoyuan").status, "disabled", "人还是停用着");
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "pending" } });
+    eq(r.status, 400, "改成待审核也占席位，一样拒");
+    r = await call("POST", `/api/admin/orgs/${org2}`, { cookie: boss, body: { seats: seated() + 1 } });
+    r = await call("POST", "/api/admin/members/xiaoyuan", { cookie: fen, body: { status: "active" } });
+    eq(r.status, 200, "反向对照：加了席位就能启用");
+  }
+
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });

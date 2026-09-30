@@ -493,6 +493,14 @@ function defaultUser() {
   return [...us].sort((a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
 }
 
+/** 席位满了返回一句话，没满返回空串。停用的人不占席位，待审核的占（批下来就是在用的人） */
+function seatsFull(st, orgId) {
+  const o = org.getOrg(orgId);
+  const seats = org.planInfo(o).seats;
+  const used = st.users.filter((u) => (u.org || org.DEFAULT_ORG) === orgId && u.status !== "disabled").length;
+  return used >= seats ? `「${o.name}」的席位已用满（${used}/${seats}）` : "";
+}
+
 function register(username, password, opts = {}) {
   username = String(username || "").trim();
   if (!/^[\w一-龥.-]{2,24}$/.test(username)) throw new Error("用户名需 2-24 位（中英文、数字、_.-）");
@@ -506,9 +514,8 @@ function register(username, password, opts = {}) {
   const s = org.settingsOf(o);
   // 席位闸要放在建号**之前**：先建后查的话，报错弹出来的时候人已经躺在账本里了
   if (!first) {
-    const seats = org.planInfo(o).seats;
-    const used = st.users.filter((u) => (u.org || org.DEFAULT_ORG) === orgId && u.status !== "disabled").length;
-    if (used >= seats) throw new Error(`「${o.name}」的席位已用满（${used}/${seats}），让管理员在企业设置里加席位`);
+    const full = seatsFull(st, orgId);
+    if (full) throw new Error(full + "，让管理员在企业设置里加席位");
   }
   // 这个组织有超管了没有。以前 owner 只给**全站**第一个人，于是分公司里一个超管都没有，
   // 两个管理员可以互相停用、互相降级——「管理员权限太大」这件事最狠的一处就在这儿。
@@ -1619,6 +1626,11 @@ function setMember(actor, username, patch) {
   if (patch.status !== undefined) {
     if (!MEMBER_STATUS.has(patch.status)) throw new Error("没有这个状态");
     if (patch.status !== "active") assertNotLastOwner(u, "停用");
+    // 停用的人不占席位。停满一个、再招满一个、再把停用的那个启用回来，席位就被绕过去了
+    if (u.status === "disabled" && patch.status !== "disabled") {
+      const full = seatsFull(st, org.orgIdOf(u));
+      if (full) throw new Error(full + "，加了席位才能重新启用");
+    }
     if ((u.status || "active") !== patch.status) {
       u.status = patch.status;
       changed.push("状态→" + patch.status);
