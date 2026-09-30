@@ -899,8 +899,8 @@ function createAdminRouter(deps = {}) {
     const counts = account.memberCounts();
     return {
       orgs: org.listOrgs().map((o) => {
-        const c = counts.get(o.id) || { members: 0, active: 0 };
-        return { ...o, settings: org.settingsOf(o), ...org.planInfo(o), members: c.members, active: c.active };
+        const c = counts.get(o.id) || { members: 0, active: 0, owners: 0 };
+        return { ...o, settings: org.settingsOf(o), ...org.planInfo(o), members: c.members, active: c.active, has_owner: c.owners > 0 };
       }),
       plans: org.PLANS, plan_order: org.PLAN_ORDER,
     };
@@ -909,6 +909,17 @@ function createAdminRouter(deps = {}) {
     org.createOrg({ ...(req.body || {}), actor: req.user.username })));
   router.post("/api/admin/orgs/:id", platformOwnerOnly, guarded((req) =>
     ({ ok: true, org: org.updateOrg(req.params.id, req.body || {}, req.user.username) })));
+  // 新开的组织里一个人都没有，它自己的管理员发不了码——这张码只能由平台这一层发。
+  // 码本身照旧造不出超级管理员；是 register 那边「这家还没超管，第一个管理员级别的人就是」
+  // 让拿管理员码进来的第一个人成了这家的超管。所以默认发管理员码、只能用一次
+  router.post("/api/admin/orgs/:id/invites", platformOwnerOnly, guarded((req) => {
+    // 不能用 getOrg：它查不到会退回默认组织，打错一个 id 就成了往总部发管理员码
+    const o = org.listOrgs().find((x) => x.id === req.params.id);
+    if (!o) throw new Error("没有这个组织：" + req.params.id);
+    const b = req.body || {};
+    const role = rbac.ASSIGNABLE.includes(b.role) ? b.role : "admin";
+    return org.createInvite(o.id, { role, dept: b.dept, max_uses: b.max_uses || 1, days: b.days || 7, actor: req.user.username });
+  }));
 
   // ---------- 审计 ----------
   router.get("/api/admin/audit", guarded((req) =>

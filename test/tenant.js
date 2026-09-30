@@ -247,15 +247,26 @@ async function login(username, password) {
   console.log("\n【4】邀请码进人");
   // 邀请码永远发给「发码人所属的组织」——总部发的码只能把人拉进总部，拉不进分公司。
   // 这条要钉住：要是哪天改成能指定组织，一张泄露的码就能把人塞进任意租户
-  r = await call("POST", "/api/admin/invites", { cookie: boss, body: { role: "member", max_uses: 5 } });
+  r = await call("POST", "/api/admin/invites", { cookie: boss, body: { role: "member", max_uses: 5, org: org2 } });
   eq(r.status, 200, "总部发码成功");
-  eq(r.json.org, "default", "总部发的码属于默认组织，指定不了别家");
+  eq(r.json.org, "default", "总部发的码属于默认组织，请求里塞了别家的 id 也没用");
   const hqInv = r.json.code;
   r = await call("POST", "/api/auth/register", { body: { username: "hqguy", password: "pw-hq-12345", invite: hqInv } });
   eq(r.json.user.org, "default", "用总部的码注册，人落在总部");
 
-  // 分公司的码由分公司自己发。这里先用 org 层直接发一张，把分公司的第一个管理员放进去
-  const inv = org.createInvite(org2, { role: "admin", max_uses: 5, days: 7, actor: "laoban" });
+  // 分公司刚建好一个人都没有，它自己的邀请码页没人打得开。第一张码由平台管理员从组织列表发，
+  // 走的是另一条只有平台超管进得去的路由，而且组织 id 必须真的存在
+  r = await call("POST", "/api/admin/orgs/o_meiyou/invites", { cookie: boss, body: {} });
+  eq(r.status, 400, "发给不存在的组织：拒绝");
+  ok(!org.listInvites("default").some((i) => i.role === "admin"), "打错组织 id 不会退回去给总部发一张管理员码", org.listInvites("default"));
+  r = await call("GET", "/api/admin/orgs", { cookie: boss });
+  eq((r.json.orgs.find((o) => o.id === org2) || {}).has_owner, false, "组织列表看得出分公司还没有超管");
+  r = await call("POST", `/api/admin/orgs/${org2}/invites`, { cookie: boss, body: {} });
+  eq(r.status, 200, "平台管理员给分公司发第一张码");
+  eq(r.json.org, org2, "码属于分公司");
+  eq(r.json.role, "admin", "默认是管理员码");
+  eq(r.json.max_uses, 1, "默认只能用一次");
+  const inv = r.json;
   r = await call("POST", "/api/auth/register", { body: { username: "fenboss", password: "pw-fen-1234", invite: inv.code } });
   eq(r.status, 200, "拿分公司邀请码注册成功");
   const fen = r.cookie;
@@ -263,6 +274,14 @@ async function login(username, password) {
   // 分公司的第一个管理员级别的人 = 这个组织的超管。以前 owner 只给全站第一个人，
   // 分公司一个超管都没有，于是那儿的管理员可以互相停用——「管理员权限太大」最狠的一处
   eq(r.json.user.role, "owner", "分公司第一个管理员就是分公司的超级管理员");
+  r = await call("POST", "/api/auth/register", { body: { username: "fenboss2", password: "pw-fen-1234", invite: inv.code } });
+  eq(r.status, 400, "一次性的码第二个人用不了");
+  r = await call("GET", "/api/admin/orgs", { cookie: boss });
+  eq((r.json.orgs.find((o) => o.id === org2) || {}).has_owner, true, "有人进来之后组织列表跟着变");
+  r = await call("POST", `/api/admin/orgs/${org2}/invites`, { cookie: fen, body: {} });
+  eq(r.status, 403, "分公司的超管也走不了这条路由（它能指定组织）");
+  r = await call("POST", `/api/admin/orgs/default/invites`, { cookie: fen, body: { role: "admin" } });
+  eq(r.status, 403, "分公司的超管不能往总部发管理员码");
 
   const memInv = org.createInvite(org2, { role: "member", max_uses: 5, days: 7, actor: "fenboss" });
   r = await call("POST", "/api/auth/register", { body: { username: "xiaoyuan", password: "pw-yuan-1234", invite: memInv.code } });

@@ -1570,8 +1570,9 @@ function memberCounts() {
   for (const u of loadUsers().users) {
     const id = org.orgIdOf(u);
     let c = out.get(id);
-    if (!c) out.set(id, (c = { members: 0, active: 0 }));
+    if (!c) out.set(id, (c = { members: 0, active: 0, owners: 0 }));
     c.members++;
+    if (rbac.roleOf(u) === "owner") c.owners++;
     // 老账号没有 status 这一格，当 active 算——跟 publicUser 里那一格的默认值保持一致，
     // 两处对不上的话，同一家公司在成员页和组织列表上会显示两个不同的在用人数
     if ((u.status || "active") === "active") c.active++;

@@ -1483,7 +1483,7 @@ PAGES.roles = {
           )).join("")}
         </div>
         <div class="ad-sec-d" style="margin-top:12px">超级管理员只有一个，只能<b>转让</b>。日常分权请用管理员。</div>
-        ${MULTI ? `<div class="ad-sec-d" style="margin-top:8px"><b>平台超级管理员</b>（默认组织的超管）可新建组织、改套餐席位、为其他组织指派超管。${OWNER ? badge("就是你", "success") : badge("不是你", "outline")}</div>` : ""}`)}
+        ${MULTI ? `<div class="ad-sec-d" style="margin-top:8px"><b>平台超级管理员</b>（默认组织的超管）可新建组织、改套餐席位、给新组织发第一张邀请码、指派超管。${OWNER ? badge("就是你", "success") : badge("不是你", "outline")}</div>` : ""}`)}
       ${cardT(
         headRow(
           secT("管理员和审计员", `共 ${staff.length} 人。${d.owner ? "超级管理员是「" + esc(d.owner) + "」。" : "<b>这个组织还没有超级管理员</b>，找平台超级管理员指派一个。"}`),
@@ -2329,7 +2329,9 @@ PAGES.orgs = {
       `${o.active} / ${o.seats}`,
       o.expires_at ? `<span class="ad-mono">${esc(fmtDate(o.expires_at))}</span>${o.expired ? " " + badge("已过期", "destructive") : ""}` : "长期",
       `<span class="fd">${esc(o.root_dir || (o.id === "default" ? "默认工作目录" : "自动分配"))}</span>`,
-      RO ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-org="${esc(o.id)}">${ic("pencil", "i-sm")} 改</button>`,
+      RO ? "" : `<div style="display:flex;gap:4px;justify-content:flex-end">${
+        o.id === "default" ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-orginv="${esc(o.id)}">${ic("link", "i-sm")} 邀请</button>`
+      }<button class="ui-btn ui-btn--ghost ui-btn--xs" data-org="${esc(o.id)}">${ic("pencil", "i-sm")} 改</button></div>`,
     ]);
     return `<div class="ad-wrap">
       ${note("<b>租户边界划在工作目录上，不划在整台机器上。</b>真隔离的是：成果文件、会话、账号、席位、用量账本、权限、审计。<b>不隔离</b>的是：引擎和密钥、MCP、技能、专家、记忆库、素材库、定时任务、备份——这些配的是<b>这台服务器</b>，归你（平台管理员）管，各组织共用。")}
@@ -2367,6 +2369,29 @@ PAGES.orgs = {
             route(true);
           },
         });
+    // 新组织里还没人，它自己的邀请码页没人打得开，第一张码得从这儿发
+    root.querySelectorAll("[data-orginv]").forEach((b) => {
+      const o = d.orgs.find((x) => x.id === b.dataset.orginv);
+      b.onclick = () =>
+        modal({
+          title: "邀请人加入「" + o.name + "」",
+          body: `<div class="fd">${o.has_owner
+            ? "这家已有超级管理员，拿管理员码进来的是普通管理员。"
+            : "这家还没有超级管理员。<b>第一个拿管理员码注册的人就是。</b>"}</div>`,
+          fields: [
+            { name: "role", label: "角色", type: "select", value: "admin",
+              options: [{ value: "admin", label: "管理员" }, { value: "auditor", label: "审计员" }, { value: "member", label: "成员" }] },
+            { name: "max_uses", label: "能用几次", type: "number", value: 1 },
+            { name: "days", label: "几天内有效", type: "number", value: 7 },
+          ],
+          ok: "生成",
+          onOk: async (v) => {
+            const inv = await post("/api/admin/orgs/" + encodeURIComponent(o.id) + "/invites", { role: v.role, max_uses: +v.max_uses || 1, days: +v.days || 7 });
+            copyText(inviteLink(inv.code));
+            toast("邀请码 " + inv.code + " 已生成，注册链接已复制");
+          },
+        });
+    });
     root.querySelectorAll("[data-org]").forEach((b) => {
       const o = d.orgs.find((x) => x.id === b.dataset.org);
       b.onclick = () =>
