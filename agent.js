@@ -10,6 +10,16 @@ const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserIn
 const { loadSkills, SKILLS_DIR } = require("./skills");
 /** 这一趟的人装不了技能：技能整台服务器一份，接口那边归平台管理员（admin.js 的 tenantScope 把这条放进策略） */
 const skillsWriteOff = () => !!orgPolicy() && orgPolicy().skills_write === false;
+/** 同理：连接器整台服务器一份（密钥、进程都在这台机器上），加连接器归平台管理员 */
+const connectorsWriteOff = () => !!orgPolicy() && orgPolicy().connectors_write === false;
+/**
+ * 借给命令行引擎的桥是单独的子进程，组织策略（ALS）跟不过去：组织关了命令行、配了网络名单的，
+ * 桥里那份 add_connector 拦不住本地进程、也查不了域名，干脆不借（本软件自己的循环里照样有闸）
+ */
+const connectorsLendOff = () => {
+  const p = orgPolicy();
+  return connectorsWriteOff() || (!!p && (p.allow_shell === false || (p.net_allow || []).length > 0 || (p.net_deny || []).length > 0));
+};
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
@@ -1265,16 +1275,28 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     const shellOff = orgPolicy() && orgPolicy().allow_shell === false;
     const noGui = !hasRenderer();
     const installOff = skillsWriteOff(); // 同理：装技能归平台管理员，别的人连定义都不摆
+    const connOff = connectorsWriteOff();
     // render_motion 不算桌面专属：没有内置浏览器时它走本机 Chrome。两样都没有才摘，理由同上
     const motionOff = !require("./htmlvideo").available().ok;
     let base = TOOL_DEFS.filter(
       (t) =>
         !(shellOff && (t.name === "run_shell" || t.name === "run_node")) &&
         !(installOff && t.name === "install_skill") &&
+        !(connOff && t.name === "add_connector") &&
         !(noGui && DESKTOP_ONLY_TOOLS.includes(t.name)) &&
         !(motionOff && t.name === "render_motion")
     );
     if (noGui) base = dropRendererParams(base);
+    // 关了命令行：add_connector 只留远程那半（url / headers）。本地进程那种就是起一条命令，执行时也会拦，
+    // 定义上摆着 command 只会让模型先试一遍再吃拒绝
+    if (shellOff) base = base.map((t) => (t.name !== "add_connector" ? t : {
+      ...t,
+      description: t.description + "本组织关了命令行：只能接远程的（填 url），本地进程那种接不了。",
+      input_schema: {
+        ...t.input_schema,
+        properties: Object.fromEntries(Object.entries((t.input_schema || {}).properties || {}).filter(([k]) => !["command", "args", "env"].includes(k))),
+      },
+    }));
     const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
     if (botWebhookOn()) tools.push(NOTIFY_TOOL);
@@ -2315,7 +2337,9 @@ function modePrompt(mode) {
         baseDir: baseDir || "",
         user: user || "",
         // 桥是个单独的子进程，组织策略（ALS）跟不过去：不该有的工具在这儿就别借出去
-        tools: skillsWriteOff() ? require("./engines/tool-bridge").LENDABLE.filter((n) => n !== "install_skill") : undefined,
+        tools: skillsWriteOff() || connectorsLendOff()
+          ? require("./engines/tool-bridge").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector"))
+          : undefined,
         extraServers: config.mcp_servers || [],
       });
     } catch (e) {
@@ -2539,6 +2563,7 @@ function modePrompt(mode) {
       has("web_search") && "  · mcp__openworkbuddy__web_search   联网搜索、取网页正文",
       has("library_list") && "  · mcp__openworkbuddy__library_list / library_read / save_skill   技能库",
       has("install_skill") && "  · mcp__openworkbuddy__install_skill   用户让装 GitHub 上的技能时用它（装进本软件的技能库，不是 ~/.claude/skills）",
+      has("add_connector") && "  · mcp__openworkbuddy__add_connector   用户让接某个 MCP 时用它（进本软件的连接器页，别手改 config.json）",
       has("remember") && "  · mcp__openworkbuddy__remember / forget           长期记忆",
     ].filter(Boolean).join("\n");
     const toolNames = bridged.lent.join("、");
@@ -3223,7 +3248,8 @@ function modePrompt(mode) {
           id: tc.id,
           name: tc.name,
           depth,
-          purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
+          // 加连接器的 url 里常拼着 key：没给名字时也不拿原地址兜底
+          purpose: tc.name === "add_connector" ? String(tc.input.name || "") : tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           title: toolHeadline(tc.name, tc.input), // 过程区那一行「动词 + 对象」
           input_preview: previewInput(tc),
         });
@@ -3291,6 +3317,11 @@ function modePrompt(mode) {
           if (callSeq.length > 12) callSeq.shift();
         }
         if (!r.isError && (tc.name === "write_file" || tc.name === "edit_file" || tc.name === "multi_edit")) edited = true;
+        // 刚接上的连接器，这一趟后面几步就该看得见它的工具。工具表是开跑时算一次的，不补的话
+        // 「接上 X 再拿它查一下」要等用户再说一句，模型这一轮只能说「接好了但我调不了」
+        if (tc.name === "add_connector" && !r.isError) {
+          for (const d of mcpManager.toolDefs()) if (!offered.has(d.name)) { tools.push(d); offered.add(d.name); }
+        }
         if (tc.name === "look_at_image" && !r.isError) sawImage = true; // 真看成过一次，收尾就不替它复核
         emit({
           type: "tool_result",
@@ -3593,7 +3624,7 @@ const TOOL_VERB = {
   check_page: "体检", html_to_image: "截图", look_at_image: "看图", generate_image: "生图",
   generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记住",
   forget: "忘掉", library_list: "翻资料库", library_read: "读资料", library_import: "取素材", save_skill: "存技能", install_skill: "装技能",
-  use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
+  add_connector: "加连接器", use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
   schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团", explore: "探索",
   find_files: "找文件", multi_edit: "改", shell_output: "看后台输出", shell_kill: "停后台", todo_write: "进度",
@@ -3699,6 +3730,11 @@ function toolHeadline(name, input) {
     case "install_skill":
       // 「装技能 owner/repo」：链接前面那串 https://github.com/ 对人没信息量
       obj = tailText(String(i.url || "").replace(/^https?:\/\/(www\.)?(github\.com|raw\.githubusercontent\.com)\//i, ""), 46); break;
+    case "add_connector": {
+      // 地址里常拼着 key，这一行又会存进会话、同步到手机：只给洗过的地址；本地的只给命令名，参数里可能夹着令牌
+      const where = i.url ? require("./mcp").redactUrl(i.url) : String(i.command || "").split("/").pop();
+      obj = tailText([i.name, where].filter((v) => typeof v === "string" && v.trim()).join(" · "), 46); break;
+    }
     // 品牌档案：哪份档案、查哪个文件才是信息；list/get/check 这种动作词对人没用，只在啥都没给时兜底
     case "brand_kit_read":
       obj = tailText([i.slug, i.file].filter((v) => typeof v === "string" && v.trim()).join(" · ") || String(i.action || ""), 46); break;
@@ -3762,6 +3798,8 @@ function previewInput(tc) {
   if (tc.name === "run_shell") return (tc.input.command || "").slice(0, 1500);
   if (tc.name === "delegate_to_expert") return `委派给「${tc.input.expert}」：\n${(tc.input.task || "").slice(0, 800)}`;
   if (tc.name === "delegate_to_team") return `委派给专家团「${tc.input.team}」：\n${(tc.input.task || "").slice(0, 800)}`;
+  // 请求头、环境变量的值多半是 Key：工具卡上只摆键名，地址也洗一遍
+  if (tc.name === "add_connector") return JSON.stringify(require("./mcp").redactServer(tc.input || {})).slice(0, 500);
   try {
     return JSON.stringify(tc.input).slice(0, 500);
   } catch {

@@ -281,8 +281,10 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
       // 装技能那条也跟着走：接口上 /api/skills 的写归平台管理员（PLATFORM_WRITE），agent 的
       // install_skill 落的是同一个目录，不能让人绕开接口、在对话里一句「装这个」就装进全公司的提示词
       const skillsOff = !isSoloDesktop() && !ownsGlobalWorkspace(req.user);
+      // 加连接器同一个判据：/api/mcp 也在 PLATFORM_WRITE 里，agent 的 add_connector 写的是同一张表——
+      // 连上的进程和密钥都在这台服务器上，所有人的任务都会多出那批工具
       if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length || skillsOff)
-        policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [], ...(skillsOff ? { skills_write: false } : {}) };
+        policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [], ...(skillsOff ? { skills_write: false, connectors_write: false } : {}) };
       // 付费 API 的额度上下文。同样只在**真配了限制**时才建：
       // 没配的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
       // 两道闸分开判，不能合成一个条件：

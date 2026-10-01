@@ -77,6 +77,7 @@ const LENDABLE = [
   "library_read",     // 技能库：把某个技能的正文读出来
   "save_skill",       // 这次趟出来的做法存成技能
   "install_skill",    // 用户让装 GitHub 上的技能：不借的话 CLI 只会照上游 README 装进它自己的 ~/.claude/skills
+  "add_connector",    // 用户让接某个 MCP：不借的话 CLI 只会手改 config.json，或者装进它自己的配置，连接器页上都看不见
   "remember",         // 长期记忆：记
   "forget",           // 长期记忆：忘
 ];

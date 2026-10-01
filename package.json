@@ -12,6 +12,7 @@
     "app": "bash scripts/run-app.sh",
     "test": "node test/all.js",
     "stats": "node scripts/stats.js",
+    "skill-hashes": "node scripts/skill-hashes.js",
     "test:e2e": "node test/e2e.js",
     "lint": "node test/lint.js",
     "typecheck": "node test/typecheck.js",

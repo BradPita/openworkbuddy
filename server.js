@@ -38,7 +38,7 @@ const taskDirs = require("./lib/task-dirs"); // 成果按对话分文件夹：�
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
-const { McpManager } = require("./mcp");
+const { McpManager, cfgFingerprint, scrubText: mcpScrub } = require("./mcp");
 const { createAgentRuntime, scanOutputs, sweepPlanOffThread } = require("./agent");
 const { createImRouter } = require("./im");
 const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./scheduler");
@@ -134,6 +134,12 @@ const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
 // 有了这两样，存盘前才问得出那句「这文件在我背后动过没有」（见 saveConfig）。
 let CONFIG_MTIME = cfgMerge.mtimeOf(CONFIG_PATH);
 let CONFIG_BASE = cfgMerge.snapshot(config);
+// 连接器那两个键（mcp_servers / mcp_disabled）不等下次存盘：运行中盯着改动时间，变了就只把这两个键认进来
+// 并重连变了的那几台（见 pollConfig）。CONFIG_SEEN = 磁盘上那份我们最后看过（读过或写过）的改动时间；
+// 跟 CONFIG_MTIME 分开记，因为只认两个键不算「整份对齐过」，下次存盘照样要走合并。
+let CONFIG_SEEN = CONFIG_MTIME;
+// 连接器管理器手上正跑着的是哪一版配置：{ servers: 名字→指纹, disabled: 名字集合 }。开机起完之前是 null
+let MCP_APPLIED = null;
 // 手改写错了当场说出来。不说的话界面上一点反应也没有，
 // 然后去怀疑是不是没保存、要不要重启、这功能是不是坏了——查半天发现是键名少了个字母。
 for (const line of cfgLint.lines(cfgLint.lint(config, CONFIG_DEFAULTS))) console.warn(`[配置] ${line}`);
@@ -3140,6 +3146,17 @@ app.get("/api/mcp/catalog", (_req, res) => {
 function mcpPublicUrl(u) {
   try { const x = new URL(String(u || "")); return x.protocol + "//" + x.host; } catch { return u ? "（地址已隐藏）" : ""; }
 }
+/**
+ * 一条自配连接器此刻的版本号：连接器页打开时记下，保存时原样带回来（base_revs），
+ * 后端拿它认出「页上这条已经旧了」——页面开着的这会儿，agent 或手改 config.json 把它换过了。
+ * 不直接给 cfgFingerprint：那是连 Key 一起算的哈希，短 Key 拿去离线撞得出来；
+ * 套一层进程里随机钥匙的 HMAC，只能比对、倒推不出。重启后钥匙换了，旧页面带回来的一律对不上，
+ * 按「旧了」处理——最坏是那几条原样不动，不会写坏。
+ */
+const MCP_REV_KEY = require("crypto").randomBytes(16);
+function mcpRev(s) {
+  return require("crypto").createHmac("sha256", MCP_REV_KEY).update(cfgFingerprint(s || {})).digest("hex").slice(0, 16);
+}
 app.get("/api/mcp", (req, res) => {
   const full = isPlatformOwner(req);
   const view = (s, plugin) => {
@@ -3159,6 +3176,8 @@ app.get("/api/mcp", (req, res) => {
       header_keys: Object.keys(s.headers || {}),
       transport: s.transport || (s.command ? "stdio" : "streamable-http"),
       plugin, // 插件带来的：界面上只读，不许当成 config 里的条目存回去
+      // 保存时带回来比对用（见 mcpRev）。只有能存的人要：成员拿到也没用
+      rev: full && !plugin ? mcpRev(s) : "",
       // 关掉的那几台：既没连上也没失败，界面要能分清「连不上」和「我自己关的」——
       // 少了这一个字段，用户关掉一台之后看到的是一张灰卡片，跟连接失败长得一模一样
       enabled: !mcpManager.disabled.has(s.name),
@@ -3196,6 +3215,7 @@ app.post("/api/mcp/toggle", async (req, res) => {
   try {
     const name = String((req.body || {}).name || "").trim();
     if (!name) throw new Error("要说明开关哪一台连接器");
+    adoptDiskMcp(); // mcp_disabled 整张表一起存：外面刚改的先认进来，别拿旧表盖掉
     let fromPlugins = [];
     try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让开关点不动 */ }
     const all = [...(config.mcp_servers || []), ...fromPlugins];
@@ -3208,10 +3228,16 @@ app.post("/api/mcp/toggle", async (req, res) => {
     // 只留还存在的名字：连接器删掉之后，它的名字不该在这张表里长住
     config.mcp_disabled = [...off].filter((n) => all.some((x) => x.name === n));
     saveConfig();
-    mcpManager.setDisabled(config.mcp_disabled);
-
-    if (on) await mcpManager.startAll([cfg]); // 只起这一台，别把别人的连接踢了重连
-    else mcpManager.stop([name]);
+    await mcpApply(async () => {
+      mcpManager.setDisabled(config.mcp_disabled);
+      if (on) await mcpManager.startAll([cfg]); // 只起这一台，别把别人的连接踢了重连
+      else mcpManager.stop([name]);
+      // 只记这一台的开关已生效：别的名字要是外面也改了开关还没同步，留给 syncMcp
+      if (MCP_APPLIED) {
+        if (on) MCP_APPLIED.disabled.delete(name); else MCP_APPLIED.disabled.add(name);
+        if (!cfg.plugin) MCP_APPLIED.servers.set(name, cfgFingerprint(cfg));
+      }
+    });
     res.json({ ok: true, name, enabled: on, connected: mcpManager.clients.has(name), total_tools: mcpManager.toolDefs().length });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -3286,47 +3312,163 @@ function normalizeMcpServer(s, i, prevByName = new Map()) {
   return { name, transport: "stdio", command, args: Array.isArray(s.args) ? s.args.map(String) : [], env };
 }
 
+/**
+ * 存之前让 toolward 看一眼这批连接器。
+ *
+ * 连接器以前一次安全检查都不过：从 GitHub 装个技能要过两道闸，而一条
+ * `command: npx` + 一串参数的连接器，点个保存就在这台机器上跑起来了——权限比技能大得多。
+ * 拿不到结果（没装 toolward、它崩了）就是 null，一切照旧。
+ *
+ * **页面上只提醒，不拦**：这是用户自己填的命令和地址，不是陌生人的代码。在「保存」这一步硬拦，
+ * 用户能做的只有改回去或者关掉整个检查，那这道提醒就等于逼人学会无视它。
+ * agent 加的那一路不一样：命令和地址是模型写的，有提醒就摆审批卡（见 tools.js 的 add_connector）。
+ * 密钥不出门——redactServers 把 env/headers 的值全换成 ***，只留键名，见 toolward.js。
+ */
+function connectorAdvice(servers) {
+  try {
+    const rep = toolward.scanConnectors(servers, config);
+    if (!rep || !rep.findings.length) return null;
+    log.warn("mcp", "连接器配置有被提醒的地方（不影响保存）", {
+      count: rep.findings.length, rules: [...new Set(rep.findings.map((f) => f.rule))].slice(0, 10),
+    });
+    return { level: rep.level, findings: rep.findings.slice(0, 8), more: Math.max(0, rep.findings.length - 8), toolward: rep.toolward };
+  } catch (e) {
+    log.warn("mcp", "连接器体检没跑成（不影响保存）", { err: e });
+    return null;
+  }
+}
+
+/**
+ * 页面整表保存要存成的那张表：规整、查重。
+ * baseNames = 页面打开那一刻看到的自配连接器名字。给了就只替换这些，之后才冒出来的
+ * （agent 刚加的、有人手改 config.json 加的）原样留着——页面手上那张旧表压根不知道它们，
+ * 不能当成「用户删了」。不给（老页面、脚本）还是整表替换，跟以前一样。
+ * baseRevs = 页面打开时每条的版本号（GET 回的 rev）。页上只能加、删，已有的那几条是原样带回来的旧样子：
+ * 版本号对不上 = 页面开着的时候别处把它换过了，留现在这条，不拿页上的旧地址配新 Key 存回去；
+ * 页上见过、现在已经没了 = 别处删了，不复活。
+ */
+function prepareMcpServers(list, baseNames, baseRevs) {
+  if (!Array.isArray(list)) throw new Error("需要 servers 数组");
+  const prevByName = new Map((config.mcp_servers || []).filter((s) => s && typeof s === "object").map((s) => [s.name, s]));
+  const revs = baseRevs && typeof baseRevs === "object" && !Array.isArray(baseRevs) ? baseRevs : null;
+  const sawRev = (k) => !!revs && Object.prototype.hasOwnProperty.call(revs, k);
+  let next = [];
+  list.forEach((s, i) => {
+    const key = String((s && s.name) || "");
+    const cur = prevByName.get(key);
+    if (sawRev(key) && !cur) return;
+    if (sawRev(key) && String(revs[key]) !== mcpRev(cur)) { next.push(cur); return; }
+    next.push(normalizeMcpServer(s, i, prevByName));
+  });
+  if (!Array.isArray(baseNames) && revs) baseNames = Object.keys(revs);
+  if (Array.isArray(baseNames)) {
+    const seen = new Set(baseNames.map(String));
+    const given = new Set(next.map((s) => s.name));
+    next = [...next, ...(config.mcp_servers || []).filter((s) => s && !seen.has(s.name) && !given.has(s.name))];
+  }
+  const dup = next.map((s) => s.name).find((n, i, a) => a.indexOf(n) !== i);
+  if (dup) throw new Error(`连接器名字重复：${dup}`);
+  return next;
+}
+
+/**
+ * 连接器的停和起排成一队。页面保存、开关、插件装卸、agent 加连接器、外面改了 config.json 的同步——
+ * 谁都可能在别人 startAll 到一半时进来，交错着 stop/start 的结果是一台连两次，或者刚连上就被摘掉。
+ */
+let mcpQueue = Promise.resolve();
+function mcpApply(fn) {
+  const run = mcpQueue.then(fn);
+  mcpQueue = run.catch(() => {}); // 前一单挂了不该把后面的全堵死；挂的原因由调用方自己接
+  return run;
+}
+
+/** 整批重启：config 里的加上插件带的。插件那些不在 config 里，只重启 config 的会把它们整批打没（旧版就是这个 bug） */
+async function restartAllMcp() {
+  const snap = mcpSnapshot(); // 先拍：起的是这一刻的配置，起到一半配置又变了，那是下一单的事
+  let fromPlugins = [];
+  try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该拖累连接器保存 */ }
+  const servers = [...(config.mcp_servers || []), ...fromPlugins];
+  mcpManager.setDisabled(config.mcp_disabled || []);
+  mcpManager.stop([...mcpManager.clients.keys(), ...mcpManager.failures.map((f) => f.name), ...servers.map((s) => s.name)]);
+  await mcpManager.startAll(servers); // 失败的单独在日志告警，不阻塞其他
+  markMcpApplied(snap);
+}
+
+/**
+ * agent 加一台连接器的前半段：跟页面保存同一个 normalizeMcpServer、同一份 toolward 体检，
+ * 只是不落盘——要不要摆审批卡由工具那边按档位定（见 tools.js add_connector），批了才 commit。
+ */
+function connectorPrepare(input) {
+  adoptDiskMcp(); // 外面刚改过的先认进来，不然「是不是覆盖」会按旧表判
+  const prevByName = new Map((config.mcp_servers || []).map((s) => [s.name, s]));
+  // 没给请求头 / 环境变量时，原来的 Key 只在还发往同一处时沿用（见 mcp.js sameTarget）：
+  // 模型换个地址不带头，不该把用户原来的令牌一起递过去。页面保存那条路照旧全沿用
+  const want = String((input && input.name) || "").trim();
+  const keep = require("./mcp").sameTarget(prevByName.get(want), input || {}) ? new Map([[want, prevByName.get(want)]]) : new Map();
+  const entry = normalizeMcpServer(input || {}, 0, keep);
+  let fromPlugins = [];
+  try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了照样能加自己的 */ }
+  const owner = fromPlugins.find((s) => s.name === entry.name);
+  // 同名的插件连接器开机时会把这条顶掉，加了等于白加，还会让人以为连上的是自己这台
+  if (owner) throw new Error(`「${entry.name}」这个名字已经被插件 ${owner.plugin || ""} 的连接器占了，换个名字`);
+  const prev = prevByName.get(entry.name) || null;
+  const advice = connectorAdvice([entry]);
+  return {
+    entry,
+    exists: !!prev,
+    // 同名同配置 = 重连一下，不算覆盖
+    same: !!prev && cfgFingerprint(prev) === cfgFingerprint(entry),
+    findings: (advice && advice.findings) || [],
+  };
+}
+
+/** 后半段：落盘、只重启这一台，回它现在的状态 */
+function connectorCommit(entry) {
+  return mcpApply(async () => {
+    adoptDiskMcp(); // 等审批那会儿外面可能又改过：在最新那张表上替换，别拿旧表盖回去
+    const list = (config.mcp_servers || []).filter((s) => s && s.name !== entry.name);
+    const at = (config.mcp_servers || []).findIndex((s) => s && s.name === entry.name);
+    list.splice(at < 0 ? list.length : at, 0, entry); // 覆盖的留在原位，连接器页上不跳位置
+    config.mcp_servers = list;
+    saveConfig();
+    // 上面认进来（或存盘时合进来）的开关表先灌给管理器再起：外面刚把这台关了，startAll 拿旧表判，
+    // 就会先把用户刚关掉的进程拉起来、回模型一句「连上了」，等下一轮同步才又停掉
+    mcpManager.setDisabled(config.mcp_disabled || []);
+    mcpManager.stop([entry.name]);
+    await mcpManager.startAll([entry]);
+    // 只记这一台已生效（配置和开关都是）：别的条目要是外面也改了还没同步，留给 syncMcp 去起
+    if (MCP_APPLIED) {
+      MCP_APPLIED.servers.set(entry.name, cfgFingerprint(entry));
+      if (mcpManager.disabled.has(entry.name)) MCP_APPLIED.disabled.add(entry.name); else MCP_APPLIED.disabled.delete(entry.name);
+    }
+    return connectorStatus(entry.name);
+  });
+}
+
+/** 一台连接器此刻的样子，给 agent 的结果用：连上没、几个工具、连不上时的原文 */
+function connectorStatus(name) {
+  const c = mcpManager.clients.get(name);
+  const f = mcpManager.failures.find((x) => x.name === name);
+  const cfg = (config.mcp_servers || []).find((s) => s && s.name === name) || {};
+  return {
+    name,
+    disabled: mcpManager.disabled.has(name),
+    connected: !!c,
+    tools: c ? c.tools.map((t) => `mcp__${name}__${t.name}`) : [],
+    // 原文要照抄给人看（不替人猜原因），但先把回显的令牌洗掉
+    error: f ? mcpScrub(f.raw || f.error, cfg) : "",
+  };
+}
+
 app.post("/api/mcp", async (req, res) => {
   try {
-    const list = (req.body || {}).servers;
-    if (!Array.isArray(list)) throw new Error("需要 servers 数组");
-    const prevByName = new Map((config.mcp_servers || []).map((s) => [s.name, s]));
-    const next = list.map((s, i) => normalizeMcpServer(s, i, prevByName));
-    const dup = next.map((s) => s.name).find((n, i, a) => a.indexOf(n) !== i);
-    if (dup) throw new Error(`连接器名字重复：${dup}`);
-
-    /**
-     * 存之前让 toolward 看一眼这批连接器。
-     *
-     * 连接器以前一次安全检查都不过：从 GitHub 装个技能要过两道闸，而一条
-     * `command: npx` + 一串参数的连接器，点个保存就在这台机器上跑起来了——权限比技能大得多。
-     * 拿不到结果（没装 toolward、它崩了）就是 null，一切照旧。
-     *
-     * **只提醒，不拦**：这是用户自己填的命令和地址，不是陌生人的代码。在「保存」这一步硬拦，
-     * 用户能做的只有改回去或者关掉整个检查，那这道提醒就等于逼人学会无视它。
-     * 密钥不出门——redactServers 把 env/headers 的值全换成 ***，只留键名，见 toolward.js。
-     */
-    let advice = null;
-    try {
-      const rep = toolward.scanConnectors(next, config);
-      if (rep && rep.findings.length) {
-        advice = { level: rep.level, findings: rep.findings.slice(0, 8), more: Math.max(0, rep.findings.length - 8), toolward: rep.toolward };
-        log.warn("mcp", "连接器配置有被提醒的地方（不影响保存）", {
-          count: rep.findings.length, rules: [...new Set(rep.findings.map((f) => f.rule))].slice(0, 10),
-        });
-      }
-    } catch (e) { log.warn("mcp", "连接器体检没跑成（不影响保存）", { err: e }); }
+    adoptDiskMcp(); // 外面刚改的先认进来：下面替换只动页面认识的那几条，其余的要是旧的就白留了
+    const next = prepareMcpServers((req.body || {}).servers, (req.body || {}).base_names, (req.body || {}).base_revs);
+    const advice = connectorAdvice(next);
 
     config.mcp_servers = next;
     saveConfig();
-
-    // 插件带来的服务器也要一起重启：只重启 config 里的会把插件连接器整批打没，
-    // 而它们不在 config 里，重启前根本救不回来（旧版就是这个 bug）。
-    let fromPlugins = [];
-    try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该拖累连接器保存 */ }
-    const servers = [...config.mcp_servers, ...fromPlugins];
-    mcpManager.stop([...mcpManager.clients.keys(), ...mcpManager.failures.map((f) => f.name), ...servers.map((s) => s.name)]);
-    await mcpManager.startAll(servers); // 失败的单独在日志告警，不阻塞其他
+    await mcpApply(restartAllMcp);
     res.json({
       ok: true,
       total_tools: mcpManager.toolDefs().length,
@@ -3433,6 +3575,7 @@ function saveConfig() {
   store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MODE });
   CONFIG_MTIME = cfgMerge.mtimeOf(CONFIG_PATH);
   CONFIG_BASE = cfgMerge.snapshot(config);
+  CONFIG_SEEN = CONFIG_MTIME;
 }
 
 /** 把磁盘上那份读回来当底，只把本进程改过的那几处盖上去。合不了就照旧覆盖，但要留一句。 */
@@ -3456,6 +3599,115 @@ function mergeDiskEdits() {
   Object.assign(config, disk);
   security.getSecurity(config); // 安全策略跟着新内容重新补齐
   console.log(`[配置] config.json 在外面被改过，已合并：磁盘那份当底，本进程改的 ${mine.length} 处盖上去`);
+}
+
+/** 此刻 config 里的连接器配置，拍成跟 MCP_APPLIED 同样的形状好比对 */
+function mcpSnapshot() {
+  return {
+    servers: new Map((config.mcp_servers || []).filter((s) => s && s.name).map((s) => [s.name, cfgFingerprint(s)])),
+    disabled: new Set((config.mcp_disabled || []).map(String)),
+  };
+}
+function markMcpApplied(snap = mcpSnapshot()) {
+  MCP_APPLIED = snap;
+}
+function mcpChanged() {
+  if (!MCP_APPLIED) return false; // 开机那一批还没起完：起完会自己记
+  const now = mcpSnapshot();
+  const same = (a, b) => a.size === b.size && [...a].every((x) => (Array.isArray(x) ? b.get(x[0]) === x[1] : b.has(x)));
+  return !same(now.servers, MCP_APPLIED.servers) || !same(now.disabled, MCP_APPLIED.disabled);
+}
+
+/**
+ * config 里的连接器跟正在跑的对不上了（外面改了 config.json、或者别的路存盘时合并进来的）：
+ * 只动变了的那几台——删掉的停、新加的和改过的重连、开关翻了的按新开关来。没变的一台都不碰，
+ * 正连着的 npx 进程不该因为隔壁加了一条就被踢下线。
+ */
+async function syncMcp() {
+  if (!mcpChanged()) return;
+  const want = mcpSnapshot();
+  const had = MCP_APPLIED;
+  let fromPlugins = [];
+  try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了照样同步自己配的 */ }
+  const pluginNames = new Set(fromPlugins.map((s) => s.name));
+  const flipped = (n) => had.disabled.has(n) !== want.disabled.has(n);
+  const gone = [...had.servers.keys()].filter((n) => !want.servers.has(n) && !pluginNames.has(n));
+  const redo = [
+    ...(config.mcp_servers || []).filter((s) => s && s.name && (had.servers.get(s.name) !== want.servers.get(s.name) || flipped(s.name))),
+    ...fromPlugins.filter((s) => flipped(s.name)),
+  ];
+  mcpManager.setDisabled(config.mcp_disabled || []);
+  if (gone.length) mcpManager.stop(gone);
+  if (redo.length) {
+    mcpManager.stop(redo.map((s) => s.name)); // 连缓存那条一起清：配置改了就当场连一次，别拿旧工具表糊过去
+    await mcpManager.startAll(redo);
+  }
+  markMcpApplied(want);
+  console.log(`[MCP] config.json 里的连接器变了，已同步：${[...gone.map((n) => `停 ${n}`), ...redo.map((s) => `重连 ${s.name}`)].join("、") || "开关表更新"}`);
+}
+
+/**
+ * 磁盘上的 config.json 自从上回看过之后被改了，就只把 mcp_servers / mcp_disabled 认进来。
+ *
+ * 为什么只认这两个：别的键（Key、模型）下次存盘时 saveConfig 会三方合并，丢不了；
+ * 连接器不一样，改了没人点保存就一直不生效——模型让人「去 config.json 里加一条」，加完连接器页上看不见，
+ * 下一次随便存点什么，数组整块按内存那份盖回去（数组不逐项合并），手加的那条就悄悄没了。
+ *
+ * 用 JSON.parse 直接读、不走 store.readJson：别人写到一半时读到的是半截 JSON，
+ * readJson 会把它当坏文件挪去 .corrupt、退回备份——半截不是坏，等它写完就好。
+ * 读不成：这一版改动时间只说一次，CONFIG_SEEN 不动，下一轮接着读。
+ * 不碰 CONFIG_MTIME：只认了两个键不算整份对齐，下次存盘照样合并别的键。
+ */
+let configPollWarned = 0;
+function adoptDiskMcp() {
+  const now = cfgMerge.mtimeOf(CONFIG_PATH);
+  if (!now || now === CONFIG_SEEN) return false;
+  let disk;
+  try {
+    disk = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+  } catch (e) {
+    if (configPollWarned !== now) {
+      configPollWarned = now;
+      console.warn(`[配置] config.json 改过了，但现在读不成（${(e && e.message) || e}），连接器先按原样跑，改好了会自动认`);
+    }
+    return false;
+  }
+  CONFIG_SEEN = now;
+  if (!disk || typeof disk !== "object" || Array.isArray(disk)) return false;
+  let took = false;
+  for (const k of ["mcp_servers", "mcp_disabled"]) {
+    const v = disk[k] === undefined ? [] : disk[k]; // 整个键删掉 = 清空
+    if (!Array.isArray(v)) {
+      console.warn(`[配置] config.json 里的 ${k} 不是数组，没认，连接器先按原样跑`);
+      continue;
+    }
+    if (JSON.stringify(v) === JSON.stringify(config[k] || [])) continue;
+    if (JSON.stringify(config[k] || []) !== JSON.stringify(CONFIG_BASE[k] || [])) {
+      // 本进程改了还没落盘就撞上外面也改：两边都是整张表，合不了。说出来，别悄悄丢一边
+      console.warn(`[配置] config.json 里的 ${k} 在外面被改了，这边也有没存的改动，这次没认外面那份`);
+      continue;
+    }
+    config[k] = v;
+    CONFIG_BASE[k] = cfgMerge.snapshot(v); // 基线跟着走：下次存盘合并时这一键不算本进程改的，磁盘那份不会被盖
+    took = true;
+  }
+  if (took) console.log("[配置] config.json 里的连接器在外面被改过，已认进来");
+  return took;
+}
+
+let configPolling = false;
+async function pollConfig() {
+  if (configPolling) return; // 上一轮还在重连（npx 首次能拖一分钟），别叠着起
+  configPolling = true;
+  try {
+    adoptDiskMcp();
+    // 不只看这一轮认没认：别的路存盘时 mergeDiskEdits 也可能把外面改的连接器合进来
+    if (mcpChanged()) await mcpApply(syncMcp);
+  } catch (e) {
+    console.warn(`[配置] 同步 config.json 里的连接器出错了：${(e && e.message) || e}`);
+  } finally {
+    configPolling = false;
+  }
 }
 
 
@@ -5183,10 +5435,13 @@ app.delete("/api/plugins/:name", (req, res) => {
 
 /** 只起某个插件里还没连上的 MCP 服务器（装完立刻可用，不用重启） */
 async function startPluginMcp(pluginName) {
-  const want = pluginsMgr.pluginMcpServers().filter((s) => s.plugin === pluginName && !mcpManager.clients.has(s.name));
-  if (!want.length) return [];
-  await mcpManager.startAll(want);
-  return want.filter((s) => mcpManager.clients.has(s.name)).map((s) => s.name);
+  // 排进连接器那条队：跟页面保存、agent 加连接器同时来时别交错着起停
+  return mcpApply(async () => {
+    const want = pluginsMgr.pluginMcpServers().filter((s) => s.plugin === pluginName && !mcpManager.clients.has(s.name));
+    if (!want.length) return [];
+    await mcpManager.startAll(want);
+    return want.filter((s) => mcpManager.clients.has(s.name)).map((s) => s.name);
+  });
 }
 
 // 文件上传到工作空间（输入框 ＋ 按钮）
@@ -7746,10 +8001,19 @@ async function main() {
   mcpManager.setDisabled(config.mcp_disabled || []);
   // MCP 连接不挡启动：窗口秒开，连接器在后台就绪（agent 每次跑任务都是现取 toolDefs，
   // 晚几秒连上也不丢工具）。首个定时 tick 在 +20s，届时早已连完。
-  mcpManager
-    .startAll([...(config.mcp_servers || []), ...pluginServers])
+  // 排进连接器那条队：开机这批还没起完，agent 加的、外面改的就得排在后面，不然会被这批顶掉
+  const bootSnap = mcpSnapshot();
+  mcpApply(async () => {
+    try { await mcpManager.startAll([...(config.mcp_servers || []), ...pluginServers]); }
+    finally { markMcpApplied(bootSnap); } // 起失败也要记：不记的话后面的同步永远当「开机还没完」
+  })
     .then(() => console.log(`MCP 工具就绪: ${mcpManager.toolDefs().length} 个`))
     .catch((e) => console.warn("[MCP] 启动失败:", e.message));
+  // 盯 config.json 里的连接器：0 = 不盯（只在存盘时合并，跟以前一样）
+  const pollMs = Number(process.env.OWB_CONFIG_POLL_MS ?? 2000);
+  if (pollMs > 0) setInterval(pollConfig, Math.max(100, pollMs)).unref();
+  // agent 的 add_connector 走的就是上面这一套：同一个校验、同一条队、同一次落盘
+  require("./tools").setConnectorHost({ prepare: connectorPrepare, commit: connectorCommit, status: connectorStatus });
   const badPlugins = pluginsMgr.loadPlugins().filter((p) => !p.ok);
   for (const p of badPlugins) console.warn(`[插件] ${p.name} 装不上: ${p.error}`);
   runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });

@@ -502,6 +502,26 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "add_connector",
+    description:
+      "把一个 MCP 服务器接成本软件的连接器：存进连接器页并当场连一次，连上后它的工具（mcp__名字__工具名）就能调。用户说「接一下某某 MCP」时用它。" +
+      "别手改 config.json，也别写进 ~/.claude、~/.cursor 这类别的软件的配置——本软件不读那些，连接器页上也看不见。" +
+      "远程的填 url（Key 放 headers），本地进程填 command + args（Key 放 env），二选一。同名的会被替换，要用户点头。" +
+      "连不上时结果里有原文，照实转告用户，别自己猜原因。",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "连接器名：字母、数字、- 和 _，如 github、brave-search" },
+        url: { type: "string", description: "远程 MCP 地址（Streamable HTTP），http 或 https" },
+        headers: { type: "object", description: "远程才用：请求头，如 {\"Authorization\": \"Bearer …\"}" },
+        command: { type: "string", description: "本地进程的启动命令，如 npx、uvx" },
+        args: { type: "array", items: { type: "string" }, description: "命令参数，如 [\"-y\", \"@modelcontextprotocol/server-github\"]" },
+        env: { type: "object", description: "本地才用：环境变量，Key 一般放这里" },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "library_list",
     description: "列出用户资料库中的参考文件与灵感笔记（跨项目共享的长期沉淀素材）。资料库可以有子目录，列出来的名字自带子目录前缀（如 客户A/合同.md），后面读取和取用时要一字不差地照抄。当前项目可能只挂载了资料库的某一块，列出来的就是它全部能看到的范围。任务涉及用户的偏好、过往素材、参考资料时先查这里。",
     input_schema: { type: "object", properties: {} },
@@ -4266,6 +4286,120 @@ async function executeToolCore(name, input, opts = {}) {
           return { content: e.skillScan ? e.message : `技能没装上：${e.message}`, isError: true };
         }
       }
+      case "add_connector": {
+        // 跟连接器页「保存」走同一套（server.js 塞进来的 connectorHost）：同一个校验、同一份 toolward 体检、
+        // 同一条重连队。以前没有这个工具，用户说「接一下某某 MCP」，模型只能手改 config.json——
+        // 不重启不生效、连接器页上看不见，下一次随便存点什么还可能被整张表盖回去
+        if (orgPolicy() && orgPolicy().connectors_write === false) {
+          return { content: "加连接器归平台管理员：连接器是整台服务器共用的，接进来所有人的任务都会多出这批工具。请管理员在「连接器」页添加。", isError: true };
+        }
+        // 本地进程的连接器就是一条命令（批了当场起，以后每次开机再起一遍）：组织关了命令行，这儿不能是后门
+        if (String(input.command || "").trim() && orgBlocksShell()) {
+          security.audit("命令拦截", "add_connector（本组织已关闭「允许运行命令行」）", "拦截");
+          return { content: "本组织在企业管理后台关闭了「允许运行命令行」，本地进程的连接器（填 command 的）加不了；远程的（填 url 的）不受影响。确实要用，找组织管理员开。", isError: true };
+        }
+        const mcpLib = require("./mcp");
+        const host = connectorHost || diskConnectorHost;
+        if (!!String(input.url || "").trim() === !!String(input.command || "").trim()) {
+          return { content: "url 和 command 要二选一：远程的填 url（Key 放 headers），本地进程填 command + args（Key 放 env）", isError: true };
+        }
+        // 报错原文里可能回显着刚传进来的 Key：给模型看之前一律先洗
+        let plan;
+        try { plan = await host.prepare(input); } catch (e) { return { content: `连接器没加：${mcpLib.scrubText((e && e.message) || e, input)}`, isError: true }; }
+        const { entry } = plan;
+        const shown = mcpLib.redactServer(entry);
+        const where = entry.url ? shown.url : [shown.command, ...(shown.args || [])].join(" ");
+        // 远程的：试连那一下就是一次真请求（地址、请求头都发出去），跟 fetch_url 过同两道网络闸——
+        // 组织的网络名单、安全中心的黑白名单。审计只记洗过的地址：地址里常拼着 key
+        if (entry.url) {
+          const orgNet = hostAllowed(null, entry.url);
+          const g = orgNet.ok ? security.checkUrl(sec, entry.url) : { allowed: false, reason: "" };
+          if (!g.allowed) {
+            security.audit("网络拦截", `加连接器 ${entry.name}：${where}`, "拦截");
+            return {
+              content: orgNet.ok
+                ? `连接器没加，安全中心拦下了：${g.reason}（设置 → 安全中心 → 网络安全）`
+                : `连接器没加：${orgNet.why}。要放行找组织管理员改「企业设置 → 网络设置」。`,
+              isError: true,
+            };
+          }
+        }
+        const over = plan.exists && !plan.same; // 同名同配置 = 重连一下，不算覆盖
+        const warn = plan.findings || [];
+        const mode = security.permissionMode(sec);
+        let verdict = security.checkWrite(sec, `config.json#mcp_servers/${entry.name}`); // 只看不动 → 拒，不摆卡
+        // 本地的：它就是一条命令，命令闸那套（文件黑名单、高危、删除保护、询问名单）照查。以前这条路一张卡不弹，
+        // sh -c 里藏一句 rm、cat 私钥都直接跑了，stderr 还原样回到模型手里。
+        // 跟 run_shell 不同的是批了就长驻、存进连接器页后每次开机还会再起，所以除了全自动，一律要人点头
+        let cmdLine = "", cmdAsk = null;
+        if (!entry.url) {
+          cmdLine = [entry.command, ...entry.args].map(shellArg).join(" ");
+          let cv = security.checkCommand(sec, cmdLine);
+          // 名单外先判一句只在全自动有用（别的档反正要问）；发给判断模型的只给洗过的那行
+          if (cv.action === "allow" && mode === "full") cv = await judgeRisk(cv, "命令", where);
+          // 「哪一段触发的」要摆上卡、写进回话：那一段可能就夹着 Key，先洗
+          if (cv.action !== "allow") cv = { ...cv, seg: mcpLib.scrubText(cv.seg || "", entry), ruleKey: "" };
+          if (cv.action === "deny" && verdict.action !== "deny") verdict = cv;
+          else if (cv.action === "ask") cmdAsk = cv;
+        }
+        // 跟 install_skill 一个尺子：每步都问照问；远程的新加直接加，盖掉已有的、体检有提醒的要点头。
+        // ruleKey 留空：批过「这类都允许」的写文件、命令，不该顺带把加连接器也放了
+        if (verdict.action !== "deny" && (cmdAsk || mode === "ask" || over || warn.length || (cmdLine && mode !== "full"))) {
+          const why = cmdAsk ? cmdAsk.rule
+            : over ? `覆盖已有连接器「${entry.name}」`
+            : warn.length ? "连接器体检有提醒"
+            : cmdLine ? "加本地连接器（会起一条命令，开机还会再起）" : "加连接器";
+          verdict = { action: "ask", rule: why, seg: cmdAsk ? cmdAsk.seg : entry.name, ruleKey: "" };
+        }
+        // 覆盖时没给请求头 / 环境变量、又还是发往同一处：原来的 Key 沿用了（见 mcp.js sameTarget），卡上得照实说
+        const kept = plan.exists && (entry.url
+          ? !(input.headers && typeof input.headers === "object") && Object.keys(entry.headers || {}).length > 0
+          : !(input.env && typeof input.env === "object") && Object.keys(entry.env || {}).length > 0);
+        // 卡上的地址、命令都是洗过的；请求头和环境变量只给键名
+        const detail = [
+          `名字：${entry.name}`,
+          entry.url ? `地址：${shown.url}` : `命令：${where}`,
+          shown.headers ? `请求头：${Object.keys(shown.headers).join("、")}（${kept ? "沿用原来的值，" : ""}值不显示）` : "",
+          shown.env ? `环境变量：${Object.keys(shown.env).join("、")}（${kept ? "沿用原来的值，" : ""}值不显示）` : "",
+          over ? (kept ? "\n会替换现有的同名连接器：地址、命令换成这份，Key 沿用原来的。" : "\n会替换现有的同名连接器：原来的地址、命令和 Key 都换成这份。") : "",
+          ...warn.slice(0, 5).map((f) => `\n体检提醒：${mcpLib.scrubText(f.why || f.rule || "", entry)}`),
+        ].filter(Boolean).join("\n");
+        const refused = await passGate(verdict, "加连接器", `${entry.name} · ${where}`, { force: true, detail });
+        if (refused) {
+          // 问了没批：通用那句「请用户预先放行这类」对这张卡不成立（ruleKey 是空的），换成真走得通的那条路
+          if (verdict.action === "ask") return { content: "没加：这一步要人点头，没拿到同意（被拒、等超时，或者当时没人能批）。可以请用户到「连接器」页自己添加，那里填 Key、看体检结果都方便。", isError: true };
+          return refused;
+        }
+        if (cmdLine) {
+          // 用户配的 before_shell 钩子管的是「跑什么命令」：换个工具起进程不该绕开它
+          const hookSays = await HK.beforeShell(opts.hooks, cmdLine, { cwd: fileBase, stopSignal: opts.stopSignal });
+          if (hookSays) {
+            security.audit("命令执行", `加连接器 ${entry.name}：${where}`, "钩子拦截");
+            // 钩子的输出可能把整条命令念回来：按这台的 Key 原值换掉再给模型（不截断，钩子的理由要留全）
+            return { content: mcpLib.secretValues(entry).reduce((s, v) => s.split(v).join("***"), hookSays), isError: true };
+          }
+        }
+        security.audit(cmdLine ? "命令执行" : "网络访问", `加连接器 ${entry.name}：${where}`, "放行");
+        let st;
+        try { st = await host.commit(entry); } catch (e) { return { content: `连接器没加：${mcpLib.scrubText((e && e.message) || e, entry)}`, isError: true }; }
+        const was = plan.exists ? "（替换了原来的同名连接器）" : "";
+        if (st.disabled) {
+          return { content: `连接器「${entry.name}」已存进连接器页${was}，但它在那儿是关着的，这次没连。要用就请用户在连接器页把它打开。`, isError: false };
+        }
+        if (st.connected) {
+          const names = st.tools.slice(0, 20).join("、") + (st.tools.length > 20 ? " 等" : "");
+          return {
+            content: `连接器「${entry.name}」已加好并连上${was}，带来 ${st.tools.length} 个工具${st.tools.length ? "：" + names : ""}。` + (st.note || "接下来可以直接调。"),
+            isError: false,
+          };
+        }
+        // 原文照抄，不替人猜原因（猜错了比不说更耽误事）；server 那边已经洗过，这里再洗一遍不嫌多
+        return {
+          content: `连接器「${entry.name}」已存进连接器页${was}，但没连上。原文：${mcpLib.scrubText(st.error || "没拿到原因", entry)}\n` +
+            "把原文照实告诉用户。改好了可以再调一次 add_connector 覆盖，或者请用户到连接器页里改。",
+          isError: true,
+        };
+      }
       // 品牌档案认的是项目根（ws），不是本对话的成果子目录：档案跟着项目走，每个对话都该读到同一份；
       // 要查的成稿、要带进档案的素材仍按 resolveFile 从成果子目录起算
       case "brand_kit_read":
@@ -4652,5 +4786,119 @@ function markDuplicates(out) {
   return out;
 }
 
+// ---------- add_connector 的落地方 ----------
+/**
+ * server 起来时把它那套塞进来（server.js main 里 setConnectorHost）：跟连接器页保存同一个
+ * normalizeMcpServer、同一条重连队、同一次 saveConfig。prepare 只校验不落盘，批了才 commit。
+ * 没塞（命令行引擎借工具的桥进程、单测）就用下面的 diskConnectorHost。
+ */
+let connectorHost = null;
+function setConnectorHost(h) {
+  connectorHost = h || null;
+}
+
+/**
+ * 本地连接器的 command + args 拼成一行给命令闸看。带空格、引号的参数包成单引号：
+ * 不包的话 sh -c '…' 里那几段，命令闸拆不出来，里面藏的 rm 就看不见
+ */
+function shellArg(a) {
+  const s = String(a);
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * 连接器配置的校验，规则跟 server.js 的 normalizeMcpServer 一致。
+ * 那份要原样留在 server.js（e2e 按源码抠出来单独跑），桥进程又够不着 server.js，只好在这儿再写一份；
+ * test/perm-gate.js 拿同一批输入对照两边的判定，哪边改了另一边没跟上会红。
+ */
+function checkConnector(s, prev) {
+  const name = String((s && s.name) || "").trim();
+  if (!name) throw new Error("连接器缺少 name");
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`连接器 name「${name}」只能用字母、数字、- 和 _（工具名要按 mcp__服务器__工具 拼）`);
+  const url = String(s.url || "").trim();
+  const command = String(s.command || "").trim();
+  if (!command && !url) throw new Error("要么填 command（本地进程），要么填 url（远程 Streamable HTTP）");
+  const strs = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [String(k), String(v)]));
+  if (url) {
+    let u;
+    try { u = new URL(url); } catch { throw new Error("url 不是合法地址"); }
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("url 只支持 http/https");
+    // 没给请求头就沿用原来那份：模型改个地址，不该顺手把令牌洗没
+    const headers = s.headers && typeof s.headers === "object" ? strs(s.headers) : (prev && prev.headers) || {};
+    const local = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "::1";
+    if (Object.keys(headers).length && u.protocol === "http:" && !local) {
+      throw new Error("带了请求头（多半是令牌）却走明文 http，令牌会在路上被看光——请改成 https");
+    }
+    return { name, transport: "streamable-http", url, headers };
+  }
+  const env = s.env && typeof s.env === "object" ? strs(s.env) : (prev && prev.env) || {};
+  for (const k of Object.keys(env)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error(`环境变量名「${k}」不合法（只能字母、数字、下划线，不能以数字开头）`);
+  return { name, transport: "stdio", command, args: Array.isArray(s.args) ? s.args.map(String) : [], env };
+}
+
+/** 读 config.json 原文。读不成就抛：这一路是要写回去的，拿一份空的当底写回去等于把整份配置抹了 */
+function readConfigStrict(file) {
+  let raw;
+  try { raw = fs.readFileSync(file, "utf8"); } catch (e) {
+    if (e && e.code === "ENOENT") return {};
+    throw e;
+  }
+  const j = JSON.parse(raw);
+  if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("config.json 不是一个 JSON 对象");
+  return j;
+}
+
+/**
+ * 没有 server 在同一个进程里时加连接器：自己校验、自己试连一次、直接写 config.json。
+ * 正在跑的 server 盯着这个文件，几秒内就把新连接器认进去并连上（见 server.js 的 pollConfig），
+ * 连接器页上看得见。写之前重读一遍磁盘：等审批那会儿别人可能也改过，只替换这一条。
+ */
+const diskConnectorHost = {
+  async prepare(input) {
+    const file = dataPath("config.json");
+    let disk;
+    try { disk = readConfigStrict(file); } catch (e) { throw new Error(`config.json 现在读不成，没敢动它：${(e && e.message) || e}`); }
+    const list = Array.isArray(disk.mcp_servers) ? disk.mcp_servers : [];
+    const want = String((input && input.name) || "").trim();
+    const prev = list.find((s) => s && s.name === want) || null;
+    // 原来的 Key 只在还发往同一处时沿用，跟 server.js connectorPrepare 一个规矩（见 mcp.js sameTarget）
+    const entry = checkConnector(input || {}, require("./mcp").sameTarget(prev, input || {}) ? prev : null);
+    let owner = null;
+    try { owner = require("./plugins").pluginMcpServers().find((s) => s.name === entry.name); } catch { /* 插件坏了照样能加自己的 */ }
+    if (owner) throw new Error(`「${entry.name}」这个名字已经被插件 ${owner.plugin || ""} 的连接器占了，换个名字`);
+    let findings = [];
+    try {
+      const rep = require("./toolward").scanConnectors([entry], disk);
+      findings = (rep && rep.findings) || [];
+    } catch (e) { console.warn(`[MCP] 连接器体检没跑成（不影响添加）: ${(e && e.message) || e}`); }
+    const { cfgFingerprint } = require("./mcp");
+    return { entry, exists: !!prev, same: !!prev && cfgFingerprint(prev) === cfgFingerprint(entry), findings };
+  },
+  async commit(entry) {
+    const { McpClient, scrubText } = require("./mcp");
+    const store = require("./store");
+    const file = dataPath("config.json");
+    const disabled = (() => { try { return (readConfigStrict(file).mcp_disabled || []).includes(entry.name); } catch { return false; } })();
+    let tools = [], error = "";
+    if (!disabled) {
+      const c = new McpClient(entry.name, entry);
+      try { tools = await c.start(20000); } catch (e) { error = scrubText((e && e.message) || e, entry) || "连接失败，没拿到原因"; } finally { try { c.stop(); } catch {} }
+    }
+    let disk;
+    try { disk = readConfigStrict(file); } catch (e) { throw new Error(`config.json 现在读不成，没敢写：${(e && e.message) || e}`); }
+    const list = (Array.isArray(disk.mcp_servers) ? disk.mcp_servers : []).filter((s) => !(s && s.name === entry.name));
+    const at = (Array.isArray(disk.mcp_servers) ? disk.mcp_servers : []).findIndex((s) => s && s.name === entry.name);
+    list.splice(at < 0 ? list.length : at, 0, entry);
+    disk.mcp_servers = list;
+    store.writeJsonAtomic(file, disk, { pretty: true, mode: store.SECRET_MODE });
+    return {
+      name: entry.name, disabled, connected: !disabled && !error,
+      tools: (tools || []).map((t) => `mcp__${entry.name}__${t.name}`), error,
+      // 命令行引擎的连接器是开跑时挂上去的：这一趟会话挂不上新的，下一个任务才有
+      note: "这次会话里还调不到它的工具，下一个任务起就有。",
+    };
+  },
+};
+
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector };

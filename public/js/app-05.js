@@ -24,7 +24,13 @@ async function renderHubMcp(box) {
   const save = async (servers) => {
     const msg = box.querySelector("#mcp-msg");
     if (msg) msg.textContent = "连接中…（npx 首次要下载包，最长约 1 分钟）";
-    const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers }) });
+    // base_names：这页打开时认识的那几台。页面开着的这会儿 agent 或手改 config.json 又加了的，
+    // 这张表里没有，后端就原样留着——不带的话整表替换，等于替用户把它们删了
+    const base_names = data.servers.filter(sv => !sv.plugin).map(sv => sv.name);
+    // base_revs：打开时每台的版本号。这会儿别处把某台换了（对话里覆盖、手改），页上那份就是旧的，
+    // 后端认得出来、留新的——不带的话旧地址会配着新 Key 存回去
+    const base_revs = Object.fromEntries(data.servers.filter(sv => !sv.plugin && sv.rev).map(sv => [sv.name, sv.rev]));
+    const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers, base_names, base_revs }) });
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok) toast((d.error || "保存失败"), "circle-x");
     // 体检结果只提醒不拦（后端也不拦）。挂在 hubState 上而不是弹 toast：

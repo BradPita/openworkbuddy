@@ -51,17 +51,26 @@ function workspaceRoot(which) {
  * env / headers 里是 Key：只进哈希，缓存文件里不落明文。
  */
 function cfgFingerprint(cfg = {}) {
-  const sorted = (o) => Object.keys(o || {}).sort().map((k) => [k, String(o[k])]);
+  // 手改 config.json 写岔了形状（"args": "-y @x/y" 这种）也不许抛：开机、轮询、页面保存都要先算一遍指纹，
+  // 这里一抛，坏一条连接器就成了整个服务起不来、同步卡死。只认普通对象 / 数组，别的形状另记一笔原样，改了照样算变
+  const plain = (o) => (o && typeof o === "object" && !Array.isArray(o) ? o : {});
+  const sorted = (o) => Object.keys(plain(o)).sort().map((k) => [k, String(o[k])]);
+  const raw = (v) => { try { return JSON.stringify(v); } catch { return String(v); } };
   const pick = {
     transport: cfg.transport || "",
     command: cfg.command || "",
-    args: (cfg.args || []).map(String),
+    args: Array.isArray(cfg.args) ? cfg.args.map(String) : [],
     env: sorted(cfg.env),
     cwd: cfg.cwd || "",
     url: cfg.url || "",
     headers: sorted(cfg.headers),
     plugin: cfg.plugin || "",
   };
+  // 只在形状不对时才多这几个键：形状对的指纹跟以前一字不差，缓存里记的工具表不白丢
+  const odd = {};
+  if (cfg.args != null && !Array.isArray(cfg.args)) odd.args = raw(cfg.args);
+  for (const k of ["env", "headers"]) if (cfg[k] != null && plain(cfg[k]) !== cfg[k]) odd[k] = raw(cfg[k]);
+  if (Object.keys(odd).length) pick.odd = odd;
   return crypto.createHash("sha256").update(JSON.stringify(pick)).digest("hex");
 }
 
@@ -226,6 +235,159 @@ function whyFailed(err, cfg = {}) {
   if (/超时/.test(raw) && /\.(initialize|tools\/list)/.test(raw)) return `连上了但迟迟没握手完。${cmd ? "第一次跑要下载依赖，可能就是慢；再试一次通常就好" : "对方没按 MCP 协议回话"}`;
 
   return raw || "连接失败，没拿到原因";
+}
+
+// query 参数名、命令行旗子名里带这些字样的，值一律按密钥对待。宁可多遮一个 --author，不漏一个 --token
+const SECRET_NAME = /key|token|secret|sig|auth|pass|cred/i;
+// 短到看不出字样、托管 MCP 却真这么拼 key 的 query 名（?k=、?ak=）
+const SHORT_SECRET_Q = /^(?:k|t|s|p|ak|sk|pk|pw|pwd)$/i;
+const SECRET_FLAG = /^(--?[\w-]+)=(.*)$/s;
+// 不带横杠的 KEY=VAL（docker -e GITHUB_PERSONAL_ACCESS_TOKEN=xxx 这种）：名字像密钥也一样遮
+const SECRET_ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
+// mcp-remote 的 --header、curl 式的 -H：后面跟的是「名字: 值」，名字留着（看得出带了什么），值遮掉
+const HEADER_FLAG = /^(?:--header|-H)$/;
+const isSecretFlag = (a) => /^--?[\w-]+$/.test(a) && SECRET_NAME.test(a);
+const looksUrl = (s) => /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
+// 20 位以上、字母数字混着、不夹空格斜杠的一截：托管 MCP 常把 key 直接当路径的一段（/api/mcp/s/<key>/mcp）
+const looksRandom = (s) => /^[\w.~+=-]{20,}$/.test(s) && /\d/.test(s) && /[A-Za-z]/.test(s);
+const safeDecode = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+// 不知道 Key 是什么时的兜底：「Bearer xxx」「api_key=xxx」这两种长相。报错原文、命令参数都过一遍
+const GENERIC_SECRETS = [
+  [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 ***"],
+  [/((?:api[_-]?key|access[_-]?token|token|secret|password|passwd)["']?\s*[:=]\s*["']?)[^\s"'&,;\u0080-\uffff]{4,}/gi, "$1***"],
+];
+const scrubGeneric = (s) => GENERIC_SECRETS.reduce((t, [re, to]) => t.replace(re, to), String(s));
+
+/**
+ * 连接器地址拿给人看（审批卡、工具结果、日志、步骤标题）之前先洗一遍：
+ * user:pass@ 去掉、名字像密钥（或短到 k、ak 这种）的 query 值打成 ***、
+ * 长得像随机串的路径段和 query 值也打成 ***、# 后面整段丢——
+ * 不少托管 MCP 就是把 key 拼在地址里发的，原样显示等于把钥匙贴在墙上。
+ * 解析不了也不回原文：那一整串可能就是密钥，回一句占位。
+ */
+function redactUrl(u) {
+  if (!u) return "";
+  try {
+    const x = new URL(String(u));
+    x.username = "";
+    x.password = "";
+    x.hash = "";
+    x.pathname = x.pathname.split("/").map((p) => (looksRandom(safeDecode(p)) ? "***" : p)).join("/");
+    for (const k of new Set(x.searchParams.keys())) {
+      if (SECRET_NAME.test(k) || SHORT_SECRET_Q.test(k) || x.searchParams.getAll(k).some(looksRandom)) x.searchParams.set(k, "***");
+    }
+    return x.toString().replace(/%2A/gi, "*");
+  } catch { return "（地址无法解析）"; }
+}
+
+/**
+ * 一个命令行参数给人看的样子：网址按 redactUrl 洗，--token=xxx 留旗子遮值，--token xxx 遮后面那个，
+ * --header 'Authorization: Bearer xxx' 留头名遮值，GITHUB_TOKEN=xxx 留名字遮值，剩下的再兜一遍 Bearer / api_key= 那两种长相
+ */
+function redactArg(a, i, all) {
+  const s = String(a);
+  if (looksUrl(s)) return redactUrl(s);
+  const prev = i > 0 ? String(all[i - 1]) : "";
+  if (HEADER_FLAG.test(prev) && s.includes(":")) return `${s.slice(0, s.indexOf(":"))}: ***`;
+  const m = s.match(SECRET_FLAG);
+  if (m && HEADER_FLAG.test(m[1]) && m[2].includes(":")) return `${m[1]}=${m[2].slice(0, m[2].indexOf(":"))}: ***`;
+  if (m && SECRET_NAME.test(m[1])) return `${m[1]}=***`;
+  const v = s.match(SECRET_ASSIGN);
+  if (v && SECRET_NAME.test(v[1])) return `${v[1]}=***`;
+  if (isSecretFlag(prev) && !s.startsWith("-")) return "***";
+  return scrubGeneric(s);
+}
+
+/**
+ * 一台连接器配置的「能给人看」版本。headers / env 只留键名——值十有八九是 Key；
+ * command 和其余参数照留：拉了哪个包、有没有串 sh -c，全靠这两项才看得出来。
+ */
+function redactServer(cfg = {}) {
+  const out = { name: String(cfg.name || "") };
+  if (cfg.url) out.url = redactUrl(cfg.url);
+  if (cfg.command) {
+    out.command = String(cfg.command);
+    const args = Array.isArray(cfg.args) ? cfg.args : [];
+    out.args = args.map(redactArg);
+  }
+  for (const k of Object.keys(cfg.headers || {})) (out.headers = out.headers || {})[k] = "***";
+  for (const k of Object.keys(cfg.env || {})) (out.env = out.env || {})[k] = "***";
+  return out;
+}
+
+/**
+ * 这台配置里所有「可能是密钥」的原值，长的在前（先换长的，短的是长的一截时不会换出半截）。
+ * 报错原文会把它们原样回显——401 的响应体常把收到的令牌念一遍、stdio 的 stderr 会打出 env——
+ * 所以按值替换，不靠猜格式。header 值再拆一层：「Bearer xxx」里光遮整串不够，对方可能只回显 xxx。
+ */
+function secretValues(cfg = {}) {
+  const out = new Set();
+  const add = (v) => { const s = String(v == null ? "" : v); if (s.length >= 4) out.add(s); };
+  for (const v of Object.values(cfg.headers || {})) {
+    add(v);
+    String(v).split(/\s+/).slice(1).forEach(add);
+  }
+  for (const v of Object.values(cfg.env || {})) add(v);
+  // 请求头的值：整串一份，「Bearer xxx」后面那截再一份
+  const addHeaderVal = (v) => { add(v); String(v).split(/\s+/).slice(1).forEach(add); };
+  const fromUrl = (u) => {
+    try {
+      const x = new URL(String(u));
+      for (const p of [x.username, x.password]) { add(p); try { add(decodeURIComponent(p)); } catch {} }
+      for (const p of x.pathname.split("/")) if (looksRandom(safeDecode(p))) { add(p); add(safeDecode(p)); }
+      for (const [k, v] of x.searchParams) if (SECRET_NAME.test(k) || SHORT_SECRET_Q.test(k) || looksRandom(v)) add(v);
+      if (x.hash.length > 1) add(x.hash.slice(1));
+    } catch {}
+  };
+  if (cfg.url) fromUrl(cfg.url);
+  const args = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
+  // 跟 redactArg 认同一批长相：卡上遮掉的，报错原文里也得遮掉
+  args.forEach((a, i) => {
+    if (looksUrl(a)) return fromUrl(a);
+    const prev = i > 0 ? args[i - 1] : "";
+    const m = a.match(SECRET_FLAG);
+    const v = a.match(SECRET_ASSIGN);
+    if (HEADER_FLAG.test(prev) && a.includes(":")) addHeaderVal(a.slice(a.indexOf(":") + 1).trim());
+    else if (m && HEADER_FLAG.test(m[1]) && m[2].includes(":")) addHeaderVal(m[2].slice(m[2].indexOf(":") + 1).trim());
+    else if (m && SECRET_NAME.test(m[1])) add(m[2]);
+    else if (v && SECRET_NAME.test(v[1])) add(v[2]);
+    else if (isSecretFlag(prev) && !a.startsWith("-")) add(a);
+  });
+  return [...out].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * 报错原文给人看之前的最后一道：先按这台配置里的原值替换，再兜一遍通用的
+ * 「Bearer xxx」「api_key=xxx」和带 user:pass／query 的网址，最后截到 300 字——
+ * 原文是要照抄给用户的（不替人下结论），但不能顺手把 Key 也抄出去。
+ */
+function scrubText(text, cfg = {}) {
+  let s = String(text == null ? "" : text);
+  for (const v of secretValues(cfg)) s = s.split(v).join("***");
+  s = scrubGeneric(s)
+    // 只认 ASCII 段：中文括号句号紧贴在网址后面时别被吞进去。路径里夹着随机串的也洗（key 当路径段的那种）
+    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>\u0080-\uffff]+/gi, (u) => (/[@?#]/.test(u) || u.split("/").slice(3).some((p) => looksRandom(safeDecode(p))) ? redactUrl(u) : u));
+  return s.length > 300 ? `${s.slice(0, 300)}…` : s;
+}
+
+/**
+ * 对话里覆盖同名连接器、又没给请求头 / 环境变量时，原来那份 Key 能不能沿用：
+ * 只在「还是发往同一处」时才行——远程看 origin（协议 + 主机 + 端口），本地看 command + args 一字不差。
+ * 换了地方还沿用，等于把用户原来那把钥匙递给一个新地址：一句注入加一次点头就漏了。
+ * 连接器页保存不走这条：页上本来就不回显 Key，人改地址时只能沿用。
+ */
+function sameTarget(prev, s) {
+  if (!prev || !s) return false;
+  const url = String(s.url || "").trim();
+  if (url) {
+    try {
+      const o = new URL(url).origin;
+      return !!prev.url && o !== "null" && o === new URL(String(prev.url)).origin;
+    } catch { return false; }
+  }
+  if (prev.url) return false;
+  const args = (a) => JSON.stringify(Array.isArray(a) ? a.map(String) : []);
+  return String(s.command || "").trim() === String(prev.command || "").trim() && args(s.args) === args(prev.args);
 }
 
 const CLIENT_INFO = { name: "openworkbuddy", version: "0.1.0" };
@@ -620,7 +782,8 @@ class McpManager {
   _failed(cfg, e) {
     // 存翻译过的那句：界面上显示的就是这条，e.message 原文对用户没有信息量
     const why = whyFailed(e, cfg);
-    console.warn(`[MCP] ${cfg.name} 连接失败: ${why}${why === e.message ? "" : `（原文 ${e.message}）`}`);
+    // 日志会被拷去发 issue：原文里回显的令牌、地址里的 key 先洗掉（存进 failures 的那份不动，界面另有权限挡）
+    console.warn(`[MCP] ${cfg.name} 连接失败: ${scrubText(why, cfg)}${why === e.message ? "" : `（原文 ${scrubText(e.message, cfg)}）`}`);
     this.failures.push({ name: cfg.name, plugin: cfg.plugin || "", error: why, raw: e.message });
     this._forget([cfg.name]);
     return why;
@@ -826,4 +989,5 @@ class McpManager {
 module.exports = {
   McpManager, McpClient, StdioTransport, HttpTransport, PROTOCOL_VERSION, whyFailed,
   renderContent, cfgFingerprint, MAX_TOOL_PAGES, TOOLS_CACHE_REL, MEDIA_REL,
+  redactUrl, redactServer, secretValues, scrubText, sameTarget,
 };
