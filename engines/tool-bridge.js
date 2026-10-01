@@ -53,6 +53,7 @@ console.debug = toErr;
 
 const { dataPath } = require("../paths");
 const tools = require("../tools");
+const security = require("../security");
 const mediaModels = require("../media-models");
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -75,6 +76,7 @@ const LENDABLE = [
   "library_list",     // 技能库：有哪些
   "library_read",     // 技能库：把某个技能的正文读出来
   "save_skill",       // 这次趟出来的做法存成技能
+  "install_skill",    // 用户让装 GitHub 上的技能：不借的话 CLI 只会照上游 README 装进它自己的 ~/.claude/skills
   "remember",         // 长期记忆：记
   "forget",           // 长期记忆：忘
 ];
@@ -287,6 +289,9 @@ async function cli(argv) {
 }
 
 if (require.main === module) {
+  // 这个进程是 CLI 拉起的子进程：在这儿摆出的审批卡，网页、终端、手机都看不见（它们看的是自己进程里那份）。
+  // 不当场拒的话，要干等满超时（默认 120 秒）才按「没批」收场，CLI 那头只当工具卡死了
+  security.watchApprovals((ev) => { const id = ev.type === "open" && ev.entry && ev.entry.id; if (id) setImmediate(() => security.resolveApproval(id, false)); });
   if (process.argv.length > 2) {
     // 命令行模式下 stdout 不再是协议通道，但 tools.js 的日志仍然只该去 stderr，
     // 免得混进给模型看的结果里。所以上面那几个 console 改道保持不变。

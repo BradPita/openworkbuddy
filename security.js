@@ -821,8 +821,8 @@ function listApprovals(scopeTo) {
   return mine.map(({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId }) => ({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId, persistable: isPersistableRule(ruleKey) }));
 }
 /**
- * @param scope once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）
- * @param scopeTo 限定只能批自己那条；不传 = 不限定（平台管理员 / 单人桌面版）
+ * @param [scope] once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）
+ * @param [scopeTo] 限定只能批自己那条；不传 = 不限定（平台管理员 / 单人桌面版）
  * @returns { ok, ruleKey, scope } —— always 的持久化在 server 那边做，配置文件归它管
  */
 function resolveApproval(id, allow, scope = "once", scopeTo) {

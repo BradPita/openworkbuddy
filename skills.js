@@ -507,9 +507,8 @@ async function installFromGitHub(url, opts = {}) {
     const name = safeName(fm.name || (/^skill$/i.test(base) ? dirHint : base));
     // 单文件这条路也得过闸。以前它直接 saveSkill 落盘，等于开了个后门：
     // 同一份内容放进目录里要过检查，摘出来单独给一个 .md 链接反而不用。
-    const scan = gate(
-      toolward.merge(guard.scanOne("skill.md", raw), toolward.scanText("skill.md", raw, null, { subject: name })),
-      name, opts);
+    const fresh = toolward.merge(guard.scanOne("skill.md", raw), toolward.scanText("skill.md", raw, null, { subject: name }));
+    const scan = gate(fresh, name, await reviewed([{ name, description: fm.description, scan: fresh }], opts, { wholeDir: false }));
     saveSkill({ name, description: fm.description, content: fm.content, _scanned: true });
     writeProvenance(name, { source: rawUrl, actor: opts.actor, forced: !!opts.force, scan });
     return [{ name, description: fm.description, scan: { level: scan.level, findings: scan.findings.length, hosts: scan.hosts } }];
@@ -538,11 +537,40 @@ async function installFromGitHub(url, opts = {}) {
     // 第三个被拦下时前两个已经落在 skills/ 里了 —— 用户看到的是「安装失败」，
     // 实际装进去两个，而且不会有人再去翻一遍。要拦就整单拦。
     const found = dirs.map(inspectSkillDir);
-    for (const it of found) gate(it.scan, it.name, opts);
-    return found.map((it) => installedFromDir(it.srcDir, { ...opts, source: u, commit, scan: it.scan }));
+    const ok = await reviewed(found, opts, { wholeDir: true });
+    for (const it of found) gate(it.scan, it.name, ok);
+    return found.map((it) => installedFromDir(it.srcDir, { ...ok, source: u, commit, scan: it.scan }));
   } finally {
     cleanup();
   }
+}
+
+/**
+ * 扫完、拷之前，把要装的清单递给 opts.review，它点了头才往下装（点头就算 confirm）。
+ *
+ * 给 agent 的 install_skill 用：技能页上那两颗「确认安装」「仍然安装」是人点的，
+ * agent 手里没有。它要装，就得在这一刻把名单、扫描结果、会不会盖掉同名目录摆给人看。
+ * 放在拷贝之前而不是之后，理由跟 gate 一样：装完再问，文件已经在技能库里了。
+ *
+ * 被拦（block）的不递过去，当场按原样拦：那一档只有平台管理员在技能页能放，问了也白问。
+ * 没传 review 的（技能页那条路由）一字不变。
+ *
+ * wholeDir：仓库那条路是整个目录先删再拷（copySkillFolder），同名目录里后来添的东西会一起没；
+ * 单文件那条走 saveSkill，只改写 skill.md，按名字认已有的那份（目录名可能跟技能名不一样）。
+ */
+async function reviewed(found, opts, { wholeDir }) {
+  if (typeof opts.review !== "function") return opts;
+  for (const it of found) if (it.scan.level === "block") gate(it.scan, it.name, opts);
+  const list = found.map((it) => ({
+    name: it.name, description: it.description, scan: it.scan, wholeDir,
+    exists: wholeDir ? fs.existsSync(path.join(SKILLS_DIR, safeName(it.name))) : !!findSkillDir(safeName(it.name)),
+  }));
+  if (!(await opts.review(list))) {
+    const e = new Error("没装：没拿到同意");
+    e.declined = true;
+    throw e;
+  }
+  return { ...opts, confirm: true };
 }
 
 /**

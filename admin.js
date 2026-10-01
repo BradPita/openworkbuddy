@@ -278,8 +278,11 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
       root = o.id === org.DEFAULT_ORG ? "" : org.rootDirOf(o, getWorkspaceDir());
       const s = req.orgSettings || org.settingsOf(o);
       // 只在真配了限制时才进 ALS：默认组织默认值 = 不限 = 不设 store = 老行为一字不差
-      if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length)
-        policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [] };
+      // 装技能那条也跟着走：接口上 /api/skills 的写归平台管理员（PLATFORM_WRITE），agent 的
+      // install_skill 落的是同一个目录，不能让人绕开接口、在对话里一句「装这个」就装进全公司的提示词
+      const skillsOff = !isSoloDesktop() && !ownsGlobalWorkspace(req.user);
+      if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length || skillsOff)
+        policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [], ...(skillsOff ? { skills_write: false } : {}) };
       // 付费 API 的额度上下文。同样只在**真配了限制**时才建：
       // 没配的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
       // 两道闸分开判，不能合成一个条件：

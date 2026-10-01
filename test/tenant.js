@@ -653,6 +653,10 @@ async function login(username, password) {
   r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { session_days: 90 } } });
   r = await call("GET", "/api/policy-probe", { cookie: yuan });
   ok(r.json.policy && r.json.policy.allow_shell === false, "分公司普通成员的请求同样带着策略", r.json.policy);
+  // 装技能：技能整台服务器一份，接口上归平台管理员；对话里的 install_skill 得认同一条，不然一句「装这个」就绕过去了
+  eq(r.json.policy && r.json.policy.skills_write, false, "分公司普通成员：执行层看到的是不许装技能");
+  r = await call("GET", "/api/policy-probe", { cookie: fen });
+  eq(r.json.policy && r.json.policy.skills_write, false, "  └ 分公司管理员也一样（管的是自己组织，不是整台服务器的技能库）");
 
   console.log("\n【18】命令审批：看得见自己那条、批得动自己那条，「一直允许」轮不到他");
   // 这一段守的是一个会让任务干挂的坑：普通成员点「允许」被 /api/security 那道闸 403 掉，

@@ -487,6 +487,21 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "install_skill",
+    description:
+      "把 GitHub 上的技能装进本软件的技能库，装完技能页和输入框里的 / 马上就找得到。用户给了链接说「装这个技能」时用它。" +
+      "别自己 git clone 到工作目录，也别照上游 README 往 ~/.claude/skills、~/.codex 之类的目录里放——那是别的软件的位置，本软件不读，用户在界面上找不到。" +
+      "支持整个仓库（里面几个技能一起装）、tree 子目录、单个 .md。装之前会做安全扫描，有告警或会覆盖已有技能时要用户点头。" +
+      "技能要装依赖（npm install 之类）的，装完到返回的技能目录里装。",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "GitHub 链接：github.com/owner/repo、.../tree/分支/子目录、.../blob/分支/xxx.md 或 raw 直链" },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "library_list",
     description: "列出用户资料库中的参考文件与灵感笔记（跨项目共享的长期沉淀素材）。资料库可以有子目录，列出来的名字自带子目录前缀（如 客户A/合同.md），后面读取和取用时要一字不差地照抄。当前项目可能只挂载了资料库的某一块，列出来的就是它全部能看到的范围。任务涉及用户的偏好、过往素材、参考资料时先查这里。",
     input_schema: { type: "object", properties: {} },
@@ -4194,6 +4209,62 @@ async function executeToolCore(name, input, opts = {}) {
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(file, body, "utf8");
         return { content: `技能「${name}」已保存并生效（${rel}）`, isError: false };
+      }
+      case "install_skill": {
+        // 跟技能页「从 GitHub 安装」走同一个函数：同一道扫描、同一张 .install.json 回执。
+        // 以前没有这个工具，用户说「装这个技能」，模型只能照上游 README 自己 clone——
+        // 落进工作目录和 ~/.claude/skills，本软件一个都不读，技能页和 / 里都找不到
+        if (orgPolicy() && orgPolicy().skills_write === false) {
+          return { content: "装技能归平台管理员：技能是整台服务器共用的，装进来所有人的任务都会带上。请管理员在「技能」页从 GitHub 安装。", isError: true };
+        }
+        const url = String(input.url || "").trim();
+        if (!url) return { content: "缺 url：要装的技能的 GitHub 链接", isError: true };
+        const skills = require("./skills");
+        const guard = require("./skill-guard");
+        let refused = null, asked = false;
+        const review = async (list) => {
+          const rel = list.map((s) => `skills/${skills.safeName(s.name)}`).join("、");
+          const over = list.filter((s) => s.exists);
+          const warn = list.filter((s) => s.scan.level === "warn");
+          let verdict = security.checkWrite(sec, `skills/${skills.safeName(list[0].name)}/skill.md`); // 只看不动 → 拒
+          // 跟 save_skill 一个尺子：每步都问照问；别的档新装直接装，盖掉已有的、扫出告警的要点头。
+          // ruleKey 留空：批过「这类都允许」的写文件，不该顺带把装技能也放了
+          if (verdict.action !== "deny" && (security.permissionMode(sec) === "ask" || over.length || warn.length)) {
+            const why = over.length ? `覆盖已有技能「${over.map((s) => s.name).join("」「")}」`
+              : warn.length ? `技能扫出告警` : `从 GitHub 装技能`;
+            verdict = { action: "ask", rule: why, seg: rel, ruleKey: "" };
+          }
+          const detail = [
+            `来源：${url}`,
+            ...list.map((s) => `· ${s.name}${s.description ? "：" + String(s.description).replace(/\s+/g, " ").slice(0, 60) : ""}`),
+            over.length && over[0].wholeDir ? `\n会整个替换现有的 ${over.map((s) => "skills/" + skills.safeName(s.name)).join("、")}：里面后来添的文件、装的依赖都会没。` : "",
+            over.length && !over[0].wholeDir ? `\n会改写现有技能「${over[0].name}」的 skill.md，目录里别的文件不动。` : "",
+            ...warn.map((s) => "\n" + guard.explain(s.scan, s.name)),
+          ].filter(Boolean).join("\n");
+          asked = verdict.action === "ask";
+          refused = await passGate(verdict, "安装技能", rel, { force: true, detail });
+          return !refused;
+        };
+        try {
+          const done = await skills.installFromGitHub(url, { review, actor: { user: bgOwner(opts), via: "agent" } });
+          const lines = done.map((s) => {
+            const where = path.join(skills.SKILLS_DIR, skills.safeName(s.name));
+            const skip = (s.skipped || []).length ? `；超过 5MB 没拷的：${s.skipped.map((f) => f.path).join("、")}` : "";
+            return `· ${s.name} → ${where}${s.scan && s.scan.level !== "ok" ? `（扫描有 ${s.scan.findings} 条告警，已获同意）` : ""}${skip}`;
+          });
+          return {
+            content: `已装进技能库，技能页和输入框里的 / 现在就找得到：\n${lines.join("\n")}\n` +
+              "要用就 use_skill 加载。技能说明里要装依赖的，到上面的技能目录里装；别再往工作目录或 ~/.claude/skills 另放一份。",
+            isError: false,
+          };
+        } catch (e) {
+          // 问了没批：通用那句「请用户预先放行这类」对装技能不成立（这张卡不给放行），换成真走得通的那条路
+          if (refused && asked) {
+            return { content: "没装：这一步要人点头，没拿到同意（被拒、等超时，或者当时没人能批）。可以请用户到「技能」页从 GitHub 装，那里看得到扫描结果、能自己点确认。", isError: true };
+          }
+          if (refused) return refused;
+          return { content: e.skillScan ? e.message : `技能没装上：${e.message}`, isError: true };
+        }
       }
       // 品牌档案认的是项目根（ws），不是本对话的成果子目录：档案跟着项目走，每个对话都该读到同一份；
       // 要查的成稿、要带进档案的素材仍按 resolveFile 从成果子目录起算
