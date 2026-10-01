@@ -561,6 +561,55 @@ function rest() {
       eq(c.media.image.base_url, ARK, "压平下来的是挪之后那条渠道的地址");
       eq(c.media.image.api_key, K1, "Key 也是挪之后那条的——这才是「挪完再压平」的意义");
     }
+
+    // ---- 设置页那份（app-05.js 的 mmBrand / mmMismatch）必须跟这边判得一模一样。
+    // 设置页是存之前当场拦的，两边一漂，用户看到的就是「服务端认、设置页不让存」：
+    // 方舟日期尾巴当初只加在了这边，方舟上架的 glm-5-3-flash-260828 在设置页一直存不进去。
+    // 切真源码进空 vm 跑，不抄。
+    {
+      const vm = require("vm");
+      const src = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
+      const a = src.indexOf("function mmRelay("), b = src.indexOf("function kindLabel(", a);
+      if (a < 0 || b < 0) throw new Error("app-05.js 里的 mmRelay … mmMismatch 那段找不到了（函数名被改过？），没法定位真源码");
+      const box = { mediaCatalog: { kinds: mm.PROVIDER_KINDS, catalog: mm.CATALOG, brand_hints: mm.BRAND_HINTS } };
+      vm.runInNewContext(src.slice(a, b), box);
+      const kinds = ["", ...mm.PROVIDER_KINDS.map((k) => k.kind)];
+      const diff = (ids) => {
+        const off = [];
+        for (const id of ids) {
+          if (box.mmBrand(id) !== mm.brandOf(id)) off.push(`${id}：设置页认 ${box.mmBrand(id) || "（空）"}，服务端认 ${mm.brandOf(id) || "（空）"}`);
+          for (const k of kinds) {
+            if (box.mmMismatch(k, id) !== mm.mismatch(k, id)) off.push(`${k || "（无渠道）"} × ${id}：设置页 ${box.mmMismatch(k, id) || "（放行）"}，服务端 ${mm.mismatch(k, id) || "（放行）"}`);
+          }
+        }
+        return off;
+      };
+      const ids = new Set([
+        "glm-5-3-flash-260828", "kimi-k2-250711", "deepseek-v3-250324", "glm-4-plus", "cogview-3",
+        "claude-sonnet-4-20250514", "gpt-4o-2024-08-06", "x-269928", "x-260800", "x-2608",
+        "qwen3:14b", "z-ai/glm-5.3-flash", "doubao-seed-1-6-250615", "qwen-max", "随便起个名", "", "text-embedding-v3",
+      ]);
+      for (const cap of Object.keys(mm.CATALOG)) for (const m of mm.CATALOG[cap]) ids.add(m.id);
+      const off = diff(ids);
+      ok(off.length === 0, `设置页认门第跟服务端一致（${ids.size} 个型号 × ${kinds.length} 类渠道）`, off.slice(0, 6));
+
+      // 目录里两家都挂着的同一个 id：服务端认不出就接着按尾巴、前缀认，设置页也得这样，不能就此放弃。
+      // 现在的目录里恰好没有这种，临时塞一条，测完拿掉
+      const cap0 = Object.keys(mm.CATALOG)[0];
+      const twin = [{ kind: "zhipu", id: "glm-twin-x" }, { kind: "dashscope", id: "glm-twin-x" }];
+      mm.CATALOG[cap0].push(...twin);
+      try {
+        const offTwin = diff(["glm-twin-x"]);
+        ok(offTwin.length === 0, "目录里两家都有的型号，设置页跟服务端也判得一样", offTwin.slice(0, 6));
+      } finally {
+        mm.CATALOG[cap0].splice(mm.CATALOG[cap0].length - twin.length, twin.length);
+      }
+
+      eq(box.mmMismatch("ark", "glm-5-3-flash-260828"), "", "设置页：方舟上架的 GLM 挂方舟渠道，放行");
+      // ★反向对照★ 一致不能是靠「两边都废了」一致的：该拦的设置页照样拦
+      eq(box.mmMismatch("ark", "qwen-max"), "dashscope", "★对照★ 设置页：通义的型号挂方舟渠道，照样拦");
+      eq(box.mmMismatch("zhipu", "glm-5-3-flash-260828"), "ark", "★对照★ 设置页：方舟上架的那条挂到智谱渠道，判挂错");
+    }
   }
 
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

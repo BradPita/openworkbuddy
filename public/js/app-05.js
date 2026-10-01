@@ -1026,6 +1026,9 @@ function bindMedia(box, s) {
  * 为什么前端也要有一份：用户在下拉框里选的那一刻就该知道挂错了，而不是存完、跑起来、
  * 等看图那一步报一句 400 才发现。服务端那份是兜底（老配置、手改的 config.json 都走它），
  * 这份是**当场**——两边的判断必须一致，所以规则表是服务端下发的（brand_hints），不在这儿写死。
+ * 只有方舟日期尾巴那条是代码不是表，这儿照抄了一份（mmArkDated）。抄的就会漂：9 月只改了服务端，
+ * 前端照旧把方舟上架的 glm-5-3-flash-260828 拦成「智谱家的」。现在 test/media-models.js
+ * 拿同一批型号两边各跑一遍，对不上就红。
  *
  * 真实事故：下拉框把火山的 doubao-seed-1-6-250615 摆在了 OpenRouter 渠道下面，
  * 用户选了它，配置就成了「拿 OpenRouter 的地址去调豆包」，每次看图都报「不是有效的模型 ID」。
@@ -1050,6 +1053,13 @@ function mmEmptyTip(d, local) {
 /** 连问都没问出去（服务端没起来 / 网断了 / 这一版的接口不在）。
  *  它跟「问到了但是空的」是两回事，但结局以前一模一样：那行字直接抹掉，什么都不说 */
 const MM_FAIL_TIP = "没连上这个渠道，先用精选或「自己填…」，重开下拉框会重试。";
+/** 方舟上架的型号都带 `-YYMMDD` 尾巴，转售别家的也是（glm-5-3-flash-260828）。跟服务端 arkDated 一字不差 */
+function mmArkDated(id) {
+  const m = /-(\d{2})(\d{2})(\d{2})$/.exec(id);
+  if (!m) return false;
+  const mo = +m[2], d = +m[3];
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= 31;
+}
 function mmBrand(id) {
   const v = String(id || "").trim();
   if (!v || v.includes(":")) return "";
@@ -1057,7 +1067,10 @@ function mmBrand(id) {
   const kinds = new Set();
   for (const cap of Object.keys(cat)) for (const m of cat[cap]) if (String(m.id).toLowerCase() === v.toLowerCase()) kinds.add(m.kind);
   if (kinds.size === 1) return [...kinds][0];
-  if (kinds.size > 1 || v.includes("/")) return "";
+  // 目录里两家都有的，跟服务端一样接着往下认，不就此放弃
+  if (v.includes("/")) return "";
+  // 日期尾巴排在前缀之前：前缀是原厂的，上架的却是方舟
+  if (mmArkDated(v)) return "ark";
   for (const [src, kind] of ((mediaCatalog || {}).brand_hints || [])) if (new RegExp(src, "i").test(v)) return kind;
   return "";
 }
