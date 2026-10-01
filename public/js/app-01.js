@@ -5,6 +5,7 @@
 let sessionId = null;
 let currentMode = "craft";
 let settingsCache = null;
+let bootMoved = []; // 服务端启动时替用户改挂过的媒体模型（GET /api/settings 只回一次），进模型页时说一声
 let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
 let projectsLocked = false;    // 服务端说「你这边没有项目这回事」（租户成员）：整块项目区不画，任务历史也不按项目过滤
@@ -5552,6 +5553,7 @@ async function refreshSettingsCache() {
   const wasRoot = settingsCache && settingsCache.workspace_dir;
   settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
   if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
+  if (settingsCache && Array.isArray(settingsCache.moved_on_boot) && settingsCache.moved_on_boot.length) bootMoved = settingsCache.moved_on_boot;
   // 换了项目/工作空间，「本对话 / 全部」该不该出现跟着变；不重画的话要等下一次刷文件列表才对得上
   if (settingsCache && wsPerChat() !== wasPerChat && filesCache) renderFiles(filesCache);
   // 开着一条对话换了根：手里那格的名字是相对旧根的，拿去筛新根就是「本对话 0」，

@@ -174,7 +174,10 @@ if (legacyNoModels) {
 // 四路媒体模型迁移：老的「一路一个模型、Key 抄四份」→ 渠道表 + 模型表。幂等，老用户什么都不用做
 // 对话模型跟着做同一件事：每条自己抄一份地址和 Key → 抽到渠道那一层，一把 Key 底下挂一排模型。
 // 两者共用同一张 config.providers 表，所以媒体那边先跑（它的渠道认领只看地址+Key，不看协议）
-let migrated = mediaModels.normalize(config);
+// 启动这一趟替用户改挂了哪几条媒体模型：只记在内存里，设置页头一回来取时说一次（GET /api/settings 的 moved_on_boot）
+const bootNorm = {};
+let migrated = mediaModels.normalize(config, bootNorm);
+let movedOnBoot = bootNorm.moved || [];
 if (chatModels.normalize(config)) migrated = true;
 // 老版本出厂 config 里那九行没 Key 的厂商模板、以及它们留下的空壳渠道，这一趟收掉。只认名字+地址
 // 跟出厂一模一样、Key 空着、又不是正在用的那条；用户自己起名建的行一条不碰。跑过一遍就没得收了
@@ -1459,11 +1462,8 @@ app.get("/api/assistant", (_req, res) => res.json(config.assistant));
 app.get("/api/model-catalog", (req, res) => {
   // brand_hints 跟着一起下发：前端要在**保存之前**就认出「这个型号是别家的」，
   // 认的规矩必须和服务端是同一份，否则前端放行、后端自愈，用户看到的就是「我选了 A，存完变成 B」
-  res.json({
-    kinds: mediaModels.PROVIDER_KINDS, catalog: mediaModels.CATALOG, caps: mediaModels.CAPS, cap_cn: mediaModels.CAP_CN,
-    api_formats: mediaModels.API_FORMATS,
-    brand_hints: mediaModels.BRAND_HINTS,
-  });
+  // kind_hosts（地址认家门那张表）同理：渠道类型选了官方、地址填的是别家，两边得判成同一家
+  res.json(mediaModels.clientCatalog());
 });
 
 // 从渠道现拉一次模型清单，10 分钟内不重复拉（换渠道来回点几下不该把人家接口打一遍）
@@ -1742,6 +1742,12 @@ function embeddingView(req) {
   };
 }
 
+/** 启动时改挂的那批只回一次：回过就清，不然每进一次设置页都弹同一句 */
+function takeMovedOnBoot() {
+  const m = movedOnBoot;
+  movedOnBoot = [];
+  return m;
+}
 app.get("/api/settings", (req, res) => {
   // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
   const myAgent = prefs.agentCfg(config);
@@ -1850,6 +1856,8 @@ app.get("/api/settings", (req, res) => {
       has_key: !!p.api_key,
     })),
     media_models: config.media_models || [],
+    // 启动时替用户改挂过的媒体模型，只回一次。只给平台管理员：改的是整台机器的配置
+    moved_on_boot: isPlatformOwner(req) ? takeMovedOnBoot() : [],
     security: config.security,
     shortcuts: prefs.shortcutsCfg(config),
     // 执行追踪。私钥跟别的 Key 一个待遇：只有平台管理员看得见原文，其余人拿到八个星号。
@@ -1967,6 +1975,7 @@ function savePersonalPrefs(user, personal) {
 app.post("/api/settings", (req, res) => {
   try {
     let b = req.body || {};
+    const norm = {}; // 媒体两张表规整时替用户改挂了哪几条，回给前端
     /**
      * 个人偏好分流。
      *
@@ -2229,7 +2238,7 @@ app.post("/api/settings", (req, res) => {
     // 两张表任何一张动过，就重算 id、补默认项、把「默认那条」压平回 config.media，
     // 这样 tools.js 那边永远读到一份现成的扁平配置，不用关心多模型这套
     if (b.media || b.providers || b.media_models) {
-      mediaModels.normalize(config);
+      mediaModels.normalize(config, norm);
       // 渠道配置动过 = 用户已经去处理那条断掉的路了（换了 Key、换了型号、换了家）。
       // 熔断记录这时必须清空，否则他改完还得干等半小时，然后来问「我都改好了怎么还不动」。
       mediaHealth.reset();
@@ -2314,7 +2323,8 @@ app.post("/api/settings", (req, res) => {
     if (b.im && b.im.qq && imBridge) {
       imBridge.startQQ(true).catch((e) => console.warn("[QQ] 长连接重启失败:", e.message));
     }
-    res.json({ ok: true, provider: llm.provider, model: llm.model });
+    // 这一趟存的时候替用户改挂了哪几条（moved），前端拿去说一声
+    res.json({ ok: true, provider: llm.provider, model: llm.model, moved: norm.moved || [] });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

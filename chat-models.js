@@ -280,8 +280,11 @@ function normalize(config) {
     let prov = ref ? providers.find((p) => p.id === ref) : null;
     if (!prov && wantsChannel(m)) {
       // 协议是用户在模型条目上选的，认渠道时它说了算：填了中转地址的 Anthropic 协议
-      // 也该归到「Anthropic 协议」那个渠道，而不是按域名猜成一个 OpenAI 兼容渠道
-      const kind = m.provider === "anthropic" ? "anthropic" : guessKind(m.base_url);
+      // 也该归到「Anthropic 协议」那个渠道，而不是按域名猜成一个 OpenAI 兼容渠道。
+      // 例外是地址认得出是哪家的（智谱的 open.bigmodel.cn/api/anthropic）：那就是那家的渠道，
+      // 协议记在 api 上（下一行），不然渠道类型写着 Anthropic、型号却是 glm-4.6，挂错家的判断会拦它
+      const g = guessKind(m.base_url);
+      const kind = m.provider !== "anthropic" ? g : g === "custom" || g === "ollama" ? "anthropic" : g;
       // 条目上记的格式跟这类渠道的默认对不上（本地部署说的是 Ollama 原生 / Responses），新建渠道时带上它
       const api = m.provider !== protoOfKind(kind) ? m.provider : "";
       const key = chanKeyOf(kind, m);

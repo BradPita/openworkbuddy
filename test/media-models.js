@@ -562,6 +562,198 @@ function rest() {
       eq(c.media.image.api_key, K1, "Key 也是挪之后那条的——这才是「挪完再压平」的意义");
     }
 
+    // ---- 智谱自家也用 6 位日期尾巴（cogview-4-250304、glm-4-flash-250414）。
+    // 尾巴只说明「可能是方舟上架的」，前缀跟渠道对得上就放行——不然智谱渠道上的 CogView 会被当成方舟的拦下
+    eq(mm.mismatch("zhipu", "cogview-4-250304"), "", "智谱带日期尾巴的 CogView 挂智谱渠道，放行");
+    eq(mm.mismatch("zhipu", "cogView-4-250304"), "", "大小写不一样也放行（智谱文档里就是这么写的）");
+    eq(mm.mismatch("zhipu", "glm-4-flash-250414"), "", "智谱带日期尾巴的 GLM 挂智谱渠道，放行");
+    // ★反向对照★ 放行只认「前缀跟渠道同一家」，换一家渠道照样判
+    ok(mm.mismatch("openai", "cogview-4-250304") !== "", "★对照★ 同一个型号挂到 OpenAI 渠道上，照样判挂错", mm.mismatch("openai", "cogview-4-250304"));
+    eq(mm.mismatch("zhipu", "doubao-seed-1-6-250615"), "ark", "★对照★ 方舟的豆包挂智谱渠道，照样判方舟家的");
+
+    // ---- 百炼原名照搬上架了别家的型号（它的模型列表里就叫 glm-4.6、kimi-k2.5、MiniMax-M3）。
+    // 填在百炼渠道上是对的，判成挂错就会被拦着存不进去
+    eq(mm.mismatch("dashscope", "glm-4.6"), "", "百炼上的 GLM，放行");
+    eq(mm.mismatch("dashscope", "kimi-k2.5"), "", "百炼上的 Kimi，放行");
+    eq(mm.mismatch("dashscope", "MiniMax-M3"), "", "百炼上的 MiniMax，放行");
+    // ★反向对照★ 只放它真上架了的那几家；照搬上架也只是百炼一家的事
+    eq(mm.mismatch("dashscope", "gpt-4o"), "openai", "★对照★ 百炼不卖 OpenAI 的型号，照样判挂错");
+    eq(mm.mismatch("dashscope", "doubao-seedream-4-0-250828"), "ark", "★对照★ 方舟的豆包挂百炼，照样判挂错");
+    eq(mm.mismatch("zhipu", "kimi-k2.5"), "moonshot", "★对照★ 智谱渠道不沾这个光，Kimi 挂智谱照样判挂错");
+
+    // ---- 渠道类型是用户选的，地址才是请求真去的地方。
+    // 「Anthropic 协议 + 智谱的地址」是智谱官方给的接法：后面跑的是 GLM，不是 Claude
+    const ZHIPU_ANT = "https://open.bigmodel.cn/api/anthropic";
+    eq(mm.guessKind(ZHIPU_ANT), "zhipu", "智谱的 Anthropic 协议地址也认得出是智谱");
+    eq(mm.judgeKind("anthropic", ZHIPU_ANT), "zhipu", "地址是智谱的，就按智谱判");
+    eq(mm.mismatch("anthropic", "glm-4.6", ZHIPU_ANT), "", "Anthropic 类型 + 智谱地址 + GLM，放行");
+    eq(mm.mismatch("openai", "claude-sonnet-5", "https://relay.example.com/v1"), "", "官方类型配了个认不出的地址（中转站常这么填），不判");
+    eq(mm.mismatch("ark", "qwen-max", "https://dashscope.aliyuncs.com/compatible-mode/v1"), "", "类型选成方舟、地址却是百炼的：按地址判，通义型号放行");
+    // ★反向对照★ 地址跟类型对得上、或者压根没给地址，照旧按类型判
+    eq(mm.mismatch("anthropic", "glm-4.6"), "zhipu", "★对照★ 不给地址时照旧按类型判");
+    eq(mm.mismatch("anthropic", "glm-4.6", "https://api.anthropic.com"), "zhipu", "★对照★ 地址就是 Anthropic 官方的，GLM 照样判挂错");
+    eq(mm.mismatch("ark", "qwen-max", ARK), "dashscope", "★对照★ 方舟地址 + 通义型号，照样判挂错");
+    eq(mm.mismatch("custom", "qwen-max", ARK), "", "★对照★ 中转类型不管地址是谁家的，一律不判");
+    // 地址表换成了一张表（前端也照这张表认），老地址的认法一个都不许变
+    for (const k of mm.PROVIDER_KINDS) {
+      if (k.base_url) eq(mm.guessKind(k.base_url), k.kind, `${k.kind} 的默认地址认回 ${k.kind}`);
+    }
+
+    // ---- OpenRouter 的型号得写成「厂商/型号」，裸写 gpt-4o 它回 400。这是写法不对，不是挂错了家
+    eq(mm.idShapeError("openrouter", "gpt-5.2"), "这条渠道的型号要写成「厂商/型号」，比如 openai/gpt-5.2", "OpenRouter 上裸写型号，给出它在 OpenRouter 上的写法");
+    ok(/openai\/gpt-4o/.test(mm.idShapeError("openrouter", "qwen-max")), "目录里对不上的，给个通用的例子", mm.idShapeError("openrouter", "qwen-max"));
+    eq(mm.idShapeError("openai", "gpt-5.2", "https://openrouter.ai/api/v1"), mm.idShapeError("openrouter", "gpt-5.2"), "类型选错、地址是 OpenRouter 的，照样要求写法");
+    // ★反向对照★
+    eq(mm.idShapeError("openrouter", "openai/gpt-4o"), "", "★对照★ 写了前缀的放行");
+    eq(mm.idShapeError("openai", "gpt-4o"), "", "★对照★ 别家渠道不要这个写法");
+    eq(mm.idShapeError("custom", "gpt-4o", "https://openrouter.ai/api/v1"), "", "★对照★ 中转类型不管");
+    eq(mm.mismatch("openrouter", "gpt-5.2"), "openai", "★对照★ mismatch 本身的结论不变（写法那条排在它前面拦）");
+
+    // ---- 挪：同家渠道只有个没 Key 的空壳，不挪（挪过去是 401），但得说一声
+    {
+      const providers = [
+        { id: "ark-empty", name: "方舟（空壳）", kind: "ark", base_url: ARK, api_key: "" },
+        { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 },
+      ];
+      const models = [{ id: "image-x", cap: "image", name: "画图", provider: "dash", model: "doubao-seedream-4-0-250828" }];
+      const warnings = [];
+      const moved = mm.rehomeMismatched(providers, models, warnings);
+      eq(moved.length, 0, "同家渠道只有个空壳，不挪");
+      eq(models[0].provider, "dash", "原地不动");
+      ok(warnings.some((w) => /还没填 Key/.test(w)), "提醒那条渠道还没填 Key", warnings);
+    }
+
+    // ---- 挪：只聊天的渠道（Anthropic）挂不了看图，型号认对了也不往那儿挪
+    {
+      const providers = [
+        { id: "oa", name: "OpenAI", kind: "openai", base_url: "https://api.openai.com/v1", api_key: K1 },
+        { id: "ant", name: "Claude", kind: "anthropic", base_url: "https://api.anthropic.com", api_key: K2 },
+      ];
+      const models = [{ id: "vision-x", cap: "vision", name: "看图", provider: "oa", model: "claude-sonnet-5" }];
+      const warnings = [];
+      const moved = mm.rehomeMismatched(providers, models, warnings);
+      eq(moved.length, 0, "Anthropic 渠道挂不了看图，不往那儿挪");
+      eq(models[0].provider, "oa", "原地不动");
+      ok(warnings.some((w) => /挂不了视觉模型/.test(w)), "提醒那家的渠道挂不了这一路", warnings);
+    }
+
+    // ---- 挪：目录里没有、只凭前缀猜的，只提醒不动手
+    {
+      const providers = [
+        { id: "oa", name: "OpenAI", kind: "openai", base_url: "https://api.openai.com/v1", api_key: K1 },
+        { id: "zp", name: "智谱", kind: "zhipu", base_url: "https://open.bigmodel.cn/api/paas/v4", api_key: K2 },
+      ];
+      const models = [{ id: "vision-x", cap: "vision", name: "看图", provider: "oa", model: "glm-4.6v" }];
+      const warnings = [];
+      const moved = mm.rehomeMismatched(providers, models, warnings);
+      eq(moved.length, 0, "按前缀猜的不挪");
+      eq(models[0].provider, "oa", "原地不动");
+      ok(warnings.some((w) => /没替你改/.test(w) && /看名字像/.test(w)), "提醒一声，说清楚是看名字猜的", warnings);
+    }
+
+    // ---- 挪：上面放行了的几种，在挪这一层也一条都不许动
+    {
+      const providers = [
+        { id: "zp", name: "智谱", kind: "zhipu", base_url: "https://open.bigmodel.cn/api/paas/v4", api_key: K1 },
+        { id: "ark", name: "方舟", kind: "ark", base_url: ARK, api_key: K1 },
+        { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 },
+        { id: "zp-ant", name: "智谱 Anthropic", kind: "anthropic", base_url: ZHIPU_ANT, api_key: K1 },
+        { id: "or", name: "OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: K2 },
+        { id: "oa", name: "OpenAI", kind: "openai", base_url: "https://api.openai.com/v1", api_key: K1 },
+      ];
+      const models = [
+        { id: "image-x", cap: "image", name: "画图", provider: "zp", model: "cogview-4-250304" },
+        { id: "vision-x", cap: "vision", name: "看图", provider: "dash", model: "glm-4.6" },
+        { id: "vision-y", cap: "vision", name: "看图二", provider: "zp-ant", model: "glm-4.6" },
+        { id: "vision-z", cap: "vision", name: "看图三", provider: "or", model: "gpt-5.2" },
+      ];
+      const warnings = [];
+      const moved = mm.rehomeMismatched(providers, models, warnings);
+      eq(moved.length, 0, "智谱日期尾巴 / 百炼照搬 / 智谱的 Anthropic 地址 / OpenRouter 裸写，一条都不挪");
+      eq(models.map((m) => m.provider).join(","), "zp,dash,zp-ant,or", "provider 字段原样不动");
+      ok(warnings.some((w) => /厂商\/型号/.test(w)), "OpenRouter 裸写的那条提醒改写法（不是挪到 OpenAI）", warnings);
+    }
+
+    // ---- 挪：只往不要「厂商/型号」写法的渠道挪
+    {
+      const providers = [
+        { id: "sf", name: "硅基流动", kind: "siliconflow", base_url: "https://api.siliconflow.cn/v1", api_key: K1 },
+        { id: "or", name: "OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: K2 },
+      ];
+      const models = [{ id: "vision-x", cap: "vision", name: "看图", provider: "sf", model: "openai/gpt-5.2" }];
+      const warnings = [];
+      const moved = mm.rehomeMismatched(providers, models, warnings);
+      eq(moved.length, 0, "OpenRouter 那种渠道不往里挪");
+      ok(warnings.some((w) => /写法不一样/.test(w)), "提醒一声写法不一样", warnings);
+    }
+
+    // ★反向对照★ 目录里认得出、同家渠道有 Key、挂得了这一路的，照挪不误
+    {
+      const providers = [
+        { id: "ark-empty", name: "方舟（空壳）", kind: "ark", base_url: ARK, api_key: "" },
+        { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 },
+        { id: "ark", name: "方舟", kind: "ark", base_url: ARK, api_key: K1 },
+        { id: "oa", name: "OpenAI", kind: "openai", base_url: "https://api.openai.com/v1", api_key: K1 },
+      ];
+      const models = [
+        { id: "image-x", cap: "image", name: "画图", provider: "dash", model: "doubao-seedream-4-0-250828" },
+        { id: "vision-x", cap: "vision", name: "看图", provider: "dash", model: "gpt-5.2" },
+      ];
+      const moved = mm.rehomeMismatched(providers, models);
+      eq(models.map((m) => m.provider).join(","), "ark,oa", "★对照★ 方舟的豆包挪到有 Key 的方舟、OpenAI 的看图挪到 OpenAI");
+      eq(moved.length, 2, "★对照★ 两条都记进挪动记录");
+    }
+
+    // ---- normalize 把挪了什么、提醒了什么交给调用方（设置页拿去跟用户说），返回值仍是「改没改」
+    {
+      const c = {
+        providers: [
+          { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 },
+          { id: "ark", name: "方舟", kind: "ark", base_url: ARK, api_key: K1 },
+          { id: "ant", name: "Claude", kind: "anthropic", base_url: "https://api.anthropic.com", api_key: K1 },
+        ],
+        media_models: [
+          { id: "image-x", cap: "image", name: "画图", provider: "dash", model: "doubao-seedream-4-0-250828", default: true },
+          { id: "vision-x", cap: "vision", name: "看图", provider: "ant", model: "claude-sonnet-5", default: true },
+        ],
+        media: {},
+      };
+      const out = {};
+      const changed = mm.normalize(c, out);
+      eq(typeof changed, "boolean", "返回值还是 true / false");
+      eq(changed, true, "挪了就算改了");
+      eq((out.moved || []).length, 1, "out.moved 里是这一趟挪的那条");
+      eq(out.moved && out.moved[0].to, "ark", "挪到哪条写在里面");
+      ok((out.warnings || []).some((w) => /看图/.test(w) && /挂不了视觉模型/.test(w)), "挂在只聊天渠道上的看图，进 out.warnings", out.warnings);
+      eq(c.media_models.find((m) => m.id === "vision-x").provider, "ant", "那条只提醒，不动也不删");
+      // ★反向对照★ 不传 out 照样能跑，第二遍什么都不挪
+      const out2 = {};
+      mm.normalize(c, out2);
+      eq((out2.moved || []).length, 0, "★对照★ 第二遍没东西可挪");
+      eq(mm.normalize(c), false, "★对照★ 不传 out 也照常返回");
+    }
+
+    // ---- 改挂了要跟用户说：存设置那次回 moved，启动那一趟改的由 GET 回一次 moved_on_boot，设置页拿去说
+    {
+      const SERVER = require("./lib/src").src("server");
+      ok(/mediaModels\.normalize\(config, norm\)/.test(SERVER) && /moved: norm\.moved \|\| \[\]/.test(SERVER), "存设置：把这一趟挪了什么回给前端");
+      ok(/moved_on_boot: isPlatformOwner\(req\) \? takeMovedOnBoot\(\) : \[\]/.test(SERVER), "读设置：启动时挪的那批回给平台管理员");
+      ok(/function takeMovedOnBoot\(\) \{[^}]*movedOnBoot = \[\];/.test(SERVER), "回过一次就清掉，不然每进一次设置页都弹");
+      ok(/normalize\(config, bootNorm\)/.test(SERVER) && /movedOnBoot = bootNorm\.moved/.test(SERVER), "启动那一趟挪的记下来");
+      const APP5 = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
+      ok(/toastMoved\(data\.moved,/.test(APP5), "设置页存完把 moved 说出来");
+      ok(/bootMoved = s\.moved_on_boot/.test(APP5) && /toastMoved\(bootMoved,/.test(APP5), "启动时挪的那批，进模型页说一次");
+    }
+
+    // ---- Gemini 官方渠道只聊天，看图这一路的目录里不该摆它（OpenRouter 转的那条不算）
+    eq(mm.CATALOG.vision.filter((m) => m.kind === "gemini").length, 0, "看图目录里没有 Gemini 官方渠道的型号");
+    ok(mm.CATALOG.vision.some((m) => m.kind === "openrouter" && /gemini/.test(m.id)), "★对照★ 走 OpenRouter 的 Gemini 还在");
+    for (const cap of Object.keys(mm.CATALOG)) {
+      if (cap === "chat") continue;
+      const bad = mm.CATALOG[cap].filter((m) => !mm.canHost(m.kind, cap)).map((m) => `${m.kind}:${m.id}`);
+      eq(bad.join(","), "", `${cap} 目录里的型号，渠道都挂得了这一路`);
+    }
+
     // ---- 设置页那份（app-05.js 的 mmBrand / mmMismatch）必须跟这边判得一模一样。
     // 设置页是存之前当场拦的，两边一漂，用户看到的就是「服务端认、设置页不让存」：
     // 方舟日期尾巴当初只加在了这边，方舟上架的 glm-5-3-flash-260828 在设置页一直存不进去。
@@ -571,15 +763,24 @@ function rest() {
       const src = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
       const a = src.indexOf("function mmRelay("), b = src.indexOf("function kindLabel(", a);
       if (a < 0 || b < 0) throw new Error("app-05.js 里的 mmRelay … mmMismatch 那段找不到了（函数名被改过？），没法定位真源码");
-      const box = { mediaCatalog: { kinds: mm.PROVIDER_KINDS, catalog: mm.CATALOG, brand_hints: mm.BRAND_HINTS } };
+      // 喂的就是 /api/model-catalog 回给设置页的那一份，表多一张少一张两边都一起变
+      const box = { mediaCatalog: mm.clientCatalog() };
       vm.runInNewContext(src.slice(a, b), box);
       const kinds = ["", ...mm.PROVIDER_KINDS.map((k) => k.kind)];
+      // 地址那一维：不给、各家官方地址、智谱的 Anthropic 协议地址、认不出的中转地址
+      const bases = ["", ...new Set(mm.PROVIDER_KINDS.map((k) => k.base_url).filter(Boolean)),
+        "https://open.bigmodel.cn/api/anthropic", "https://api.anthropic.com", "https://relay.example.com/v1",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"];
       const diff = (ids) => {
         const off = [];
         for (const id of ids) {
           if (box.mmBrand(id) !== mm.brandOf(id)) off.push(`${id}：设置页认 ${box.mmBrand(id) || "（空）"}，服务端认 ${mm.brandOf(id) || "（空）"}`);
           for (const k of kinds) {
             if (box.mmMismatch(k, id) !== mm.mismatch(k, id)) off.push(`${k || "（无渠道）"} × ${id}：设置页 ${box.mmMismatch(k, id) || "（放行）"}，服务端 ${mm.mismatch(k, id) || "（放行）"}`);
+            for (const u of bases) {
+              if (box.mmMismatch(k, id, u) !== mm.mismatch(k, id, u)) off.push(`${k || "（无渠道）"} @ ${u || "（无地址）"} × ${id}：设置页 ${box.mmMismatch(k, id, u) || "（放行）"}，服务端 ${mm.mismatch(k, id, u) || "（放行）"}`);
+              if (box.mmIdShapeError(k, id, u) !== mm.idShapeError(k, id, u)) off.push(`${k || "（无渠道）"} @ ${u || "（无地址）"} × ${id} 写法：设置页「${box.mmIdShapeError(k, id, u)}」，服务端「${mm.idShapeError(k, id, u)}」`);
+            }
           }
         }
         return off;
@@ -588,10 +789,22 @@ function rest() {
         "glm-5-3-flash-260828", "kimi-k2-250711", "deepseek-v3-250324", "glm-4-plus", "cogview-3",
         "claude-sonnet-4-20250514", "gpt-4o-2024-08-06", "x-269928", "x-260800", "x-2608",
         "qwen3:14b", "z-ai/glm-5.3-flash", "doubao-seed-1-6-250615", "qwen-max", "随便起个名", "", "text-embedding-v3",
+        "cogview-4-250304", "cogView-4-250304", "glm-4-flash-250414", "glm-4-air-250414",
+        "glm-4.6", "kimi-k2.5", "MiniMax-M3", "gpt-4o", "gpt-5.2", "openai/gpt-4o", "glm-4.6v",
       ]);
       for (const cap of Object.keys(mm.CATALOG)) for (const m of mm.CATALOG[cap]) ids.add(m.id);
       const off = diff(ids);
-      ok(off.length === 0, `设置页认门第跟服务端一致（${ids.size} 个型号 × ${kinds.length} 类渠道）`, off.slice(0, 6));
+      ok(off.length === 0, `设置页认门第跟服务端一致（${ids.size} 个型号 × ${kinds.length} 类渠道 × ${bases.length} 种地址）`, off.slice(0, 6));
+      // 认地址、认「挂得了哪一路」也是两边各一份
+      const offHost = [];
+      for (const u of [...bases, "http://127.0.0.1:11434/v1", "https://api.minimax.cn/v1", "not a url"]) {
+        const want = mm.guessKind(u);
+        if (u && box.mmGuessKind(u) !== want) offHost.push(`${u}：设置页认 ${box.mmGuessKind(u)}，服务端认 ${want}`);
+      }
+      for (const k of kinds) for (const cap of [...mm.CAPS, "chat"]) {
+        if (k && box.mmCanHost(k, cap) !== mm.canHost(k, cap)) offHost.push(`${k} × ${cap}：设置页 ${box.mmCanHost(k, cap)}，服务端 ${mm.canHost(k, cap)}`);
+      }
+      ok(offHost.length === 0, "设置页认地址、认渠道挂得了哪一路，跟服务端一致", offHost.slice(0, 6));
 
       // 目录里两家都挂着的同一个 id：服务端认不出就接着按尾巴、前缀认，设置页也得这样，不能就此放弃。
       // 现在的目录里恰好没有这种，临时塞一条，测完拿掉
@@ -608,7 +821,23 @@ function rest() {
       eq(box.mmMismatch("ark", "glm-5-3-flash-260828"), "", "设置页：方舟上架的 GLM 挂方舟渠道，放行");
       // ★反向对照★ 一致不能是靠「两边都废了」一致的：该拦的设置页照样拦
       eq(box.mmMismatch("ark", "qwen-max"), "dashscope", "★对照★ 设置页：通义的型号挂方舟渠道，照样拦");
-      eq(box.mmMismatch("zhipu", "glm-5-3-flash-260828"), "ark", "★对照★ 设置页：方舟上架的那条挂到智谱渠道，判挂错");
+      // 智谱自家也用 6 位日期尾巴（cogview-4-250304），所以前缀对得上的不再拿尾巴判走——这一条跟着放行
+      eq(box.mmMismatch("zhipu", "glm-5-3-flash-260828"), "", "设置页：GLM 带日期尾巴挂智谱渠道，前缀对得上，放行");
+      eq(box.mmMismatch("zhipu", "cogview-4-250304"), "", "设置页：智谱自家带日期尾巴的 CogView，放行");
+      eq(box.mmMismatch("dashscope", "kimi-k2.5"), "", "设置页：百炼照搬上架的 Kimi，放行");
+      eq(box.mmMismatch("anthropic", "glm-4.6", "https://open.bigmodel.cn/api/anthropic"), "", "设置页：智谱的 Anthropic 协议地址上跑 GLM，放行");
+      eq(box.mmIdShapeError("openrouter", "gpt-5.2"), mm.idShapeError("openrouter", "gpt-5.2"), "设置页：OpenRouter 裸写型号，同一句提醒");
+      // ★反向对照★
+      eq(box.mmMismatch("zhipu", "doubao-seed-1-6-250615"), "ark", "★对照★ 设置页：方舟的豆包挂智谱渠道，照样判挂错");
+      eq(box.mmMismatch("dashscope", "gpt-4o"), "openai", "★对照★ 设置页：百炼不卖的 OpenAI 型号，照样判挂错");
+      eq(box.mmMismatch("ark", "qwen-max", ARK), "dashscope", "★对照★ 设置页：方舟地址上的通义型号，照样判挂错");
+
+      // 目录还没拉下来（或者拉失败了）的时候，设置页一律不判——拿空表判只会把什么都放过或什么都拦下
+      const empty = { mediaCatalog: null };
+      vm.runInNewContext(src.slice(a, b), empty);
+      eq(empty.mmMismatch("ark", "qwen-max"), "", "目录为空时不判");
+      eq(empty.mmIdShapeError("openrouter", "gpt-5.2"), "", "目录为空时也不拦写法");
+      eq(empty.mmMismatch("zhipu", "glm-5-3-flash-260828"), "", "目录为空时连日期尾巴也不拿来判（没有前缀表，光凭尾巴会把智谱的判成方舟的）");
     }
   }
 
@@ -926,10 +1155,90 @@ async function videoParamChecks() {
   }
 }
 
+// ---------------------------------------------------------------- 5d
+/**
+ * 设置页拉目录（app-05.js 的 loadMediaCatalog）。
+ * 拉失败那次要是把空目录缓存下来，这一整次会话下拉框都是空的、挂错家也一条认不出——
+ * 而界面看上去一切正常。所以失败不缓存，下回调用再拉；拉成功了才缓存。
+ * 切真源码进 vm，fetch 换成假的，一个请求都不出本机。
+ */
+async function catalogLoadChecks() {
+  console.log("\n【5d】设置页拉目录：失败不缓存，成功才缓存");
+  const vm = require("vm");
+  const src = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
+  const a = src.indexOf("async function loadMediaCatalog(");
+  const b = src.indexOf("\n}\n", a);
+  if (a < 0 || b < 0) throw new Error("app-05.js 里的 loadMediaCatalog 找不到了（函数名被改过？）");
+  let calls = 0, mode = "down";
+  const box = {
+    mediaCatalog: null,
+    fetch: async () => {
+      calls++;
+      if (mode === "down") throw new Error("connect ECONNREFUSED");
+      if (mode === "500") return { ok: false, json: async () => ({ error: "boom" }) };
+      return { ok: true, json: async () => mm.clientCatalog() };
+    },
+  };
+  vm.runInNewContext(src.slice(a, b + 2), box);
+  let got = await box.loadMediaCatalog();
+  eq(Array.isArray(got.kinds) && got.kinds.length, 0, "连不上：这一次拿到的是空目录");
+  eq(box.mediaCatalog, null, "……但不缓存");
+  mode = "500";
+  got = await box.loadMediaCatalog();
+  eq(box.mediaCatalog, null, "回了个 500：也不缓存（别把报错体当目录）");
+  eq(calls, 2, "每次都重新拉了");
+  mode = "ok";
+  got = await box.loadMediaCatalog();
+  ok(got.kinds.length > 0 && box.mediaCatalog === got, "恢复以后拉到了，缓存下来");
+  // ★反向对照★ 缓存住了就不再拉
+  mode = "down";
+  got = await box.loadMediaCatalog();
+  eq(calls, 3, "★对照★ 缓存住以后不再发请求");
+  ok(got.kinds.length > 0, "★对照★ 之后再断网也用缓存那份");
+}
+
+// ---------------------------------------------------------------- 5e
+/**
+ * 派发前那道闸（tools.js 的 viaMedia）：写法不对、挂错家，在发请求**之前**拦下，
+ * 给 agent 一句能照着做的话。判的时候要连渠道地址一起看——「Anthropic 类型 + 智谱的地址」
+ * 跑的就是 GLM，按类型判会把能跑通的那条拦死。每条拦截后面跟一条「确实放过去了」的对照。
+ */
+async function gateChecks() {
+  console.log("\n【5e】派发前的闸：写法不对、挂错家，发请求之前就拦");
+  const { viaMedia } = require(path.join(ROOT, "tools"))._internals;
+  const mh = require(path.join(ROOT, "media-health"));
+  mh.reset();
+  let ran = 0;
+  const run = async () => { ran++; return { content: "【看图】好的", isError: false }; };
+  const media = (kind, base_url, model) => {
+    const one = { cap: "vision", name: "看图", model, base_url, api_key: K1, kind, default: true };
+    return { media: { list: [one], vision: one } };
+  };
+  try {
+    let r = await viaMedia("vision", media("openrouter", "https://openrouter.ai/api/v1", "gpt-5.2"), {}, run);
+    eq(r.isError, true, "OpenRouter 上裸写 gpt-5.2 → 拦下");
+    ok(/厂商\/型号/.test(r.content) && /openai\/gpt-5\.2/.test(r.content), "拦下的话里给出正确写法", r.content);
+    eq(ran, 0, "……一个请求都没发");
+    r = await viaMedia("vision", media("openrouter", "https://openrouter.ai/api/v1", "openai/gpt-5.2"), {}, run);
+    eq(r.isError, false, "★对照★ 写成 openai/gpt-5.2 就放过去", r.content);
+    eq(ran, 1, "★对照★ 确实调了");
+
+    r = await viaMedia("vision", media("anthropic", "https://open.bigmodel.cn/api/anthropic", "glm-4.6"), {}, run);
+    eq(r.isError, false, "Anthropic 类型 + 智谱的地址 + GLM → 放过去", r.content);
+    eq(ran, 2, "……确实调了");
+    r = await viaMedia("vision", media("anthropic", "https://api.anthropic.com", "glm-4.6"), {}, run);
+    eq(r.isError, true, "★对照★ 地址换成 Anthropic 官方的，GLM 照样拦");
+    ok(/智谱/.test(r.content), "★对照★ 拦下的话里说是智谱家的", r.content);
+    eq(ran, 2, "★对照★ 拦下的这次没发请求");
+  } finally {
+    mh.reset();
+  }
+}
+
 function done() {
-  asrChecks().then(videoParamChecks).then(rest, (e) => {
+  asrChecks().then(videoParamChecks).then(catalogLoadChecks).then(gateChecks).then(rest, (e) => {
     fail++;
-    console.log("  ✗ 转写 / 生视频参数那组炸了：" + ((e && e.stack) || e));
+    console.log("  ✗ 转写 / 生视频参数 / 拉目录 / 派发闸那组炸了：" + ((e && e.stack) || e));
     rest();
   });
 }

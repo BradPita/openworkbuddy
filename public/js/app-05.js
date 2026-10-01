@@ -674,6 +674,7 @@ const SETTING_CATS = [
 const PLATFORM_ONLY_CATS = new Set(["search", "evolve", "trace", "ops", "data", "im"]);
 async function renderSettings(active) {
   const s = await fetch("/api/settings").then(r => r.json());
+  if (Array.isArray(s.moved_on_boot) && s.moved_on_boot.length) bootMoved = s.moved_on_boot;
   const cats = s.platform_owner ? SETTING_CATS : SETTING_CATS.filter(([k]) => !PLATFORM_ONLY_CATS.has(k));
   // 从别处跳进一个已经不画的标签页（旧的深链、上次停在「数据」页），别留一屏空白：退回模型页
   if (!cats.some(([k]) => k === active)) active = cats[0][0];
@@ -727,7 +728,21 @@ async function saveSettings(patch, msgEl) {
   // 等缓存真刷回来再放行：saveAllModelTables 存完立刻拿 settingsCache 重画，不等的话画的还是旧表——
   // 删掉的渠道会在屏幕上再站一轮，用户以为「删除不成功」
   if (resp.ok) await refreshSettingsCache();
+  if (resp.ok) toastMoved(data.moved, (settingsCache || {}).providers);
   return resp.ok;
+}
+/**
+ * 服务端规整时替用户改挂了哪几条媒体模型（存的时候、或者启动那一趟），说一声。
+ * 改了人家存好的配置却一个字不提，下次用户在设置页看见渠道变了，只会以为是自己点错了。
+ */
+function toastMoved(moved, providers) {
+  const list = Array.isArray(moved) ? moved : [];
+  if (!list.length || typeof toast !== "function") return;
+  const nm = (id) => ((providers || []).find((p) => p.id === id) || {}).name || id;
+  const m = list[0];
+  toast(list.length === 1
+    ? `「${m.name}」挂错了渠道，已从「${nm(m.from)}」改挂到「${nm(m.to)}」`
+    : `${list.length} 个模型挂错了渠道，已改挂到对的那条，去模型页看看`);
 }
 /* ───────────────────────── 图 / 视频 / 配音 / 看图：多模型配置 ─────────────────────────
  * 老界面是一路一张卡、一张卡一个模型，Key 还得一路填一遍：同一把 OpenRouter Key 抄四次，
@@ -761,8 +776,10 @@ let rowMenuBound = false;
 
 async function loadMediaCatalog() {
   if (mediaCatalog) return mediaCatalog;
-  mediaCatalog = await fetch("/api/model-catalog").then((r) => r.json()).catch(() => ({ kinds: [], catalog: {} }));
-  return mediaCatalog;
+  // 拉失败的不缓存：缓存了空目录，这一整次会话下拉都是空的、挂错家也认不出，下回调用再拉一次
+  const got = await fetch("/api/model-catalog").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (got && Array.isArray(got.kinds)) mediaCatalog = got;
+  return mediaCatalog || { kinds: [], catalog: {} };
 }
 
 /**
@@ -926,9 +943,15 @@ function capCard(c, s, provName) {
         ${mine.length ? mine.map((m) => {
           const i = s.media_models.indexOf(m);
           const meta = [m.default ? "主用" : "备用", provName(m.provider), m.voice ? `音色 ${m.voice}` : ""].filter(Boolean).map(esc).join(" · ");
-          const bad = mmMismatch((s.providers.find((x) => x.id === m.provider) || {}).kind, m.model);
+          const pv = s.providers.find((x) => x.id === m.provider) || {};
+          const shape = mmIdShapeError(pv.kind, m.model, pv.base_url);
+          const bad = shape ? "" : mmMismatch(pv.kind, m.model, pv.base_url);
+          // 老版本按型号名挪过来的：看图挂在了只聊天的渠道上。型号跟渠道对得上，上面那条看不出来
+          const noHost = !shape && !bad && pv.kind && !mmCanHost(pv.kind, c.cap);
           return `
+          ${shape ? `<div class="ch-note mrow-bad">${ic("triangle-alert")}${esc(shape)}</div>` : ""}
           ${bad ? `<div class="ch-note mrow-bad">${ic("triangle-alert")}「${esc(m.model)}」是${esc(kindLabel(bad))}的型号，这条渠道调不通。请加一条${esc(kindLabel(bad))}渠道或换型号。</div>` : ""}
+          ${noHost ? `<div class="ch-note mrow-bad">${ic("triangle-alert")}这家的渠道不能挂媒体模型，换一条渠道或删掉这条。</div>` : ""}
           <div class="mrow${m.default ? " is-on" : ""}">
             <input type="radio" name="def-${c.cap}" ${m.default ? "checked" : ""} data-def="${i}" title="设为这一路的主用模型">
             <span class="mrow-name">${esc(m.name)}</span>
@@ -1007,11 +1030,22 @@ function bindMedia(box, s) {
       const voice = f.querySelector(".mm-voice") ? f.querySelector(".mm-voice").value.trim() : "";
       // 手填进来的型号也过一遍门第：能挪就当场挪到对的那条渠道（比存下去再报错强），
       // 本机没有那家渠道就拦住——这时候只有用户自己知道去哪儿开号，替他瞎猜只会换一种方式失败。
+      // 写法不对（OpenRouter 上没写成「厂商/型号」）排在最前：改个写法就通，不是换渠道的事
       let use = prov;
-      const want = mmMismatch((s.providers.find((x) => x.id === prov) || {}).kind, model);
+      const pv = s.providers.find((x) => x.id === prov) || {};
+      const shape = mmIdShapeError(pv.kind, model, pv.base_url);
+      if (shape) return toast(shape);
+      const want = mmMismatch(pv.kind, model, pv.base_url);
       if (want) {
-        const alt = s.providers.filter((x) => x.kind === want);
-        const fix = alt.find((x) => String(x.api_key || "").trim()) || alt[0];
+        // 只挪到填了 Key、挂得了这一路的那家渠道上：空壳挪过去是 401，只聊天的渠道没有画图看图的接口
+        const same = s.providers.filter((x) => x.kind === want);
+        // 要写「厂商/型号」的渠道（OpenRouter）也不往里挪：挪过去名字还得改，不如让人自己挑
+        const host = same.filter((x) => mmCanHost(x.kind, cap));
+        const fit = host.filter((x) => !(mmKindRow(x.kind) || {}).needs_slash);
+        const fix = fit.find((x) => String(x.api_key || "").trim());
+        if (!fix && fit.length) return toast(`${kindLabel(want)}那条渠道还没填 Key，填上再挂「${model}」`);
+        if (!fix && host.length) return toast(`「${model}」是${kindLabel(want)}的写法，这条渠道用不了，换个型号吧`);
+        if (!fix && same.length) return toast("这家的渠道不能挂媒体模型，换个型号吧");
         if (!fix) return toast(`「${model}」是${kindLabel(want)}的型号，这条渠道没有。请先加一条${kindLabel(want)}渠道或换型号`);
         use = fix.id;
         toast(`「${model}」是${kindLabel(want)}的型号，已自动挂到「${fix.name}」渠道`);
@@ -1025,7 +1059,8 @@ function bindMedia(box, s) {
 /* ───────── 型号是哪家的：跟服务端 media-models.js 的 brandOf / mismatch 同一套规矩 ─────────
  * 为什么前端也要有一份：用户在下拉框里选的那一刻就该知道挂错了，而不是存完、跑起来、
  * 等看图那一步报一句 400 才发现。服务端那份是兜底（老配置、手改的 config.json 都走它），
- * 这份是**当场**——两边的判断必须一致，所以规则表是服务端下发的（brand_hints），不在这儿写死。
+ * 这份是**当场**——两边的判断必须一致，所以规则表是服务端下发的（brand_hints、kind_hosts，
+ * 渠道类型上的 resells / needs_slash），不在这儿写死。
  * 只有方舟日期尾巴那条是代码不是表，这儿照抄了一份（mmArkDated）。抄的就会漂：9 月只改了服务端，
  * 前端照旧把方舟上架的 glm-5-3-flash-260828 拦成「智谱家的」。现在 test/media-models.js
  * 拿同一批型号两边各跑一遍，对不上就红。
@@ -1053,6 +1088,8 @@ function mmEmptyTip(d, local) {
 /** 连问都没问出去（服务端没起来 / 网断了 / 这一版的接口不在）。
  *  它跟「问到了但是空的」是两回事，但结局以前一模一样：那行字直接抹掉，什么都不说 */
 const MM_FAIL_TIP = "没连上这个渠道，先用精选或「自己填…」，重开下拉框会重试。";
+/** MiniMax 渠道只做视频（media_only），它的对话走 OpenAI 兼容地址，得另建一条渠道 */
+const MM_MINIMAX_CHAT_TIP = "MiniMax 对话请建「其它 OpenAI 兼容接口」渠道，地址填 https://api.minimax.cn/v1";
 /** 方舟上架的型号都带 `-YYMMDD` 尾巴，转售别家的也是（glm-5-3-flash-260828）。跟服务端 arkDated 一字不差 */
 function mmArkDated(id) {
   const m = /-(\d{2})(\d{2})(\d{2})$/.exec(id);
@@ -1074,11 +1111,74 @@ function mmBrand(id) {
   for (const [src, kind] of ((mediaCatalog || {}).brand_hints || [])) if (new RegExp(src, "i").test(v)) return kind;
   return "";
 }
-function mmMismatch(kind, id) {
+/** 只按前缀认的那家，跟服务端 hintOf 一字不差 */
+function mmHint(id) {
+  for (const [src, kind] of ((mediaCatalog || {}).brand_hints || [])) if (new RegExp(src, "i").test(id)) return kind;
+  return "";
+}
+/** 目录里这个 id 只属于哪一家；两家都有或者没有回空串，跟服务端 brandInCatalog 一样 */
+function mmInCatalog(id) {
+  const cat = (mediaCatalog || {}).catalog || {};
+  const kinds = new Set();
+  for (const cap of Object.keys(cat)) for (const m of cat[cap]) if (String(m.id).toLowerCase() === id.toLowerCase()) kinds.add(m.kind);
+  return kinds.size === 1 ? [...kinds][0] : "";
+}
+function mmKindRow(kind) {
+  return ((mediaCatalog || {}).kinds || []).find((k) => k.kind === kind) || null;
+}
+/** 这家平台原名照搬上架了 brand 家的型号（resells） */
+function mmResold(kind, brand) {
+  const r = mmKindRow(kind);
+  return !!(r && Array.isArray(r.resells) && r.resells.includes(brand));
+}
+/** 地址认家门：跟服务端 guessKind 同一张表（kind_hosts）。表没下发回空串 = 认不出，按渠道类型判 */
+function mmGuessKind(base) {
+  const hosts = (mediaCatalog || {}).kind_hosts || [];
+  if (!hosts.length) return "";
+  const b = String(base || "").toLowerCase();
+  for (const [src, kind] of hosts) if (new RegExp(src).test(b)) return kind;
+  return "custom";
+}
+/** 跟服务端 judgeKind 一样：选了官方那家、地址却是别家的就按别家判，是认不出的域名就当中转不判 */
+function mmJudgeKind(kind, base) {
   const k = String(kind || "").trim();
+  const b = String(base || "").trim();
+  if (!k || !b || k === "ollama" || mmRelay(k)) return k;
+  const g = mmGuessKind(b);
+  if (!g || g === k) return k;
+  return mmRelay(g) ? "" : g;
+}
+function mmMismatch(kind, id, base) {
+  // 目录没拉到：认不出就放行，服务端存的时候和真调之前还各有一道
+  if (!((mediaCatalog || {}).kinds || []).length) return "";
+  const k = mmJudgeKind(kind, base);
   if (!k || k === "ollama" || mmRelay(k)) return "";
-  const b = mmBrand(id);
-  return b && b !== k ? b : "";
+  const v = String(id || "").trim();
+  if (!v || v.includes(":")) return "";
+  const hit = mmInCatalog(v);
+  if (hit) return hit === k || mmResold(k, hit) ? "" : hit;
+  if (v.includes("/")) return "";
+  if (k === "ark" && mmArkDated(v)) return "";
+  // 前缀正好是这家的放行：智谱自家也写 -YYMMDD（cogview-4-250304）
+  if (mmHint(v) === k) return "";
+  const b = mmBrand(v);
+  return b && b !== k && !mmResold(k, b) ? b : "";
+}
+/** 型号写法对不对（OpenRouter 要「厂商/型号」），跟服务端 idShapeError 一字不差 */
+function mmIdShapeError(kind, id, base) {
+  const row = mmKindRow(mmJudgeKind(kind, base));
+  const v = String(id || "").trim();
+  if (!row || !row.needs_slash || !v || v.includes("/")) return "";
+  const tail = "/" + v.toLowerCase();
+  const cat = (mediaCatalog || {}).catalog || {};
+  const same = Object.values(cat).flat().find((m) => m.kind === row.kind && String(m.id).toLowerCase().endsWith(tail));
+  return `这条渠道的型号要写成「厂商/型号」，比如 ${same ? same.id : "openai/gpt-4o"}`;
+}
+/** 这类渠道挂不挂得了这一路，跟服务端 canHost 一样 */
+function mmCanHost(kind, cap) {
+  const r = mmKindRow(kind) || {};
+  if (r.decide_only) return false;
+  return cap === "chat" ? !r.media_only : !r.chat_only;
 }
 function kindLabel(kind) {
   const k = ((mediaCatalog || {}).kinds || []).find((x) => x.kind === kind);
@@ -1172,6 +1272,11 @@ function renderModelsPane(pane, s) {
   s.providers = s.providers || [];
   s.media_models = s.media_models || [];
   modelsPaneEl = pane;
+  // 启动时替用户改挂过的，进模型页时说一次，说完就清
+  if (bootMoved.length) {
+    toastMoved(bootMoved, s.providers);
+    bootMoved = [];
+  }
   if (chanFirstPaint) {
     // 头一次打开只展开「对话」那张卡：人来这一页十有八九是为了换对话模型，而那张卡
     // 横着列了所有渠道下的所有对话模型——以前是展开「当前默认模型所在的那个渠道」，
@@ -1275,6 +1380,7 @@ function paintModels(pane, s) {
       <select id="pf-kind">${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join("")}</select>
       <input id="pf-name" placeholder="给它起个名（如：我的火山方舟）">
       <input id="pf-base" placeholder="接口地址（选了类型会自动填）">
+      <div id="pf-relay-tip" class="ch-note" style="display:none">${ic("triangle-alert")}这个地址不是这家官方的。若是中转站，类型选「其它 OpenAI 兼容接口」</div>
       <select id="pf-api" title="本地部署或自建网关说的是哪种话，就选哪种">
         <option value="">接口格式：跟着类型走</option>
         ${((mediaCatalog || {}).api_formats || []).map((f) => `<option value="${esc(f.id)}">${esc(f.label)}</option>`).join("")}
@@ -1773,12 +1879,23 @@ function bindModels(pane, s, po) {
     keyEl.value = "";
     keyEl.placeholder = p && p.key_hint ? `已装 ${p.key_hint}，留空就不动它` : "API Key";
     pane.querySelector("#pf-key-src").innerHTML = kindKeyLink((p && p.kind) || "", (p && p.base_url) || "");
+    relayTip();
   };
+  // 类型选了官方那家、地址却是认不出的域名：多半是中转站。不拦，提一句——
+  // 这种组合判「型号挂错家」时会当中转放行，类型选对了，下拉里的型号和报错才对得上
+  const relayTip = () => {
+    const tip = pane.querySelector("#pf-relay-tip");
+    if (!tip) return;
+    const k = pane.querySelector("#pf-kind").value, b = pane.querySelector("#pf-base").value.trim();
+    tip.style.display = k && b && k !== "ollama" && !mmRelay(k) && mmRelay(mmGuessKind(b)) ? "" : "none";
+  };
+  pane.querySelector("#pf-base").oninput = relayTip;
   pane.querySelector("#pf-kind").onchange = (e) => {
     const k = kinds.find((x) => x.kind === e.target.value) || {};
     pane.querySelector("#pf-base").value = k.base_url || "";
     pane.querySelector("#pf-key-src").innerHTML = kindKeyLink(k.kind || "", k.base_url || "");
     if (!pane.querySelector("#pf-name").value) pane.querySelector("#pf-name").value = String(k.label || "").replace(/（.*/, "");
+    relayTip();
   };
   pane.querySelector("#pf-new").onclick = () => { editP = -1; showProvForm(null); pane.querySelector("#pf-kind").onchange({ target: pane.querySelector("#pf-kind") }); };
   pane.querySelector("#pf-cancel").onclick = () => (form.style.display = "none");
@@ -1913,8 +2030,16 @@ function bindModels(pane, s, po) {
       const name = f.querySelector(".ca-name").value.trim() || model;
       if (s.models.some((m, i) => m.name === name && i !== editM)) return toast(`已经有叫「${name}」的模型了，换个别名`);
       // 挂错家的型号：对话这一路只拦、不自动挪。媒体那边挪错了顶多是一张图没画出来，
-      // 对话这条挪错了人连话都说不上，所以这里把决定权留给用户——写清楚是哪家的，他自己改。
-      const bad = mmMismatch((s.providers.find((x) => x.id === chan) || {}).kind, model);
+      // 对话这条挪错了人连话都说不上，所以这里把决定权留给用户——写清楚是哪家的，自己改。
+      const pv = s.providers.find((x) => x.id === chan) || {};
+      // 只做媒体的那家（海螺）：它这条渠道的地址挂对话必然 404，叫人去选它那条渠道也等于没说
+      // （对话下拉里本来就选不到）——指一条走得通的路
+      const mediaOnly = (k) => !!(mmKindRow(k) || {}).media_only;
+      if (mediaOnly(pv.kind)) return toast(MM_MINIMAX_CHAT_TIP);
+      const shape = mmIdShapeError(pv.kind, model, pv.base_url);
+      if (shape) return toast(shape);
+      const bad = mmMismatch(pv.kind, model, pv.base_url);
+      if (bad && mediaOnly(bad)) return toast(MM_MINIMAX_CHAT_TIP);
       if (bad) return toast(`「${model}」是${kindLabel(bad)}家的型号，挂在这条渠道上调不通。选${kindLabel(bad)}那条渠道，或者换一个这条渠道有的型号`);
       const was = editM >= 0 ? s.models[editM] : null;
       const cbT = f.querySelector(".ca-cap-tools"), cbV = f.querySelector(".ca-cap-vision");
@@ -2283,6 +2408,8 @@ async function loadTracePage() {
     fetch("/api/traces?limit=200").then((r) => r.json()).catch(() => ({ traces: [] })),
     settingsCache ? Promise.resolve(settingsCache) : fetch("/api/settings").then((r) => r.json()).catch(() => null),
   ]);
+  // 这一趟可能正好领走了启动时改挂的那几条，先记下，等进模型页再说
+  if (s && Array.isArray(s.moved_on_boot) && s.moved_on_boot.length) bootMoved = s.moved_on_boot;
   if (pageKind !== "trace") return;
   traceCache = Array.isArray(data.traces) ? data.traces : [];
   const stats = document.getElementById("tp-stats");

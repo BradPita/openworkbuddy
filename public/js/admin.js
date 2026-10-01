@@ -2748,6 +2748,9 @@ PAGES.models = {
       // 目录只拿来给类型中文名和「去拿 Key」的链接。拉不到就退回只显示 kind 本身，别把整页拖垮
       api("/api/model-catalog").catch(() => ({ kinds: [] })),
     ]);
+    // 启动时替人改挂过的媒体模型只回这一次，这页先拿到就在这页说，不然工作台那边就再也看不到了
+    const moved = Array.isArray(s.moved_on_boot) ? s.moved_on_boot : [];
+    if (moved.length) toast(moved.length === 1 ? `「${moved[0].name}」挂错了渠道，启动时已改挂到对的那条` : `${moved.length} 个模型挂错了渠道，启动时已改挂到对的那条`);
     return { s, kinds: (cat && cat.kinds) || [] };
   },
   render: (d) => {

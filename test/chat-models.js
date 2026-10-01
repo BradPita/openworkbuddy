@@ -132,6 +132,15 @@ console.log("\n【3】协议归渠道管");
   eq(d.providers[0].kind, "anthropic", "中转地址 + anthropic 协议 → 渠道类型是 anthropic");
   eq(d.models[0].base_url, "https://gw.example.com/v1", "中转地址原样留着（不许被官方域名顶掉）");
   eq(cm.normalize(d), false, "再跑一遍不再变——不然每次启动都多建一个渠道");
+  // 例外：地址认得出是哪家的。智谱官方给的 Anthropic 协议地址 open.bigmodel.cn/api/anthropic，
+  // 后面跑的是 GLM——归成 Anthropic 渠道的话，渠道写着 Anthropic、型号是 glm-4.6，挂错家那道闸会拦死它
+  const z = { models: [{ name: "GLM走Claude协议", provider: "anthropic", base_url: "https://open.bigmodel.cn/api/anthropic", api_key: "k", model: "glm-4.6" }] };
+  cm.normalize(z);
+  eq(z.providers[0].kind, "zhipu", "智谱的 Anthropic 协议地址 → 渠道类型是智谱");
+  eq(z.providers[0].api, "anthropic", "协议记在渠道的 api 上，照旧按 Anthropic 协议打");
+  eq(z.models[0].provider, "anthropic", "模型这边写回的协议也还是 anthropic");
+  eq(mm.mismatch(z.providers[0].kind, "glm-4.6", z.providers[0].base_url), "", "挂错家的判断放行它");
+  eq(cm.normalize(z), false, "再跑一遍不再变");
   // 反向对照：同一个地址改成 openai 协议，就归到 custom 渠道
   const e = { models: [{ name: "中转GPT", provider: "openai", base_url: "https://gw.example.com/v1", api_key: "k", model: "gpt-5.2" }] };
   cm.normalize(e);

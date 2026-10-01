@@ -5529,6 +5529,7 @@ const GATE_CHECKS = `
   window.bindPetCard = () => {};
   window.refreshSettingsCache = () => {};
   window.settingsCache = null; // saveAllModelTables 存完会读它；夹具里没有缓存，给个空的免得裸标识符炸
+  window.bootMoved = []; // 启动时改挂的那批，renderModelsPane 一进来就读；声明在 app-01.js，没切进来，同理给个空的
   window.applyAssistantIdentity = () => {};
   window.setupPicker = () => {};
   window.renderSearchPane = window.renderEvolvePane = window.renderDataPane = window.renderImPane =

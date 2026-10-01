@@ -27,9 +27,13 @@ const CAPS = ["vision", "image", "video", "tts", "asr"];
  */
 const PROVIDER_KINDS = [
   { kind: "ark", label: "火山方舟（豆包 / 即梦 / Seedance）", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "https://console.volcengine.com/ark" },
-  { kind: "dashscope", label: "阿里云百炼（通义 / 万相 / Qwen-TTS）", base_url: "https://dashscope.aliyuncs.com/api/v1", key_url: "https://bailian.console.aliyun.com/" },
+  // resells：这家平台**原名照搬**上架了哪几家的型号（百炼模型列表里 glm-5.2、kimi-k3、MiniMax-M3、
+  // deepseek-v4.1-flash 都是原厂的名字）。这几家的型号挂在百炼渠道上是对的，不判挂错。
+  // 只写官方模型列表上见得到的，没见到的宁可不写——写多了，真挂错的就拦不住了。
+  { kind: "dashscope", label: "阿里云百炼（通义 / 万相 / Qwen-TTS）", base_url: "https://dashscope.aliyuncs.com/api/v1", key_url: "https://bailian.console.aliyun.com/", resells: ["zhipu", "moonshot", "minimax", "deepseek"] },
   { kind: "openai", label: "OpenAI 官方", base_url: "https://api.openai.com/v1", key_url: "https://platform.openai.com/api-keys" },
-  { kind: "openrouter", label: "OpenRouter（聚合，一把 Key 通吃）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys" },
+  // needs_slash：型号名必须是「厂商/型号」。裸写 gpt-4o 在这儿必然 400，那是写法错，不是挂错家
+  { kind: "openrouter", label: "OpenRouter（聚合，一把 Key 通吃）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys", needs_slash: true },
   { kind: "siliconflow", label: "硅基流动 SiliconFlow", base_url: "https://api.siliconflow.cn/v1", key_url: "https://cloud.siliconflow.cn/account/ak" },
   { kind: "zhipu", label: "智谱 GLM / CogView / CogVideo", base_url: "https://open.bigmodel.cn/api/paas/v4", key_url: "https://bigmodel.cn/usercenter/apikeys" },
   // media_only 是 chat_only 的反面：海螺的对话接口路径是 /text/chatcompletion_v2，不是 /chat/completions，
@@ -154,8 +158,7 @@ const CATALOG = {
     { kind: "ark", id: "doubao-1-5-vision-pro-250328", label: "豆包 1.5 Vision Pro" },
     { kind: "dashscope", id: "qwen-vl-max", label: "通义千问 VL Max" },
     { kind: "dashscope", id: "qwen-vl-plus", label: "通义千问 VL Plus（便宜）" },
-    { kind: "gemini", id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    { kind: "gemini", id: "gemini-2.5-flash", label: "Gemini 2.5 Flash（快且便宜）" },
+    // Gemini 官方渠道是 chat_only，看图这一路选不到它，目录里摆它的型号只会让人选完挂不上
     { kind: "openai", id: "gpt-5.2", label: "GPT-5.2" },
     { kind: "openai", id: "gpt-5-mini", label: "GPT-5 mini（便宜）" },
     { kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2（走 OpenRouter）" },
@@ -303,22 +306,31 @@ function providerKeyOf(p) {
   return `${b.replace(/\/+$/, "").toLowerCase()} ${String(p.api_key || "").trim()}`;
 }
 
-/** 从接口地址猜渠道类型，给迁移和「粘个地址就建渠道」用 */
+/**
+ * 接口地址里的域名 → 渠道类型，按顺序认，先中先得。
+ * 写成字符串表而不是一串 if：设置页要拿同一张表判「这个地址是不是这家自己的」，
+ * 表随 /api/model-catalog 下发（跟 BRAND_HINTS 一样），两边不各抄一份。
+ */
+const KIND_HOSTS = [
+  ["ark\\.|volces\\.com", "ark"],
+  ["dashscope", "dashscope"],
+  ["openrouter", "openrouter"],
+  ["siliconflow", "siliconflow"],
+  ["bigmodel\\.cn", "zhipu"],
+  ["minimax", "minimax"],
+  ["api\\.openai\\.com", "openai"],
+  ["api\\.anthropic\\.com", "anthropic"],
+  ["generativelanguage\\.googleapis\\.com", "gemini"],
+  ["deepseek\\.com", "deepseek"],
+  ["moonshot\\.cn", "moonshot"],
+  ["typesafe\\.ai", "typesafe"],
+  ["(localhost|127\\.0\\.0\\.1):11434", "ollama"],
+];
+
+/** 从接口地址猜渠道类型，给迁移和「粘个地址就建渠道」用。认不出的域名一律算 custom */
 function guessKind(baseUrl) {
   const b = String(baseUrl || "").toLowerCase();
-  if (/ark\.|volces\.com/.test(b)) return "ark";
-  if (/dashscope/.test(b)) return "dashscope";
-  if (/openrouter/.test(b)) return "openrouter";
-  if (/siliconflow/.test(b)) return "siliconflow";
-  if (/bigmodel\.cn/.test(b)) return "zhipu";
-  if (/minimax/.test(b)) return "minimax";
-  if (/api\.openai\.com/.test(b)) return "openai";
-  if (/api\.anthropic\.com/.test(b)) return "anthropic";
-  if (/generativelanguage\.googleapis\.com/.test(b)) return "gemini";
-  if (/deepseek\.com/.test(b)) return "deepseek";
-  if (/moonshot\.cn/.test(b)) return "moonshot";
-  if (/typesafe\.ai/.test(b)) return "typesafe";
-  if (/(localhost|127\.0\.0\.1):11434/.test(b)) return "ollama";
+  for (const [src, kind] of KIND_HOSTS) if (new RegExp(src).test(b)) return kind;
   return "custom";
 }
 
@@ -674,8 +686,10 @@ function dedupeProviders(config) {
  * 老配置（一路一个模型、Key 抄四份）进来，出去就是 providers + media_models；
  * 已经是新结构的原样保留，只补 id、补默认项、把引用不存在渠道的那条挂回去。
  * 返回 true 表示真改了东西（调用方据此决定要不要落盘）。
+ * out 可不传；传了就往里写 out.moved（这一趟替用户改挂了哪几条）和 out.warnings（没敢动、只提醒的），
+ * 调用方拿去告诉用户——改了人家存好的配置，不说一声就是悄悄改。
  */
-function normalize(config) {
+function normalize(config, out) {
   const before = JSON.stringify([config.providers || null, config.media_models || null, config.media || null, !!config.media_migrated]);
   const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
   const models = Array.isArray(config.media_models) ? config.media_models.filter((m) => m && typeof m === "object") : [];
@@ -747,7 +761,22 @@ function normalize(config) {
   models.splice(0, models.length, ...kept);
   // 挂错家的型号先挪回去，再选默认——顺序不能反：默认那条正是压平进 config.media 的那条，
   // 挪之前选的话，压平下来的还是错渠道的地址，白挪一趟。
-  rehomeMismatched(providers, models);
+  const warnings = [];
+  const moved = rehomeMismatched(providers, models, warnings);
+  // 老版本按型号名挪过来的：媒体模型挂在只聊天 / 只判断的渠道上（比如看图挂到了 Claude 官方渠道）。
+  // 型号名跟渠道对得上，上面那一步看不出来，可这条渠道根本没有看图画图的接口
+  for (const m of models) {
+    const p = providers.find((x) => x.id === m.provider);
+    if (p && !canHost(p.kind, m.cap)) {
+      const s = `${CAP_CN[m.cap] || m.cap}「${m.name}」挂在${kindLabel(p.kind)}那条渠道上，这家的渠道挂不了${CAP_CN[m.cap] || m.cap}，换一条渠道或者删掉这条`;
+      console.warn(`[媒体模型] ${s}`);
+      warnings.push(s);
+    }
+  }
+  if (out && typeof out === "object") {
+    out.moved = moved;
+    out.warnings = warnings;
+  }
   // 每一路恰好一个默认：一个都没标就点名第一条，标了好几个就只认第一个
   for (const cap of CAPS) {
     const mine = models.filter((m) => m.cap === cap);
@@ -921,12 +950,14 @@ function brandInCatalog(modelId) {
 }
 
 /**
- * 方舟给自己上架的每个型号都盖一个 `-YYMMDD` 的日期尾巴，别家一个都不这么写
- * （精选目录里方舟 17 个型号 17 个带，其余十家 79 个一个不带）。
+ * 方舟给自己上架的每个型号都盖一个 `-YYMMDD` 的日期尾巴
+ * （精选目录里方舟 17 个型号 17 个带）。
  * 它又是个**转售别家型号**的平台：目录里 `deepseek-v3-250324`、`kimi-k2-250711`
  * 挂的就是 ark。所以尾巴比前缀可信——光看 `glm-` 前缀会把方舟上架的
  * `glm-5-3-flash-260828` 判成智谱家的，再被 rehomeMismatched 从用户填对的
  * 方舟渠道上挪走，而那个型号在方舟上是真能调通的（实测 200）。
+ * 但尾巴不是方舟独有的：智谱自家也这么写（glm-4-flash-250414、cogview-4-250304）。
+ * 所以 brandOf 照旧按尾巴认方舟，mismatch 再给「前缀正好是这条渠道自家的」放行，见下面。
  */
 function arkDated(id) {
   const m = /-(\d{2})(\d{2})(\d{2})$/.exec(id);
@@ -952,15 +983,82 @@ function brandOf(modelId) {
   return "";
 }
 
+/** 只看前缀认出来的那家；不看目录、不看日期尾巴 */
+function hintOf(id) {
+  for (const [src, kind] of BRAND_HINTS) if (new RegExp(src, "i").test(id)) return kind;
+  return "";
+}
+
+/** 这类渠道是不是原名照搬上架了 brand 家的型号（PROVIDER_KINDS 上的 resells） */
+function resold(kind, brand) {
+  const row = PROVIDER_KINDS.find((x) => x.kind === kind);
+  return !!(row && Array.isArray(row.resells) && row.resells.includes(brand));
+}
+
+/**
+ * 这条渠道实际是哪家，判门第时按谁算。
+ *
+ * 渠道类型是用户在下拉里选的，地址是手填的，两样会对不上：选了「Anthropic 官方」，
+ * 地址填的却是智谱的 open.bigmodel.cn/api/anthropic，后面接的是 glm-4.6——那是对的，
+ * 按 anthropic 判就会把它拦成「智谱家的」。所以：
+ *   · 中转 / 本机 / 没填地址（用这家官方默认地址）→ 照渠道类型判；
+ *   · 地址认得出是这家自己的 → 照渠道类型判；
+ *   · 地址是认不出的域名 → 当中转，回空串，不判；
+ *   · 地址认得出是另一家的 → 按那一家判。
+ */
+function judgeKind(kind, baseUrl) {
+  const k = String(kind || "").trim();
+  const b = String(baseUrl || "").trim();
+  if (!k || !b || k === "ollama" || RELAY_KINDS.has(k)) return k;
+  const g = guessKind(b);
+  if (g === k) return k;
+  return RELAY_KINDS.has(g) ? "" : g;
+}
+
 /**
  * 这个型号挂在这类渠道上是不是挂错了。挂错了就回**它本该在的那类渠道**，没挂错回空串。
  * ollama 一并放过：本地跑的模型名是用户自己 pull 的，叫什么都算数。
+ * baseUrl 可不传，不传就按这类渠道的官方地址算（见 judgeKind）。
+ *
+ * 顺序：目录 > 带冒号 / 斜杠的不判 > 方舟渠道上的日期尾巴放行 > 前缀正好是这家的放行 > brandOf。
+ * 前缀那一条是给智谱的：它自家也写 -YYMMDD（cogview-4-250304），字面上跟方舟上架的
+ * glm-5-3-flash-260828 分不出来，挂在智谱渠道上一律放行——宁可漏判。
  */
-function mismatch(kind, modelId) {
-  const k = String(kind || "").trim();
+function mismatch(kind, modelId, baseUrl) {
+  const k = judgeKind(kind, baseUrl);
   if (!k || k === "ollama" || RELAY_KINDS.has(k)) return "";
-  const brand = brandOf(modelId);
-  return brand && brand !== k ? brand : "";
+  const id = String(modelId || "").trim();
+  if (!id || id.includes(":")) return "";
+  const hit = brandInCatalog(id);
+  if (hit) return hit === k || resold(k, hit) ? "" : hit;
+  if (id.includes("/")) return "";
+  if (k === "ark" && arkDated(id)) return "";
+  if (hintOf(id) === k) return "";
+  const brand = brandOf(id);
+  return brand && brand !== k && !resold(k, brand) ? brand : "";
+}
+
+/**
+ * 型号名的写法对不对：needs_slash 的渠道（OpenRouter）只认「厂商/型号」。
+ * 这跟挂错家是两回事——gpt-4o 在 OpenRouter 上叫 openai/gpt-4o，同一个型号换个写法就通，
+ * 不该把它挪到 OpenAI 渠道上去（那等于悄悄换一把 Key 计费）。对了回空串，不对回一句能照着改的话。
+ */
+function idShapeError(kind, modelId, baseUrl) {
+  const k = judgeKind(kind, baseUrl);
+  const row = PROVIDER_KINDS.find((x) => x.kind === k);
+  const id = String(modelId || "").trim();
+  if (!row || !row.needs_slash || !id || id.includes("/")) return "";
+  const tail = "/" + id.toLowerCase();
+  const same = Object.values(CATALOG).flat().find((m) => m.kind === k && String(m.id).toLowerCase().endsWith(tail));
+  return `这条渠道的型号要写成「厂商/型号」，比如 ${same ? same.id : "openai/gpt-4o"}`;
+}
+
+/** 这类渠道挂不挂得了这一路：媒体那几路不收只聊天 / 只判断的，对话不收只做媒体 / 只判断的 */
+function canHost(kind, cap) {
+  const row = PROVIDER_KINDS.find((x) => x.kind === kind);
+  if (!row) return true; // 认不出的类型不拦，挂错家那道闸另有判断
+  if (row.decide_only) return false;
+  return cap === "chat" ? !row.media_only : !row.chat_only;
 }
 
 /** 渠道类型的中文名，报错里用得着 */
@@ -971,29 +1069,62 @@ function kindLabel(kind) {
 /**
  * 挂错渠道的模型，能挪就挪回去。
  *
- * 只往**已经存在的**同家渠道上挪，绝不新建渠道——新建出来的必然是没有 Key 的空壳，
- * 同家有好几条时优先挑填了 Key 的那条（空壳挪过去等于换一种方式失败）。
- * 一条都没有就只留一句警告：这时候只有用户自己知道该去哪儿开号。
- * 返回真正挪动过的条目，调用方拿去写日志 / 回给前端。
+ * 只往**已经存在的**同家渠道上挪，绝不新建渠道——新建出来的必然是没有 Key 的空壳。
+ * 同家的渠道也得填了 Key、挂得了这一路（看图挂不到只聊天的 Claude 官方渠道上）才挪；
+ * 只有空壳、或者那家的渠道挂不了这一路，就只留一句警告：挪过去只是换一种方式失败。
+ * 型号也得是**目录里明确列出的**才挪：靠前缀、日期尾巴猜出来的只警告，不改用户的配置。
+ * 型号写法不对（OpenRouter 上裸写 gpt-4o）也不挪：改个写法就通，挪走等于换一把 Key 计费。
+ * warnings 可传一个数组，警告的原话会一并收进去。返回真正挪动过的条目，调用方拿去写日志 / 回给前端。
  */
-function rehomeMismatched(providers, models) {
+function rehomeMismatched(providers, models, warnings) {
   const moved = [];
+  const warn = (s) => {
+    console.warn(`[媒体模型] ${s}`);
+    if (Array.isArray(warnings)) warnings.push(s);
+  };
   for (const m of models) {
     const p = providers.find((x) => x.id === m.provider);
-    const want = mismatch(p && p.kind, m.model);
+    const shape = p ? idShapeError(p.kind, m.model, p.base_url) : "";
+    if (shape) {
+      warn(`${CAP_CN[m.cap] || m.cap}「${m.name}」的型号 ${m.model}：${shape}`);
+      continue;
+    }
+    const want = mismatch(p && p.kind, m.model, p && p.base_url);
     if (!want) continue;
-    const alt = providers.filter((x) => x.kind === want);
-    const fix = alt.find((x) => String(x.api_key || "").trim()) || alt[0];
-    const what = `${CAP_CN[m.cap] || m.cap}「${m.name}」的型号 ${m.model} 是${kindLabel(want)}家的`;
+    // 目录里查得到的才算定论；只凭前缀、日期尾巴猜出来的，说一声就好，配置不动
+    if (brandInCatalog(m.model) !== want) {
+      warn(`${CAP_CN[m.cap] || m.cap}「${m.name}」的型号 ${m.model} 看名字像${kindLabel(want)}家的，挂在${kindLabel(p && p.kind)}那条渠道上；没替你改，调不通就去 设置 → 模型 里核对一下`);
+      continue;
+    }
+    const what = `${CAP_CN[m.cap] || m.cap}「${m.name}」的型号 ${m.model} 是${kindLabel(want)}家的，却挂在${kindLabel(p && p.kind)}那条渠道上，调过去必然报「型号不存在」`;
+    const same = providers.filter((x) => x.kind === want);
+    // 只挪到挂得了这一路、不要求「厂商/型号」写法的渠道上（挪进 OpenRouter 还得改名字，那不是挪一下的事）
+    const host = same.filter((x) => canHost(x.kind, m.cap));
+    const fit = host.filter((x) => !(PROVIDER_KINDS.find((k) => k.kind === x.kind) || {}).needs_slash);
+    const fix = fit.find((x) => String(x.api_key || "").trim());
     if (fix) {
       moved.push({ cap: m.cap, name: m.name, model: m.model, from: m.provider, to: fix.id, want });
       m.provider = fix.id;
-      console.warn(`[媒体模型] ${what}，却挂在${kindLabel(p && p.kind)}那条渠道上（调过去必然报「型号不存在」），已改挂到「${fix.name}」`);
+      console.warn(`[媒体模型] ${what}，已改挂到「${fix.name}」`);
+    } else if (fit.length) {
+      warn(`${what}；${kindLabel(want)}的渠道还没填 Key，填上再存一次就会挪过去`);
+    } else if (host.length) {
+      warn(`${what}；${kindLabel(want)}的渠道型号写法不一样，没替你改，去 设置 → 模型 里核对一下`);
+    } else if (same.length) {
+      warn(`${what}；${kindLabel(want)}的渠道挂不了${CAP_CN[m.cap] || m.cap}，换一个这条渠道上有的型号`);
     } else {
-      console.warn(`[媒体模型] ${what}，却挂在${kindLabel(p && p.kind)}那条渠道上，调过去必然报「型号不存在」；本机没有${kindLabel(want)}的渠道，去 设置 → 模型 里加一条，或者换一个这条渠道上有的型号`);
+      warn(`${what}；本机没有${kindLabel(want)}的渠道，去 设置 → 模型 里加一条，或者换一个这条渠道上有的型号`);
     }
   }
   return moved;
+}
+
+/** 设置页要的那份目录：规则表都从这儿下发，前端照同一张表判，不各抄一份 */
+function clientCatalog() {
+  return {
+    kinds: PROVIDER_KINDS, catalog: CATALOG, caps: CAPS, cap_cn: CAP_CN, api_formats: API_FORMATS,
+    brand_hints: BRAND_HINTS, kind_hosts: KIND_HOSTS,
+  };
 }
 
 module.exports = {
@@ -1002,5 +1133,6 @@ module.exports = {
   VIDEO_SPECS, videoSpecOf, videoPlan,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError, upsertLegacy,
-  RELAY_KINDS, BRAND_HINTS, brandOf, brandInCatalog, arkDated, mismatch, kindLabel, rehomeMismatched,
+  RELAY_KINDS, BRAND_HINTS, KIND_HOSTS, brandOf, brandInCatalog, arkDated, judgeKind, mismatch, idShapeError, canHost, kindLabel, rehomeMismatched,
+  clientCatalog,
 };
