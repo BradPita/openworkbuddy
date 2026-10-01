@@ -20,6 +20,7 @@
  &nbsp;·&nbsp; <a href="docs/功能清单.md">功能清单</a>
  &nbsp;·&nbsp; <a href="#文档">文档</a>
  &nbsp;·&nbsp; <a href="#商用授权--企业服务"><b>商用授权 · 企业服务</b></a>
+ &nbsp;·&nbsp; <a href="#交流群">交流群</a>
  &nbsp;·&nbsp; <a href="CHANGELOG.md">变更记录</a>
 </p>
 
@@ -292,6 +293,14 @@ flowchart TB
 
 它能跑命令、读写文件、上网，所以有命令审批、文件黑名单、URL 白名单、审计日志和四档权限。装别人的技能前会先过一遍静态体检，危险的默认不装——但它不是杀毒，装前自己读一眼 `skill.md`。
 **放公网前先读 [安全](docs/安全.md)**，默认配置只为本机调。
+
+## 交流群
+
+用崩了、有想法、想一起改，进飞书群直接说：
+
+<p align="center">
+ <img src="docs/images/feishu-group.png" width="360" alt="OpenWorkBuddy 飞书交流群">
+</p>
 
 ## 一起把它做下去
 
