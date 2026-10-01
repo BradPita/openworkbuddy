@@ -20,7 +20,6 @@
  &nbsp;·&nbsp; <a href="docs/功能清单.md">功能清单</a>
  &nbsp;·&nbsp; <a href="#文档">文档</a>
  &nbsp;·&nbsp; <a href="#商用授权--企业服务"><b>商用授权 · 企业服务</b></a>
- &nbsp;·&nbsp; <a href="#交流群">交流群</a>
  &nbsp;·&nbsp; <a href="CHANGELOG.md">变更记录</a>
 </p>
 
@@ -294,14 +293,6 @@ flowchart TB
 它能跑命令、读写文件、上网，所以有命令审批、文件黑名单、URL 白名单、审计日志和四档权限。装别人的技能前会先过一遍静态体检，危险的默认不装——但它不是杀毒，装前自己读一眼 `skill.md`。
 **放公网前先读 [安全](docs/安全.md)**，默认配置只为本机调。
 
-## 交流群
-
-用崩了、有想法、想一起改，进飞书群直接说：
-
-<p align="center">
- <img src="docs/images/feishu-group.png" width="360" alt="OpenWorkBuddy 飞书交流群">
-</p>
-
 ## 一起把它做下去
 
 - **用崩了、卡住了，开个 [issue](https://github.com/CatCatUncle/openworkbuddy/issues/new)**，哪怕只贴一句报错——你以为「只有我遇到」的坑，多半所有人都在踩。贴之前扫一眼，别把 API Key 带上。
@@ -370,14 +361,6 @@ Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
 <p align="center">
  <sub>顺手把它转给一个天天手搓 PPT、周报、会议纪要的同事，比一百次曝光管用。</sub>
-</p>
-
-<p align="center">
- <img src="docs/images/tip-wechat.png" width="280" alt="微信扫码打赏">
-</p>
-
-<p align="center">
- <sub>用着顺手，扫码请作者喝杯咖啡。打赏是心意，不算商业授权，公司使用看 <a href="#商用授权--企业服务">商用授权</a>。</sub>
 </p>
 
 ## 贡献者

@@ -20,7 +20,6 @@
  &nbsp;·&nbsp; <a href="docs/功能清单.md">Feature list (zh)</a>
  &nbsp;·&nbsp; <a href="#docs">Docs</a>
  &nbsp;·&nbsp; <a href="#commercial-license--enterprise-services"><b>Commercial license · Services</b></a>
- &nbsp;·&nbsp; <a href="README.md#交流群">Feishu group</a>
  &nbsp;·&nbsp; <a href="CHANGELOG.en.md">Changelog</a>
 </p>
 
@@ -359,14 +358,6 @@ An independent open-source project, not affiliated with Tencent or its WorkBuddy
 
 <p align="center">
  <sub>Pass it to one colleague who hand-builds decks, weekly reports and meeting notes — worth more than a hundred impressions.</sub>
-</p>
-
-<p align="center">
- <img src="docs/images/tip-wechat.png" width="280" alt="Tip the author via WeChat Pay">
-</p>
-
-<p align="center">
- <sub>If it saves you time, buy the author a coffee (WeChat Pay). A tip is a thank-you, not a commercial license — companies, see <a href="#commercial-license--enterprise-services">Commercial license</a>.</sub>
 </p>
 
 ## Contributors

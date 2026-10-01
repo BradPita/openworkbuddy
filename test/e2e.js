@@ -12539,7 +12539,7 @@ async function testEngineSecurityGuard() {
  *  - 中英两份 README 互相链接，且都只指向这一个仓库
  *  - 首屏三句差异（吐文件 / 不绑模型 / 一个 Markdown 一个技能）在「为什么是它」里，不许埋回功能清单
  *  - 「最新动态」每条都带日期，且日期必须是 git 里真有提交的日子——防止写着写着变成愿望清单
- *  - 交流群二维码文件真在、是 PNG、别大到把 clone 拖慢
+ *  - 有地方找人：中英两份都有开 issue 的入口
  *  - 协议一句人话讲清「谁免费、谁要授权」并链到商业授权页
  *  - 贡献页有技能模板（frontmatter 齐全），README 的 10 分钟路径指向它
  */
@@ -12586,14 +12586,10 @@ function testReadmeFrontGate() {
   assert([...newsEn.matchAll(/^- \*\*[A-Z][a-z]{2} \d{1,2}\*\* /gm)].length >= 6, "英文 What's new 至少 6 条带日期条目");
   const longEn = [...newsEn.matchAll(/^- \*\*[A-Z][a-z]{2} \d{1,2}\*\* (.+)$/gm)].filter((m) => m[1].length > NEWS_MAX_EN);
   assert(longEn.length === 0, "英文 What's new 有条目太长（上限 " + NEWS_MAX_EN + "）：" + longEn.map((m) => m[1].slice(0, 30)).join(" / "));
-  // 交流群二维码
-  const qrRel = "docs/images/feishu-group.png";
-  assert(zh.includes('src="' + qrRel + '"') && /^## 交流群\s*$/m.test(zh), "README 缺「交流群」一节或二维码引用");
-  const qr = fs.readFileSync(path.join(root, qrRel));
-  assert(qr.length > 5000 && qr.length < 1024 * 1024, "二维码文件大小离谱：" + qr.length);
-  assert(qr.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), "二维码不是 PNG");
-  const w = qr.readUInt32BE(16), h = qr.readUInt32BE(20);
-  assert(w >= 300 && h >= 300, "二维码太小扫不出来：" + w + "x" + h);
+  // 有地方找人：README 里不放群码，出了问题靠 issue 找到人
+  for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) {
+    assert(/github\.com\/CatCatUncle\/openworkbuddy\/issues/.test(t), name + " 没有开 issue 的入口，读者出了问题找不到人");
+  }
   // 协议一句人话
   const lic = (zh.split(/^## 协议\s*$/m)[1] || "").split(/^## /m)[0];
   assert(/免费/.test(lic) && /商业授权/.test(lic) && /\(COMMERCIAL-LICENSE\.md\)/.test(lic) && /\(LICENSE\)/.test(lic), "「协议」一节要一句话讲清免费/授权并链到两份协议文件");
@@ -12651,7 +12647,7 @@ function testReadmeFrontGate() {
   assert(docLinks.length >= 12, "README 的文档链接只扫出 " + docLinks.length + " 条，正则八成没匹配上");
   const gone = [...new Set(docLinks)].filter((f) => !fs.existsSync(path.join(root, f)));
   assert(gone.length === 0, "README 链到了不存在的文档：" + gone.join(" "));
-  console.log("✅ README 门面闸门：中英互链·只指本仓库·首屏三句差异·最新动态 " + items.length + " 条日期均有真实提交且倒序·二维码 PNG " + w + "x" + h + "·协议一句人话·技能模板+锚点·无「一个人做」措辞·README 每条动态都能在 CHANGELOG（中英各 " + nZh + " 条）里找到（反向对照通过）·" + docLinks.length + " 条文档链接都在");
+  console.log("✅ README 门面闸门：中英互链·只指本仓库·首屏三句差异·最新动态 " + items.length + " 条日期均有真实提交且倒序·中英都有开 issue 的入口·协议一句人话·技能模板+锚点·无「一个人做」措辞·README 每条动态都能在 CHANGELOG（中英各 " + nZh + " 条）里找到（反向对照通过）·" + docLinks.length + " 条文档链接都在");
 }
 
 // 「去哪拿 Key」闸门：向导和设置页每个要填 Key 的地方都得有一条直达链接，链接全 https + 新窗口。
