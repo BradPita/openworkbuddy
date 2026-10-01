@@ -1008,6 +1008,7 @@ async function renderLibPreview(prev, lib) {
     <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
     ${canOpenOnHost() ? `<a class="link" href="#" id="lb-reveal" title="在访达 / 资源管理器里打开它所在的文件夹，并选中它">所在位置</a>
     <a class="link" href="#" id="lb-copy" title="把文件本身放进剪贴板，之后直接粘到微信 / 邮件里">复制文件</a>` : ""}
+    ${isCopyableText(name) ? `<a class="link" href="#" id="lb-copytext" title="把里面的文字整份复制，贴进飞书 / Word 保留格式">复制全文</a>` : ""}
     <a class="link" href="${dlUrl}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
     ${src === "lib" ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
   </div>
@@ -1137,6 +1138,8 @@ async function renderLibPreview(prev, lib) {
   if (rev) rev.onclick = (e) => revealFile(name, e, "", src === "lib" ? "lib" : "");
   const cp = prev.querySelector("#lb-copy");
   if (cp) cp.onclick = (e) => copyHostFile(name, e, { src: src === "lib" ? "lib" : "" });
+  const ct = prev.querySelector("#lb-copytext");
+  if (ct) ct.onclick = (e) => { e.preventDefault(); return copyFileText(url, name); };
   // 「出自任务」那条链接得在 innerHTML 重排之后再接一次事件（上面几条 outerHTML 会换掉节点）
   prev.querySelectorAll("[data-open]").forEach((a) => a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.open, { turn: a.dataset.turn === undefined ? null : +a.dataset.turn }); });
 }

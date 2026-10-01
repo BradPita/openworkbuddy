@@ -581,7 +581,20 @@ function createFeishuMediaSender(deps) {
     }
   }
 
-  return { sendFile };
+  /**
+   * 发一张不在工作目录里的图：回复正文里的 SVG 信息图转出来的 PNG，放系统临时目录，不算成果
+   * @param {string} chatId @param {string} abs @param {string} name @param {{ signal?: AbortSignal }} [o]
+   */
+  async function sendImage(chatId, abs, name, o = {}) {
+    const stop = o.signal;
+    halt(stop);
+    const token = await getToken();
+    const key = await uploadImage(token, abs, name, stop);
+    await send(token, chatId, "image", { image_key: key }, stop);
+    return { route: "image", sent: true };
+  }
+
+  return { sendFile, sendImage };
 }
 
 module.exports = {

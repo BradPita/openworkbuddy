@@ -238,8 +238,12 @@ const has = (p) => fs.existsSync(p);
     ok(acc && /finally \{[\s\S]*?settleRunDir\(source, rest, runRoot, runDir\)/.test(acc[0]), "跑完（成败都算）在 finally 里收空文件夹");
     ok(acc && /baseDir: runDir,[\s\S]*?\.\.\.rest,/.test(acc[0]), "调用方在 args 里给了 baseDir 的照旧听调用方的（...rest 在后面）");
     ok(/send\(\{ type: "dir", dir: taskBaseDir \|\| "" \}\)/.test(srv), "网页对话每一轮都报 dir：中途换到自选文件夹时报空串，前端好清掉旧的那格");
-    ok(/dir: perChatHere\(\) \? sessDirOf\(s\) : null, att_dir: s\.dir \|\| null/.test(srv),
+    ok(/const perChat = perChatHere\(\);[\s\S]{0,800}dir: perChat \? sessDirOf\(s\) : null,[^\n]*att_dir: s\.dir \|\| null/.test(srv),
       "/api/session：dir 只给当前根下的那格，附件另给 att_dir（换过根也看得见历史里的图）");
+    ok(/root_files: perChat \? rootFilesOf\(s\) : \[\]/.test(srv) && /function rootFilesOf\(sess\)[\s\S]{0,400}statSync\(path\.join\(root, n\)\)\.isFile\(\)/.test(srv),
+      "  └ 另给 root_files：分文件夹以前摊在根上的老产出（盘上还在的），「本对话」也摆它们");
+    ok(/att_spots: attachSpotsOf\(s\)/.test(srv) && /function attachSpotsOf\(sess\)[\s\S]{0,1600}known\.find\(\(k\) => taskDirs\.samePlace\(k, r\)\)[\s\S]{0,600}workspaceKeyOf\(root\)/.test(srv),
+      "  └ 另给 att_spots：换过根、留在别的根那格里的附件，指纹按 knownRoots 里那份原样算（rootFromKey 才认得回来）");
     ok(acc && /runDirFor\(source, rest\) : null;\s*if \(runDir\) holdRunDir\(runRoot, runDir\);/.test(acc[0]), "开跑登记「这格有人在用」，settleRunDir 最后一个走的才收");
     const up = /app\.post\("\/api\/upload"[\s\S]*?\n}\);/.exec(srv);
     ok(up && /sessDirOf\(sess\)/.test(up[0]) && !/sess && sess\.dir \?/.test(up[0]), "上传跟对话同一个判据：换过根不拿旧名字在新根下建空壳");
@@ -255,7 +259,7 @@ const has = (p) => fs.existsSync(p);
     const pick = (re) => { const x = re.exec(srv); if (!x) throw new Error("切不到：" + re); return x[0]; };
     const code = [
       pick(/function sessDirHere\([\s\S]*?\n}\n/), pick(/function sessDirOf\([\s\S]*?\n}\n/),
-      pick(/function stashSessionDir\([\s\S]*?\n}\n/), pick(/function useSessionDirHere\([\s\S]*?\n}\n/),
+      pick(/function useSessionDirHere\([\s\S]*?\n}\n/),
       pick(/function assignSessionDir\([\s\S]*?\n}\n/),
     ].join("\n");
     const W = path.join(HOME, "c-ws"), P = path.join(HOME, "c-projects", "小红书");
@@ -297,6 +301,38 @@ const has = (p) => fs.existsSync(p);
     const T = "任务_0930_周报";
     own.claimBaseDir(T, 3);
     ok(!own.inForeignDir(T + "/深/一层.md", T, 3) && own.inForeignDir(T + "/x.md", A, 1), "一层的对话文件夹照旧");
+  }
+
+  section("【9】分文件夹以前摊在根上的老产出：认出来，整篇重写时写回那份");
+  {
+    const W = path.join(HOME, "f9", "workspace"), P = path.join(HOME, "f9", "projects", "海报");
+    const KW = "kw", KP = "kp";
+    const turn = (...evs) => ({ role: "assistant", events: evs });
+    const files = (changed, root) => (root === undefined ? { type: "files", changed } : { type: "files", changed, root });
+    const sess = {
+      dir: "周报材料", // 不是 任务_ 开头的格（自选文件夹名）：靠 dir 认出是自己的
+      dirs: { [P]: "任务_1001_周报_2" },
+      transcript: [
+        turn(files(["报告.md", "图/封面.png"])), // 老到没带 root：只算默认工作空间的
+        turn(files(["报告.md", "数据.csv"], KW), { type: "text", text: "x" }),
+        turn(files(["周报材料/新.md", "任务_0930_别的/那边的.md", "/abs/外面.md", "../上一层.md", ""], KW)),
+        turn(files(["海报.png"], KP)),
+      ],
+    };
+    const fw = taskDirs.flatOutputs(sess, W, W, KW);
+    ok(fw.length === 3 && ["报告.md", "数据.csv", "图/封面.png"].every((n) => fw.includes(n)) && fw.filter((n) => n === "报告.md").length === 1,
+      "默认工作空间：带本根指纹的、老到没带 root 的都算，同名只报一次", fw);
+    ok(!fw.some((n) => /^任务_|^\/|^\.\./.test(n)), "★反向对照★ 自己那格里的、别的任务格里的、绝对路径、跑出根外的：都不算", fw);
+    ok(!fw.includes("海报.png"), "  └ 别的根上写的（项目里的海报.png）不混进来", fw);
+    const fp = taskDirs.flatOutputs(sess, P, W, KP);
+    ok(fp.length === 1 && fp[0] === "海报.png", "在项目根上看：只有项目里那份；老到没带 root 的不算（那时只有默认工作空间）", fp);
+    const f2 = taskDirs.flatOutputs(sess, W, W, KW, 2);
+    ok(f2.length === 2 && f2.includes("数据.csv") && !f2.includes("图/封面.png"),
+      "  └ 有上限，从最近一轮往回认：老会话写过几千个文件也只报最近的几个", f2);
+    ok(taskDirs.flatOutputs({ dir: "x" }, W, W, KW).length === 0 && taskDirs.flatOutputs(null, W, W, KW).length === 0,
+      "没有对话记录：空着，不炸");
+    const legacy = { transcript: [turn(files(["周报.md"], KW))] };
+    ok(taskDirs.flatOutputs(legacy, W, W, KW)[0] === "周报.md", "还没分到格的老会话（没有 dir）：根上写过的照认");
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

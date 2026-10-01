@@ -455,8 +455,8 @@ if (sub === "owner") {
     }
     const r = account.setOwnerLocally(who, { actor: "命令行" });
     process.stdout.write(green(`\u2713 ${who} 现在是「${r.org_name}」的超级管理员\n`));
-    if (r.from) process.stdout.write(dim(`  原来的超管 ${r.from} 已改任管理员——他还能管人、改设置，只是发不了管理员了。\n`));
-    if (r.disabled) process.stderr.write(yellow("  注意：这个账号是「已停用」状态，先到管理后台复职，不然他登不上。\n"));
+    if (r.from) process.stdout.write(dim(`  原来的超管 ${r.from} 已改任管理员——这个人还能管人、改设置，只是发不了管理员了。\n`));
+    if (r.disabled) process.stderr.write(yellow("  注意：这个账号是「已停用」状态，先到管理后台复职，不然登不上。\n"));
     if (r.two_factor) process.stderr.write(dim("  这个账号开着二次验证，登录还要那串码。\n"));
     process.exit(0);
   } catch (e) {
@@ -528,7 +528,7 @@ if (sub === "passwd" || sub === "2fa") {
       }
       const had = account.disableTOTP(who, { byAdmin: true, actor: "命令行" });
       process.stdout.write(had
-        ? green(`✓ ${who} 的二次验证已关闭\n`) + dim("  他现在只用密码就能登。让他登进去后到「设置 → 安全」重新绑一次，旧的密钥和恢复码已经作废。\n")
+        ? green(`✓ ${who} 的二次验证已关闭\n`) + dim("  现在只用密码就能登。登进去后到「设置 → 安全」重新绑一次，旧的密钥和恢复码已经作废。\n")
         : dim(`${who} 本来就没开二次验证，什么都没改。\n`));
       process.exit(0);
     }
@@ -539,7 +539,7 @@ if (sub === "passwd" || sub === "2fa") {
       process.stdout.write(`\n  ${bold(r.password)}   ${dim("← 新密码，这一次之后不会再显示")}\n\n`);
       process.stderr.write(dim("  自己定一个的话：openworkbuddy passwd " + who + " '你的新密码'\n"));
     }
-    process.stderr.write(dim("  他在别处的登录状态已经全部作废，需要重新登一次。\n"));
+    process.stderr.write(dim("  这个账号在别处的登录状态已经全部作废，需要重新登一次。\n"));
     if (r.two_factor) process.stderr.write(yellow("  注意：这个账号还开着二次验证，光有密码登不进去。手机也丢了就跑：openworkbuddy 2fa " + who + " --off\n"));
     if (r.disabled) process.stderr.write(yellow("  注意：这个账号是「已停用」状态，改了密码也登不上。到管理后台复职，或跑 openworkbuddy 里的离职/复职流程。\n"));
     process.exit(0);
@@ -1565,6 +1565,50 @@ async function runOnce(runtime, text, mode, interactive, shown) {
   }
 }
 
+// ---------- 成果按对话分文件夹（口径跟网页端是同一份，见 lib/task-dirs.js） ----------
+// 应用自己建的根（默认工作空间、没填目录的项目、租户根）下，一条会话一格「任务_月日_标题」。
+// 以前命令行一律摊在根上：终端里跑十趟，十份「报告.html」后写的把先写的盖了，网页上「本对话」也一份都认不出来。
+// -C 进代码仓库、设置里挑的现成文件夹、分身目录照旧就地读写——那里要改的东西本来就在根上
+const taskDirs = require("./lib/task-dirs");
+// 刚往根上放、还没发出去的东西：拷进来的附件、粘贴图、存成文件的长文本。
+// 跟网页端先传上来的附件一样，发出去那一刻搬进这条会话的那格
+const strayUploads = new Set();
+/** 这一趟的成果文件夹（相对工作目录）；用户自选的根返回 null，就地读写 */
+function chatDirHere(asked) {
+  const root = getWorkspaceDir();
+  const anchors = { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("./org").tenantsDir() };
+  if (!taskDirs.perChatRoot(root, anchors)) return null;
+  if (!taskDirs.useSessDirAt(sess, root, dataPath("workspace"))) taskDirs.newSessDir(sess, root, dataPath("workspace"), asked);
+  else try { fs.mkdirSync(path.join(root, sess.dir), { recursive: true }); } catch {}
+  // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（跟网页那头同一套，见 lib/task-dirs.js flatOutputs）
+  try {
+    const tools = require("./tools");
+    tools.ownRootFiles(sessionId, taskDirs.flatOutputs(sess, root, dataPath("workspace"), tools.workspaceKeyOf(root)).map((n) => path.join(root, n)));
+  } catch {}
+  return sess.dir;
+}
+/** 这句话带着的、刚放到根上的附件搬进 dir。名字不用改：模型的相对路径本来就从这格起算 */
+function moveStrays(text, dir) {
+  const root = getWorkspaceDir();
+  for (const n of [...strayUploads]) {
+    if (!String(text).includes(n)) continue; // 攒着没发的（/drop 了的也算）留给下一句
+    strayUploads.delete(n);
+    if (!dir) continue;
+    try {
+      const from = path.join(root, n), to = path.join(root, dir, n);
+      // 只搬确实是个文件、目标位置还空着的；搬不动就留在根上，读的时候根下兜得到
+      if (fs.existsSync(from) && fs.statSync(from).isFile() && !fs.existsSync(to)) fs.renameSync(from, to);
+    } catch {}
+  }
+}
+/** 一趟跑完什么都没留下就撤掉那格（会话里也清掉，下一趟按模型起好的标题重新起名），跟网页端回合收尾同一个口子 */
+function settleChatDir(dir) {
+  if (!dir || sess.dir !== dir) return;
+  const root = getWorkspaceDir();
+  try { require("./lib/deps-guard").dropLoneFence(path.join(root, dir)); } catch {}
+  if (taskDirs.dropIfEmpty(root, dir)) sess.dir = null;
+}
+
 /**
  * @param shown 人自己打的那句话。text 前面拼了给模型看的东西（!命令 的输出）时才传，
  *              会话标题、网页上那条对话显示的都是它，不是那一大段
@@ -1593,6 +1637,10 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
   // 在终端里起的活儿归「工程」线。网页/手机上切到那个标签就能看见这条会话——
   // 这是两条线里唯一一条服务端替人填的：它确实是从命令行进来的，不是猜的。
   sess.lane = "cli";
+  const hadDir = sess.dir;
+  const runDir = chatDirHere(asked);
+  moveStrays(text, runDir);
+  if (runDir && runDir !== hadDir) prog(dim(`（这条会话的成果放在 ${runDir}/）\n`)); // 新起的那格说一声，往后每趟不再重复
   const state = { streamed: false, usage: null, files: null, changed: [], finalParts: [], error: null, md: newMdRenderer() };
   lastRun = state; // workflow 那头要知道这一步写过什么、错在哪
   // 挂到实时目录上：网页端的「工程」标签就是靠它知道这台机器的终端里此刻在干什么
@@ -1693,6 +1741,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
     const r = await runtime.runTask({
       history: sess.history,
       sessionId, // 文件检查点记在这个会话名下，/rewind 才知道哪些是这趟活儿改的
+      baseDir: runDir || undefined, // 相对路径读写、脚本 cwd、产物落点全在这条会话的那格
       // 工作目录（往上到 git 根）的 AGENTS.md / CLAUDE.md 先带上——/init 写的就是它，以前命令行一个字都不读。
       // 进行中的目标注进任务上下文：agent 每一轮都对着验收标准干活，不跑偏
       projectContext: [projectMemo.memoContext(getWorkspaceDir()), goalKit.contextFor(sess.goal), opts.appendSystem].filter(Boolean).join("\n\n") || undefined,
@@ -1780,6 +1829,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
   tickSettle();
   tick.render = null;
   live.finish({ error: state.error, title: sess.title });
+  settleChatDir(runDir);
   // --json 下正文没走 stdout，最终文本从事件里攒回来，落盘的内容两种模式必须一样
   if (!finalText && state.finalParts.length) finalText = state.finalParts.join("");
   // 落盘：Web 端打开该会话也能回放（最终文本 + 用量）
@@ -1846,6 +1896,7 @@ let visionWarned = false;
 function bringIn(files) {
   if (!files || !files.length) return [];
   const r = attach.collect(files, { workspaceDir: getWorkspaceDir() });
+  for (const n of r.copied) strayUploads.add(n); // 本来就在工作目录里的不动，只搬刚拷进来的
   for (const s of r.skipped) prog(yellow(`  ！${s.ref} 没带上：${s.why}\n`));
   if (r.names.length && attach.anyImage(r.names) && !visionWarned) {
     visionWarned = true;
@@ -3161,12 +3212,14 @@ function splitFiles(text) {
         const name = attach.freeName(dir, attach.stampName("粘贴文本", "txt"), new Set(), fs);
         try { fs.writeFileSync(path.join(dir, name), r.text); }
         catch (e) { prog(red(`存不下来：${e.message}\n`)); return; }
+        strayUploads.add(name);
         if (!pending.includes(name)) pending.push(name);
         prog(dim(`  ${r.text.length} 字，存成 ${name} 了；接着打你要问的\n`));
         return;
       }
       const got = r.kind === "files" ? r.paths.map((x) => ({ ref: x, path: x })) : [{ ref: r.file, path: r.file }];
       // 位图那条本来就写在工作目录里，collect 认得出「已经在里面了」，不会再复制一份
+      if (r.kind !== "files") strayUploads.add(path.basename(dest));
       const names = bringIn(got);
       for (const n of names) if (!pending.includes(n)) pending.push(n);
       if (names.length) prog(dim(`  带上了 ${names.join("、")}；接着打你要问的\n`));

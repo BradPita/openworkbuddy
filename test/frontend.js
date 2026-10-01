@@ -176,6 +176,10 @@ const srcBlock = (sig) => {
 };
 const HOSTCAP_SRC = [srcLine("function amPlatformOwner("), srcLine("function canOpenOnHost("),
                      srcBlock("function openOnHost(")].join("\n");
+// 复制文字那一组（ClipboardItem → writeText → execCommand 三段兜底、渲染后的样子、整份取文件）。
+// 预览面板的「复制全文」和资料库那颗都靠它，切真源码。
+const COPYTEXT_SRC = [srcBlock("async function copyText("), srcBlock("function copyTextLegacy("),
+                      srcBlock("function renderedCopy("), srcBlock("async function copyFileText(")].join("\n");
 
 // 成果面板：文件夹按时间分段（今天／昨天／过去 7 天／更早按月）。分段是纯视图，
 // 磁盘上仍是扁平的 任务_MMDD_xxx —— 所以这段逻辑没有任何服务端断言能替它把关，
@@ -989,6 +993,8 @@ const TURNOUT_CHECKS = `
     ok("接线：files 事件拿 outPool(ev) 挑本回合产出、判「已删除」，右侧面板仍只吃 ev.files",
       FILES_EV.includes("const pool = outPool(ev);") && FILES_EV.includes("pool.filter(f => ev.changed.includes(f.name))")
         && FILES_EV.includes("renderTurnOutputs(body, turnOut, pool, ev)") && FILES_EV.includes("renderFiles(ev.files)"), FILES_EV.slice(0, 400));
+    ok("接线：这一轮写回根上的老产出（不在自己那格、也不是别的任务格）记进 sessionRootFiles，「本对话」照样摆它",
+      /const ownDir = !isReplaying && sessionDirs\\.get\\(turnSid\\);\\s*if \\(ownDir\\) for \\(const n of ev\\.changed \\|\\| \\[\\]\\) \\{[\\s\\S]{0,200}?startsWith\\(ownDir \\+ "\\/"\\)[\\s\\S]{0,200}?sessionRootFiles\\.get\\(turnSid\\)\\.add\\(String\\(n\\)\\)/.test(FILES_EV), FILES_EV.slice(FILES_EV.indexOf("ownDir") - 60, FILES_EV.indexOf("ownDir") + 400));
     ok("接线：角标只数面板里点得到的（outputArrivalPlan 收 listed: ev.files，面板只画 ev.files）", FILES_EV.includes("listed: ev.files"), FILES_EV.slice(FILES_EV.indexOf("outputArrivalPlan")));
     ok("接线：只有眼前这个对话的回合才重画成果区（后台对话只更新缓存）",
       FILES_EV.includes("if (!isReplaying && turnSid === sessionId) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }"), FILES_EV.slice(FILES_EV.indexOf("renderFiles") - 200, FILES_EV.indexOf("renderFiles") + 200));
@@ -1449,6 +1455,7 @@ const FILELIST_STUBS = [
   "window.snapshotFiles = () => {};",
   "window.sessionId = 's_now';",
   "window.sessionDirs = new Map([['s_now', '任务_0903_本对话']]);",
+  "window.sessionRootFiles = new Map();",
   "window.fetch = async () => ({ ok: true, json: async () => [] });",
   // 身份：默认按平台管理员验（📂 该在）；最后一节翻成普通成员，验它真的收起来
   "window.settingsCache = { platform_owner: true };",
@@ -1534,6 +1541,15 @@ const FILELIST_CHECKS = `
   ok("点「全部对话」整个工作空间回来", heads().length === 4 && dirs().some((d) => d.includes("上周的")) && scopeSeg()[1].classList.contains("on"), JSON.stringify(dirs()));
   scopeSeg()[0].click();
   ok("点回「本对话」又只剩自己的", dirs().length === 1 && /本对话/.test(dirs()[0]), JSON.stringify(dirs()));
+  // 分文件夹以前的老对话：产出摊在根上（服务端 /api/session 报 root_files）。不摆它们，老对话一点开就是「本对话 0」
+  sessionRootFiles.set("s_now", new Set(["散在根目录的.txt"]));
+  renderFiles(data);
+  ok("老对话摊在根上的产出也算「本对话」", scopeSeg()[0].textContent === "本对话 3" && dirs().some((d) => d.includes("工作空间根目录"))
+    && !/昨天干的|上周的|老的/.test(el.textContent), scopeSeg().map((b) => b.textContent).join("|") + " " + JSON.stringify(dirs()));
+  ok("  └ 只认登记过的那几份：别的对话格里同名的不算", !ownsFile("s_now", "任务_0902_昨天干的/散在根目录的.txt") && ownsFile("s_now", "散在根目录的.txt"));
+  sessionRootFiles.delete("s_now");
+  renderFiles(data);
+  ok("★反向对照★ 没登记：根上的散件回到「全部对话」那档", scopeSeg()[0].textContent === "本对话 2" && !dirs().some((d) => d.includes("工作空间根目录")), JSON.stringify(dirs()));
   // 新对话还没建文件夹：默认工作空间里就该是空的，而不是把别的对话的摆上来
   window.sessionId = null; window.settingsCache = { platform_owner: true, workspace_is_default: true };
   renderFiles(data);
@@ -2301,6 +2317,8 @@ const TRAIL_STUBS = [
   + " var BUSY = false; curBusy = () => BUSY; var TOASTS = []; toast = (m) => { TOASTS.push(m); };",
   "var planHandoff = " + JSON.stringify(require(path.join(__dirname, "..", "modes")).PLAN_HANDOFF) + "; var planAskEdit = (p) => { inputEl.placeholder = p; };",
   "var isReplaying = false;",
+  // files 事件那一支：本对话那格、它摊在根上的老产出（这屏没有分文件夹，空着就是不分）
+  "var sessionDirs = new Map(), sessionRootFiles = new Map(), sessionAttachSpots = new Map();",
   // 注意力那页（app-01-attention.js）的三个入口：流里来了题、题答了、出错了。记下来，第 11 节验接没接上
   "var ATTN = []; var attnAsk = (...a) => ATTN.push(['ask', ...a]); var attnAnswered = (...a) => ATTN.push(['ans', ...a]);"
   + " var attnFlag = (...a) => ATTN.push(['flag', ...a]);",
@@ -2330,6 +2348,11 @@ const WN2 = APP02.indexOf("let csMatches = [], csIdx = -1;");
 const WN3 = APP02.indexOf("// ================= 命令审批条", WN2);
 if (WN0 < 0 || WN1 <= WN0 || WN2 < 0 || WN3 <= WN2) throw new Error("app-02.js 里 jumpToTurn～openSession 或 ⌘F 那段找不到了（改名/挪窝了？），前端测试没法定位真源码");
 if (!/function showOlderTurns\(/.test(APP02.slice(WN0, WN1))) throw new Error("切出来的那段里没有 showOlderTurns——长对话分批画没被测到");
+// openSession / reattachOne 收 root_files 走的是 app-01 那份真 setRootFiles，切过来用，不另抄
+const RF0 = APP02X.indexOf("function setRootFiles(");
+const RF1 = APP02X.indexOf("/** 这个文件算不算这条对话的", RF0);
+if (RF0 < 0 || RF1 <= RF0) throw new Error("app-01.js 里 setRootFiles 找不到了，前端测试没法定位真源码");
+const ROOTFILES_SRC = APP02X.slice(RF0, RF1);
 const WIN_SRC = TRAIL_SRC + "\n" + APP02.slice(WN0, WN1) + "\n" + APP02.slice(WN2, WN3);
 // 真的 chatStick / syncScrollGuides / scrollBottom（app-01 原文）。第 5 节「补画的旧轮不许拽滚动条」换上它，别的节照旧用桩
 const SB0 = APP02X.indexOf("let chatStick = true;");
@@ -2384,6 +2407,8 @@ const WIN_STUBS = TRAIL_STUBS + "\n" + [
   "var sessions = [], activeLane = 'work', laneOfSession = () => activeLane, renderLaneTabs = () => {}, renderHistory = () => {};",
   "var runningSessions = new Map(), updateSendUI = () => {}, planPlaceholder = '';",
   "var sessionDirs = new Map(), sessionAttachDirs = new Map(), openDirs = new Set(), filesAllScope = false, renderFiles = () => {};",
+  "var sessionRootFiles = new Map(), sessionAttachSpots = new Map();",
+  ROOTFILES_SRC,
   "var sessionModels = new Map(), updateModelLabel = () => {}, sessionGoals = new Map(), renderGoalCard = () => {};",
   "var currentUser = null, renderUserChip = () => {};",
   "var SCROLL_REAL = " + scrollKit(WIN_SCROLL_SRC) + ";",
@@ -2476,6 +2501,14 @@ const WIN_CHECKS = `
   ok("正好 10 轮的不挂按钮", turns().length === 10 && !more() && turnsHidden() === 0);
   await open("S_ELEVEN");
   ok("11 轮的：「显示更早的 1 轮」", turns().length === 10 && label() === "显示更早的 1 轮", label());
+  // 分文件夹以前的老对话：服务端报 root_files（它摊在根上的老产出），「本对话」靠它摆出那几份
+  SESS.S_FLAT = { transcript: mkT(2), dir: "任务_1001_新格", root_files: ["老报告.md"] };
+  await open("S_FLAT");
+  ok("打开老对话：root_files 记到这条对话名下", !!sessionRootFiles.get("S_FLAT") && sessionRootFiles.get("S_FLAT").has("老报告.md"), JSON.stringify([...sessionRootFiles.keys()]));
+  SESS.S_FLAT.root_files = [];
+  await open("S_TEN");
+  await open("S_FLAT");
+  ok("  └ 再打开时报空了（换了根、文件删了）：旧的那批清掉，不拿它去筛", !sessionRootFiles.has("S_FLAT"));
   // ★反向对照★ 窗口放开 = 改之前那样整段回放
   TURN_WINDOW = Infinity;
   const msFull = await open("S_LONG");
@@ -3773,7 +3806,8 @@ if (ACT0 < 0 || ACT1 <= ACT0 || ACT2 <= ACT1) throw new Error("app-00-ui.js 的 
 const ACT_SRC = UI00_SRC.slice(ACT0, ACT1);
 const ACT_KEYS = UI00_SRC.slice(ACT1, ACT2 + "else boot();\n})();".length);
 // 预览面板上的「所在位置」「复制文件」两颗按钮：画不画看 canOpenOnHost，点下去发什么看这两个函数
-const DEAD_SRC = HOSTCAP_SRC + "\n" + srcBlock("function revealFile(") + "\n" + srcBlock("function copyHostFile(")
+const DEAD_SRC = HOSTCAP_SRC + "\n" + srcBlock("function revealFile(") + "\n" + srcBlock("function copyHostFile(") + "\n" + COPYTEXT_SRC
+  + "\n" + srcLine("function dirOf(")
   + "\n" + ACT_SRC + "\n" + APP01_NAV.slice(PVK0, PVK1) + "\n"
   + APP01_NAV.slice(NAV0, NAV1) + "\n" + APP01_NAV.slice(PVF0, PVF1)
   + "\n" + APP01_NAV.slice(OVH0, OVH1)
@@ -4088,6 +4122,7 @@ const DEAD_CHECKS = `
   let writeOk = true, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
   // 预览一份产出时服务端回什么：404 = 东西没了，500 = 读不出来，200 = 正常
   let viewResp = { code: 200, body: "# 九月周报" };
+  let libViewResp = null;
   // docx/xlsx/pptx/zip 走的是另一条路：服务端先把压缩包拆成结构化数据，前端只管画。
   // ovHits 记下问的是哪个根——资料库的文件必须问 /api/library/preview/，
   // 问成 /api/files/preview/ 就是在另一个目录里找，永远 404（那正是「资料库打不开 PPT」的形状）
@@ -4190,6 +4225,9 @@ const DEAD_CHECKS = `
     if (url.startsWith("/api/library/note")) return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
     if (url.startsWith("/api/library/file/")) {
       fileHits.push({ url: url.split("?")[0], method });
+      // 读文件内容（「复制全文」）回的是那份字；其余写操作照旧按权限回
+      if (libViewResp && (!method || method === "GET")) return Promise.resolve({ ok: libViewResp.code < 400, status: libViewResp.code,
+        json: () => Promise.resolve({}), text: () => Promise.resolve(libViewResp.body) });
       return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
     }
     return j({ ok: true });
@@ -4615,6 +4653,55 @@ const DEAD_CHECKS = `
   pv.querySelector("#lb-reveal").onclick({ preventDefault() {}, stopPropagation() {} });
   ok("反向对照：工作区产出不带 src=lib（带了就跑去资料库里找一个不存在的同名文件）",
      posts.length === 1 && posts[0].body.src === "", JSON.stringify(posts));
+
+  // ⑤c-6b 「复制全文」：文字类文件把内容拿走（「复制文件」放进去的是文件本身，粘进文字框里什么都没有）。
+  // 剪贴板换成替身：离屏窗口里真调会写进这台机器的剪贴板
+  {
+    const clip = { html: [], text: [] };
+    const saveClip = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const saveItem = window.ClipboardItem, saveExec = document.execCommand;
+    window.ClipboardItem = function (m) { this.m = m; this.types = Object.keys(m); };
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      write: async (items) => { clip.html.push(items[0]); },
+      writeText: async (t) => { clip.text.push(t); } } });
+    document.execCommand = () => false;
+    try {
+      ok("复制全文：.md 上有这颗", !!pv.querySelector("#lb-copytext"), pv.innerHTML.slice(0, 500));
+      viewResp = { code: 200, body: "# 九月周报\\n\\n正文第一段" };
+      fileHits.length = 0; window.toasts = [];
+      await pv.querySelector("#lb-copytext").onclick({ preventDefault() {}, stopPropagation() {} });
+      ok("复制全文：取的是这份文件本身", fileHits.length === 1 && fileHits[0].url === "/api/files/view/" + fpath("任务_0916_周报/九月周报.md"),
+         JSON.stringify(fileHits));
+      const plain = clip.html.length === 1 ? await clip.html[0].m["text/plain"].text() : "";
+      ok("复制全文：按渲染后的样子放了 HTML + 纯文本", clip.html.length === 1 && clip.html[0].types.includes("text/html") && plain.includes("正文第一段"),
+         JSON.stringify(clip.html.map((c) => c.types)) + plain);
+      ok("复制全文：说了一句已复制全文", window.toasts.join("|").includes("已复制全文"), window.toasts.join("|"));
+
+      window.settingsCache = { platform_owner: false };
+      pv = await previewOf("任务_0916_周报/九月周报.md");
+      ok("复制全文：多人服务器上的成员也有（复制的是内容，不碰服务器那台机器）", !!pv.querySelector("#lb-copytext"), pv.innerHTML.slice(0, 500));
+      window.settingsCache = { platform_owner: true };
+
+      const txtRaw = "第一行\\n  缩进的第二行";
+      pv = await libPreviewOf("素材/口播稿.txt");
+      libViewResp = { code: 200, body: txtRaw };
+      clip.text.length = 0; fileHits.length = 0;
+      await pv.querySelector("#lb-copytext").onclick({ preventDefault() {}, stopPropagation() {} });
+      libViewResp = null;
+      ok("复制全文：资料库里的 txt 走资料库那个根", fileHits.length === 1 && fileHits[0].url === "/api/library/file/" + fpath("素材/口播稿.txt"),
+         JSON.stringify(fileHits));
+      ok("复制全文：txt 原样复制（缩进一个不少）", clip.text.length === 1 && clip.text[0] === txtRaw, JSON.stringify(clip.text));
+
+      for (const n of ["素材/note_audio.mp3", "素材/封面.png", "素材/页面.html", "汇报/三季度.pptx"]) {
+        pv = await libPreviewOf(n);
+        ok("复制全文：" + n.split(".").pop() + " 上不摆（要的是文件本身，不是一段字）", !pv.querySelector("#lb-copytext"), pv.innerHTML.slice(0, 300));
+      }
+    } finally {
+      if (saveClip) Object.defineProperty(navigator, "clipboard", saveClip); else delete navigator.clipboard;
+      window.ClipboardItem = saveItem; document.execCommand = saveExec;
+      viewResp = { code: 200, body: "# 九月周报" }; libViewResp = null;
+    }
+  }
 
   // ⑤c-7 「出自任务」认的是文件夹，不是「谁最近动过它」。
   // 任务_0915_对话_2/BGM_纯配乐.mp3
@@ -7131,7 +7218,8 @@ const TFA1 = APP06.indexOf("// ================= 快捷键面板 ===============
 if (TFA0 < 0 || TFA1 <= TFA0) throw new Error("app-06.js 里的 renderTwoFactorBox 找不到了（改名/挪窝？），二次验证卡测试没法定位真源码");
 // location.reload（gate 模式绑完要整页重来）在真页面里改不动，navigator.clipboard 在 data: URL
 // 这种不安全上下文里压根不存在——两个都包成参数注进去，里面的源码一个字节没动。
-const TFA_WRAP = "window.__mkTfa = (location, navigator) => {\n" + APP06.slice(TFA0, TFA1)
+// 「复制」那几颗走 app-01 的 copyText（三段兜底），这里一并当参数注进去，记下放进去了什么
+const TFA_WRAP = "window.__mkTfa = (location, navigator, copyText) => {\n" + APP06.slice(TFA0, TFA1)
   + "\nreturn { renderTwoFactorBox };\n};";
 const TFA_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
   + "</style><body><div id='tfa-box'></div></body>";
@@ -7158,7 +7246,8 @@ const TFA_CHECKS = `
   };
   const nav = { reloads: 0 }, copied = [];
   const T = window.__mkTfa({ reload(){ nav.reloads++; } },
-    { clipboard: { writeText: (t) => { copied.push(t); return Promise.resolve(); } } });
+    { clipboard: { writeText: (t) => { copied.push(t); return Promise.resolve(); } } },
+    (t) => { copied.push(t); return Promise.resolve(true); });
   const draw = async (st, opts) => { state = st; await T.renderTwoFactorBox(box, opts); };
 
   // ---- 1. 没绑：一句话说清它挡的是什么 ----
@@ -9020,7 +9109,16 @@ const PREVIEW_STUBS = [
   // 剪贴板：Electron 离屏窗口里 navigator.clipboard.write 真调会弹权限/静默失败，
   // 所以整个换掉，顺便当"到底往剪贴板放了什么"的证据。ClipboardItem 同理。
   "window.copied = []; window.ClipboardItem = function (m) { this.m = m; this.types = Object.keys(m); };",
-  "Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write: async (items) => { window.copied.push(items[0]); } } });",
+  "Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {",
+  "  write: async (items) => { if (window.CLIP_WRITE_FAIL) throw new Error('NotAllowedError'); window.copied.push(items[0]); },",
+  "  writeText: async (t) => { if (window.CLIP_TEXT_FAIL) throw new Error('NotAllowedError'); window.copiedText.push(t); } } });",
+  "window.copiedText = []; window.CLIP_WRITE_FAIL = false; window.CLIP_TEXT_FAIL = false;",
+  // execCommand('copy') 那条老路也换掉：真调会写进这台机器的剪贴板（把人正复制着的东西冲掉）。
+  // 替身照真的样子发一个 copy 事件，被测代码在事件里 setData，这里把放进去的东西记下来。
+  "window.legacyCopied = []; window.EXEC_OK = true;",
+  "document.execCommand = (cmd) => { if (cmd !== 'copy') return false; const dt = new DataTransfer();",
+  "  document.dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, cancelable: true, bubbles: true }));",
+  "  window.legacyCopied.push({ plain: dt.getData('text/plain'), html: dt.getData('text/html') }); return window.EXEC_OK; };",
   // 1×1 的真 PNG。走 canvas 重编码那条路时 <img> 要能真的解出来，光有个空 Blob 不行
   "window.PNG1X1 = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));",
   "window.PV_BLOB = null;",
@@ -9423,13 +9521,114 @@ const PREVIEW_CHECKS = `
        window.toasts.length === 1 && window.toasts[0][0].indexOf("HTTPS") >= 0, JSON.stringify(window.toasts));
     ok("这一条也告诉他还能右键复制", window.toasts[0][0].indexOf("右键") >= 0, JSON.stringify(window.toasts));
 
-    // 不是图的时候这颗按钮必须收起来：摆一个按下去没反应的按钮，比没有这个按钮更糟
+    // 看文档时这颗按钮换成「复制全文」（以前直接收起来，结果点开 .md 想拿内容只剩「复制文件」）
     await show("报告.md", { body: "# x", total: 3 });
-    ok("看文档时复制按钮收起来", btn.hidden === true);
-    window.copied = [];
+    ok("看文档时复制按钮还在，换成复制全文", btn.hidden === false && /复制全文/.test(btn.title), btn.title);
+    window.copied = []; window.copiedText = [];
     key(null, { metaKey: true });
     await tick();
-    ok("文档页上的 Cmd+C 也不抢", window.copied.length === 0, String(window.copied.length));
+    ok("文档页上的 Cmd+C 不抢（选字复制是浏览器的事）", window.copied.length === 0 && window.copiedText.length === 0, String(window.copied.length));
+  }
+
+  // ---- 15b. 复制全文：文字类文件整份进剪贴板 ----
+  // 2026-10-01：用户点开一份「要点总结.md」点复制，粘出来什么都没有——那颗放进去的是文件本身。
+  // 这里钉住：.md 按渲染后的样子（HTML + 纯文本）、源码 / txt 原样、取整份不带 Range、
+  // 失败都说出来，三条剪贴板路一条不通就走下一条。
+  {
+    const btn = document.getElementById("pv-copy");
+    const tick = () => new Promise((r) => setTimeout(r, 40));
+    const until = async (cond) => { const t0 = Date.now(); while (!cond() && Date.now() - t0 < 5000) await tick(); return cond(); };
+    const reset = () => { window.copied = []; window.copiedText = []; window.legacyCopied = []; window.toasts = []; window.reqs = []; };
+    const toasted = () => until(() => window.toasts.length >= 1);
+    const blobText = (item, t) => item && item.m && item.m[t] ? item.m[t].text() : Promise.resolve(null);
+
+    // 预览只读了开头（截断），复制要的是整份：替身返回的全文比预览那段长
+    const LONG = "# 要点总结\\n\\n| 篇目 | 要点 |\\n|---|---|\\n| 一 | 甲 |\\n" + "正文。".repeat(50);
+    await show("任务_1001/要点总结.md", { body: LONG, total: LONG.length });
+    ok(".md 预览露出复制全文", btn.hidden === false && /复制全文/.test(btn.title), btn.title);
+    reset();
+    btn.onclick();
+    await toasted();
+    const req = window.reqs.find((x) => String(x.url).indexOf("/api/files/view/") >= 0);
+    ok("复制全文另取一次整份（不带 Range，不拿预览那截）", !!req && !(req.init && req.init.headers && (req.init.headers.Range || req.init.headers.range)),
+       JSON.stringify(window.reqs.map((x) => [x.url, x.init])));
+    ok("取的就是这份文件（子目录路径没被编码坏）", !!req && req.url.indexOf("/api/files/view/" + fpath("任务_1001/要点总结.md")) === 0, req && req.url);
+    ok(".md 放进去的是 HTML + 纯文本两份（贴飞书 / Word 保留格式）",
+       window.copied.length === 1 && window.copied[0].types.indexOf("text/html") >= 0 && window.copied[0].types.indexOf("text/plain") >= 0,
+       JSON.stringify(window.copied.map((c) => c.types)));
+    const plain = await blobText(window.copied[0], "text/plain"), html = await blobText(window.copied[0], "text/html");
+    ok("纯文本那份是全文，不是预览截下来的开头", !!plain && plain.indexOf("正文。正文。") >= 0 && plain.length >= 100, String(plain).slice(0, 120));
+    ok("HTML 那份是渲染过的", !!html && /<p class="?md"?>/.test(html), String(html).slice(0, 120));
+    ok("复制完说了一句", window.toasts.length === 1 && window.toasts[0][0] === "已复制全文", JSON.stringify(window.toasts));
+    ok("按钮放开了", btn.disabled === false);
+
+    // 源码 / 纯文本：原样复制，不套渲染
+    const CODE = "def f(x):\\n    return x * 2\\n";
+    await show("脚本.py", { body: CODE, total: CODE.length });
+    ok("源码预览也露出复制全文", btn.hidden === false && btn.title === "复制全文", btn.title);
+    reset();
+    btn.onclick();
+    await toasted();
+    ok("源码原样进剪贴板，一个字不改", window.copiedText.length === 1 && window.copiedText[0] === CODE, JSON.stringify(window.copiedText));
+    ok("纯文字不走 HTML 那份", window.copied.length === 0, String(window.copied.length));
+
+    // 两条新 API 都被拒（权限 / 非安全上下文）：落到 execCommand 老路，照样写进去
+    window.CLIP_WRITE_FAIL = true; window.CLIP_TEXT_FAIL = true;
+    await show("报告.md", { body: "# 标题\\n\\n内容", total: 12 });
+    reset();
+    btn.onclick();
+    await toasted();
+    window.CLIP_WRITE_FAIL = false; window.CLIP_TEXT_FAIL = false;
+    ok("新 API 都不让写时走老路写进去", window.legacyCopied.length === 1 && window.legacyCopied[0].plain.indexOf("内容") >= 0,
+       JSON.stringify(window.legacyCopied));
+    ok("老路也带上 HTML", window.legacyCopied.length === 1 && /<p class="?md"?>/.test(window.legacyCopied[0].html), JSON.stringify(window.legacyCopied));
+    ok("老路写成了照样说已复制", window.toasts.length === 1 && window.toasts[0][0] === "已复制全文", JSON.stringify(window.toasts));
+
+    // 三条都不通：必须说出来并给出路，不许假装成功（以前代码块那颗就是不管成没成都说已复制）
+    window.CLIP_WRITE_FAIL = true; window.CLIP_TEXT_FAIL = true; window.EXEC_OK = false;
+    reset();
+    btn.onclick();
+    await toasted();
+    window.CLIP_WRITE_FAIL = false; window.CLIP_TEXT_FAIL = false; window.EXEC_OK = true;
+    ok("三条都不通时说复制失败并给出路", window.toasts.length === 1 && window.toasts[0][1] === "circle-x" && /手动选中/.test(window.toasts[0][0]),
+       JSON.stringify(window.toasts));
+
+    // 文件取不到：说 HTTP 几，不猜原因
+    window.PV_FETCH_OK = false;
+    reset();
+    btn.onclick();
+    await toasted();
+    window.PV_FETCH_OK = true;
+    ok("取不到文件时说没取到 + 状态码", window.toasts.length === 1 && /没取到/.test(window.toasts[0][0]) && /206/.test(window.toasts[0][0]),
+       JSON.stringify(window.toasts));
+    ok("取不到时剪贴板一点没动", window.copied.length + window.copiedText.length + window.legacyCopied.length === 0);
+
+    // 空文件：按钮不露；硬点也不往剪贴板写空串（写空串 = 把人原来复制着的东西清掉）
+    await show("空.txt", { body: "   \\n", total: 4 });
+    ok("空文件不露复制全文", btn.hidden === true, btn.title);
+    reset();
+    await copyFileText("/api/files/view/" + fpath("空.txt"), "空.txt");
+    ok("空文件不写剪贴板，并说一句", window.copiedText.length + window.copied.length + window.legacyCopied.length === 0 && window.toasts.length === 1,
+       JSON.stringify(window.toasts));
+    ok("copyText 收到空串直接不写", (await copyText("  ")) === false && window.copiedText.length === 0);
+
+    // 后缀是文本、内容其实是二进制：不露，不复制乱码
+    await show("怪.txt", { body: "\\u0000\\u0001\\u0002PK\\u0003\\u0004" + "\\u0000".repeat(40), total: 46 });
+    ok("内容是二进制时不露复制全文", btn.hidden === true, btn.title);
+
+    // 切到 HTML / PDF / Office：要的是文件本身或长相，不是一段字，按钮收起来
+    await show("页.html", { body: "<p>x</p>", total: 8 });
+    ok("网页不露复制全文", btn.hidden === true, btn.title);
+    ok("isCopyableText 只认文字三族", isCopyableText("a.md") && isCopyableText("a.csv") && isCopyableText("a.py") && isCopyableText("a.txt")
+       && !isCopyableText("a.html") && !isCopyableText("a.png") && !isCopyableText("a.pdf") && !isCopyableText("a.docx") && !isCopyableText("a.zip"));
+
+    // 再回到图片：这颗又变回复制图片，点下去复制的是图不是字
+    await show("图.png", { body: "", total: 1 });
+    ok("回到图片时按钮变回复制图片", btn.hidden === false && /复制图片/.test(btn.title), btn.title);
+    reset();
+    btn.onclick();
+    await until(() => window.copied.length === 1);
+    ok("图片模式下点的仍是复制图", window.copied.length === 1 && !!window.copied[0].m["image/png"] && window.copiedText.length === 0);
   }
 
   // ---- 16. 源码按代码画：行号 + 着色 + 横向滚动，压缩产物先展开 ----
@@ -12784,6 +12983,8 @@ const AB_STUBS = `
     configurable: true,
     value: { writeText: (t) => { COPIED = t; return Promise.resolve(); } },
   });
+  // 真界面里 copyText 在 app-01.js（剪贴板三段兜底），这个夹具只切了 app-06.js，替身记一笔
+  function copyText(t) { COPIED = t; return Promise.resolve(true); }
 `;
 const AB_CHECKS = `
 (async () => {
@@ -13482,9 +13683,12 @@ for (const k of ["bubble-quote", "bubble-attach", "bubble-pics", "BUBBLE_ATT_ICO
 if (!APP02X.includes('<div class="u-stack">')) throw new Error("app-01.js 的回合骨架里没有 .u-stack 了：气泡上面那排缩略图没地方挂，测试搭的壳子已经不是线上那个");
 // 「这份素材躺在工作区哪儿」那三档也按真源码跑：拼错一档，用户看到的就是一整排灰方块
 const RS0 = APP02X.indexOf("function attachRel(name, sid) {");
-const RS1 = APP02X.indexOf("\n}\n", APP02X.indexOf("function attachThumb(rel) {")) + 3; // 切到 attachThumb 的收尾大括号：它现在是多行的（缩略图地址带盘上那一版的时间戳）
+const RS1 = APP02X.indexOf("\n}\n", APP02X.indexOf("function attachThumb(rel, root) {")) + 3; // 切到 attachThumb 的收尾大括号：它现在是多行的（缩略图地址带盘上那一版的时间戳）
 if (RS0 < 0 || RS1 <= RS0) throw new Error("app-01.js 里的 attachRel / attachThumb 找不到了（改名/挪窝？），素材路径这一半没法核");
-const ATTACH_RESOLVE_SRC = APP02X.slice(RS0, RS1);
+const WR0 = APP02X.indexOf("function withRoot(url, root) {");
+const WR1 = APP02X.indexOf("\n}\n", WR0) + 3;
+if (WR0 < 0 || WR1 <= WR0) throw new Error("app-01.js 里的 withRoot 找不到了，素材带根取图那一半没法核");
+const ATTACH_RESOLVE_SRC = APP02X.slice(RS0, RS1) + "\n" + APP02X.slice(WR0, WR1);
 // 认哪些扩展名画缩略图，也用真的那一份
 const PIC_RE_SRC = (() => {
   const m = APP02X.match(/const BUBBLE_PIC_RE = (\/[^\n]+\/i);/);
@@ -13515,10 +13719,11 @@ const BUBBLE_CHECKS = `
   // 「这份素材躺在哪儿」那三档用真源码，不用测试自己编一份：编一份的话，线上拼错了这儿照样绿
   const attachPaths = new Map(), sessionDirs = new Map(), sessionAttachDirs = new Map();
   const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
-  const RESOLVE = new Function("attachPaths", "sessionDirs", "sessionAttachDirs", "fpath", "curStamp",
-    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, sessionAttachDirs, fpath, () => "");
-  let pvOpened = [];
-  const previewFile = (rel, root) => { pvOpened.push(rel); };
+  const sessionAttachSpots = new Map();
+  const RESOLVE = new Function("attachPaths", "sessionDirs", "sessionAttachDirs", "sessionAttachSpots", "fpath", "curStamp",
+    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, sessionAttachDirs, sessionAttachSpots, fpath, () => "");
+  let pvOpened = [], pvRoots = [];
+  const previewFile = (rel, root) => { pvOpened.push(rel); pvRoots.push(root); };
   const stage = document.createElement("div");
   stage.style.cssText = "width:520px";
   document.body.appendChild(stage);
@@ -13649,6 +13854,21 @@ const BUBBLE_CHECKS = `
     const b2 = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
     ok("反向对照：当前根下有这条对话的文件夹时仍以它为准", b2.dataset.rel === "任务_0930_新根/截图.png", b2.dataset.rel);
     sessionAttachDirs.clear();
+  }
+  {
+    // 换过根、两边格名还不一样：服务端 att_spots 报这份附件在别的根那格里，带着那个根去取、去开
+    attachPaths.clear(); sessionDirs.clear(); pvOpened = []; pvRoots = [];
+    sessionDirs.set("s9", "任务_1001_周报_2");
+    sessionAttachSpots.set("s9", { "截图.png": { root: "ab12cd34", dir: "任务_1001_周报" }, "报价单.pdf": { root: "ab12cd34", dir: "任务_1001_周报" } });
+    const t = turnOf("【图片 1：截图.png】\\n【文件 2：报价单.pdf】\\n【图片 3：新图.png】\\n看看", "s9");
+    const pic = t.querySelector(".bpic"), img = pic.querySelector("img"), doc = t.querySelector(".batt");
+    ok("留在别的根那格里的图：按服务端报的那格、带着那个根取缩略图",
+      pic.dataset.rel === "任务_1001_周报/截图.png" && pic.dataset.root === "ab12cd34" && /[?&]root=ab12cd34(&|$)/.test(img.getAttribute("src")), pic.dataset.rel + " / " + img.getAttribute("src"));
+    pic.click(); doc.click();
+    ok("  └ 点开预览也带着那个根（下载/定位跟着它）", pvOpened.join() === "任务_1001_周报/截图.png,任务_1001_周报/报价单.pdf" && pvRoots.join() === "ab12cd34,ab12cd34", JSON.stringify([pvOpened, pvRoots]));
+    const p3 = t.querySelectorAll(".bpic")[1];
+    ok("★反向对照★ 服务端没报的（就在当前那格里）：照旧按当前那格、不带根", p3.dataset.rel === "任务_1001_周报_2/新图.png" && p3.dataset.root === "" && !/root=/.test(p3.querySelector("img").getAttribute("src")), p3.dataset.rel);
+    sessionAttachSpots.clear(); sessionDirs.clear();
   }
   {
     attachPaths.clear(); sessionDirs.clear();
@@ -14261,7 +14481,7 @@ app.whenReady().then(async () => {
     const win3 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
-      const names3 = await win3.webContents.executeJavaScript(IC_BOOT + PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
+      const names3 = await win3.webContents.executeJavaScript(IC_BOOT + PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + COPYTEXT_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
       names3.push(...testPreviewCloseSites(APP02));
       // ★反向对照★ 随便哪一处退回不带 now 的收法（滑完再拆）：这条当场红
       let pcRed = "";

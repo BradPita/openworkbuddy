@@ -1383,7 +1383,9 @@ async function openSession(id, opts) {
   // 下面这几张表一律按 sid 写：await 期间全局 sessionId 已经可能变过（上面的号挡住了，这里再兜一层）
   if (data.dir && sessionDirs.get(sid) !== data.dir) { sessionDirs.set(sid, data.dir); openDirs.add(data.dir); }
   else if (data.dir === null) sessionDirs.delete(sid); // 服务端说这对话在当前根下没有自己的那格（换过根），别拿旧的去筛
+  setRootFiles(sid, data.root_files);
   if (data.att_dir) sessionAttachDirs.set(sid, data.att_dir); else sessionAttachDirs.delete(sid);
+  setAttachSpots(sid, data.att_spots);
   filesAllScope = false; // 成果区跟着换到这个对话自己的那一格
   renderFiles(filesCache);
   if (data.model) sessionModels.set(sid, data.model); else sessionModels.delete(sid);
@@ -2059,7 +2061,9 @@ async function reattachOne(sid) {
   if (runningSessions.has(sid)) return; // 等记录那会儿这一趟已经从别处接上了（本页刚发的、另一次接回）
   if (data && data.dir) sessionDirs.set(sid, data.dir);
   else if (data && data.dir === null) sessionDirs.delete(sid);
+  if (data) setRootFiles(sid, data.root_files);
   if (data && data.att_dir) sessionAttachDirs.set(sid, data.att_dir);
+  if (data) setAttachSpots(sid, data.att_spots);
   if (data && data.model) sessionModels.set(sid, data.model);
   if (data && data.goal) sessionGoals.set(sid, data.goal);
   const t = (data && data.transcript) || [];
@@ -2942,17 +2946,11 @@ document.addEventListener("click", (e) => {
   if (!btn) return;
   const pre = btn.closest(".code-wrap")?.querySelector("pre");
   if (!pre) return;
-  const text = pre.textContent || "";
-  const done = () => { btn.textContent = "已复制"; setTimeout(() => { btn.textContent = "复制"; }, 1500); };
-  if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done)); }
-  else fallbackCopy(text, done);
-  function fallbackCopy(t, cb) {
-    const ta = document.createElement("textarea");
-    ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand("copy"); } catch {}
-    document.body.removeChild(ta); cb();
-  }
+  // 以前退回 execCommand 那条路之后不管成没成都显示「已复制」；现在成了才说
+  copyText(pre.textContent || "").then((ok) => {
+    if (!ok) return toast("复制失败，手动选中代码再复制", "circle-x");
+    btn.textContent = "已复制"; setTimeout(() => { btn.textContent = "复制"; }, 1500);
+  });
 });
 
 // 正文里 [文字](报告.md) 这类指向工作区文件的链接（事件委托，历史回放与流式渲染共用）。

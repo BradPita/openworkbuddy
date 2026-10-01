@@ -3585,6 +3585,20 @@ async function executeTool(name, input, opts = {}) {
   return r;
 }
 
+/**
+ * 会话 → 它以前在根上（不在任何对话文件夹里）写过的文件的绝对路径。每趟开头由调用方整份换掉（lib/task-dirs.js flatOutputs）。
+ * 写文件默认落进这条对话自己的文件夹；只有这里登记过的、或这趟读过的根上文件，写的时候才回到根上那份。
+ * 只活在这个进程里，会话多了先进先出。
+ */
+const rootOwned = new Map();
+function ownRootFiles(sessionId, absPaths) {
+  if (!sessionId) return;
+  rootOwned.delete(sessionId);
+  const list = (absPaths || []).filter(Boolean);
+  if (list.length) rootOwned.set(sessionId, new Set(list.map((p) => path.resolve(p))));
+  if (rootOwned.size > 500) rootOwned.delete(rootOwned.keys().next().value);
+}
+
 async function executeToolCore(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
@@ -3654,9 +3668,11 @@ async function executeToolCore(name, input, opts = {}) {
   // write_file 写 index.html，全被兜到根下那一份上——几条对话轮流盖同一个文件，谁的成果卡点开都是最后写的那家。
   // 只有这条对话自己读过根下那份（read_file / edit_file 登记过），才算「接着改那个旧文件」照旧写回去；
   // 否则就是新产物，落在自己的任务文件夹里
+  // 这条对话自己以前在根上写过的（分文件夹以前的老产出，见 ownRootFiles）也算：整篇重写它就写回那份，不在新格里另起一份
   const seenHere = (abs) => {
     const m = opts.sessionId ? CT._internals.seen.get(opts.sessionId) : null;
-    return !!(m && m.has(abs));
+    const own = opts.sessionId ? rootOwned.get(opts.sessionId) : null;
+    return !!((m && m.has(abs)) || (own && own.has(abs)));
   };
   /** @param {string} rel */
   const resolveWrite = (rel) => resolveFile(rel, "write");
@@ -4566,4 +4582,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };

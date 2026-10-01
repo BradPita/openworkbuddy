@@ -174,6 +174,43 @@ async function unitMain() {
       "★反向对照★ 去掉「读过才写回根」：u3 没读过根下 index.html，写的却是根下那份（几条对话轮流盖它）", { changed: mut !== src, mutRoot, mutWrote });
     fs.writeFileSync(rootIdx, OLD);
 
+    // 分文件夹以前的老对话：它自己当年摊在根上的 报告.md，现在「整篇重写」要写回那份，不在新格里另起第二份
+    const oldRep = path.join(ws, "报告.md");
+    fs.writeFileSync(oldRep, "老报告");
+    tools.ownRootFiles("u4", [oldRep]);
+    const r4 = await run(tools, "write_file", { path: "报告.md", content: "重写的报告" }, "u4");
+    const r4n = await run(tools, "write_file", { path: "新图表.md", content: "新的" }, "u4");
+    ok(!r4.isError && read(oldRep) === "重写的报告" && read(path.join(ws, "任务_u4", "报告.md")) === null,
+      "老对话登记过的根上文件：没读也整篇重写，写回根上那份", { root: read(oldRep), cell: read(path.join(ws, "任务_u4", "报告.md")) });
+    ok(!r4n.isError && read(path.join(ws, "任务_u4", "新图表.md")) === "新的" && read(path.join(ws, "新图表.md")) === null,
+      "  └ 同一条对话的新产出：照旧落进自己的文件夹");
+    fs.writeFileSync(oldRep, "老报告");
+    const r5 = await run(tools, "write_file", { path: "报告.md", content: "u5 的报告" }, "u5");
+    ok(!r5.isError && read(oldRep) === "老报告" && read(path.join(ws, "任务_u5", "报告.md")) === "u5 的报告",
+      "★反向对照★ 别的对话没登记它：根上那份一字不动，写进自己的格", { root: read(oldRep) });
+    tools.ownRootFiles("u6", [oldRep]);
+    tools.ownRootFiles("u6", []);
+    const r6 = await run(tools, "write_file", { path: "报告.md", content: "撤了以后" }, "u6");
+    ok(!r6.isError && read(oldRep) === "老报告" && read(path.join(ws, "任务_u6", "报告.md")) === "撤了以后",
+      "★反向对照★ 登记整份换掉（这回是空的）：不再认根上那份", { root: read(oldRep) });
+    const mut2 = src.replace(" || (own && own.has(abs))", "");
+    let mut2Root = null;
+    if (mut2 !== src) {
+      const Module = require("module");
+      const m = new Module(file, null);
+      m.filename = file;
+      m.paths = Module._nodeModulePaths(ROOT);
+      m._compile(mut2, file);
+      m.exports.setWorkspaceDir(ws);
+      m.exports.ownRootFiles("u7", [oldRep]);
+      await run(m.exports, "write_file", { path: "报告.md", content: "u7 重写" }, "u7");
+      mut2Root = read(oldRep);
+      m.exports.setWorkspaceDir(ws);
+    }
+    ok(mut2 !== src && mut2Root === "老报告" && read(path.join(ws, "任务_u7", "报告.md")) === "u7 重写",
+      "★反向对照★ 去掉「登记过的老产出算自己的」：重写落进新格，一条对话拆成两份报告", { changed: mut2 !== src, mut2Root });
+    fs.rmSync(oldRep, { force: true });
+
     // cdp：两条对话各自 navigate + screenshot，截到的是各自的页面；收一条只关它自己的标签页
     const cdp = require(path.join(ROOT, "cdp.js"));
     fc = fakeChrome();
@@ -523,7 +560,8 @@ function electronMain() {
     const others = (X) => ["A", "B", "C", "D"].filter((Y) => Y !== X);
     const mineName = (X, n, shared) => n.startsWith(DIR[X] + "/") || (shared && X === "C" && n === "共享.md");
     const foreign = (X, names, shared) => (names || []).filter((n) => n && !mineName(X, n, shared));
-    const foreignHeads = (X, heads) => (heads || []).filter((h) => h !== DIR[X] && !h.startsWith(DIR[X] + "/"));
+    // C 读过又改的 共享.md 在根上：它算 C 的老产出，C 的成果面板里「本对话」会多一组根目录（"."）——只 C 有，A/B/D 有就是串了
+    const foreignHeads = (X, heads, shared) => (heads || []).filter((h) => h !== DIR[X] && !h.startsWith(DIR[X] + "/") && !(shared && X === "C" && h === "."));
 
     // ---------- 窗口（隐藏、离屏） ----------
     const part = "iso-main";
@@ -556,7 +594,7 @@ function electronMain() {
         const o = await js(`__iso.open(${J(SID[X])}, ${J(DIR[X])})`);
         cycles++;
         for (const s of [o.a, o.b]) {
-          const f = { items: foreign(X, s.items), heads: foreignHeads(X, s.heads), scope: foreign(X, s.scope), outs: foreign(X, s.outs, true) };
+          const f = { items: foreign(X, s.items, true), heads: foreignHeads(X, s.heads, true), scope: foreign(X, s.scope, true), outs: foreign(X, s.outs, true) };
           if (s.cur !== SID[X] || f.items.length || f.heads.length || f.scope.length || f.outs.length) bad.push({ X, cur: s.cur === SID[X], ...f });
         }
       }
@@ -572,8 +610,8 @@ function electronMain() {
       if (prevPv) ok(!o.a.pv.cur && !o.a.pv.shown && o.a.pv.frames === 0, `切到 ${X}：上一条（${prevPv}）开着的预览当场收掉`, o.a.pv);
       if (prevPv && X === "A") break;
       const b = o.b;
-      ok(b.items.includes(DIR[X] + "/index.html") && !foreign(X, b.items).length && !foreignHeads(X, b.heads).length && !foreign(X, b.scope).length,
-        `${X}：成果面板里有自己的 index.html，没有别家的文件夹和文件`, { items: b.items, heads: b.heads });
+      ok(b.items.includes(DIR[X] + "/index.html") && !foreign(X, b.items, true).length && !foreignHeads(X, b.heads, true).length && !foreign(X, b.scope, true).length && (X === "C") === b.scope.includes("共享.md"),
+        `${X}：成果面板里有自己的 index.html，没有别家的文件夹和文件${X === "C" ? "，根上读过又改的 共享.md 也列在本对话里" : ""}`, { items: b.items, heads: b.heads, scope: b.scope });
       ok(b.outs.includes(DIR[X] + "/index.html") && !foreign(X, b.outs, true).length, `${X}：对话里的产出卡只指向自己的文件`, b.outs);
       const ch = await changedOf(SID[X]);
       const chBad = foreign(X, ch, true);
@@ -616,8 +654,8 @@ function electronMain() {
     for (const X of ["A", "B", "C", "D"]) {
       const o = await js(`__iso.open(${J(SID[X])}, ${J(DIR[X])})`);
       const b = o.b;
-      ok(b.cur === SID[X] && b.items.includes(DIR[X] + "/index.html") && !foreign(X, b.items).length && !foreignHeads(X, b.heads).length && !foreign(X, b.scope).length && !foreign(X, b.outs, true).length,
-        `刷新后点开 ${X}：成果面板、产出卡只有自己的`, { items: b.items, heads: b.heads, outs: b.outs });
+      ok(b.cur === SID[X] && b.items.includes(DIR[X] + "/index.html") && !foreign(X, b.items, true).length && !foreignHeads(X, b.heads, true).length && !foreign(X, b.scope, true).length && !foreign(X, b.outs, true).length && (X === "C") === b.scope.includes("共享.md"),
+        `刷新后点开 ${X}：成果面板、产出卡只有自己的${X === "C" ? "（共享.md 照样算 C 的）" : ""}`, { items: b.items, heads: b.heads, scope: b.scope, outs: b.outs });
     }
     {
       const allHeads = await js(`__iso.allScope()`);

@@ -1831,6 +1831,21 @@ async function testCliMode() {
       let body = {}; try { body = JSON.parse(raw || "{}"); } catch {}
       seen.push(body);
       if (mode === "boom") return j(401, { error: { message: "鉴权失败" } });
+      // 写一份 报告.md 再收尾：看产出落在哪。内容带上这趟的暗号，好分辨是哪一趟写的、有没有被后一趟盖掉
+      if (mode === "write") {
+        const msgs = body.messages || [];
+        if ((msgs[msgs.length - 1] || {}).role !== "tool") {
+          const u = msgs.filter((m) => m.role === "user");
+          const tag = (String((u[u.length - 1] || {}).content || "").match(/周报([A-Z]+)标记/) || [])[1] || "?";
+          return j(200, {
+            choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{
+              id: "call_w_" + seen.length, type: "function",
+              function: { name: "write_file", arguments: JSON.stringify({ path: "报告.md", content: "本趟：" + tag }) },
+            }] } }],
+            usage: { prompt_tokens: 10, completion_tokens: 4 },
+          });
+        }
+      }
       // 第一趟先让模型去问用户一句，之后照常收尾。用来验「那头到底有没有人」这件事
       if (mode === "ask" && !seen.some((b) => JSON.stringify(b).includes("无人值守"))) {
         return j(200, {
@@ -1969,6 +1984,48 @@ async function testCliMode() {
     assert.notStrictEqual(r8.status, 0, "-C 指了个用不了的目录却照跑，文件会被写到别处");
     assert(/工作目录用不了/.test(r8.stderr), "-C 失败时没说清是目录的问题：" + r8.stderr.slice(-300));
 
+    // 11）成果按对话分文件夹，口径跟网页端同一份（lib/task-dirs.js）。
+    //     以前命令行一律摊在工作空间根上：两趟各写一份 报告.md，后一趟把前一趟的盖了，网页上「本对话」也认不出来
+    const ws = path.join(home, "workspace");
+    const real = (p) => fs.realpathSync(p);
+    const taskDirsIn = (d) => fs.readdirSync(d).filter((n) => n.startsWith("任务_"));
+    const sessOf = (id) => JSON.parse(fs.readFileSync(path.join(home, "data", "sessions", id + ".json"), "utf8"));
+    const sidOf = (r) => (r.stderr.match(/会话 (cli_[\w]+)/) || [])[1];
+    // 上面那几趟只回了一句话，什么都没写：起过的文件夹得撤掉，不然跑一趟留一个空壳
+    assert.deepStrictEqual(taskDirsIn(ws), [], "★没产出的几趟留下了空文件夹★");
+    mode = "write";
+    const w1 = await run(["--no-mcp", "写周报ECHO标记"]);
+    assert.strictEqual(w1.status, 0, "写文件那趟失败：" + w1.stderr.slice(-500));
+    const s1 = sessOf(sidOf(w1));
+    assert(s1.dir && /^任务_\d{4}_/.test(s1.dir), "命令行会话没记成果文件夹：" + JSON.stringify({ dir: s1.dir, root: s1.root }));
+    assert(s1.root && real(s1.root) === real(ws), "会话没记成果文件夹在哪个根下：" + s1.root);
+    assert.strictEqual(fs.readFileSync(path.join(ws, s1.dir, "报告.md"), "utf8"), "本趟：ECHO", "产出没落进这条会话的文件夹");
+    assert(!fs.existsSync(path.join(ws, "报告.md")), "★产出摊在工作空间根上了★");
+    assert(w1.stderr.includes(`这条会话的成果放在 ${s1.dir}/`), "新起的文件夹没告诉人在哪：" + w1.stderr.slice(-300));
+    // 续接：同一格，不另起 任务_…_2；也不再把「放在哪」重复说一遍
+    const w2 = await run(["--no-mcp", "--session", sidOf(w1), "再写一版周报FOXTROT标记"]);
+    assert.strictEqual(w2.status, 0, "续接写文件失败：" + w2.stderr.slice(-500));
+    assert.strictEqual(sessOf(sidOf(w1)).dir, s1.dir, "续接换了文件夹，一条对话的成果拆成了两半");
+    assert.strictEqual(fs.readFileSync(path.join(ws, s1.dir, "报告.md"), "utf8"), "本趟：FOXTROT", "续接那趟没写进同一格");
+    assert.strictEqual(taskDirsIn(ws).length, 1, "续接多起了一个文件夹：" + taskDirsIn(ws).join("、"));
+    assert(!w2.stderr.includes("这条会话的成果放在"), "接着用的那格每趟都说一遍，是噪音");
+    // 另起一条：另一格，两份 报告.md 各在各的，谁也不盖谁
+    const w3 = await run(["--no-mcp", "写周报GOLF标记"]);
+    assert.strictEqual(w3.status, 0, "第二条会话写文件失败：" + w3.stderr.slice(-500));
+    const s3 = sessOf(sidOf(w3));
+    assert(s3.dir && s3.dir !== s1.dir, "两条会话挤进了同一格：" + s3.dir);
+    assert.strictEqual(fs.readFileSync(path.join(ws, s3.dir, "报告.md"), "utf8"), "本趟：GOLF", "第二条的产出不在它自己那格");
+    assert.strictEqual(fs.readFileSync(path.join(ws, s1.dir, "报告.md"), "utf8"), "本趟：FOXTROT", "★后一条会话把前一条的成果盖了★");
+    // 用户自己挑的目录（-C 进代码仓库）照旧就地读写：那里要改的东西本来就在根上，套一层反倒拆散了
+    const repo = path.join(home, "我的仓库");
+    fs.mkdirSync(repo, { recursive: true });
+    const w4 = await run(["--no-mcp", "-C", repo, "写周报HOTEL标记"]);
+    assert.strictEqual(w4.status, 0, "-C 写文件失败：" + w4.stderr.slice(-500));
+    assert.strictEqual(fs.readFileSync(path.join(repo, "报告.md"), "utf8"), "本趟：HOTEL", "-C 指的目录里没就地写");
+    assert.deepStrictEqual(taskDirsIn(repo), [], "★在用户自己的仓库里套了一层任务_文件夹★");
+    assert(!sessOf(sidOf(w4)).dir, "-C 那趟会话里记了个成果文件夹，网页上会拿它去筛一个不存在的目录");
+    mode = "ok";
+
     // 9）带文件进去：真跑一趟 openworkbuddy，看挂在请求体上的是不是那句标记
     //    单元测试证得了每个零件对，证不了这趟进程真把它挂上了——中间少接一根线，
     //    人拖进来的文件就是「发出去了但模型没看见」，而终端上什么异常都不会有。
@@ -1987,6 +2044,10 @@ async function testCliMode() {
     assert(u9.includes("（已上传文件："), "-f 带了文件，用户那条消息上却没挂标记，模型根本不知道有文件：" + JSON.stringify(u9));
     assert(u9.includes("带进来的.md"), "标记里没有文件名：" + JSON.stringify(u9));
     assert(u9.includes("这文件里写了什么"), "挂了标记却把人要问的话弄丢了：" + JSON.stringify(u9));
+    // 带进来的文件跟网页端先传上来的附件一样，搬进这条会话的那格（名字不变：相对路径本来就从那格起算）
+    const s9 = sessOf(sidOf(r9));
+    assert(s9.dir && fs.existsSync(path.join(ws, s9.dir, "带进来的.md")), "带进来的文件没搬进这条会话的文件夹：" + JSON.stringify({ dir: s9.dir }));
+    assert(!fs.existsSync(path.join(ws, "带进来的.md")), "★带进来的文件还摊在工作空间根上★");
     assert(!JSON.stringify(seen[seen.length - 1]).includes("ZETA9527"),
       "★文件正文被塞进对话历史了★ 历史每一步都重发，图片会把上下文撑爆、纯文本模型直接 400，而会话是存盘的——这一步等于把这个会话永久弄坏");
 
@@ -2025,7 +2086,7 @@ async function testCliMode() {
       assert.strictEqual(m[7].slice(0, 2), m[4], "x");
     } catch { caught4 = true; }
     assert(caught4, "--list 时区判据失效：UTC 那版居然也能过");
-    console.log(`✅ CLI 模式：单发不串台（续接才带上下文）· 答案走 stdout 进度走 stderr · 退出码 0/1 说实话 · 管道进料 · --json 可解析 · -q 是干净正文 · --list 本地时间与轮数对得上 · -C 用不了就停 · -f 带文件只挂标记不塞正文`);
+    console.log(`✅ CLI 模式：单发不串台（续接才带上下文）· 答案走 stdout 进度走 stderr · 退出码 0/1 说实话 · 管道进料 · --json 可解析 · -q 是干净正文 · --list 本地时间与轮数对得上 · -C 用不了就停 · -f 带文件只挂标记不塞正文 · 成果按对话分文件夹（续接同一格·两条不互盖·没产出不留空壳·-C 就地写·附件跟进那格）`);
   } finally {
     srv.close();
     fs.rmSync(home, { recursive: true, force: true });
@@ -4326,11 +4387,15 @@ function testTaskDirLifecycle() {
   const srv = srcLib.src("server");
 
   // ── 一、文件夹名从哪儿来 ──────────────────────────────────────
-  // 洗字的活在 lib/task-dirs.js，assignSessionDir 里只剩「拿哪句话、洗完是空的叫什么」这一行
+  // 洗字和起名都在 lib/task-dirs.js（网页对话和命令行共用 newSessDir），
+  // 那里只剩「拿哪句话、洗完是空的叫什么」这一行；server.js 的 assignSessionDir 必须经它起名
   const taskDirs = require(path.join(__dirname, "..", "lib", "task-dirs.js"));
-  const sm = /function assignSessionDir\([\s\S]*?(const slug = [^\n]*\n)/.exec(srv);
-  assert.ok(sm, "server.js 里找不到取文件夹名的那一行（assignSessionDir 被改过？）");
-  const slugOf = new Function("taskDirs", "sess", "message", sm[1] + "; return slug;").bind(null, taskDirs);
+  const tdSrc = fs.readFileSync(path.join(__dirname, "..", "lib", "task-dirs.js"), "utf8");
+  const sm = /function newSessDir\([\s\S]*?(const slug = [^\n]*\n)/.exec(tdSrc);
+  assert.ok(sm, "lib/task-dirs.js 里找不到取文件夹名的那一行（newSessDir 被改过？）");
+  assert.ok(/function assignSessionDir\([\s\S]*?taskDirs\.newSessDir\(sess, getWorkspaceDir\(\), dataPath\("workspace"\), message, assignedDirs\)/.test(srv),
+    "server.js 的 assignSessionDir 没经 taskDirs.newSessDir 起名（两头各起各的，终端和网页认不回同一格）");
+  const slugOf = new Function("taskSlug", "sess", "text", sm[1] + "; return slug;").bind(null, taskDirs.taskSlug);
 
   // 【任务类型：X】是喂给模型的前缀，起标题时早就洗掉了，文件夹名这儿漏过一次——
   // 于是真实数据里躺着「任务_0826_任务类型数据分析及可视化_3」，用户看到的是分类词，
@@ -8168,6 +8233,139 @@ async function testChatShownLive() {
   }
 }
 
+/**
+ * 任务跑到一半切项目 / 点「新任务」：这趟的成果必须还落在它开头那个项目的文件夹里。
+ *
+ * 工作目录是全局的一个值。以前没钉住：网页上一切项目，正在跑的那趟后半截就写进了另一个项目，
+ * 产出散在两处；为了躲这个，「新任务」遇忙干脆不重置，新任务又落在上一条临时切过的文件夹里。
+ * 现在每趟开头把根钉在自己那条异步链上，全局根随便换。
+ */
+async function testRunRootPinned() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pin-"));
+  const 甲 = path.join(home, "projects", "甲"), 乙 = path.join(home, "projects", "乙");
+  for (const d of [甲, 乙]) fs.mkdirSync(d, { recursive: true });
+  // 第一趟干活的调用卡在闸门上，等测试那头把项目切走了再放行，写文件那一步保证发生在切换之后
+  let gate = null, entered = null;
+  const reset = () => {
+    let open; gate = new Promise((r) => (open = r)); gate.open = open;
+    entered = new Promise((r) => (reset.hit = r));
+  };
+  reset();
+  const llm = http.createServer((req, res) => {
+    let raw = ""; req.on("data", (c) => (raw += c));
+    req.on("end", async () => {
+      if (!req.url.includes("/chat/completions")) { res.writeHead(404); return res.end("{}"); }
+      let b = {}; try { b = JSON.parse(raw); } catch {}
+      const msgs = b.messages || [];
+      const send = (o) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ...o, usage: { prompt_tokens: 9, completion_tokens: 3 } })); };
+      const main = Array.isArray(b.tools) && b.tools.length;
+      if (main && (msgs[msgs.length - 1] || {}).role !== "tool") {
+        const tag = (String((msgs.filter((m) => m.role === "user").pop() || {}).content || "").match(/成果([A-Z]+)标记/) || [])[1] || "?";
+        reset.hit(); await gate;
+        return send({ choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{
+          id: "call_pin_" + tag, type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "报告.md", content: "本趟：" + tag }) },
+        }] } }] });
+      }
+      send({ choices: [{ message: { role: "assistant", content: main ? "写好了" : "周报" }, finish_reason: "stop" }] });
+    });
+  });
+  await new Promise((r) => llm.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${llm.address().port}/v1`;
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.example.json"), "utf8"));
+  cfg.provider = "openai";
+  cfg.openai = { base_url: base, api_key: "k", model: "mock", stream: false };
+  cfg.models = [{ name: "假模型", provider: "openai", base_url: base, api_key: "k", model: "mock", stream: false }];
+  cfg.active_model = "假模型";
+  cfg.agent = { ...(cfg.agent || {}), max_steps: 3, tool_timeout_ms: 8000, llm_timeout_ms: 20000 };
+  cfg.mcp_servers = [];
+  cfg.projects = [{ name: "甲", dir: 甲 }, { name: "乙", dir: 乙 }];
+  cfg.active_project = "甲";
+  cfg.workspace_dir = 甲;
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg, null, 2));
+  const owner = "owner" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [owner]: { user: "boss", at: Date.now() } },
+  }));
+  const call = (port, method, p, body) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const rq = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      Cookie: "openworkbuddy_token=" + owner,
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    rq.on("error", (e) => resolve({ code: 0, body: e.message }));
+    if (data) rq.write(data);
+    rq.end();
+  });
+  // 一个根底下所有叫「报告.md」的文件（相对路径）
+  const reports = (root) => {
+    const out = [];
+    const walk = (d, rel) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name.startsWith(".")) continue;
+      if (e.isDirectory()) walk(path.join(d, e.name), rel + e.name + "/");
+      else if (e.name === "报告.md") out.push(rel + e.name);
+    } };
+    try { walk(root, ""); } catch {}
+    return out;
+  };
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+
+  const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  let passed = false;
+  try {
+    const { up, port, why } = await boot.wait();
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+    const run1 = call(port, "POST", "/api/chat", { sessionId: "s_pin_a", message: "写成果ALPHA标记", mode: "craft", lang: "zh" });
+    const hit = await Promise.race([entered, new Promise((r) => setTimeout(() => r("timeout"), 20000))]);
+    assert(hit !== "timeout", "第一趟迟迟没走到模型那一步：" + boot.log.slice(-300));
+    // 正跑着：切到乙，再点一次「新任务」
+    const sw = await call(port, "POST", "/api/projects/switch", { name: "乙" });
+    assert(sw.code === 200 && sw.json && sw.json.ok, "切项目失败：" + sw.code + " " + sw.body.slice(0, 200));
+    const rs = await call(port, "POST", "/api/workspace/reset");
+    assert(rs.json && rs.json.ok && !rs.json.busy && real(rs.json.workspace_dir) === real(乙),
+      "★有任务在跑时「新任务」不重置★ 新任务会落在上一条临时切过的文件夹里：" + rs.body.slice(0, 200));
+    gate.open();
+    const r1 = await run1;
+    assert(r1.code === 200 && /"type":"done"/.test(r1.body), "第一趟没跑完：" + r1.code + " " + r1.body.slice(0, 300));
+    // 读盘上那份：/api/session 只回「此刻这个根」下的文件夹，切到乙之后看不到甲那格
+    const sessOf = (id) => { try { return JSON.parse(fs.readFileSync(path.join(home, "data", "sessions", id + ".json"), "utf8")); } catch { return {}; } };
+    const s1 = sessOf("s_pin_a");
+    assert(/^任务_\d{4}_/.test(s1.dir || "") && real(s1.root || "") === real(甲), "第一趟记的文件夹/根不对：" + JSON.stringify({ dir: s1.dir, root: s1.root }));
+    assert(reports(乙).length === 0,
+      "★跑到一半切了项目，这趟的成果写进了新项目★ 产出散在两处：乙里有 " + JSON.stringify(reports(乙)));
+    assert(JSON.stringify(reports(甲)) === JSON.stringify([s1.dir + "/报告.md"]) &&
+      fs.readFileSync(path.join(甲, s1.dir, "报告.md"), "utf8") === "本趟：ALPHA",
+      "第一趟的成果没落在它开头那个项目的文件夹里：甲里有 " + JSON.stringify(reports(甲)));
+
+    // 反向对照：切过去之后新开的那条，老老实实落在乙
+    reset(); gate.open();
+    const r2 = await call(port, "POST", "/api/chat", { sessionId: "s_pin_b", message: "写成果BRAVO标记", mode: "craft", lang: "zh" });
+    assert(r2.code === 200 && /"type":"done"/.test(r2.body), "第二趟没跑完：" + r2.code + " " + r2.body.slice(0, 300));
+    const s2 = sessOf("s_pin_b");
+    assert(real(s2.root || "") === real(乙) && JSON.stringify(reports(乙)) === JSON.stringify([s2.dir + "/报告.md"]),
+      "切到乙之后新开的任务没落在乙：" + JSON.stringify({ root: s2.root, 乙: reports(乙) }));
+    assert(reports(甲).length === 1, "第二趟把甲也动了：" + JSON.stringify(reports(甲)));
+
+    // IM / 定时任务那条路也得钉：静态看一眼 accountedRuntime 是不是包在这趟自己的根里跑
+    assert(/withWorkspace\(runRoot, \(\) => baseRuntime\.runTask\(/.test(srcLib.src("server")),
+      "★IM / 定时任务那趟没钉根★ 跑到一半网页上切项目，后半截就写进别的项目");
+    console.log("✓ 任务跑到一半切项目、点「新任务」：这趟成果留在原项目的文件夹，新任务照常落在新项目");
+    passed = true;
+  } finally {
+    try { gate.open(); } catch {}
+    try { boot.child.kill(); } catch {}
+    llm.close();
+    await dropTempHome(home, passed, boot.child);
+  }
+}
+
 async function testDecideLive() {
   const os = require("os");
   const http = require("http");
@@ -9927,6 +10125,7 @@ testCanvasEdgeVersion();
   await testSessionSearchLive();
   await testDecideLive();
   await testChatShownLive();
+  await testRunRootPinned();
   await testConfigExternalEdit();
   await testSweepApi();
   testSweepEndOfRunScope();

@@ -532,8 +532,9 @@ function renderPromptPage() {
       card.onclick = (e) => { if (e.target.closest("button")) return; card.classList.toggle("open"); };
       on(".tpl-use", () => startTaskWith(t.p));
       on(".tpl-copy", async (e) => {
-        try { await navigator.clipboard.writeText(t.p); e.target.textContent = "已复制"; setTimeout(() => e.target.textContent = "复制", 1200); }
-        catch { toast("复制失败，手动选中上面的文字吧", "circle-x"); }
+        const b = e.currentTarget;
+        if (!(await copyText(t.p))) return toast("复制失败，手动选中上面的文字吧", "circle-x");
+        b.textContent = "已复制"; setTimeout(() => { b.textContent = "复制"; }, 1200);
       });
       on(".tpl-edit", () => edit(t.layer === "builtin" ? { base: t, hide: t.id } : { base: t, id: t.id, scope: t.layer }));
       on(".tpl-fork", () => edit({ base: t, scope: "mine", fork: true }));

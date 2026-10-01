@@ -261,11 +261,11 @@ function renderSecurityPane(pane, s) {
     if (pane.querySelector("#dev-pair-copyurl")) pane.querySelector("#dev-pair-copyurl").onclick = (e) => {
       e.preventDefault();
       // 链接里已经带着码，粘到手机上直接就是填好的那一页，不用再敲一遍
-      navigator.clipboard.writeText(cur.url || "").then(() => toast("链接已复制，里面带着码，直接粘到手机浏览器"), () => toast("复制失败，照着上面抄一下", "circle-x"));
+      copyText(cur.url || "").then((ok) => ok ? toast("链接已复制，里面带着码，直接粘到手机浏览器") : toast("复制失败，照着上面抄一下", "circle-x"));
     };
     pane.querySelector("#dev-pair-copy").onclick = (e) => {
       e.preventDefault();
-      navigator.clipboard.writeText(p.pretty).then(() => toast("配对码已复制"), () => toast("复制失败，手抄一下", "circle-x"));
+      copyText(p.pretty).then((ok) => ok ? toast("配对码已复制") : toast("复制失败，手抄一下", "circle-x"));
     };
     pane.querySelector("#dev-pair-cancel").onclick = async (e) => {
       e.preventDefault();
@@ -468,7 +468,7 @@ async function renderTwoFactorBox(box, opts) {
     code.onkeydown = (e) => { if (e.key === "Enter") box.querySelector("#tfa-enable").click(); };
     box.querySelector("#tfa-copy-secret").onclick = (e) => {
       e.preventDefault();
-      navigator.clipboard.writeText(d.secret).then(() => toast("密钥已复制"), () => toast("复制失败，手抄一下", "circle-x"));
+      copyText(d.secret).then((ok) => ok ? toast("密钥已复制") : toast("复制失败，手抄一下", "circle-x"));
     };
     // 半路不干了：这时候 totp.secret 已经存进去了但没 enabled_at，下次再来 startEnroll 会重新生成一把，
     // 所以这儿不用清理什么，退回去就行
@@ -496,7 +496,7 @@ async function renderTwoFactorBox(box, opts) {
         <button class="btn-brand" id="tfa-rc-done">我存好了</button>
       </div>`;
     box.querySelector("#tfa-copy-rc").onclick = () =>
-      navigator.clipboard.writeText(codes.join("\n")).then(() => toast("恢复码已复制，找个安全地方存下来"), () => toast("复制失败，手抄一下", "circle-x"));
+      copyText(codes.join("\n")).then((ok) => ok ? toast("恢复码已复制，找个安全地方存下来") : toast("复制失败，手抄一下", "circle-x"));
     box.querySelector("#tfa-rc-done").onclick = () => (gate ? location.reload() : renderTwoFactorBox(box, opts));
   }
 
@@ -930,8 +930,8 @@ function renderAboutPane(pane) {
   };
   pane.querySelector("#ab-up-cmd-copy").onclick = (e) => {
     e.preventDefault();
-    navigator.clipboard.writeText(upCmdT.textContent)
-      .then(() => toast("命令已复制，粘到「终端」里回车就行"), () => toast("复制失败，手抄一下", "circle-x"));
+    copyText(upCmdT.textContent)
+      .then((ok) => ok ? toast("命令已复制，粘到「终端」里回车就行") : toast("复制失败，手抄一下", "circle-x"));
   };
   pane.querySelector("#ab-up-btn").onclick = () => loadUpdate(true);
   loadUpdate(false);

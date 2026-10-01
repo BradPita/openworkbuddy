@@ -370,9 +370,9 @@ const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件
 function perChatHere() {
   return taskDirs.perChatRoot(getWorkspaceDir(), { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: org.tenantsDir() });
 }
-/** 会话记的成果文件夹还在不在「此刻这个根」下。老会话没记根的，那时只有默认工作空间会分文件夹 */
+/** 会话记的成果文件夹还在不在「此刻这个根」下（口径在 lib/task-dirs.js，命令行那头用同一套） */
 function sessDirHere(sess) {
-  return !!(sess && sess.dir) && taskDirs.samePlace(sess.root || dataPath("workspace"), getWorkspaceDir());
+  return taskDirs.sessDirIn(sess, getWorkspaceDir(), dataPath("workspace"));
 }
 /**
  * 会话在「此刻这个根」下的成果文件夹：正用着的那格，或者以前在这个根下用过、盘上还在的那格；都没有给 null。
@@ -380,44 +380,59 @@ function sessDirHere(sess) {
  * 回来只能另起一个 任务_…_2，前后两半成果拆在两个文件夹里，「本对话」也只认后一半
  */
 function sessDirOf(sess) {
-  if (sessDirHere(sess)) return sess.dir;
-  const d = sess && sess.dirs ? sess.dirs[taskDirs.canonDir(getWorkspaceDir())] : null;
-  return d && fs.existsSync(path.join(getWorkspaceDir(), d)) ? d : null;
-}
-/** 换走 dir 之前按根记一笔（最多记 20 个根，先进先出） */
-function stashSessionDir(sess) {
-  if (!sess || !sess.dir) return;
-  const dirs = sess.dirs || (sess.dirs = {});
-  const k = taskDirs.canonDir(sess.root || dataPath("workspace"));
-  delete dirs[k];
-  dirs[k] = sess.dir;
-  for (const old of Object.keys(dirs).slice(0, -20)) delete dirs[old];
+  return taskDirs.sessDirAt(sess, getWorkspaceDir(), dataPath("workspace"));
 }
 /** 当前根下这个会话已经有自己的那格就接着用它；返回用上没有 */
 function useSessionDirHere(sess) {
-  if (sessDirHere(sess)) return true;
-  const d = sessDirOf(sess);
-  if (!d) return false;
-  stashSessionDir(sess);
-  sess.dir = d;
-  sess.root = getWorkspaceDir();
-  return true;
+  return taskDirs.useSessDirAt(sess, getWorkspaceDir(), dataPath("workspace"));
+}
+/** 这个会话以前摊在「此刻这个根」上的产出（相对名），盘上还在的 */
+function rootFilesOf(sess) {
+  const root = getWorkspaceDir();
+  return taskDirs.flatOutputs(sess, root, dataPath("workspace"), workspaceKeyOf(root))
+    .filter((n) => { try { return fs.statSync(path.join(root, n)).isFile(); } catch { return false; } });
+}
+
+/**
+ * 换过根的对话：历史里的附件留在别的根下那格里，那边的格名跟这边的还不一样（任务_1001_周报 / 任务_1001_周报_2），
+ * 前端按「当前那格/名字」去取就是一排灰方块。这里报「当前格里没有、别的根那格里有」的那些：名字 → {root 指纹, dir}。
+ * 只看每格第一层（附件就落在第一层），最多 300 个；指纹按 knownRoots 里那份原样算，rootFromKey 才认得回来。
+ */
+function attachSpotsOf(sess) {
+  const here = getWorkspaceDir(), def = dataPath("workspace");
+  const curDir = taskDirs.sessDirAt(sess, here, def);
+  const pairs = [];
+  if (sess.dir && !taskDirs.samePlace(sess.root || def, here)) pairs.push([sess.root || def, sess.dir]);
+  for (const [r, d] of Object.entries(sess.dirs || {})) if (d && !taskDirs.samePlace(r, here)) pairs.push([r, d]);
+  const out = {};
+  let n = 0;
+  if (!pairs.length) return out;
+  const known = knownRoots();
+  for (const [r, d] of pairs) {
+    const root = known.find((k) => taskDirs.samePlace(k, r));
+    if (!root) continue;
+    let names = [];
+    try { names = fs.readdirSync(path.join(root, d), { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name); } catch { continue; }
+    for (const name of names) {
+      if (n >= 300) return out;
+      if (Object.prototype.hasOwnProperty.call(out, name)) continue;
+      if (curDir && fs.existsSync(path.join(here, curDir, name))) continue;
+      out[name] = { root: workspaceKeyOf(root), dir: d };
+      n++;
+    }
+  }
+  return out;
 }
 
 /** 给对话分配成果文件夹（任务_月日_标题），并把「消息发出前就传上来的」附件一起搬进去。
  *  搬运失败一概不抛：文件夹没建成事小，因为一个附件搬不动就让整条对话起不来事大。*/
 function assignSessionDir(sess, message) {
-  const slug = taskDirs.taskSlug(sess.title || message) || "对话";
-  const dir = taskDirs.freeDir(getWorkspaceDir(), `任务_${taskDirs.dayStamp()}_${slug}`, assignedDirs);
-  assignedDirs.add(dir);
-  stashSessionDir(sess); // 上一个根下的那格记着，回那边时接着用
-  sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
-  // 连**哪个根**下的这个文件夹也一起记住。只记相对名的后果就是用户换一次工作目录，
-  // 这条对话的成果全部变成「文件不存在」——文件没丢，是坐标系换了而没人记得旧的那套。
-  sess.root = getWorkspaceDir();
+  // 存进会话，后续轮次/重启都落同一个文件夹。连**哪个根**下的这个文件夹也一起记住：
+  // 只记相对名的后果就是用户换一次工作目录，这条对话的成果全部变成「文件不存在」——
+  // 文件没丢，是坐标系换了而没人记得旧的那套。
+  const dir = taskDirs.newSessDir(sess, getWorkspaceDir(), dataPath("workspace"), message, assignedDirs);
   rememberRoot(sess.root);
   const full = path.join(getWorkspaceDir(), dir);
-  try { fs.mkdirSync(full, { recursive: true }); } catch {}
   for (const n of sess.pending_uploads || []) {
     try {
       const from = path.join(getWorkspaceDir(), n), to = path.join(full, n);
@@ -3495,8 +3510,8 @@ app.post("/api/projects/switch", (req, res) => {
 // 新任务回到当前项目自己的目录：输入框里临时切过的文件夹不带进下一个任务
 app.post("/api/workspace/reset", (_req, res) => {
   try {
-    // 工作目录是全局的：有任务在跑时重置会把它的写入目录半路拽走，产出散落两处。跳过，等空闲再说
-    if (activeRuns.size) return res.json({ ok: false, busy: true, workspace_dir: getWorkspaceDir() });
+    // 跑着的任务不怕：每趟在开头就把自己的根钉住了（/api/chat 的 enterWorkspace、accountedRuntime 的 withWorkspace），
+    // 这里改的只是下一条新任务从哪开始。以前在这儿遇忙就跳过，结果忙的时候点「新任务」，新任务落在上一条临时切过的文件夹里
     ensureProjects();
     const ap = config.projects.find((p) => p.name === config.active_project) || config.projects[0];
     if (ap && ap.dir && ap.dir !== getDefaultWorkspaceDir()) {
@@ -6609,6 +6624,9 @@ app.post("/api/chat", async (req, res) => {
    * 整段包在 try 里：分身开不出来（没装 git、仓库还没有第一次提交、磁盘满）绝不能让任务起不来。
    * 那种情况下退回老样子——两条任务共用一份工作区，跟这个功能上线前一模一样。
    */
+  // 把这趟的根钉在这条请求上：跑到一半有人切项目、点「新任务」改了全局根，这趟照旧写在开头这个根里，
+  // 不会半截产出落到另一个项目。下面开了分身会再换成分身目录
+  enterWorkspace(getWorkspaceDir());
   let wtInfo = null;
   try {
     // 名单要把终端里那趟也算上：撞车最常见的一种就是「网页上开着一条，人又在终端里 openworkbuddy 了一句」，
@@ -6670,6 +6688,8 @@ app.post("/api/chat", async (req, res) => {
     if (!useSessionDirHere(sess)) assignSessionDir(sess, message);
     taskBaseDir = sess.dir;
   }
+  // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（见 lib/task-dirs.js flatOutputs）
+  try { require("./tools").ownRootFiles(sessionId, taskBaseDir ? rootFilesOf(sess).map((n) => path.join(getWorkspaceDir(), n)) : []); } catch {}
   // 成果面板标「本对话」用；不进回放记录。换到自选文件夹时发空串：面板手里还是上一个根里的文件夹名，
   // 拿它去筛这边摊在根上的文件，永远是「本对话 0」
   send({ type: "dir", dir: taskBaseDir || "" });
@@ -7183,8 +7203,11 @@ app.get("/api/session/:id", (req, res) => {
   // 于是点开「看执行过程」，顶上写的是光秃秃一个「任务」，看不出这是哪条定时任务跑的哪一趟。
   // dir 只在这条对话的文件夹就在「此刻这个根」下时给：换了根还给旧名字，面板拿它去筛新根，只会筛出一片空
   // dir 管「本对话」筛哪一格，只给当前根下的；att_dir 管历史里附件缩略图去哪找——换过根照样得看得见，
-  // 文件在旧根那格里，按名字找得回来（rootedPath 会挨个根试）
-  res.json({ transcript: s.transcript, dir: perChatHere() ? sessDirOf(s) : null, att_dir: s.dir || null, model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
+  // 文件在旧根那格里，按名字找得回来（rootedPath 会挨个根试）。
+  // root_files：分文件夹以前这条对话摊在根上的产出，「本对话」也摆它们——不然老对话一点开就是「本对话 0」
+  // att_spots：换过根以后还留在别的根那格里的附件，按名字给出在哪个根、哪一格（见 attachSpotsOf）
+  const perChat = perChatHere();
+  res.json({ transcript: s.transcript, dir: perChat ? sessDirOf(s) : null, root_files: perChat ? rootFilesOf(s) : [], att_dir: s.dir || null, att_spots: attachSpotsOf(s), model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
 });
 
 // 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
@@ -7682,7 +7705,8 @@ function accountedRuntime(baseRuntime, source) {
         // IM / 定时任务的产物也各归各的文件夹（见 runDirFor；调用方在 args 里给了 baseDir 就听调用方的）
         runDir = rest.baseDir === undefined ? runDirFor(source, rest) : null;
         if (runDir) holdRunDir(runRoot, runDir);
-        return baseRuntime.runTask({
+        // 钉住根：跑到一半网页上切了项目，这趟的写入也不跟着跑
+        return withWorkspace(runRoot, () => baseRuntime.runTask({
           user: caller || (owner ? owner.username : undefined),
           ...(reopened.length ? { mediaReopened: reopened } : {}),
           taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
@@ -7690,7 +7714,7 @@ function accountedRuntime(baseRuntime, source) {
           projectContext: projectContextOf(activeProject()),
           ...rest,
           ...(want ? { llmOverride: runLLM } : {}),
-        });
+        }));
       };
       try {
         r = await (runner ? inTenantOf(runner, source, go) : go());

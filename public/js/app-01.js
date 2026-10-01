@@ -125,9 +125,15 @@ function compactNote(proc) {
 
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
 const sessionDirs = new Map(); // sessionId -> 该对话在当前根下的成果子文件夹（成果面板标「本对话」）
+// sessionId -> Set(该对话分文件夹以前摊在当前根上的产出，相对名)。老对话接着聊，新产出进新格、老的还在根上，
+// 「本对话」两边都得摆，不然一条对话在面板里只剩后半截
+const sessionRootFiles = new Map();
 // sessionId -> 该对话最近用的那格，不管在不在当前根下。只拿来找历史里的附件：换过根以后 sessionDirs 清掉了，
 // 附件缩略图还得拼得出「任务_X/图.jpg」，服务端按这个名字挨个根去找
 const sessionAttachDirs = new Map();
+// sessionId -> { 附件名: { root: 根指纹, dir } }：换过根以后还留在别的根那格里的附件（服务端 att_spots）。
+// 那边的格名跟这边不一样，光靠名字拼不出来；有这一份就直接带着根去取，缩略图、预览、下载都是那一份
+const sessionAttachSpots = new Map();
 // 附件原名 -> /api/upload 回的工作区相对路径。这是最准的一份：上传那一刻服务端亲口说了
 // 「我把它放这儿了」，不用再靠 sessionDirs 去猜。只活在这一次开着的窗口里，
 // 刷新之后老回合走 attachRel 里后面两档兜底
@@ -941,18 +947,23 @@ const BUBBLE_PIC_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
  * ② 还留了个 alt：**修好上传落点之前传的那批，人确实躺在工作区根上**
  * （当时前端还没给会话 id，服务端没地方放，只能落根）。所以②读不出来时自动改试③，
  * 老会话里那些图才不会整排变成灰方块。
+ * 换过根的对话：服务端报了这份附件在别的根那格里（sessionAttachSpots），就按那份带着根去取，排在②前面——
+ * 当前那格里没有它，服务端才会报。root 空串 = 当前根。
  */
 function attachRel(name, sid) {
   const memo = attachPaths.get(name);
-  if (memo) return { rel: memo, alt: "" };
+  if (memo) return { rel: memo, alt: "", root: "" };
+  const spots = sessionAttachSpots.get(sid);
+  const spot = spots && Object.prototype.hasOwnProperty.call(spots, name) ? spots[name] : null;
+  if (spot && spot.dir && spot.root) return { rel: spot.dir + "/" + name, alt: "", root: String(spot.root) };
   const dir = sessionDirs.get(sid) || sessionAttachDirs.get(sid);
-  return dir ? { rel: dir + "/" + name, alt: name } : { rel: name, alt: "" };
+  return dir ? { rel: dir + "/" + name, alt: name, root: "" } : { rel: name, alt: "", root: "" };
 }
 /** 缩略图地址。跟产出卡共用一套口径：一律 ?thumb=320，svg 除外（矢量栅格化反而更大更糊） */
-function attachThumb(rel) {
-  const stamp = curStamp(rel, "");
+function attachThumb(rel, root) {
+  const stamp = curStamp(rel, root || "");
   const q = [/\.svg$/i.test(rel) ? "" : "thumb=320", stamp ? "v=" + encodeURIComponent(stamp) : ""].filter(Boolean).join("&");
-  return "/api/files/view/" + fpath(rel) + (q ? "?" + q : "");
+  return withRoot("/api/files/view/" + fpath(rel) + (q ? "?" + q : ""), root || "");
 }
 function stripSceneTag(t) {
   return String(t == null ? "" : t)
@@ -1177,7 +1188,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   if (docList.length) {
     bubbleHtml += `<div class="bubble-attach">${docList.map((a) => {
       const sp = attSpot(a);
-      return `<button type="button" class="batt" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" title="${esc(a.name)} · 点击预览">${ic(BUBBLE_ATT_ICON[a.label] || "paperclip")}${esc(a.name)}</button>`;
+      return `<button type="button" class="batt" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" data-root="${esc(sp.root)}" title="${esc(a.name)} · 点击预览">${ic(BUBBLE_ATT_ICON[a.label] || "paperclip")}${esc(a.name)}</button>`;
     }).join("")}</div>`;
   }
   turn.querySelector(".bubble").innerHTML = bubbleHtml;
@@ -1185,8 +1196,8 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     const pics = picList.map((a) => {
       const sp = attSpot(a);
       // 名字条平时藏着，只在图读不出来的时候顶上来：一个空灰方框谁都看不出是哪份素材
-      return `<button type="button" class="bpic" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" title="${esc(a.name)} · 点击预览">`
-        + `<img src="${attachThumb(sp.rel)}" alt="${esc(a.name)}" loading="lazy" decoding="async">`
+      return `<button type="button" class="bpic" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" data-root="${esc(sp.root)}" title="${esc(a.name)} · 点击预览">`
+        + `<img src="${attachThumb(sp.rel, sp.root)}" alt="${esc(a.name)}" loading="lazy" decoding="async">`
         + `<span class="bpic-nm">${ic("image")}${esc(a.name)}</span></button>`;
     }).join("");
     turn.querySelector(".u-stack").insertAdjacentHTML("afterbegin", `<div class="bubble-pics">${pics}</div>`);
@@ -1194,16 +1205,16 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       img.onerror = () => {
         const btn = img.closest(".bpic");
         const alt = btn.dataset.alt;
-        if (alt) { btn.dataset.rel = alt; btn.dataset.alt = ""; img.src = attachThumb(alt); return; } // 老会话：改试工作区根
+        if (alt) { btn.dataset.rel = alt; btn.dataset.alt = ""; btn.dataset.root = ""; img.src = attachThumb(alt, ""); return; } // 老会话：改试工作区根
         btn.classList.add("gone");
         btn.title = btn.title.replace(" · 点击预览", " · 这份素材读不出来了：可能已被改名、移走或删掉");
       };
     }
   }
-  // 素材点开就是产出卡那个预览面板（带下载 / 打开所在位置）。root 留空 = 当前工作目录：
-  // 用户发的素材一直跟着他现在这个工作区走，不像产出那样要记住当年是在哪个根下生成的
+  // 素材点开就是产出卡那个预览面板（带下载 / 打开所在位置）。root 一般是空 = 当前工作目录；
+  // 换过根、附件留在别的根那格里的，带着那个根去开（下载/定位跟着它走）
   for (const el of turn.querySelectorAll(".bubble-pics .bpic, .bubble-attach .batt")) {
-    el.onclick = () => previewFile(el.dataset.rel, "");
+    el.onclick = () => previewFile(el.dataset.rel, el.dataset.root || "");
   }
   // 引用的正文走 textContent：那是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
   if (quoteText) {
@@ -1214,10 +1225,10 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     bq.title = "点一下展开/收起这段引用";
     bq.onclick = () => bq.classList.toggle("open");
   }
-  turn.querySelector(".u-copy").onclick = (e) => {
-    navigator.clipboard?.writeText(shown || userText).then(() => {
-      e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200);
-    }).catch(() => toast("复制失败", "circle-x"));
+  turn.querySelector(".u-copy").onclick = async (e) => {
+    const btn = e.currentTarget, was = btn.innerHTML;
+    if (!(await copyText(shown || userText))) return toast("复制失败，手动选中文字再复制", "circle-x");
+    btn.innerHTML = ic("check"); setTimeout(() => { btn.innerHTML = was; }, 1200);
   };
   // 只有"正在看的会话"的回合才上屏；后台会话的回合先游离着更新，切回来时再接上
   if (turnSid === sessionId) {
@@ -1872,6 +1883,13 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       liveOuts += turnOut.length;
       for (const f of turnOut) if (!liveOutFiles.some((x) => x.name === f.name)) liveOutFiles.push(f);
       if (ev.root) outRoot = ev.root;
+      // 这一轮写回根上的老产出（整篇重写分文件夹以前那份）：「本对话」照样摆它
+      const ownDir = !isReplaying && sessionDirs.get(turnSid);
+      if (ownDir) for (const n of ev.changed || []) {
+        if (String(n).startsWith(ownDir + "/") || /^任务_\d{4}_/.test(String(n))) continue;
+        if (!sessionRootFiles.has(turnSid)) sessionRootFiles.set(turnSid, new Set());
+        sessionRootFiles.get(turnSid).add(String(n));
+      }
       renderTurnOutputs(body, turnOut, pool, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       // 后台在跑的别的对话：只悄悄更新清单，不重画右侧——以前这里不分是谁的回合，
@@ -2064,33 +2082,11 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     bar.querySelector("[data-a=copy]").onclick = async (e) => {
       // 复制"渲染后"的内容而不是 markdown 源码：贴到飞书/Word 里保留格式，
       // 贴到纯文本框里也不会出现 **、<br> 这类原始标记
-      const parts = [...body.querySelectorAll(".a-text")].map(t => {
-        const c = t.cloneNode(true);
-        c.querySelectorAll(".code-head").forEach(h => { // 代码块的「复制」小工具条不进剪贴板
-          const lang = h.querySelector("span")?.textContent || "";
-          h.replaceWith(Object.assign(document.createElement("div"), { textContent: lang, style: "font-size:12px;color:#888" }));
-        });
-        return c;
-      });
-      const html = parts.map(c => c.innerHTML).join("<br>");
-      // innerText 需要元素在文档里才有正确换行，挂到屏外拿完就删
-      const probe = document.createElement("div");
-      probe.style.cssText = "position:fixed;left:-99999px;top:0;width:600px";
-      parts.forEach(c => probe.appendChild(c));
-      document.body.appendChild(probe);
-      const plain = parts.map(c => c.innerText.trim()).filter(Boolean).join("\n\n");
-      probe.remove();
-      const done = () => { e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200); };
-      try {
-        if (navigator.clipboard && window.ClipboardItem) {
-          await navigator.clipboard.write([new ClipboardItem({
-            "text/html": new Blob([html], { type: "text/html" }),
-            "text/plain": new Blob([plain], { type: "text/plain" }),
-          })]);
-          return done();
-        }
-      } catch {}
-      navigator.clipboard?.writeText(plain).then(done).catch(() => toast("复制失败", "circle-x"));
+      const btn = e.currentTarget; // await 之后 currentTarget 就成 null 了，先拿住
+      const { html, plain } = renderedCopy([...body.querySelectorAll(".a-text")]);
+      if (!plain) return toast("这条回复里没有文字可复制", "circle-x");
+      if (!(await copyText(plain, html))) return toast("复制失败，手动选中文字再复制", "circle-x");
+      btn.innerHTML = ic("check"); setTimeout(() => { btn.innerHTML = ic("copy"); }, 1200);
     };
     // 👍👎 以前点了只是换个高亮色，一个字节都没往外送——按了等于没按。
     // 现在它是自进化那条链的第一环：反馈落盘 → 归类成信号 → 提改进 → 人审 → 复盘看数字有没有降。
@@ -3010,12 +3006,31 @@ let fileQuery = "";
 let filesAllScope = false;
 /** 换过根之后重新认一遍这条对话的那格（服务端只给当前根下的，没有就是 null） */
 function resyncSessionDir(sid) {
-  if (sessionDirs.delete(sid) && sid === sessionId && filesCache) renderFiles(filesCache);
+  const hadDir = sessionDirs.delete(sid), hadFlat = sessionRootFiles.delete(sid); // 摊在根上的那批也是按旧根算的
+  if ((hadDir || hadFlat) && sid === sessionId && filesCache) renderFiles(filesCache);
   fetch("/api/session/" + encodeURIComponent(sid)).then((r) => r.json()).then((d) => {
-    if (!d || !d.dir || sessionDirs.has(sid)) return; // 等回来之前这一轮已经报过 dir 了，以那个为准
-    sessionDirs.set(sid, d.dir);
+    if (!d) return;
+    setRootFiles(sid, d.root_files);
+    setAttachSpots(sid, d.att_spots); // 换了根，「哪些附件在别的根那格里」也跟着换
+    // 等回来之前这一轮已经报过 dir 了，以那个为准
+    if (d.dir && !sessionDirs.has(sid)) sessionDirs.set(sid, d.dir);
     if (sid === sessionId && filesCache) renderFiles(filesCache);
   }).catch(() => {});
+}
+/** 记下服务端说的「这条对话摊在当前根上的老产出」；空的就不留这一格 */
+function setRootFiles(sid, list) {
+  if (Array.isArray(list) && list.length) sessionRootFiles.set(sid, new Set(list.map(String)));
+  else sessionRootFiles.delete(sid);
+}
+/** 记下服务端说的「哪些附件留在别的根那格里」；空的就不留这一格 */
+function setAttachSpots(sid, spots) {
+  if (spots && typeof spots === "object" && Object.keys(spots).length) sessionAttachSpots.set(sid, spots);
+  else sessionAttachSpots.delete(sid);
+}
+/** 这个文件算不算这条对话的：在它那格里，或者是它分文件夹以前摊在根上的老产出 */
+function ownsFile(sid, name) {
+  const n = String(name || ""), dir = sessionDirs.get(sid), flat = sessionRootFiles.get(sid);
+  return (!!dir && n.startsWith(dir + "/")) || (!!flat && flat.has(n));
 }
 /** 当前根是不是按对话分成果文件夹的那种（默认工作空间、应用替人建的项目/租户目录） */
 function wsPerChat() {
@@ -3028,7 +3043,7 @@ function filesInScope(all) {
   const curDir = sessionDirs.get(sessionId);
   const own = !!curDir || wsPerChat();
   if (!own || filesAllScope) return { list: files, scoped: false, outside: 0, all: files.length };
-  const list = curDir ? files.filter((f) => String(f.name || "").startsWith(curDir + "/")) : [];
+  const list = files.filter((f) => ownsFile(sessionId, f.name));
   return { list, scoped: true, outside: files.length - list.length, all: files.length };
 }
 const FIND_MIN = 8; // 文件少的时候一眼扫得完，搜索框纯占地方
@@ -3057,6 +3072,100 @@ function revealFile(name, e, root, src) {
     .catch(() => toast("打不开所在位置", "circle-x"));
 }
 /**
+ * 往剪贴板里放一段文字，给了 HTML 就一起放（贴进飞书 / Word 表格和加粗还在）。放进去了返回 true。
+ *
+ * 三条路依次试：ClipboardItem（HTML + 纯文本）→ writeText → execCommand("copy")。
+ * 以前回复、我的输入这几处只走前两条，被拒了要么弹一句「复制失败」，要么什么都没发生；
+ * 第三条是老写法，不走权限那一关，前两条不认的时候它多半还写得进去。
+ * 空串一律不写：写进去等于把剪贴板清空——人原来复制着的东西没了，粘出来还是空的。
+ */
+async function copyText(plain, html) {
+  const text = String(plain == null ? "" : plain);
+  if (!text.trim()) return false;
+  if (html && navigator.clipboard && window.ClipboardItem) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([text], { type: "text/plain" }),
+      })]);
+      return true;
+    } catch {}
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { await navigator.clipboard.writeText(text); return true; } catch {}
+  }
+  return copyTextLegacy(text, html);
+}
+/** execCommand 那条老路：在 copy 事件里把纯文本和 HTML 一起塞进去，用完把焦点还回原处 */
+function copyTextLegacy(text, html) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;left:-99999px;top:0;opacity:0";
+  const back = document.activeElement;
+  const fill = (e) => {
+    if (!e.clipboardData) return;
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", text);
+    if (html) e.clipboardData.setData("text/html", html);
+  };
+  document.body.appendChild(ta);
+  ta.select();
+  document.addEventListener("copy", fill, true);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch {}
+  document.removeEventListener("copy", fill, true);
+  ta.remove();
+  try { if (back && back.focus) back.focus({ preventScroll: true }); } catch {}
+  return ok;
+}
+/**
+ * 一段渲染好的正文「贴出去的样子」：HTML 一份、纯文本一份。
+ * 代码块顶上那条「复制」小工具条不进剪贴板，换成一行小字写语言名。
+ * innerText 要元素真挂在文档里才有正确的换行，所以挂到屏外量完就拆。
+ * @param {Element[]} nodes
+ */
+function renderedCopy(nodes) {
+  const parts = nodes.map((t) => {
+    const c = t.cloneNode(true);
+    c.querySelectorAll(".code-head").forEach((h) => {
+      const lang = h.querySelector("span")?.textContent || "";
+      h.replaceWith(Object.assign(document.createElement("div"), { textContent: lang, style: "font-size:12px;color:#888" }));
+    });
+    return c;
+  });
+  const html = parts.map((c) => c.innerHTML).join("<br>");
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:fixed;left:-99999px;top:0;width:600px";
+  parts.forEach((c) => probe.appendChild(c));
+  document.body.appendChild(probe);
+  const plain = parts.map((c) => c.innerText.trim()).filter(Boolean).join("\n\n");
+  probe.remove();
+  return { html, plain };
+}
+/**
+ * 把一份文字文件**整份**复制进剪贴板。预览面板为了快只读了开头（PV_TEXT_MAX），这里另取一次整份。
+ * Markdown 按渲染后的样子复制（跟「复制回复」一个口径），别的原样复制。
+ * 2026-10-01 用户点开一份「要点总结.md」想把内容拿走，标题栏只有「复制文件」——
+ * 那颗放进去的是文件本身，粘进文字框里什么都没有，于是只能手动拖选全文。
+ */
+async function copyFileText(url, name, root) {
+  const r = await fetch(url).catch(() => null);
+  if (!r || !r.ok) { toast(r ? `文件没取到（HTTP ${r.status}）` : "文件没取到，请求没发出去", "circle-x"); return false; }
+  const text = await r.text();
+  if (!text.trim()) { toast("这个文件是空的，没有可复制的文字", "circle-x"); return false; }
+  if (looksBinary(text)) { toast("这个文件不是文本，复制不了文字", "circle-x"); return false; }
+  let ok;
+  if (PV_MD_RE.test(name)) {
+    const box = document.createElement("div");
+    box.innerHTML = renderMd(text, dirOf(name), false, root || "", { fileLinks: false });
+    const c = renderedCopy([box]);
+    ok = await copyText(c.plain, c.html);
+  } else ok = await copyText(text);
+  toast(ok ? "已复制全文" : "复制失败，手动选中文字再复制", ok ? "circle-check" : "circle-x");
+  return ok;
+}
+/**
  * 把文件本身放进剪贴板，之后直接 Cmd+V 粘到微信 / 邮件 / 访达里。
  * 以前只能先下载一份再自己去翻下载目录。
  * 服务端会告诉我们放进去的到底是文件还是一条路径，两者得分开说：
@@ -3069,7 +3178,8 @@ function copyHostFile(name, e, o) {
     .then(r => r.json().catch(() => ({})).then(j => {
       if (!r.ok || !j || j.error) return toast(((j && j.error) || "复制不了这个文件"), "circle-x");
       if (j.kind === "path") return toast("这台机器放不下文件本身，已复制它的完整路径", "circle-check");
-      toast("已复制文件，去微信 / 邮件 / 访达里直接粘", "circle-check");
+      // 文字类文件多说半句：粘进文字框里不出字，要的是内容就点旁边那颗
+      toast(isCopyableText(name) ? "已复制文件本身；要里面的文字点「复制全文」" : "已复制文件，去微信 / 邮件 / 访达里直接粘", "circle-check");
     }))
     .catch(() => toast("复制不了这个文件", "circle-x"));
 }
@@ -3131,8 +3241,7 @@ function renderFileFilter() {
   if (find) find.hidden = !showFind;
   if (scope) {
     scope.hidden = !showScope;
-    const mine = sessionDirs.get(sessionId);
-    const nMine = mine ? filesCache.filter((f) => String(f.name || "").startsWith(mine + "/")).length : 0;
+    const nMine = filesCache.filter((f) => ownsFile(sessionId, f.name)).length;
     scope.innerHTML = !showScope ? "" :
       `<button class="fp-seg${filesAllScope ? "" : " on"}" data-all="0" title="只看这个对话自己文件夹里的">本对话 ${nMine}</button>` +
       `<button class="fp-seg${filesAllScope ? " on" : ""}" data-all="1" title="整个工作空间，含别的对话的产出">全部对话 ${filesCache.length}</button>`;
@@ -3543,6 +3652,12 @@ function looksBinary(text) {
   return bad > 8 && bad / text.length > 0.01;
 }
 
+/** 文字类文件能不能「复制全文」：跟预览走同一张路由表——当 Markdown、表格文本、纯文本看的那几族。
+ *  网页、图、PDF、Office 不算（那几样要的是文件本身或长相，不是一段字） */
+function isCopyableText(name) {
+  const k = previewKind(name);
+  return k === "markdown" || k === "csv" || k === "text";
+}
 const PV_TEXT_MAX = 512 * 1024; // 只取前 512KB。以前是整包 fetch 完再 slice(0,100000)，
                                 // 碰上几百 MB 的日志，渲染进程在 slice 之前就已经卡死了
 
@@ -4227,9 +4342,8 @@ async function previewFile(name, root) {
     if (stale()) return;
     if (tag) elUrl = url + "&e=" + encodeURIComponent(tag);
   }
-  // 「复制」只对图片有意义。别的类型藏起来——摆一个按下去没反应的按钮比没有这个按钮更糟
-  const pvCopyBtn = document.getElementById("pv-copy");
-  if (pvCopyBtn) pvCopyBtn.hidden = kind !== "image";
+  // 文字类要等内容读回来、确认真是文本才亮（见下面文本那一支），先只亮图片的
+  setPvCopy(kind === "image" ? "image" : "");
   // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
   // 一张矮图挂在顶上、底下一大片空白。
   body.classList.toggle("pv-mid", kind === "image" || kind === "video");
@@ -4314,6 +4428,7 @@ async function previewFile(name, root) {
       bindPvCode(body, trunc);
     }
     else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    if (r && !looksBinary(r.text) && r.text.trim()) setPvCopy(kind === "markdown" ? "markdown" : "text");
   }
   bindPvFallback(body, name);
   bindPvMore(body, url);
@@ -4395,7 +4510,32 @@ async function copyImageFromUrl(url) {
     }
   }
 }
-document.getElementById("pv-copy").onclick = () => copyPreviewImage();
+/**
+ * 标题栏那颗「复制」：图片复制图，文字类（Markdown / 纯文本 / 源码 / 表格文本）复制全文。
+ * 别的类型藏起来——摆一颗按下去没反应的按钮比没有这颗按钮更糟。
+ * 以前它只认图片，点开一份 .md 想把内容拿走，标题栏里没有一颗是干这个的。
+ */
+let pvCopyMode = "";
+function setPvCopy(mode) {
+  pvCopyMode = mode || "";
+  const b = document.getElementById("pv-copy");
+  if (!b) return;
+  b.hidden = !pvCopyMode;
+  b.title = pvCopyMode === "image" ? "复制图片（可直接粘到微信 / Word / PPT）"
+    : pvCopyMode === "markdown" ? "复制全文（贴进飞书 / Word 保留格式）" : "复制全文";
+}
+async function copyPreviewText() {
+  const name = pvCurrent, root = pvRoot;
+  if (!name) return;
+  const btn = document.getElementById("pv-copy");
+  if (btn) btn.disabled = true;
+  try {
+    await copyFileText(withRoot("/api/files/view/" + fpath(name) + "?v=" + encodeURIComponent(pvVer(name, root)), root), name, root);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+document.getElementById("pv-copy").onclick = () => (pvCopyMode === "image" ? copyPreviewImage() : copyPreviewText());
 // 预览面板开着、看的又是图的时候，Ctrl/Cmd+C 就复制这张图。
 // 判一下有没有选中文字：用户可能是想复制文件名，那一下不该被我们抢走
 document.addEventListener("keydown", (e) => {

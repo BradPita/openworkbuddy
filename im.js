@@ -40,11 +40,13 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const { dataPath } = require("./paths");
 const notify = require("./notify");
 const callout = require("./callout"); // IM 里没有图标，正文提示条换成文字标签
 const imCard = require("./im-card"); // 飞书那张任务卡片长什么样（纯渲染，不碰网络）
+const imReply = require("./lib/im-reply"); // 发进聊天前：正文里的 SVG 图摘出来转图片、长回复切成几条
 const security = require("./security");
 const mailer = require("./mailer"); // 发信：配没配、地址合不合法、报错里有没有夹带密码，判据只有这一份
 const { getWorkspaceDir, statOutputs } = require("./tools");
@@ -133,7 +135,7 @@ function turnOutputs(outputFiles, changedNames) {
   return pool.concat(statOutputs([...changedNames].filter((n) => !have.has(n))));
 }
 
-function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = () => {}, priceOpts = null }) {
+function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = () => {}, priceOpts = null, renderSvg: renderSvgOpt = null }) {
   const router = express.Router();
   // 聊天那部分钱按哪张价目算：先跟额度记账同一个来源（调用者上下文里带着管理员改过的价和组织折扣），
   // 再是 server.js 给的，都没有就只看 config 里登记的价
@@ -264,7 +266,15 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     return resp.json();
   }
 
+  // 一张卡片放多少：正文 3000 字、表格 5 张（飞书卡片的上限）。卡片收尾和分条发正文用同一把尺子
+  const FEISHU_CHUNK = { max: 3000, tables: 5 };
+
+  /** 长回复分几张卡片发：段落、代码块、表格不从中间劈开 */
   async function feishuReply(chatId, text) {
+    for (const part of imReply.chunks(String(text || ""), FEISHU_CHUNK)) await feishuReplyOne(chatId, part);
+  }
+
+  async function feishuReplyOne(chatId, text) {
     const token = await getFeishuToken();
     // 纯文本消息（msg_type=text）不渲染 Markdown，# 和表格会裸奔；
     // 交互卡片的 markdown 组件（schema 2.0）支持标题/表格/代码块/列表
@@ -318,7 +328,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
     if (String(text).length <= budget && tables <= 5) return { body: text, split: false };
     const cut = lines.slice(0, 12).join("\n").slice(0, Math.min(budget, 500));
-    return { body: cut + "\n\n> 内容较长（" + String(text).length + " 字），正文见下一条消息。", split: true };
+    const n = imReply.chunks(String(text), FEISHU_CHUNK).length;
+    return { body: cut + "\n\n> 内容较长（" + String(text).length + " 字），" + (n > 1 ? `全文分 ${n} 条发在下面。` : "全文见下一条消息。"), split: true };
   }
 
   /**
@@ -599,7 +610,11 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     return null;
   }
 
-  async function runInbound({ channel, sessionKey, text, reply, status, sendFile, card, cardPromise, projectContext = "", logExtra = {} }) {
+  // 回复里的 SVG 图转 PNG：桌面版借主进程的隐藏窗口，node 直跑找本机 Chrome，都没有就如实说没转成。
+  // 测试传假的进来，不去拉真浏览器
+  const renderSvg = renderSvgOpt || ((svg) => require("./diagram").svgToPngAnyhow(svg));
+
+  async function runInbound({ channel, sessionKey, text, reply, status, sendFile, sendImage, card, cardPromise, projectContext = "", logExtra = {} }) {
     logIm(channel, "in", text, logExtra);
     // 「停」：叫停正在跑的那件，不排队、不交给模型。飞书那头卡片自己会变成「已停止」，
     // 别的通道没有卡片，回一句让人知道按到了
@@ -750,6 +765,11 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           out += `\n\n成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
           if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
         }
+        // 正文里的 SVG 信息图：聊天软件只会贴出一坨源码。能发图片的通道转成 PNG 跟在正文后面，
+        // 发不了的在原位置换成一句话
+        const figs = await imReply.prepareFigures(out, { canSend: !!sendImage, render: renderSvg });
+        out = figs.text;
+        if (figs.failed) logIm(channel, "sys", `回复里有 ${figs.failed} 张图没转成图片，原位置已换成说明`, logExtra);
         if (updTimer) { clearTimeout(updTimer); updTimer = null; }
         await recallStatus();
         phase = "回复发送";
@@ -787,6 +807,27 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           await sendOnce(() => reply(out));
           logIm(channel, "out", out, logExtra);
           phase = "附件发送";
+        }
+        // 图紧跟正文、排在附件前面，跟网页上读的顺序一样。PNG 放系统临时目录，不进工作区（进了会被当成果）
+        if (figs.pngs.length) {
+          const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-imfig-"));
+          try {
+            for (const [i, im] of figs.pngs.entries()) {
+              if (sendCtl.signal.aborted) { logIm(channel, "sys", `已叫停，没发：${im.name}`, logExtra); continue; }
+              const abs = path.join(tmp, im.name);
+              fs.writeFileSync(abs, im.png);
+              try {
+                await sendOnce(() => sendImage(abs, im.name, { signal: sendCtl.signal }));
+                logIm(channel, "out", `已发送正文里的图：${im.name}`, logExtra);
+              } catch (e) {
+                if (sendCtl.signal.aborted) { logIm(channel, "sys", `已叫停，没发：${im.name}`, logExtra); continue; }
+                logIm(channel, "error", `发送正文里的图 ${im.name} 失败: ${e.message}`, logExtra);
+                try { await reply(`${figs.pngs.length > 1 ? `图 ${i + 1} ` : "图"}没发出去（${chatWhy(e, 100)}）。`); } catch {}
+              }
+            }
+          } finally {
+            try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+          }
         }
         // 发附件时回了「停」：剩下的不发（已经发出去的消息收不回），不再补「没发出去」
         for (const f of toSend) {
@@ -1046,7 +1087,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       card: cardP ? { ackMsgId: msg.message_id, ackId } : null,
       cardPromise: cardP,
       sendFile: (rel, o) => feishuSendFileMsg(chatId, rel, o),
-      reply: (out) => feishuReply(chatId, out.slice(0, 3500)),
+      sendImage: (abs, name, o) => feishuMedia.sendImage(chatId, abs, name, o),
+      reply: (out) => feishuReply(chatId, out),
     });
     // 收尾：表情是「收到了」的意思，活干完了就该摘掉（runInbound 内部已按任务真正收尾时摘）
   } catch (e) {
@@ -1129,7 +1171,12 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     if (firstLine) return firstLine.replace(/^#{1,6}\s*/, "").slice(0, 160);
     return `飞书文档（${String(fileToken || "").slice(0, 12)}）`;
   }
+  /** 评论回复一条最多 3000 字：长的拆成几条接着回，不再把后半截砍掉 */
   async function feishuReplyDocComment(fileToken, commentId, fileType, text) {
+    for (const part of imReply.chunks(String(text || ""), { max: 3000, tables: 99 })) await feishuReplyDocCommentOne(fileToken, commentId, fileType, part);
+  }
+
+  async function feishuReplyDocCommentOne(fileToken, commentId, fileType, text) {
     const token = await getFeishuToken();
     const qs = new URLSearchParams({
       file_type: fileType || "docx",
@@ -1139,7 +1186,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
-        content: { elements: [{ type: "text_run", text_run: { text: String(text || "").slice(0, 3000) } }] },
+        content: { elements: [{ type: "text_run", text_run: { text: String(text || "") } }] },
       }),
       signal: AbortSignal.timeout(15000),
     });
@@ -1389,6 +1436,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         logExtra: { chat: msg.fromUser },
         reply: (out) => wecom.push(msg.fromUser, out),
         sendFile: (rel) => wecom.sendFile(msg.fromUser, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
+        sendImage: (abs, name) => wecom.sendFile(msg.fromUser, abs, name),
       });
     })().catch((e) => console.error("[企业微信] 任务出错:", e.message));
   });
@@ -1423,6 +1471,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         logExtra: { chat: msg.fromUser },
         reply: (out) => mp.push(msg.fromUser, out),
         sendFile: (rel) => mp.sendFile(msg.fromUser, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
+        sendImage: (abs, name) => mp.sendFile(msg.fromUser, abs, name),
       });
     })().catch((e) => console.error("[公众号] 任务出错:", e.message));
   });
@@ -1473,6 +1522,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         reply: (out) => ilink.send(userId, out),
         // 微信也能收成果文件了（走 CDN 上传），不用再打发用户去工作台下载
         sendFile: (rel) => ilink.sendFile(userId, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
+        sendImage: (abs, name) => ilink.sendFile(userId, abs, name),
       });
     },
   });
@@ -1673,7 +1723,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       // 推送只是顺带的通知——挂了记一笔就行，不许把做成的任务说成失败，也不让调用方干等它（单通道最长 15 秒）。
       // 回复已经发出去了，这里再抛就会掉进下面那个 catch 二次写响应头，所以必须就地接住
       try {
-        await pushBots(`【OpenWorkBuddy·任务完成】\n任务：${String(message).slice(0, 80)}\n${reply.slice(0, 500)}`);
+        await pushBots(`【OpenWorkBuddy·任务完成】\n任务：${String(message).slice(0, 80)}\n${imReply.dropFigures(reply).slice(0, 500)}`);
       } catch (pe) {
         const why = String((pe && pe.message) || pe).slice(0, 300);
         console.warn("[webhook] 任务完成推送失败:", why);

@@ -260,6 +260,9 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Oct 1** Long Feishu replies are no longer cut off: they're split into several messages, and charts are sent as images
+- **Oct 1** Older conversations: files already in the workspace root are edited in place, and attachments still open after you switch folders
+- **Oct 1** The CLI gives each conversation its own folder too; "New task" while another task runs no longer lands in that task's folder; Copy works again
 - **Sep 30** Outputs get a folder per conversation in more places: projects without a folder, Feishu/WeChat chats and schedules no longer overwrite each other
 - **Sep 30** Templates can be added, edited and deleted: "Mine" is private to you; "Company" is shared across the org and only admins can change it
 - **Sep 30** Many open conversations no longer slow the window: they share one live channel, and saving and screenshots moved off the main thread
