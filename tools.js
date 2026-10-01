@@ -3833,7 +3833,8 @@ async function executeToolCore(name, input, opts = {}) {
     }
     switch (name) {
       case "canvas_manage":
-        return canvasManage(input);
+        // 带上本对话的成果文件夹：agent 写进节点的相对路径是从那儿算的，画布要的是从根算的
+        return canvasManage(input, { base: baseRel });
       case "run_node": {
         if (orgBlocksShell()) return shellBlocked("run_node");
         if (sec.runtime_node === false) {

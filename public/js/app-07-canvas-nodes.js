@@ -125,7 +125,7 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
       : kind === "audio" && mediaPath && mediaAvailable
         ? canvasAudioPreview(mediaPath)
         : "";
-    const missing = mediaPath && !mediaAvailable ? `<div class="canvas-media-missing">素材已从工作区移除，请在右侧重新选择或上传。</div>` : "";
+    const missing = mediaPath && !mediaAvailable ? `<div class="canvas-media-missing" title="${esc(mediaPath)}">工作区里找不到这个文件，请在右侧重新选择或上传。</div>` : "";
     const action = kind === "audio" ? "生成配音" : mediaPath && mediaAvailable ? `重跑${def.label}` : `生成${def.label}`;
     const busy = canvasState.busy.has(`${nodeId}:${kind}`);
     return `<article class="canvas-node canvas-node-media canvas-node-${kind}">${header(payload.title || def.label, kind === "image" ? "点击图片放大" : "可直接播放")}<div class="canvas-node-body">${media}${missing}<div class="canvas-media-text">${esc(mediaText)}</div>${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : action}</button>${mediaPath && mediaAvailable ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;

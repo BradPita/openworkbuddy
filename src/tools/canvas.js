@@ -168,7 +168,62 @@ function canvasList() {
   if (!out.length) out.push({ name: "main", title: "主画布", nodes: 0, updatedAt: 0 });
   return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
-function canvasManage(input = {}) {
+// 节点 payload 里放文件路径的那几格：页面 canvasMediaPath 读的，加上镜头、角色、场景卡各自的图和视频
+const CANVAS_PATH_KEYS = ["path", "file", "url", "image", "first_frame", "last_frame", "video", "audio", "reference_video", "ref"];
+/**
+ * agent 写进节点的文件路径，改成从工作区根算起。
+ *
+ * 对话有了自己的成果文件夹（任务_1001_xx）以后，agent 手里的相对路径是从那个文件夹算的：
+ * write_file、run_shell 落的素材，generate_image 回的 file，都是这个口径。画布却是整个工作区
+ * 共用的一份，页面按根去找文件。照原样写进去，「不烧心_素材包/03_关键帧/x.png」在根下当然没有，
+ * 满画布的参考图一起挂「找不到」，文件其实好好躺在 任务_1001_xx/不烧心_素材包/ 里。
+ *
+ * 认的顺序跟文件工具读文件一样：成果文件夹里有，就是它；那里没有、根下有，就是根下那个
+ * （旧对话的产物、共享素材）；两边都还没有（先占位、等会儿再生成），按成果文件夹算，
+ * 那是 agent 接下来往里写的地方。不像文件名的（ref 里写了一句描述）、网址、工作区外的绝对路径都不碰。
+ * 原地改 payload，返回改了哪几条 [原样, 改成]。
+ */
+function canvasRebasePaths(payload, base) {
+  const moved = [];
+  if (!payload || typeof payload !== "object") return moved;
+  const root = path.resolve(ws());
+  const inside = (abs) => abs.startsWith(root + path.sep);
+  let baseAbs = base ? path.resolve(root, String(base)) : "";
+  if (baseAbs && !inside(baseAbs)) baseAbs = "";
+  const baseRel = baseAbs ? path.relative(root, baseAbs).split(path.sep).join("/") : "";
+  for (const key of CANVAS_PATH_KEYS) {
+    const v = payload[key];
+    if (typeof v !== "string") continue;
+    const raw = v.trim();
+    if (!raw || /^(https?:|data:|blob:|\/api\/files\/view\/)/i.test(raw)) continue;
+    if (!/\.[a-z0-9]{2,5}$/i.test(raw.split(/[?#]/)[0])) continue;
+    let abs;
+    if (path.isAbsolute(raw)) abs = path.resolve(raw);
+    else {
+      const clean = raw.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+      const atRoot = path.resolve(root, clean);
+      // 已经带着本对话文件夹那一截的，本来就是从根算的
+      if (!baseRel || clean === baseRel || clean.startsWith(baseRel + "/")) abs = atRoot;
+      else {
+        const inBase = path.resolve(baseAbs, clean);
+        abs = fs.existsSync(inBase) || !fs.existsSync(atRoot) ? inBase : atRoot;
+      }
+    }
+    if (!inside(abs)) continue;
+    const out = path.relative(root, abs).split(path.sep).join("/");
+    if (out !== v) { payload[key] = out; moved.push([v, out]); }
+  }
+  return moved;
+}
+/** 改过的路径要告诉 agent：它接下来拿 get 读到的是新写法，不说一声它会以为节点被人动过 */
+function canvasMovedNote(moved) {
+  return moved.length ? `\n节点里的文件路径已改成从工作区根算起（画布整个工作区共用一份，页面按根找文件）：${moved.map(([a, b]) => `${a} → ${b}`).join("；")}` : "";
+}
+/**
+ * @param {object} input 工具入参
+ * @param {{ base?: string }} [ctx] base：本对话的成果文件夹（相对工作区根），没有就是空
+ */
+function canvasManage(input = {}, ctx = {}) {
   const op = String(input.operation || "get");
   const canvasName = canvasSafeName(input.canvas_name || canvasCurrentName());
   if (op === "list") return { content: JSON.stringify({ current: canvasCurrentName(), canvases: canvasList() }), isError: false };
@@ -188,14 +243,21 @@ function canvasManage(input = {}) {
     // 上限拦在「往里加」这一步。以前是在序列化时截断，等于替用户删已有的节点；
     // 拦在这儿最多是加不进去，一个字节都不会少
     if (state.nodes.length >= CANVAS_MAX_NODES) return { content: `画布 ${canvasName} 已经有 ${state.nodes.length} 个节点，到上限 ${CANVAS_MAX_NODES} 了，加不进去。先删掉些用不上的，或者换一张画布（canvas_name 换个名字就是新的一张）。`, isError: true };
-    state.nodes.push({ id, kind, payload: input.payload && typeof input.payload === "object" ? input.payload : {}, position: { x: Number(input.position?.x) || 120 + (state.nodes.length % 4) * 390, y: Number(input.position?.y) || 120 + Math.floor(state.nodes.length / 4) * 300 } });
-    state = canvasWriteState(state, canvasName); return { content: `已添加${kind}节点 ${id} 到画布 ${canvasName}。`, isError: false };
+    const payload = input.payload && typeof input.payload === "object" ? { ...input.payload } : {};
+    const moved = canvasRebasePaths(payload, ctx.base);
+    state.nodes.push({ id, kind, payload, position: { x: Number(input.position?.x) || 120 + (state.nodes.length % 4) * 390, y: Number(input.position?.y) || 120 + Math.floor(state.nodes.length / 4) * 300 } });
+    state = canvasWriteState(state, canvasName); return { content: `已添加${kind}节点 ${id} 到画布 ${canvasName}。${canvasMovedNote(moved)}`, isError: false };
   }
   if (op === "update") {
     const node = state.nodes.find((item) => item.id === String(input.node_id || "")); if (!node) return { content: `找不到节点：${input.node_id || "（空）"}`, isError: true };
-    if (input.payload && typeof input.payload === "object") node.payload = { ...node.payload, ...input.payload };
+    let moved = [];
+    if (input.payload && typeof input.payload === "object") {
+      const patch = { ...input.payload };
+      moved = canvasRebasePaths(patch, ctx.base);
+      node.payload = { ...node.payload, ...patch };
+    }
     if (input.position && typeof input.position === "object") node.position = { x: Number(input.position.x) || node.position.x, y: Number(input.position.y) || node.position.y };
-    state = canvasWriteState(state, canvasName); return { content: `已更新节点 ${node.id}。`, isError: false };
+    state = canvasWriteState(state, canvasName); return { content: `已更新节点 ${node.id}。${canvasMovedNote(moved)}`, isError: false };
   }
   if (op === "connect") {
     const source = String(input.source_id || ""), target = String(input.target_id || "");
@@ -222,5 +284,5 @@ module.exports = {
   bindWorkspace,
   CANVAS_KINDS, CANVAS_EDGE_RELATIONS, CANVAS_MAX_NODES, CANVAS_MAX_EDGES, CANVAS_BAK_KEEP, canvasSafeName,
   canvasCurrentName, canvasSetCurrentName, canvasNormalizeState, canvasBackup, canvasReadState, canvasWriteState,
-  canvasList, canvasManage
+  canvasList, canvasManage, canvasRebasePaths
 };

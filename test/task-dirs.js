@@ -335,6 +335,50 @@ const has = (p) => fs.existsSync(p);
     ok(taskDirs.flatOutputs(legacy, W, W, KW)[0] === "周报.md", "还没分到格的老会话（没有 dir）：根上写过的照认");
   }
 
+  section("【10】画布节点里的文件路径：agent 是从对话那格算的，写进画布要换成从根算");
+  {
+    // 2026-10-01 用户截图：画布上五张参考图全挂「找不到」，文件好好躺在 任务_1001_你/不烧心_素材包/ 里。
+    // agent 写进节点的是「不烧心_素材包/03_关键帧/x.png」（从它自己那格算的），页面按工作区根去找
+    const tools = require(path.join(ROOT, "tools.js"));
+    const cws = path.join(HOME, "canvas-ws");
+    const base = "任务_1001_短剧";
+    const put = (rel, body = "x") => { fs.mkdirSync(path.dirname(path.join(cws, rel)), { recursive: true }); fs.writeFileSync(path.join(cws, rel), body); };
+    put(base + "/素材包/03_关键帧/KF01.png");
+    put("共享/logo.png");
+    tools.setWorkspaceDir(cws);
+    const nodes = () => JSON.parse(fs.readFileSync(path.join(cws, ".openworkbuddy", "canvas.json"), "utf8")).nodes;
+    const node = (id) => nodes().find((n) => n.id === id) || {};
+    const add = (id, kind, payload, opts) => tools.executeTool("canvas_manage", { operation: "add", node_id: id, kind, payload }, opts);
+
+    let r = await add("img", "image", { title: "参考图", path: "素材包/03_关键帧/KF01.png" }, { baseDir: base });
+    const p1 = node("img").payload.path;
+    ok(!r.isError && p1 === base + "/素材包/03_关键帧/KF01.png", "对话那格里的素材：写进画布时补上那一截", p1);
+    ok(has(path.join(cws, p1)), "  └ 页面按根去找，找得到", p1);
+    ok(/素材包\/03_关键帧\/KF01\.png → 任务_1001_短剧\//.test(String(r.content)), "  └ 改了什么要告诉 agent，它下次 get 读到的是新写法", r.content);
+
+    r = await tools.executeTool("canvas_manage", { operation: "update", node_id: "img", payload: { first_frame: "./素材包/03_关键帧/KF01.png", video: "out/SEG01.mp4" } }, { baseDir: base });
+    ok(!r.isError && node("img").payload.first_frame === base + "/素材包/03_关键帧/KF01.png", "update 一样换；开头的 ./ 一并去掉", node("img").payload);
+    ok(node("img").payload.video === base + "/out/SEG01.mp4", "还没生成出来的（两边都没有）：按对话那格算，那是它接下来写的地方", node("img").payload.video);
+
+    r = await add("logo", "image", { path: "共享/logo.png" }, { baseDir: base });
+    ok(node("logo").payload.path === "共享/logo.png", "★反向对照★ 那格里没有、根下有的共享素材：照旧从根算，不硬塞一截", node("logo").payload.path);
+    r = await add("pre", "image", { path: base + "/素材包/03_关键帧/KF01.png" }, { baseDir: base });
+    ok(node("pre").payload.path === base + "/素材包/03_关键帧/KF01.png" && !/→/.test(String(r.content)), "★反向对照★ 已经带着那一截的：不再套一层，也不报改动", [node("pre").payload.path, r.content]);
+    r = await add("up", "image", { path: "../共享/logo.png" }, { baseDir: base });
+    ok(node("up").payload.path === "共享/logo.png", "从那格往上一层写的 ../：解析成根下的路径", node("up").payload.path);
+    r = await add("abs", "image", { path: path.join(cws, base, "素材包", "03_关键帧", "KF01.png") }, { baseDir: base });
+    ok(node("abs").payload.path === base + "/素材包/03_关键帧/KF01.png", "工作区里的绝对路径：换成相对根的（页面拼不出绝对路径的链接）", node("abs").payload.path);
+    const outside = path.join(HOME, "别处", "a.png");
+    r = await add("out", "image", { path: outside }, { baseDir: base });
+    ok(node("out").payload.path === outside, "★反向对照★ 工作区外的绝对路径：原样留着，不替人挪", node("out").payload.path);
+    r = await add("ch", "character", { name: "猫叔", ref: "橘猫，戴圆框眼镜", url: "https://example.com/a.png", image: "素材包/03_关键帧/KF01.png" }, { baseDir: base });
+    const ch = node("ch").payload;
+    ok(ch.ref === "橘猫，戴圆框眼镜" && ch.url === "https://example.com/a.png" && ch.name === "猫叔", "★反向对照★ 不像文件名的描述、网址、名字：一个字不动", ch);
+    ok(ch.image === base + "/素材包/03_关键帧/KF01.png", "角色卡的 image 也换", ch.image);
+    r = await add("noBase", "image", { path: "素材包/03_关键帧/KF01.png" }, {});
+    ok(node("noBase").payload.path === "素材包/03_关键帧/KF01.png", "★反向对照★ 没有对话那格（用户自己挑的文件夹，就地读写）：原样写", node("noBase").payload.path);
+  }
+
   console.log(`\n${pass} 通过，${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

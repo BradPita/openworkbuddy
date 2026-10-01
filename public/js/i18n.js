@@ -606,7 +606,7 @@
       "哪些按 MIT": "What's MIT",
       "拖拽文件到这里，自动保存到工作区": "Drop files here to save them into the workspace",
       "分镜表是输入，场次/镜头是可继续创作的节点。": "The shot list is the input; scenes and shots are nodes you can keep building on.",
-      "素材已从工作区移除，请在右侧重新选择或上传。": "This asset is gone from the workspace — pick or upload another on the right.",
+      "工作区里找不到这个文件，请在右侧重新选择或上传。": "Can't find this file in the workspace. Pick or upload another on the right.",
       "工作区里还没有图片、视频或音频": "No images, video or audio in the workspace yet",
       "直接对话，让 Agent 读取、添加、连接和生成节点": "Just talk to it: the agent reads, adds, links and generates nodes",
       "输入 @ 可引用画布节点或工作区素材。": "Type @ to reference a canvas node or a workspace asset.",
