@@ -4016,7 +4016,7 @@ app.get("/api/library/preview/*", async (req, res) => {
     const rel = relOf(req);
     const p = libPath(rel);
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
-    res.json(await previewData(p, rel));
+    res.json(await previewData(p, rel, { layout: true }));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -6386,7 +6386,8 @@ app.get("/api/files/preview/*", async (req, res) => {
     const rel = relOf(req);
     const p = rootedPath(req, rel);
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
-    res.json(await previewData(p, rel));
+    // layout：PPT 连每页的版式一起给，面板里看到的是一页页幻灯片，不只是念出来的字
+    res.json(await previewData(p, rel, { layout: true }));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

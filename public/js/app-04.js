@@ -1076,7 +1076,7 @@ async function renderLibPreview(prev, lib) {
         if (!d || d.error) body.outerHTML = failPh((d && d.error) || `服务端回了 HTTP ${r.status}`);
         else body.outerHTML = /\.docx$/i.test(name) ? docHtml(d)
           : /\.xlsx$/i.test(name) ? sheetHtml(d)
-          : /\.pptx$/i.test(name) ? slidesHtml(d) : archiveHtml(d);
+          : /\.pptx$/i.test(name) ? slidesHtml(d, "lib") : archiveHtml(d);
         // 一个 .xlsx 常常好几张表，标签点不动就只看得见第一张
         prev.querySelectorAll(".ov-tab").forEach((t) => { t.onclick = () => {
           prev.querySelectorAll(".ov-tab").forEach((x) => x.classList.toggle("on", x === t));

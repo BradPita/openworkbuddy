@@ -29,11 +29,13 @@ const LIMITS = {
   cols: 60,
   slides: 300,
   chars: 20000,   // 单个文本节点
+  layoutEls: 30000, // 整份 PPT 画版式最多画这么多个元素；超了后面的页退回文字卡片
 };
 
 // ---------------- 最小 zip 读取器 ----------------
 // OOXML 就是 zip：读中央目录拿到条目表，按需 inflate 单个条目。只支持 stored(0) 和 deflate(8)，
 // 这两种覆盖了 Word/Excel/PowerPoint/我们自己用 docx 与 pptxgenjs 生成的全部文件。
+// zip64 也认：有的导出工具不管文件多小都写成 zip64，以前这类文件一律打不开。
 function readZip(file) {
   const st = fs.statSync(file);
   if (st.size > LIMITS.zipBytes) throw new Error(`文件太大（${(st.size / 1048576).toFixed(0)} MB），没法在应用内展开`);
@@ -44,14 +46,22 @@ function readZip(file) {
     if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   }
   if (eocd < 0) throw new Error("不是有效的 zip / Office 文件（找不到中央目录）");
-  const count = buf.readUInt16LE(eocd + 10);
+  let count = buf.readUInt16LE(eocd + 10);
   let off = buf.readUInt32LE(eocd + 16);
-  if (off === 0xffffffff || count === 0xffff) throw new Error("这是 zip64 格式，应用内暂时展不开");
+  if (off === 0xffffffff || count === 0xffff) {
+    // zip64：EOCD 前面 20 字节是定位记录，指向真正的 zip64 目录尾
+    const loc = eocd - 20;
+    const z = loc >= 0 && buf.readUInt32LE(loc) === 0x07064b50 ? Number(buf.readBigUInt64LE(loc + 8)) : -1;
+    if (z < 0 || z + 56 > buf.length || buf.readUInt32LE(z) !== 0x06064b50) throw new Error("zip64 目录尾损坏，读不出这个文件");
+    count = Number(buf.readBigUInt64LE(z + 32));
+    off = Number(buf.readBigUInt64LE(z + 48));
+  }
 
   const entries = [];
   for (let k = 0; k < count && k < LIMITS.entries; k++) {
     if (off + 46 > buf.length || buf.readUInt32LE(off) !== 0x02014b50) break;
     const nlen = buf.readUInt16LE(off + 28);
+    const xlen = buf.readUInt16LE(off + 30);
     const e = {
       method: buf.readUInt16LE(off + 10),
       csize: buf.readUInt32LE(off + 20),
@@ -59,14 +69,29 @@ function readZip(file) {
       lho: buf.readUInt32LE(off + 42),
       name: buf.toString("utf8", off + 46, off + 46 + nlen),
     };
+    if (e.size === 0xffffffff || e.csize === 0xffffffff || e.lho === 0xffffffff) {
+      // 真实的大小/位置在扩展字段 0x0001 里，只放了那几个写成 0xffffffff 的，顺序固定
+      for (let x = off + 46 + nlen, end = x + xlen; x + 4 <= end;) {
+        const id = buf.readUInt16LE(x), len = buf.readUInt16LE(x + 2);
+        if (id === 0x0001) {
+          let q = x + 4;
+          const next = () => { const v = q + 8 <= x + 4 + len ? Number(buf.readBigUInt64LE(q)) : -1; q += 8; return v; };
+          if (e.size === 0xffffffff) e.size = next();
+          if (e.csize === 0xffffffff) e.csize = next();
+          if (e.lho === 0xffffffff) e.lho = next();
+          break;
+        }
+        x += 4 + len;
+      }
+    }
     e.dir = e.name.endsWith("/");
     entries.push(e);
-    off += 46 + nlen + buf.readUInt16LE(off + 30) + buf.readUInt16LE(off + 32);
+    off += 46 + nlen + xlen + buf.readUInt16LE(off + 32);
   }
 
   const read = (e) => {
     if (!e || e.dir) return null;
-    if (buf.readUInt32LE(e.lho) !== 0x04034b50) throw new Error("zip 局部头损坏：" + e.name);
+    if (e.lho < 0 || e.lho + 30 > buf.length || buf.readUInt32LE(e.lho) !== 0x04034b50) throw new Error("zip 局部头损坏：" + e.name);
     // 局部头里的名字/扩展字段长度可能和中央目录不一样，必须以局部头为准
     const start = e.lho + 30 + buf.readUInt16LE(e.lho + 26) + buf.readUInt16LE(e.lho + 28);
     const raw = buf.subarray(start, start + e.csize);
@@ -416,7 +441,12 @@ function slidePictures(root) {
   }
   return out;
 }
-function pptxToSlides(zip) {
+/**
+ * @param {{ layout?: boolean }} [opts] layout：顺带把每页的版式（位置、底色、字号、图片、表格、图表）
+ *   一起吐出来给预览面板画。只有预览接口要；给模型读的那条路（read_document）不要——
+ *   几十 MB 的图片 base64 塞进上下文没有任何用处。
+ */
+function pptxToSlides(zip, opts = {}) {
   const slideNames = zip.entries
     .filter((e) => /^ppt\/slides\/slide\d+\.xml$/.test(e.name))
     .map((e) => e.name)
@@ -470,9 +500,33 @@ function pptxToSlides(zip) {
       notes = clip(parts.join("\n").trim());
       if (notes === title) notes = ""; // 备注页会把标题也复述一遍
     }
-    slides.push({ n, title, lines, notes });
+    slides.push({ n, title, lines, notes, name });
   }
-  return { kind: "slides", slides, total: slideNames.length, truncated: slideNames.length > slides.length };
+  const out = { kind: "slides", slides, total: slideNames.length, truncated: slideNames.length > slides.length };
+  if (opts.layout) addLayout(zip, out);
+  for (const s of slides) delete s.name;
+  return out;
+}
+
+/** 给每页挂上 layout。哪一页解析出错就只那一页没有版式（前端退回文字卡片），不连累整份 */
+function addLayout(zip, out) {
+  let reader;
+  try {
+    reader = require("./lib/pptx-layout.js").createLayoutReader(zip, { parseXml, findAll, kids, child, textOf, resolvePart });
+  } catch {
+    return;
+  }
+  let budget = LIMITS.layoutEls;
+  for (const s of out.slides) {
+    if (budget <= 0) break;
+    try {
+      const l = reader.slide(s.name);
+      budget -= l.els.length;
+      s.layout = l;
+    } catch {}
+  }
+  out.size = reader.size;
+  out.media = reader.media;
 }
 
 // ---------------- xlsx ----------------
@@ -557,13 +611,13 @@ function zipListing(zip) {
 // ---------------- 入口 ----------------
 const OOXML = { docx: "doc", xlsx: "sheet", pptx: "slides" };
 /** 前端 previewKind() 认出来的这几种，才会来调这个接口；这里再判一次，别信路由 */
-async function previewData(file, name) {
+async function previewData(file, name, opts = {}) {
   const ext = (String(name).split(".").pop() || "").toLowerCase();
   if (ext === "xlsx") return await xlsxToSheets(file);
   if (ext === "docx") return docxToDoc(readZip(file));
-  if (ext === "pptx") return pptxToSlides(readZip(file));
+  if (ext === "pptx") return pptxToSlides(readZip(file), { layout: !!opts.layout });
   if (ext === "zip") return zipListing(readZip(file));
   throw new Error(`不认识的预览类型 .${ext}`);
 }
 
-module.exports = { previewData, readZip, parseXml, findAll, textOf, OOXML, LIMITS, _internals: { docxToDoc, pptxToSlides, xlsxToSheets, zipListing, decodeEntities, cellText, docxNumbering, chartToLines, resolvePart } };
+module.exports = { previewData, readZip, parseXml, findAll, textOf, OOXML, LIMITS, _internals: { docxToDoc, pptxToSlides, xlsxToSheets, zipListing, decodeEntities, cellText, docxNumbering, chartToLines, resolvePart, kids, child } };

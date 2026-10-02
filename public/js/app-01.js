@@ -3832,14 +3832,349 @@ function sheetHtml(d) {
   return `<div class="ov-doc">${d.sheets.length > 1 ? `<div class="ov-tabs">${tabs}</div>` : ""}${panes}</div>`;
 }
 
-function slidesHtml(d) {
-  const cards = d.slides.map((s) => `<div class="ov-slide">
+// ---- PPT：按每页真实版式画 ----
+// 服务端（lib/pptx-layout.js）只给数据：位置/尺寸是「格」（一页宽 = 10000 格），颜色是它算好的
+// #rrggbb / rgba()。这里是唯一拼 HTML 的地方，所以每样东西进 HTML 前再过一遍：
+// 字一律 esc，颜色/数字/字体名/路径各有白名单，图片只认 data:image/…;base64 并换成 blob: 地址。
+// 尺寸全用百分比和 cqw（.ov-stage 是尺寸容器），面板拖宽拖窄一页里的东西一起缩放，不会错位。
+const DECK_CLR = /^(#[0-9a-f]{6}|rgba\(\d{1,3},\d{1,3},\d{1,3},(?:0|1|0?\.\d+)\)|transparent)$/i;
+const DECK_IMG = /^data:image\/(png|jpeg|gif|webp|bmp|svg\+xml);base64,([A-Za-z0-9+/=]+)$/;
+const deckN = (v) => { const x = Number(v); return Number.isFinite(x) ? Math.round(x * 100) / 100 : 0; };
+const deckC = (v) => (typeof v === "string" && DECK_CLR.test(v) ? v : "");
+const deckCq = (u) => deckN(u) / 100 + "cqw"; // 格 → cqw
+// 每个调用方（对话页预览 / 资料库）各留一份 blob 地址，下一次画的时候把上一份收回
+const deckBlobs = { pv: [], lib: [] };
+let deckSeq = 0;
+function deckMedia(media, owner) {
+  const old = deckBlobs[owner] || [];
+  old.forEach((u) => { try { URL.revokeObjectURL(u); } catch {} });
+  const made = [];
+  const map = Object.create(null); // 键来自文件，「__proto__」「constructor」之类不能查到原型上去
+  for (const [k, v] of Object.entries(media || {})) {
+    const m = DECK_IMG.exec(typeof v === "string" ? v : "");
+    if (!m || !/^m\d+$/.test(k)) continue;
+    try {
+      const bin = atob(m[2]);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const u = URL.createObjectURL(new Blob([bytes], { type: "image/" + m[1] }));
+      map[k] = u;
+      made.push(u);
+    } catch {}
+  }
+  deckBlobs[owner] = made;
+  return map;
+}
+function deckFont(f) {
+  const names = (Array.isArray(f) ? f : []).map((x) => String(x).replace(/[^\p{L}\p{N} _.\-]/gu, "").trim()).filter(Boolean).slice(0, 3);
+  return names.map((x) => `'${x}'`).concat(["system-ui", "'PingFang SC'", "'Microsoft YaHei'", "sans-serif"]).join(",");
+}
+/** 填充 → CSS background（div 用） */
+function deckBg(f, media) {
+  if (!f) return "";
+  if (f.c) return deckC(f.c) ? `background:${deckC(f.c)}` : "";
+  if (Array.isArray(f.g) && f.g.length) {
+    const stops = f.g.map((s) => deckC(s[1]) ? `${deckC(s[1])} ${deckN(s[0])}%` : "").filter(Boolean).join(",");
+    if (!stops) return "";
+    return f.radial ? `background:radial-gradient(circle,${stops})` : `background:linear-gradient(${deckN(f.a) + 90}deg,${stops})`;
+  }
+  if (f.img && media[f.img.m]) return `background:url("${media[f.img.m]}") ${f.tile ? "repeat" : "center/100% 100% no-repeat"}`;
+  return "";
+}
+/** 填充 → SVG fill 属性（多边形、自定义形状用）；渐变和图片要往 defs 里放东西 */
+function deckSvgFill(f, media, defs) {
+  if (!f) return 'fill="none"';
+  if (f.c) return deckC(f.c) ? `fill="${deckC(f.c)}"` : 'fill="none"';
+  const id = "ovg" + (++deckSeq);
+  if (Array.isArray(f.g) && f.g.length) {
+    const stops = f.g.map((s) => deckC(s[1]) ? `<stop offset="${deckN(s[0])}%" stop-color="${deckC(s[1])}"/>` : "").join("");
+    defs.push(f.radial ? `<radialGradient id="${id}">${stops}</radialGradient>` : `<linearGradient id="${id}" gradientTransform="rotate(${deckN(f.a)} .5 .5)">${stops}</linearGradient>`);
+    return `fill="url(#${id})"`;
+  }
+  if (f.img && media[f.img.m]) {
+    defs.push(`<pattern id="${id}" patternContentUnits="objectBoundingBox" width="1" height="1"><image href="${media[f.img.m]}" width="1" height="1" preserveAspectRatio="none"/></pattern>`);
+    return `fill="url(#${id})"`;
+  }
+  return 'fill="none"';
+}
+const deckDash = (ln, w) => (ln.d === "dot" ? ` stroke-dasharray="${w} ${w * 2}"` : ln.d === "dash" ? ` stroke-dasharray="${w * 4} ${w * 3}"` : "");
+const DECK_AL = Object.assign(Object.create(null), { ctr: "center", r: "right", just: "justify", dist: "justify" });
+function deckRun(r) {
+  if (r.br) return "<br>";
+  const st = [`font-size:${deckCq(r.fs)}`];
+  if (deckC(r.c)) st.push(`color:${deckC(r.c)}`);
+  if (r.b) st.push("font-weight:700");
+  if (r.i) st.push("font-style:italic");
+  const deco = [r.u ? "underline" : "", r.s ? "line-through" : ""].filter(Boolean).join(" ");
+  if (deco) st.push("text-decoration:" + deco);
+  if (deckC(r.hl)) st.push(`background:${deckC(r.hl)}`);
+  if (r.sup) st.push(`vertical-align:${r.sup === "sup" ? "super" : "sub"};font-size:${deckCq(deckN(r.fs) * 0.65)}`);
+  if (r.f) st.push(`font-family:${esc(deckFont(r.f))}`);
+  return `<span style="${st.join(";")}">${esc(r.t || "")}</span>`;
+}
+function deckText(tx) {
+  const ins = (Array.isArray(tx.ins) ? tx.ins : []).map(deckN);
+  const pad = `padding:${deckCq(ins[1])} ${deckCq(ins[2])} ${deckCq(ins[3])} ${deckCq(ins[0])}`;
+  const st = [pad, `justify-content:${tx.an === "m" ? "center" : tx.an === "b" ? "flex-end" : "flex-start"}`];
+  if (tx.nw) st.push("white-space:pre");
+  if (tx.v) st.push("writing-mode:vertical-rl" + (tx.v === "270" ? ";transform:rotate(180deg)" : ""));
+  const paras = (tx.p || []).map((p) => {
+    const runs = p.runs || [];
+    const big = runs.reduce((m, r) => Math.max(m, deckN(r.fs)), 0) || deckN(p.efs) || 180;
+    const ps = [`font-size:${deckCq(big)}`, `line-height:${p.lhu ? deckCq(p.lhu) : deckN(p.lh) || 1.2}`];
+    if (DECK_AL[p.al]) ps.push("text-align:" + DECK_AL[p.al]);
+    if (p.ml) ps.push(`padding-left:${deckCq(p.ml)}`);
+    if (p.ind) ps.push(`text-indent:${deckCq(p.ind)}`);
+    if (p.sb) ps.push(`margin-top:${deckCq(p.sb)}`);
+    if (p.sa) ps.push(`margin-bottom:${deckCq(p.sa)}`);
+    let bu = "";
+    if (p.bu) {
+      const bs = [];
+      if (deckC(p.buc)) bs.push(`color:${deckC(p.buc)}`);
+      if (p.bus) bs.push(`font-size:${deckN(p.bus) * 100}%`);
+      // 悬挂缩进：符号占掉缩进那一截，正文从左边距起；没有悬挂缩进就符号后面跟个空格
+      if (deckN(p.ind) < 0) bs.push(`display:inline-block;text-indent:0;min-width:${deckCq(-deckN(p.ind))}`);
+      bu = `<span style="${bs.join(";")}">${esc(String(p.bu))}${deckN(p.ind) < 0 ? "" : " "}</span>`;
+    }
+    const body = runs.length ? runs.map(deckRun).join("") : "​";
+    return `<p style="${ps.join(";")}">${bu}${body}</p>`;
+  }).join("");
+  return { style: st.join(";"), html: paras };
+}
+function deckArrow(x1, y1, x2, y2, w, c) {
+  const a = Math.atan2(y2 - y1, x2 - x1), L = Math.max(w * 4, 40), H = Math.max(w * 2.2, 22);
+  const bx = x2 - L * Math.cos(a), by = y2 - L * Math.sin(a);
+  const p = [[x2, y2], [bx + H * Math.sin(a), by - H * Math.cos(a)], [bx - H * Math.sin(a), by + H * Math.cos(a)]];
+  return `<polygon points="${p.map((q) => q.map(deckN).join(",")).join(" ")}" fill="${c}"/>`;
+}
+/** 简单图表：柱（横/竖、堆叠）、折线、面积、饼/环。别的类型写一句是什么图 */
+function deckChart(c, W, H) {
+  const fs = Math.max(70, Math.min(160, Math.min(W, H) / 16));
+  const t = (x, y, s, anchor = "middle", extra = "") => `<text x="${deckN(x)}" y="${deckN(y)}" font-size="${deckN(fs)}" text-anchor="${anchor}" fill="#595959"${extra}>${esc(String(s))}</text>`;
+  const out = [];
+  let top = fs * 0.6;
+  if (c.title) { out.push(t(W / 2, fs * 1.3, String(c.title).slice(0, 60), "middle", ' font-weight="600"')); top = fs * 2.2; }
+  const series = (c.series || []).filter((s) => Array.isArray(s.v));
+  if (!series.length || !/^(bar|line|area|pie|doughnut)$/.test(c.kind)) {
+    out.push(t(W / 2, H / 2, c.kind === "other" || !c.kind ? "图表" : "图表（" + c.kind + "）"));
+    return out.join("");
+  }
+  const cats = (c.cats || []).map((x) => String(x ?? ""));
+  const n = Math.max(cats.length, ...series.map((s) => s.v.length));
+  const pie = c.kind === "pie" || c.kind === "doughnut";
+  const legend = pie ? cats.slice(0, n).map((x, i) => [x, (series[0].pc || [])[i]]) : series.length > 1 ? series.map((s) => [s.n, s.c]) : [];
+  const legH = legend.length ? fs * 1.8 : 0;
+  if (legend.length) {
+    const items = legend.slice(0, 12);
+    const step = W / items.length;
+    items.forEach(([name, col], i) => {
+      const x = step * i + step / 2;
+      out.push(`<rect x="${deckN(x - fs * 2.2)}" y="${deckN(H - legH / 2 - fs * 0.35)}" width="${deckN(fs * 0.7)}" height="${deckN(fs * 0.7)}" fill="${deckC(col) || "#888"}"/>`);
+      out.push(t(x - fs * 1.3, H - legH / 2 + fs * 0.35, String(name).slice(0, 10), "start"));
+    });
+  }
+  const bottom = H - legH - fs * 0.4;
+  if (pie) {
+    const vals = series[0].v.map((v) => Math.max(0, deckN(v)));
+    const sum = vals.reduce((a, b) => a + b, 0) || 1;
+    const cx = W / 2, cy = (top + bottom) / 2, r = Math.max(10, Math.min(W * 0.45, (bottom - top) / 2));
+    let a0 = -Math.PI / 2;
+    vals.forEach((v, i) => {
+      const a1 = a0 + v / sum * Math.PI * 2;
+      const col = deckC((series[0].pc || [])[i]) || "#888";
+      if (v / sum > 0.9999) out.push(`<circle cx="${deckN(cx)}" cy="${deckN(cy)}" r="${deckN(r)}" fill="${col}"/>`);
+      else if (v > 0) out.push(`<path d="M${deckN(cx)} ${deckN(cy)}L${deckN(cx + r * Math.cos(a0))} ${deckN(cy + r * Math.sin(a0))}A${deckN(r)} ${deckN(r)} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${deckN(cx + r * Math.cos(a1))} ${deckN(cy + r * Math.sin(a1))}Z" fill="${col}" stroke="#fff" stroke-width="${deckN(r / 80)}"/>`);
+      a0 = a1;
+    });
+    if (c.kind === "doughnut") out.push(`<circle cx="${deckN(cx)}" cy="${deckN(cy)}" r="${deckN(r * 0.5)}" fill="#fff"/>`);
+    return out.join("");
+  }
+  const stack = c.stack && (c.kind === "bar" || c.kind === "area");
+  const pct = c.stack === "pct";
+  const totals = Array.from({ length: n }, (_, i) => series.reduce((a, s) => a + Math.abs(deckN(s.v[i])), 0) || 1);
+  const val = (s, i) => { const v = deckN(s.v[i]); return pct ? v / totals[i] * 100 : v; };
+  let lo = 0, hi = 0;
+  for (let i = 0; i < n; i++) {
+    if (stack) { let p = 0, m = 0; series.forEach((s) => { const v = val(s, i); if (v >= 0) p += v; else m += v; }); hi = Math.max(hi, p); lo = Math.min(lo, m); }
+    else series.forEach((s) => { const v = s.v[i] == null ? 0 : val(s, i); hi = Math.max(hi, v); lo = Math.min(lo, v); });
+  }
+  if (hi === lo) hi = lo + 1;
+  const raw = (hi - lo) / 5, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((k) => k >= raw) || raw;
+  hi = Math.ceil(hi / step) * step; lo = Math.floor(lo / step) * step;
+  const horiz = c.kind === "bar" && c.dir === "h";
+  const fmt = (v) => (Math.abs(v) >= 1000 ? (+v.toPrecision(4)).toLocaleString() : String(+v.toFixed(2))) + (pct ? "%" : "");
+  const left = horiz ? fs * 4.5 : fs * 3.4, right = W - fs * 0.6, base = bottom - fs * 1.4;
+  const pw = Math.max(1, right - left), ph = Math.max(1, base - top);
+  const pos = (v) => (horiz ? left + (v - lo) / (hi - lo) * pw : base - (v - lo) / (hi - lo) * ph);
+  for (let v = lo; v <= hi + step / 2; v += step) {
+    const p = pos(v);
+    out.push(horiz ? `<line x1="${deckN(p)}" y1="${deckN(top)}" x2="${deckN(p)}" y2="${deckN(base)}" stroke="#d9d9d9" stroke-width="${deckN(fs / 14)}"/>` + t(p, base + fs * 1.1, fmt(v))
+      : `<line x1="${deckN(left)}" y1="${deckN(p)}" x2="${deckN(right)}" y2="${deckN(p)}" stroke="#d9d9d9" stroke-width="${deckN(fs / 14)}"/>` + t(left - fs * 0.3, p + fs * 0.35, fmt(v), "end"));
+  }
+  const band = (horiz ? ph : pw) / Math.max(1, n);
+  const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor((horiz ? ph : pw) / (fs * 3.2)))));
+  cats.slice(0, n).forEach((name, i) => {
+    if (i % every) return;
+    const mid = (horiz ? top : left) + band * (i + 0.5);
+    out.push(horiz ? t(left - fs * 0.3, mid + fs * 0.35, name.slice(0, 8), "end") : t(mid, base + fs * 1.1, name.slice(0, 8)));
+  });
+  if (c.kind === "bar") {
+    const gw = band * 0.7, bw = stack ? gw : gw / series.length;
+    const acc = Array.from({ length: n }, () => [0, 0]);
+    series.forEach((s, k) => {
+      const col = deckC(s.c) || "#4472c4";
+      for (let i = 0; i < n; i++) {
+        if (s.v[i] == null) continue;
+        const v = val(s, i);
+        let a, b;
+        if (stack) { const j = v >= 0 ? 0 : 1; a = acc[i][j]; b = a + v; acc[i][j] = b; } else { a = 0; b = v; }
+        const p1 = pos(Math.max(lo, Math.min(a, b))), p2 = pos(Math.min(hi, Math.max(a, b)));
+        const o = band * i + band * 0.15 + (stack ? 0 : bw * k);
+        out.push(horiz ? `<rect x="${deckN(p1)}" y="${deckN(top + o)}" width="${deckN(Math.max(0, p2 - p1))}" height="${deckN(bw)}" fill="${col}"/>`
+          : `<rect x="${deckN(left + o)}" y="${deckN(p2)}" width="${deckN(bw)}" height="${deckN(Math.max(0, p1 - p2))}" fill="${col}"/>`);
+      }
+    });
+  } else {
+    const acc = new Array(n).fill(0);
+    series.forEach((s) => {
+      const col = deckC(s.c) || "#4472c4";
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        if (s.v[i] == null && !stack) continue;
+        const v = (stack ? acc[i] : 0) + val(s, i);
+        if (stack) acc[i] = v;
+        pts.push([left + band * (i + 0.5), pos(v)]);
+      }
+      if (!pts.length) return;
+      const line = pts.map((q) => q.map(deckN).join(",")).join(" ");
+      if (c.kind === "area") out.push(`<polygon points="${deckN(pts[0][0])},${deckN(pos(Math.max(lo, 0)))} ${line} ${deckN(pts[pts.length - 1][0])},${deckN(pos(Math.max(lo, 0)))}" fill="${col}" fill-opacity="0.75"/>`);
+      else {
+        out.push(`<polyline points="${line}" fill="none" stroke="${col}" stroke-width="${deckN(fs / 5)}" stroke-linejoin="round"/>`);
+        pts.forEach(([x, y]) => out.push(`<circle cx="${deckN(x)}" cy="${deckN(y)}" r="${deckN(fs / 4)}" fill="${col}"/>`));
+      }
+    });
+  }
+  out.push(horiz ? `<line x1="${deckN(left)}" y1="${deckN(top)}" x2="${deckN(left)}" y2="${deckN(base)}" stroke="#bfbfbf" stroke-width="${deckN(fs / 12)}"/>`
+    : `<line x1="${deckN(left)}" y1="${deckN(pos(Math.max(lo, 0)))}" x2="${deckN(right)}" y2="${deckN(pos(Math.max(lo, 0)))}" stroke="#bfbfbf" stroke-width="${deckN(fs / 12)}"/>`);
+  return out.join("");
+}
+const DECK_BAD = Object.assign(Object.create(null), { "too-big": "图片太大，没放进预览", missing: "图片找不到了" });
+function deckEl(e, W, H, media) {
+  const x = deckN(e.x), y = deckN(e.y), w = deckN(e.w), h = deckN(e.h);
+  const box = `left:${x / W * 100}%;top:${y / H * 100}%;width:${w / W * 100}%;height:${h / H * 100}%` + (e.rot ? `;transform:rotate(${deckN(e.rot)}deg)` : "");
+  if (e.k === "ln") {
+    const [x1, y1, x2, y2] = (Array.isArray(e.p) ? e.p : []).map(deckN);
+    const c = deckC(e.ln && e.ln.c);
+    if (!c) return "";
+    const lw = Math.max(deckN(e.ln.w), 4);
+    return `<svg class="ov-ln" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${c}" stroke-width="${lw}"${deckDash(e.ln, lw)}/>`
+      + (e.ln.te ? deckArrow(x1, y1, x2, y2, lw, c) : "") + (e.ln.he ? deckArrow(x2, y2, x1, y1, lw, c) : "") + "</svg>";
+  }
+  if (e.k === "chart") {
+    return `<div class="ov-e" style="${box}"><svg class="ov-geo" viewBox="0 0 ${Math.max(w, 1)} ${Math.max(h, 1)}" preserveAspectRatio="none">${deckChart(e.chart || {}, Math.max(w, 1), Math.max(h, 1))}</svg></div>`;
+  }
+  if (e.k === "tbl") {
+    const tb = e.tbl || {};
+    const edge = deckC(tb.line) || "#bfbfbf";
+    const cols = (tb.cols || []).map((c) => `<col style="width:${deckN(c)}%">`).join("");
+    const rows = (tb.rows || []).map((r) => `<tr style="height:${deckCq(r.h)}">${(r.c || []).map((c) => {
+      if (c.skip) return "";
+      const st = [`border:max(1px,0.08cqw) solid ${edge}`];
+      if (deckC(c.f)) st.push(`background:${deckC(c.f)}`);
+      for (const [k, side] of [["l", "left"], ["r", "right"], ["t", "top"], ["b", "bottom"]]) {
+        const b = c.bd && c.bd[k];
+        if (Array.isArray(b) && deckC(b[1])) st.push(`border-${side}:max(1px,${deckCq(b[0])}) solid ${deckC(b[1])}`);
+      }
+      const tx = c.tx ? deckText(c.tx) : null;
+      if (tx) st.push(tx.style.replace(/justify-content:([a-z-]+)/, (m, v) => "vertical-align:" + (v === "center" ? "middle" : v === "flex-end" ? "bottom" : "top")));
+      return `<td${deckN(c.cs) > 1 ? ` colspan="${deckN(c.cs)}"` : ""}${deckN(c.rs) > 1 ? ` rowspan="${deckN(c.rs)}"` : ""} style="${st.join(";")}">${tx ? tx.html : ""}</td>`;
+    }).join("")}</tr>`).join("");
+    return `<div class="ov-e" style="${box}"><table class="ov-stbl"><colgroup>${cols}</colgroup>${rows}</table></div>`;
+  }
+  const g = e.geo || { t: "rect" };
+  const flip = e.fh || e.fv ? `transform:scale(${e.fh ? -1 : 1},${e.fv ? -1 : 1})` : "";
+  const lnC = e.ln && deckC(e.ln.c), lnW = e.ln ? Math.max(deckN(e.ln.w), 1) : 0;
+  const radius = g.t === "ellipse" ? "border-radius:50%" : g.t === "round" ? `border-radius:${deckCq(g.r)}` : "";
+  let inner = "";
+  if (e.k === "pic") {
+    const src = e.img && media[e.img.m];
+    if (!src) {
+      const why = e.img && e.img.bad ? DECK_BAD[e.img.bad] || `${String(e.img.bad).replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase()} 格式的图预览不了` : "图片";
+      return `<div class="ov-e ov-miss" style="${box}"><span>${esc(why)}</span></div>`;
+    }
+    const [cl, ct, cr, cb] = Array.isArray(e.crop) ? e.crop.map(deckN) : [0, 0, 0, 0];
+    const sw = Math.max(1, 100 - cl - cr), sh = Math.max(1, 100 - ct - cb);
+    const ist = `left:${-cl / sw * 100}%;top:${-ct / sh * 100}%;width:${100 / sw * 100}%;height:${100 / sh * 100}%` + (flip ? ";" + flip : "");
+    const border = lnC ? `;box-shadow:inset 0 0 0 ${deckCq(lnW)} ${lnC}` : "";
+    return `<div class="ov-e ov-pic" style="${box};${radius}${border};${deckBg(e.fill, media)}"><img src="${src}" style="${ist}" alt="" draggable="false"></div>`;
+  }
+  if (g.t === "poly" || g.t === "path") {
+    const ok = g.t === "poly" ? /^[0-9 ,.]+$/.test(g.p || "") : /^[MLCQAZ0-9 .\-]+$/.test(g.d || "");
+    if (ok) {
+      const defs = [];
+      const fill = deckSvgFill(e.fill, media, defs);
+      const stroke = lnC ? ` stroke="${lnC}" stroke-width="${lnW}"${deckDash(e.ln, lnW)}` : "";
+      const vw = Math.max(w, 1), vh = Math.max(h, 1);
+      const shape = g.t === "poly"
+        ? `<polygon points="${g.p.split(" ").map((pt) => { const [a, b] = pt.split(",").map(deckN); return deckN(a / 100 * vw) + "," + deckN(b / 100 * vh); }).join(" ")}" ${fill}${stroke}/>`
+        : `<path d="${g.d}" fill-rule="evenodd" ${fill}${stroke}/>`; // PowerPoint 里一条路径内重叠的子路径是镂空（时钟的指针、盾牌里的勾）
+      inner = `<svg class="ov-geo" viewBox="0 0 ${vw} ${vh}" preserveAspectRatio="none"${flip ? ` style="${flip}"` : ""}>${defs.length ? `<defs>${defs.join("")}</defs>` : ""}${shape}</svg>`;
+    }
+  } else {
+    const st = [deckBg(e.fill, media), radius, lnC ? `box-shadow:inset 0 0 0 ${deckCq(lnW)} ${lnC}` : ""].filter(Boolean);
+    if (lnC && e.ln.d) st.push(`box-shadow:none;border:${deckCq(lnW)} ${e.ln.d === "dot" ? "dotted" : "dashed"} ${lnC}`);
+    if (st.length) inner = `<div class="ov-geo" style="${st.join(";")}"></div>`;
+  }
+  if (e.tx) {
+    const tx = deckText(e.tx);
+    let at = "";
+    // SmartArt 的形状另带一个文字框（相对形状左上角，单位同样是格）
+    if (Array.isArray(e.tx.box) && e.tx.box.length === 4 && w && h) {
+      const [bx, by, bw, bh] = e.tx.box.map(deckN);
+      at = `;inset:auto;left:${bx / w * 100}%;top:${by / h * 100}%;width:${bw / w * 100}%;height:${bh / h * 100}%`;
+    }
+    inner += `<div class="ov-tx" style="${tx.style}${at}">${tx.html}</div>`;
+  }
+  return inner ? `<div class="ov-e" style="${box}">${inner}</div>` : "";
+}
+function deckStage(l, size, media) {
+  const W = deckN(size && size.w) || 10000, H = deckN(size && size.h) || 5625;
+  const bg = deckBg(l.bg, media) || "background:#fff";
+  return `<div class="ov-stage" style="aspect-ratio:${W}/${H};${bg}">${(l.els || []).map((e) => { try { return deckEl(e, W, H, media); } catch { return ""; } }).join("")}</div>`;
+}
+let deckView = "layout";
+try { if (localStorage.getItem("owb-deck-view") === "text") deckView = "text"; } catch {}
+// 「看版式 / 看文字」两个按钮：对话页和资料库画出来的都走这一个委托，不用各自再绑
+document.addEventListener("click", (ev) => {
+  const b = ev.target && ev.target.closest && ev.target.closest(".ov-vbtn");
+  if (!b) return;
+  const deck = b.closest(".ov-deck");
+  if (!deck) return;
+  deckView = b.dataset.v === "text" ? "text" : "layout";
+  try { localStorage.setItem("owb-deck-view", deckView); } catch {}
+  deck.dataset.view = deckView;
+  deck.querySelectorAll(".ov-vbtn").forEach((x) => x.classList.toggle("on", x === b));
+});
+
+function slidesHtml(d, owner = "pv") {
+  const media = deckMedia(d.media, owner);
+  const visual = !!d.size && d.slides.some((s) => s.layout);
+  const cards = d.slides.map((s) => {
+    let stage = "";
+    if (visual && s.layout) { try { stage = deckStage(s.layout, d.size, media); } catch { stage = ""; } }
+    const text = `${s.title ? `<div class="ov-slide-t">${esc(s.title)}</div>` : ""}
+      ${s.lines.map((l) => `<div class="ov-li" style="margin-left:${l.lvl * 22}px">${esc(l.s)}</div>`).join("")}`;
+    return `<div class="ov-slide${stage ? " has-stage" : ""}">
       <div class="ov-slide-n">第 ${s.n} 页</div>
-      ${s.title ? `<div class="ov-slide-t">${esc(s.title)}</div>` : ""}
-      ${s.lines.map((l) => `<div class="ov-li" style="margin-left:${l.lvl * 22}px">${esc(l.s)}</div>`).join("")}
+      ${stage}<div class="ov-txt">${text}</div>
       ${s.notes ? `<div class="ov-notes">备注：${esc(s.notes)}</div>` : ""}
-    </div>`).join("");
-  return `<div class="ov-doc"><div class="ov-note">共 ${d.total} 页${d.truncated ? `，只显示了前 ${d.slides.length} 页` : ""}</div>${cards}</div>`;
+    </div>`;
+  }).join("");
+  const toggle = visual
+    ? `<span class="ov-views"><button type="button" class="ov-vbtn${deckView === "layout" ? " on" : ""}" data-v="layout">看版式</button><button type="button" class="ov-vbtn${deckView === "text" ? " on" : ""}" data-v="text">看文字</button></span>`
+    : "";
+  return `<div class="ov-doc ov-deck" data-view="${visual ? deckView : "text"}"><div class="ov-note ov-deck-head"><span>共 ${d.total} 页${d.truncated ? `，只显示了前 ${d.slides.length} 页` : ""}</span>${toggle}</div>${cards}</div>`;
 }
 
 function archiveHtml(d) {

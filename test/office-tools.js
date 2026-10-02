@@ -102,6 +102,45 @@ function makeZip(entries) {
   return Buffer.concat([body, dir, end]);
 }
 
+/** 同样的条目写成 zip64：大小和偏移全挪进扩展字段 0x0001，目录尾走 zip64 那一套。
+ *  有的导出工具不管文件多小都这么写，以前这类文件一律打不开 */
+function makeZip64(entries) {
+  const locals = [], central = [];
+  let offset = 0;
+  for (const [name, buf] of entries) {
+    const nb = Buffer.from(name, "utf8");
+    const crc = zlib.crc32(buf) >>> 0;
+    const head = Buffer.alloc(30);
+    head.writeUInt32LE(0x04034b50, 0); head.writeUInt16LE(45, 4); head.writeUInt16LE(0x800, 6);
+    head.writeUInt32LE(crc, 14); head.writeUInt32LE(buf.length, 18); head.writeUInt32LE(buf.length, 22);
+    head.writeUInt16LE(nb.length, 26);
+    locals.push(head, nb, buf);
+    const ex = Buffer.alloc(28);
+    ex.writeUInt16LE(0x0001, 0); ex.writeUInt16LE(24, 2);
+    ex.writeBigUInt64LE(BigInt(buf.length), 4); ex.writeBigUInt64LE(BigInt(buf.length), 12); ex.writeBigUInt64LE(BigInt(offset), 20);
+    const cen = Buffer.alloc(46);
+    cen.writeUInt32LE(0x02014b50, 0); cen.writeUInt16LE(45, 4); cen.writeUInt16LE(45, 6);
+    cen.writeUInt16LE(0x800, 8); cen.writeUInt32LE(crc, 16);
+    cen.writeUInt32LE(0xffffffff, 20); cen.writeUInt32LE(0xffffffff, 24);
+    cen.writeUInt16LE(nb.length, 28); cen.writeUInt16LE(ex.length, 30); cen.writeUInt32LE(0xffffffff, 42);
+    central.push(cen, nb, ex);
+    offset += head.length + nb.length + buf.length;
+  }
+  const body = Buffer.concat(locals);
+  const dir = Buffer.concat(central);
+  const z = Buffer.alloc(56);
+  z.writeUInt32LE(0x06064b50, 0); z.writeBigUInt64LE(44n, 4); z.writeUInt16LE(45, 12); z.writeUInt16LE(45, 14);
+  z.writeBigUInt64LE(BigInt(entries.length), 24); z.writeBigUInt64LE(BigInt(entries.length), 32);
+  z.writeBigUInt64LE(BigInt(dir.length), 40); z.writeBigUInt64LE(BigInt(body.length), 48);
+  const loc = Buffer.alloc(20);
+  loc.writeUInt32LE(0x07064b50, 0); loc.writeBigUInt64LE(BigInt(body.length + dir.length), 8); loc.writeUInt32LE(1, 16);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0xffff, 8); end.writeUInt16LE(0xffff, 10);
+  end.writeUInt32LE(0xffffffff, 12); end.writeUInt32LE(0xffffffff, 16);
+  return Buffer.concat([body, dir, z, loc, end]);
+}
+
 async function makeFixtures(dir) {
   const { Document, Packer, Paragraph, HeadingLevel, TextRun, Table, TableRow, TableCell, ImageRun } = require(path.join(ROOT, "node_modules/docx"));
   const doc = new Document({ sections: [{ children: [
@@ -1193,6 +1232,175 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     ok(!/【页眉】|【页脚】/.test(tBare), "反向对照：正文里不许凭空多出页眉页脚那两行", tBare);
 
     fs.rmSync(DDIR, { recursive: true, force: true });
+  }
+
+  console.log("\n⑭ PPT 预览按每页版式画：位置、颜色、占位符继承、zip64，只给预览用");
+  {
+    // 以前 PPT 预览只列每页的字，Windows 上又没有系统自带的快速查看兜底，用户看到的就是一串文字。
+    // 现在 previewData(…, { layout: true }) 多给一份每页的版式数据（宽 10000 格），前端照着画。
+    const PptxGenJS = require(path.join(ROOT, "node_modules/pptxgenjs"));
+    const LDIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-office-layout-"));
+    const p = new PptxGenJS(); // 默认 16:9，10 × 5.625 英寸
+    const s1 = p.addSlide();
+    s1.background = { color: "1F3864" };
+    s1.addText("年度汇报", { x: 0.5, y: 1.5, w: 9, h: 1.2, fontSize: 44, bold: true, color: "FFFFFF", align: "center" });
+    const s2 = p.addSlide();
+    s2.addShape(p.ShapeType.ellipse, { x: 1, y: 1, w: 2, h: 2, fill: { color: "ED7D31" } });
+    s2.addImage({ data: "image/png;base64," + PNG1.toString("base64"), x: 4, y: 1, w: 2, h: 2 });
+    s2.addTable([[{ text: "项目" }, { text: "数值" }], [{ text: "营收" }, { text: "12" }]], { x: 1, y: 3.5, w: 4 });
+    s2.addChart(p.ChartType.bar, [{ name: "营收", labels: ["Q1", "Q2", "Q3"], values: [12, 18, 7] }], { x: 6, y: 3, w: 3.5, h: 2.4 });
+    const pf = path.join(LDIR, "版式.pptx");
+    await p.writeFile({ fileName: pf });
+
+    // 只给预览用：模型读文档（read_document）走不带参数的 previewData，
+    // 不能平白把几十 KB 坐标和整张图的 base64 塞进上下文
+    const plain = await preview.previewData(pf, "版式.pptx");
+    ok(!plain.size && !plain.media && plain.slides.every((s) => !s.layout), "★不要版式时一点版式数据都不带★", Object.keys(plain));
+    const toolsSrc = srcLib.src("tools");
+    ok(!/layout\s*:\s*true/.test(toolsSrc), "★模型读文档那条路没要版式★", (toolsSrc.match(/.{0,60}layout\s*:\s*true/) || [""])[0]);
+    eq((srcLib.src("server").match(/previewData\([^()]*\{\s*layout:\s*true\s*\}\)/g) || []).length, 2,
+      "对话页预览和资料库预览两个接口都要了版式");
+
+    const d = await preview.previewData(pf, "版式.pptx", { layout: true });
+    eq(d.size, { w: 10000, h: 5625 }, "★页面按宽 10000 格折算，16:9 高 5625★");
+    const [l1, l2] = d.slides.map((s) => s.layout || { els: [] });
+    eq(l1.bg, { c: "#1f3864" }, "★底色读出来了★");
+    const title = l1.els.find((e) => e.tx && JSON.stringify(e.tx).includes("年度汇报"));
+    ok(title && title.x === 500 && title.y === 1500 && title.w === 9000, "★位置按英寸折成格：x 0.5 寸 = 500★", title);
+    const run = title && title.tx.p[0].runs[0];
+    ok(run && Math.abs(run.fs - 611.1) < 0.2 && run.c === "#ffffff" && run.b === 1, "★44 磅白色粗体★ 44 磅折成 611.1 格", run);
+    eq(title && title.tx.p[0].al, "ctr", "★居中★");
+    const oval = l2.els.find((e) => e.geo && e.geo.t === "ellipse");
+    eq(oval && oval.fill, { c: "#ed7d31" }, "★椭圆和它的填充色★");
+    const pic = l2.els.find((e) => e.k === "pic");
+    ok(pic && pic.img && /^m\d+$/.test(pic.img.m) && /^data:image\/png;base64,/.test(d.media[pic.img.m]),
+      "★图片进了 media 表，页里只留键★ 同一张图用几次只传一份", pic);
+    const tbl = l2.els.find((e) => e.k === "tbl");
+    ok(tbl && tbl.tbl.rows.length === 2 && JSON.stringify(tbl.tbl.rows[1]).includes("营收"), "★表格按行列读出★", tbl);
+    const ch = l2.els.find((e) => e.k === "chart");
+    ok(ch && ch.chart.kind === "bar" && JSON.stringify(ch.chart.series[0].v) === "[12,18,7]", "★图表带着数据，前端自己画★", ch);
+    // 前端只认这两种颜色写法，别的一律丢；服务端得保证只吐这两种
+    const odd = [];
+    JSON.stringify(d.slides, (k, v) => {
+      if (typeof v === "string" && /^(#|rgb|hsl)/i.test(v) && !/^(#[0-9a-f]{6}|rgba\(\d{1,3},\d{1,3},\d{1,3},(?:0|1|0?\.\d+)\))$/.test(v)) odd.push(v);
+      return v;
+    });
+    eq(odd, [], "★所有颜色都是 #rrggbb 或 rgba()★");
+
+    // 占位符继承：PowerPoint 存的页上，占位符常常不写位置和字号，全靠版式页和母版。
+    // 拿 pptxgenjs 出一份带占位符的母版，再把页上那个占位符的位置和字体设置删掉，
+    // 给版式页的占位符补一份列表样式（36 磅、主题色 accent2）——就是 PowerPoint 自己存的样子
+    const q = new PptxGenJS();
+    q.defineSlideMaster({ title: "M", background: { color: "F2F2F2" }, objects: [
+      { rect: { x: 0, y: 5.2, w: 10, h: 0.425, fill: { color: "C00000" } } },
+      { placeholder: { options: { name: "body", type: "body", x: 1, y: 1, w: 8, h: 3 }, text: "" } },
+    ] });
+    q.addSlide({ masterName: "M" }).addText("占位里的字", { placeholder: "body" });
+    const qf = path.join(LDIR, "占位.pptx");
+    await q.writeFile({ fileName: qf });
+    const zq = preview.readZip(qf);
+    const layoutPart = "ppt/slideLayouts/" + (/slideLayouts\/(slideLayout\d+\.xml)/.exec(zq.text("ppt/slides/_rels/slide1.xml.rels")) || [])[1];
+    const accent2 = (/<a:accent2>\s*<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(zq.text("ppt/theme/theme1.xml")) || [])[1];
+    // 只动装着 body 占位符的那个 <p:sp>（页上第一个 xfrm 是组的，版式页前面还有装饰条）
+    const inBodySp = (xml, fn) => { const i = xml.lastIndexOf("<p:sp>", xml.search(/type="body"/)); return xml.slice(0, i) + fn(xml.slice(i)); };
+    let stripped = "", styled = "";
+    const files = zq.entries.filter((e) => !e.dir).map((e) => {
+      let buf = zq.read(e);
+      if (e.name === "ppt/slides/slide1.xml") {
+        stripped = inBodySp(buf.toString("utf8"), (s) => s.replace(/<a:xfrm>[\s\S]*?<\/a:xfrm>/, "")
+          .replace(/<a:rPr\b[^>]*?(\/>|>[\s\S]*?<\/a:rPr>)/g, '<a:rPr lang="zh-CN"/>').replace(/ sz="\d+"/g, ""));
+        buf = Buffer.from(stripped);
+      }
+      if (e.name === layoutPart) {
+        styled = inBodySp(buf.toString("utf8"), (s) => s.replace(/<a:lstStyle\/>|<a:lstStyle>[\s\S]*?<\/a:lstStyle>/,
+          '<a:lstStyle><a:lvl1pPr><a:defRPr sz="3600"><a:solidFill><a:schemeClr val="accent2"/></a:solidFill></a:defRPr></a:lvl1pPr></a:lstStyle>'));
+        buf = Buffer.from(styled);
+      }
+      return [e.name, buf];
+    });
+    const bodySp = stripped.slice(stripped.lastIndexOf("<p:sp>", stripped.search(/type="body"/)));
+    ok(accent2 && !/<a:xfrm>/.test(bodySp) && !/sz="|srgbClr/.test(bodySp) && /schemeClr val="accent2"/.test(styled),
+      "夹具改到位了：页上的占位符没有位置和字号，版式页有列表样式", { accent2, layoutPart });
+    const hf = path.join(LDIR, "继承.pptx");
+    fs.writeFileSync(hf, makeZip(files));
+    const h = await preview.previewData(hf, "继承.pptx", { layout: true });
+    const hl = h.slides[0].layout || { els: [] };
+    const body = hl.els.find((e) => e.tx && JSON.stringify(e.tx).includes("占位里的字"));
+    ok(body && body.x === 1000 && body.y === 1000 && body.w === 8000 && body.h === 3000, "★页上没写位置，按版式页的占位符摆★", body);
+    const br = body && body.tx.p[0].runs[0];
+    ok(br && br.fs === 500, "★字号从版式页的列表样式继承：36 磅 = 500 格★", br);
+    eq(br && br.c, "#" + String(accent2).toLowerCase(), "★颜色是主题色 accent2 换算出来的★");
+    eq(hl.bg, { c: "#f2f2f2" }, "★母版的底色★");
+    ok(hl.els[0] && hl.els[0].fill && hl.els[0].fill.c === "#c00000", "★母版上的装饰条先画（压在页内容下面）★", hl.els[0]);
+    ok(!hl.els.some((e) => e !== body && e.tx && !JSON.stringify(e.tx).includes("占位里的字")),
+      "反向对照：版式页上的空占位符不画出来（PowerPoint 放映时也不显示）", hl.els);
+
+    // zip64：同一份内容换成 zip64 写法，读出来必须一模一样
+    const buf64 = makeZip64(files);
+    ok(buf64.indexOf(Buffer.from([0x50, 0x4b, 0x06, 0x06])) > 0, "夹具确实是 zip64（有 zip64 目录尾）");
+    const zf = path.join(LDIR, "继承64.pptx");
+    fs.writeFileSync(zf, buf64);
+    const h64 = await preview.previewData(zf, "继承64.pptx", { layout: true });
+    eq(JSON.stringify(h64.slides), JSON.stringify(h.slides), "★zip64 写法的 pptx 读出来和普通的一样★");
+    // 反向对照：zip64 定位记录指歪了要明说读不出，不能抛个下标越界
+    const bent = Buffer.from(buf64);
+    bent.writeBigUInt64LE(BigInt(bent.length), bent.length - 22 - 20 + 8);
+    const bf = path.join(LDIR, "坏64.pptx");
+    fs.writeFileSync(bf, bent);
+    let why = "";
+    try { await preview.previewData(bf, "坏64.pptx", { layout: true }); } catch (e) { why = e.message; }
+    has(why, /zip64/, "反向对照：zip64 目录尾坏了，报的是 zip64 读不出");
+
+    // 前端画版式那段是唯一拼 HTML 的地方：文件里的字、颜色、字体名、路径全是外来的，
+    // 一份做了手脚的 pptx 不能借预览往页面里塞标签、事件属性或脚本地址
+    const vm = require("vm");
+    const app01 = fs.readFileSync(path.join(ROOT, "public/js/app-01.js"), "utf8");
+    const escFrom = app01.indexOf("const ESC_MAP");
+    const escTo = app01.indexOf("\n}\n", app01.indexOf("function esc(")) + 3;
+    const deckFrom = app01.indexOf("// ---- PPT：按每页真实版式画 ----");
+    const deckTo = app01.indexOf("function archiveHtml(");
+    ok(escFrom >= 0 && escTo > escFrom && deckFrom > 0 && deckTo > deckFrom, "找得到前端画版式的那段代码", { escFrom, escTo, deckFrom, deckTo });
+    const sb = {
+      URL: { createObjectURL: () => "blob:ok", revokeObjectURL() {} },
+      Blob: class {},
+      atob: (s) => Buffer.from(s, "base64").toString("latin1"),
+      localStorage: { getItem: () => null, setItem() {} },
+      document: { addEventListener() {} },
+    };
+    vm.runInNewContext(app01.slice(escFrom, escTo) + "\n" + app01.slice(deckFrom, deckTo), sb);
+    const EVIL = "<img src=x onerror=alert(1)>";
+    const box = { x: 0, y: 0, w: 1000, h: 1000 };
+    const evil = { total: 1, size: { w: 10000, h: 5625 },
+      media: { m0: "data:text/html;base64,PHNjcmlwdD4=", m1: "javascript:alert(1)", m2: "data:image/png;base64," + PNG1.toString("base64") },
+      slides: [{ n: 1, title: EVIL, lines: [{ s: EVIL, lvl: 0 }], notes: EVIL, layout: {
+        bg: { c: "red;background:url(javascript:alert(1))" },
+        els: [
+          { k: "sp", ...box, fill: { c: '#ffffff" onmouseover="alert(1)' }, tx: { p: [{ al: "constructor", bu: EVIL, buc: 'x"',
+            runs: [{ t: EVIL, fs: "1;x:expression(alert(1))", c: "#000;behavior:url(x)", f: ["x');background:url(javascript:alert(1));('"] }] }] } },
+          { k: "sp", ...box, geo: { t: "path", d: 'M0 0"/><script>alert(1)</script>' }, fill: { c: "#000000" } },
+          { k: "sp", ...box, geo: { t: "poly", p: '0,0 100,0" onload="alert(1)' }, fill: { c: "#000000" } },
+          { k: "sp", ...box, fill: { img: { m: "m1" } } },
+          { k: "pic", ...box, img: { m: "m0" } },
+          { k: "pic", ...box, img: { m: "__proto__" } },
+          { k: "pic", ...box, img: { bad: EVIL } },
+          { k: "pic", ...box, img: { m: "m2" } },
+          { k: "chart", ...box, chart: { kind: "bar", title: EVIL, cats: [EVIL], series: [{ n: EVIL, v: [1], c: "url(javascript:x)" }] } },
+          { k: "tbl", ...box, tbl: { cols: ["50;x"], rows: [{ h: 10, c: [{ tx: { p: [{ runs: [{ t: EVIL }] }] }, f: "expression(x)", cs: '2" onclick="x' }] }] } },
+          { k: "ln", p: [0, 0, '1" onclick="x', 1], ln: { c: "#000000", w: 1, d: '" onclick="x' } },
+          { k: "sp", ...box, tx: { p: "坏数据" } },
+        ] } }] };
+    const html = sb.slidesHtml(evil, "pv");
+    const tags = html.match(/<[^>]*>/g) || [];
+    const hot = tags.filter((t) => /^<(script|iframe|object|embed)\b|\son\w+\s*=|javascript:|expression\(|behavior:|^<img\b(?![^>]*src="blob:ok")/i.test(t));
+    eq(hot, [], "★外来的字、颜色、字体名、路径一样也没混进标签★");
+    ok(html.includes("&lt;img src=x onerror=alert(1)&gt;"), "字是转义后显示出来的，不是被吞了", html.slice(0, 300));
+    ok(html.includes('src="blob:ok"'), "正经的 png 照样换成 blob 地址显示");
+    ok(/<svg class="ov-geo"[^>]*>.*<rect/.test(html), "一个元素数据是坏的，同页别的元素照样画（图表还在）");
+    // 没有版式数据（老接口、或服务端读版式失败）就只有文字，也不出切换按钮
+    const textOnly = sb.slidesHtml({ total: 1, slides: [{ n: 1, title: "标题", lines: [] }] }, "pv");
+    ok(/data-view="text"/.test(textOnly) && !/ov-vbtn/.test(textOnly), "反向对照：没有版式数据就只显示文字，没有「看版式」按钮", textOnly);
+
+    fs.rmSync(LDIR, { recursive: true, force: true });
   }
 
   fs.rmSync(HOME, { recursive: true, force: true });
