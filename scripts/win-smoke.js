@@ -14,6 +14,9 @@
  *
  * 每一趟都用自己的临时数据目录（OPENWORKBUDDY_HOME），开隐藏运行（OWB_SHELL_HIDDEN=1）：
  * 起不来时的报错框改成往输出里打一行，不会弹出来挂住流水线。
+ * 隐藏运行默认把 stdin 当遥控线，stdin 一断就退（测试宿主没了别留孤儿）。这里没有遥控线：
+ * 安装版拿到的是空 stdin，免安装版的解压壳干脆不往下传，两条都是一启动就「断了」、当场退出码 0。
+ * 所以加 OWB_SHELL_STDIN=0 关掉这条，收尾靠 taskkill 整棵进程树。
  *
  * 用法：node scripts/win-smoke.js [dist 目录]
  */
@@ -42,6 +45,7 @@ function boot(exe, label, timeoutMs) {
     ...process.env,
     OPENWORKBUDDY_HOME: home,
     OWB_SHELL_HIDDEN: "1",
+    OWB_SHELL_STDIN: "0",
     OWB_USER_DATA_DIR: path.join(home, "userdata"),
   };
   delete env.ELECTRON_RUN_AS_NODE;

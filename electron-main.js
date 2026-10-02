@@ -1481,7 +1481,9 @@ if (HIDDEN) {
         }
       }
     });
-    // 跑测试的那个进程没了：别留一个谁也看不见、谁也不管的应用在后台
-    process.stdin.on("end", () => requestQuit());
+    // 跑测试的那个进程没了：别留一个谁也看不见、谁也不管的应用在后台。
+    // OWB_SHELL_STDIN=0 是 Windows 包冒烟（scripts/win-smoke.js）用的：免安装版外面套着一层解压壳，
+    // 壳拉起真应用时不把 stdin 传下去，真应用一读就是「已经结束」，没等窗口出来就自己退了
+    if (process.env.OWB_SHELL_STDIN !== "0") process.stdin.on("end", () => requestQuit());
   } catch {}
 }
