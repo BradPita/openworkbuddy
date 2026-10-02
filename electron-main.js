@@ -622,6 +622,14 @@ app.whenReady().then(async () => {
     PAGE_UP = true;
     clearTimeout(watchdog);
     bootLog("页面加载完成 ✓ 启动成功");
+    // 免安装版被强杀时留在 %TEMP% 的解压目录（一份几百 MB），等启动忙完再收拾，规则见 portable-temp.js
+    if (process.platform === "win32" && app.isPackaged) {
+      setTimeout(() => {
+        require("./portable-temp").sweepStale()
+          .then((gone) => { if (gone.length) bootLog(`清掉免安装版留下的 ${gone.length} 个临时解压目录`); })
+          .catch(() => {});
+      }, 60 * 1000).unref();
+    }
   });
   // 用 127.0.0.1 而不是 localhost：有些机器（改过 hosts、或者 IPv6 优先）会把 localhost 解析到 ::1，
   // 而服务端只监听了 IPv4，表现就是窗口一直空白。

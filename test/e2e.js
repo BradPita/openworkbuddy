@@ -10152,6 +10152,7 @@ testCanvasEdgeVersion();
   testKeySourcesGate();
   await testAdminModelsPage();
   testPackagingAndDemoGate();
+  await testPortableTempSweep();
   await testImInboundMedia();
   await testImCredentialGuard();
   await testUpdaterVersions();
@@ -12745,6 +12746,16 @@ function packagingCheck(cfg, docs, recorderSrc, pkgJson) {
   // 一键装双击后一声不吭装进 %LOCALAPPDATA%\Programs，选不了位置、也看不出装没装上，报上来就是「双击了没反应」
   const ns = cfg.nsis || {};
   if (ns.oneClick !== false || ns.allowToChangeInstallationDirectory !== true) problems.push("Windows 安装包变回一键装了：用户选不了装在哪个盘，也看不到安装向导和进度");
+  // 免安装版：解压目录每次各用各的（共用时再双击一次会先删掉正在跑那份的文件），解压那一两分钟要有图（不然屏幕上什么都没有）
+  const pt = cfg.portable || {};
+  if (pt.unpackDirName !== true) problems.push("免安装版解压目录不是每次各用各的（unpackDirName 不是 true）：再双击一次会先删掉正在运行那份的文件");
+  if (!pt.splashImage) problems.push("免安装版解压时没有图（splashImage），一两分钟屏幕上什么都没有，用户会以为没点上");
+  else {
+    let bmp = null;
+    try { bmp = fs.readFileSync(path.join(__dirname, "..", pt.splashImage)); } catch {}
+    if (!bmp) problems.push(`免安装版解压图 ${pt.splashImage} 不存在`);
+    else if (bmp.toString("latin1", 0, 2) !== "BM" || bmp.readUInt16LE(28) !== 24) problems.push(`免安装版解压图 ${pt.splashImage} 不是 24 位 BMP（NSIS 只认这个）`);
+  }
   // 作者没有 Windows：发版时那趟静默装 + 启动是 Windows 包唯一一次被真跑起来
   if ("release.yml" in docs && !/run: node scripts\/win-smoke\.js/.test(docs["release.yml"])) problems.push("release.yml 不跑 scripts/win-smoke.js：Windows 包打完没人真装一遍、开一遍就发出去了");
   for (const [name, text] of Object.entries(docs)) {
@@ -13774,13 +13785,71 @@ function testPackagingAndDemoGate() {
     ["录制脚本不删演示目录", [cfg, docs, recorder.replace("fs.rmSync(home, { recursive: true, force: true })", "0")]],
     ["安装包退回一键装", (() => { const c = clone(cfg); c.nsis.oneClick = true; return [c, docs, recorder]; })()],
     ["安装向导不让选位置", (() => { const c = clone(cfg); delete c.nsis.allowToChangeInstallationDirectory; return [c, docs, recorder]; })()],
+    ["免安装版共用解压目录", (() => { const c = clone(cfg); delete c.portable.unpackDirName; return [c, docs, recorder]; })()],
+    ["免安装版解压时不出图", (() => { const c = clone(cfg); delete c.portable.splashImage; return [c, docs, recorder]; })()],
+    ["免安装版解压图换成 PNG", (() => { const c = clone(cfg); c.portable.splashImage = "build/icon.png"; return [c, docs, recorder]; })()],
     ["发版不再真装一遍 Windows 包", [cfg, { ...docs, "release.yml": docs["release.yml"].replace("run: node scripts/win-smoke.js", "run: echo") }, recorder]],
   ];
   for (const [name, [c, d, r]] of variants) {
     assert(c !== cfg || d !== docs || r !== recorder, "变体「" + name + "」没改动到输入，对照无效");
     if (!packagingCheck(c, d, r, pkg).length) throw new Error("闸门漏了这种坏法：" + name);
   }
-  console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup（向导式，能选位置）· 发版前真装一遍 Windows 包 · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
+  console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup（向导式，能选位置）· 免安装版各解各的目录、解压时有图 · 发版前真装一遍 Windows 包 · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
+}
+
+/**
+ * Windows 免安装版被强杀后留在 %TEMP% 的解压目录（一份几百 MB）：下次启动收拾掉，但绝不能误删。
+ * 真 Windows 上「exe 正在运行」靠打不开写来判，这台 Mac 上判不了，所以 inUse 用替身；
+ * 其余（认目录形状、认是不是本应用、跳过自己、跳过刚建的、真的删）全走真文件系统。
+ */
+async function testPortableTempSweep() {
+  const os = require("os");
+  const PT = require("../portable-temp");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ptemp-"));
+  try {
+    const app = (dir, name = "openworkbuddy") => {
+      fs.mkdirSync(path.join(dir, "resources", "app"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "OpenWorkBuddy.exe"), "MZ");
+      fs.writeFileSync(path.join(dir, "resources", "app", "package.json"), JSON.stringify({ name }));
+    };
+    const age = (dir, t) => fs.utimesSync(dir, t / 1000, t / 1000);
+    app(path.join(tmp, "nsA1B2.tmp", "app"));                       // 被强杀留下的：该删
+    app(path.join(tmp, "2Q9xLm7Rb0KpZs4TfWc8YdHn3Ve"));               // 0.10.6 及以前定死名字的：该删
+    app(path.join(tmp, "nsC3D4.tmp", "app"));                       // 还在跑的那份：不能删
+    app(path.join(tmp, "nsE5F6.tmp", "app"));                       // 自己：不能删
+    app(path.join(tmp, "nsG7H8.tmp", "app"), "some-other-app");     // 别的应用的解压目录：不能删
+    fs.mkdirSync(path.join(tmp, "nsI9J0.tmp"));                      // 别的安装器留的空 ns 目录：不能删
+    app(path.join(tmp, "random-folder"));                            // 名字不是那两种形状：不能删
+    app(path.join(tmp, "nsK1L2.tmp", "app"));                       // 刚建的（可能另一份正解压到一半）：不能删
+    const running = path.join(tmp, "nsC3D4.tmp", "app", "OpenWorkBuddy.exe");
+    const opts = { tmp, self: path.join(tmp, "nsE5F6.tmp", "app"), inUse: (exe) => exe === running };
+    // 建立时间改不了，只能挪 now：拿「刚建的」那份的建立时间当 now，其余的修改时间拨回两个门槛前（判年龄取两者里早的那个）
+    const st = fs.statSync(path.join(tmp, "nsK1L2.tmp"));
+    opts.now = Math.min(st.birthtimeMs || st.mtimeMs, st.mtimeMs) + 1000;
+    for (const d of fs.readdirSync(tmp)) if (d !== "nsK1L2.tmp") age(path.join(tmp, d), opts.now - 2 * PT.MIN_AGE_MS);
+    const want = ["2Q9xLm7Rb0KpZs4TfWc8YdHn3Ve", "nsA1B2.tmp"];
+    const got = PT.staleDirs(opts).map((d) => path.basename(d)).sort();
+    assert.deepStrictEqual(got, want, "该清的和不该清的分错了：" + JSON.stringify(got));
+    // ★反向对照★ 不认「正在运行」：还在跑的那份也会被删
+    const loose = PT.staleDirs({ ...opts, inUse: () => false }).map((d) => path.basename(d)).sort();
+    assert(loose.includes("nsC3D4.tmp"), "★反向对照★ 不判正在运行时没把运行中的那份算进去，这条测试抓不住误删");
+    // ★反向对照★ 不看年龄：刚建的那份也会被删
+    const young = PT.staleDirs({ ...opts, now: opts.now + 2 * PT.MIN_AGE_MS }).map((d) => path.basename(d));
+    assert(young.includes("nsK1L2.tmp"), "★反向对照★ 过了门槛那份还没被算进去，「刚建的不删」这条没量到");
+    const gone = await PT.sweepStale(opts);
+    assert.strictEqual(gone.length, 2, "真删时没删掉两份：" + JSON.stringify(gone));
+    const left = fs.readdirSync(tmp).sort();
+    for (const w of want) assert(!left.includes(w), "说删了其实还在：" + w);
+    for (const k of ["nsC3D4.tmp", "nsE5F6.tmp", "nsG7H8.tmp", "nsI9J0.tmp", "random-folder", "nsK1L2.tmp"]) assert(left.includes(k), "误删了：" + k);
+    // 接线：页面加载完以后在 Windows 装包态才扫，不在启动关键路径上
+    const main = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+    const at = main.indexOf('bootLog("页面加载完成 ✓ 启动成功")');
+    const sw = main.indexOf('require("./portable-temp").sweepStale()');
+    assert(at > 0 && sw > at && sw - at < 800, "electron-main.js 没在页面加载完以后收拾免安装版的临时目录");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  console.log("✅ 免安装版临时目录：被强杀留下的两种都清掉；正在跑的、自己、别的应用、刚建的、名字不对的一个不碰");
 }
 
 /**
@@ -15356,6 +15425,22 @@ async function testUpdaterVersions() {
   // 反向对照三：纯 node 跑（npm start）压根没有 resourcesPath
   assert.strictEqual(U.installKind("/Users/me/openworkbuddy", undefined), "source",
     "纯 node 模式判成了装机版");
+  // Windows 免安装版：resources 在 %TEMP% 解压目录里，光看路径会判成 app，叫人去「下载 setup.exe 覆盖装」——它没装过。
+  // 外壳设的 PORTABLE_EXECUTABLE_FILE 才是准的
+  {
+    const tmpApp = "C:\\Users\\me\\AppData\\Local\\Temp\\nsA1B2.tmp\\app\\resources\\app";
+    const tmpRes = "C:\\Users\\me\\AppData\\Local\\Temp\\nsA1B2.tmp\\app\\resources";
+    assert.strictEqual(U.installKind(tmpApp, tmpRes, { PORTABLE_EXECUTABLE_FILE: "D:\\下载\\OpenWorkBuddy-0.10.7-win-x64-portable.exe" }),
+      "portable", "免安装版被判成了安装包，升级提示会叫人去覆盖装");
+    assert.strictEqual(U.installKind(tmpApp, tmpRes, {}), "app", "★反向对照★ 没有外壳设的那个变量就不该判成免安装版");
+    const how = U.howToUpdate("portable", "win32");
+    assert(/免安装版/.test(how) && /portable\.exe/.test(how) && /换掉/.test(how) && /~\/OpenWorkBuddy/.test(how),
+      "免安装版的升级提示没说「下新的换掉旧的、数据不动」：" + how);
+    assert(!/覆盖(装|安装)一次/.test(how), "免安装版还在被叫去覆盖安装：" + how);
+    assert.strictEqual(U.updateCmd("portable", "win32"), "", "免安装版被塞了一条命令");
+    const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
+    assert(/d\.install === "portable" \? " · 免安装版"/.test(ui), "设置页版本那行没把免安装版标出来，还写着「安装包」");
+  }
   // 判错了不是措辞问题，是给出完全用不上的操作：两条建议必须真的不一样
   assert(/git pull/.test(U.howToUpdate("source")), "源码版没给 git pull");
   assert(!/git pull/.test(U.howToUpdate("app", "darwin")), "装机版还在让人 git pull");

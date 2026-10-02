@@ -914,7 +914,7 @@ function renderAboutPane(pane) {
       upCmd.style.display = "none";     // 上一次画出来的那条命令别挂在「版本号没读到」下面
       return;
     }
-    upVer.textContent = `当前 v${d.current}${d.install === "source" ? " · 源码运行" : " · 安装包"}`;
+    upVer.textContent = `当前 v${d.current}${d.install === "source" ? " · 源码运行" : d.install === "portable" ? " · 免安装版" : " · 安装包"}`;
     upHow.textContent = (d.error ? `${d.error}。` : d.has_update ? `有新版 v${d.latest}。` : d.latest ? `已是最新（线上也是 v${d.latest}）。` : "") + (d.how || "");
     upLink.style.display = d.has_update ? "" : "none";
     // 命令只在真有新版时露出来：已经是最新还摆一条「升级命令」，照着跑一趟等于白跑

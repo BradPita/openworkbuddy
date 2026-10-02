@@ -198,6 +198,13 @@ module.exports = {
     // 而且没有任何文档指向它，纯粹是下载页上一个更大更诱人的错误选项。关掉，只留两个按架构分开的。
     // （安装版 nsis 那个合体是要的：artifactName 里没有 ${arch}，只会产一个，装的时候自动选架构。）
     buildUniversalInstaller: false,
+    // 每次启动解压到各自的 %TEMP%\nsXXXX.tmp\app，不再共用一个构建时定死的目录。
+    // 共用时第二次双击会先把那个目录整个删掉再解压：第一份正开着的代码当场没了，
+    // 解压到一半又双击，两份同时在一个目录里写和删。代价是被强杀时临时目录来不及清，
+    // 下次启动由 portable-temp.js 收拾。注意只能写 true：false 在 electron-builder 里等同不写。
+    unpackDirName: true,
+    // 解压那一两分钟屏幕上原来什么都没有，用户以为没点上又双击。图由 scripts/gen-portable-splash.py 生成
+    splashImage: "build/portable-splash.bmp",
   },
   nsis: {
     artifactName: "${productName}-${version}-win-setup.${ext}",

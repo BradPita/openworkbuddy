@@ -27,7 +27,10 @@ function currentVersion() {
 // 压根没有这个仓库。所以第二条才是装机版真正命中的那条：代码在 Electron 的 resources 目录底下。
 // 两个参数只为可测：真实调用一律不传。Windows 给的是反斜杠、macOS 是斜杠，
 // 这里统一成斜杠再比，免得断言只能在打包用的那个系统上跑。
-function installKind(dir = __dirname, resourcesPath = process.resourcesPath) {
+// Windows 免安装版的外壳（portable.nsi）启动应用前会设 PORTABLE_EXECUTABLE_FILE，服务进程经 env 继承到。
+// 它的 resources 在 %TEMP% 的解压目录里，按下面的规则会判成 app，提示变成「下载 setup.exe 覆盖装」——可它没有装过。
+function installKind(dir = __dirname, resourcesPath = process.resourcesPath, env = process.env) {
+  if (env && env.PORTABLE_EXECUTABLE_FILE) return "portable";
   const norm = (s) => String(s).replace(/\\/g, "/").replace(/\/+$/, "");
   const d = norm(dir);
   if (/\/app\.asar(\/|$)/.test(d)) return "app";  // asar 开着的情况，留着以防哪天打开
@@ -64,6 +67,11 @@ function updateCmd(kind, platform = process.platform) {
 function howToUpdate(kind, platform = process.platform) {
   if (kind === "source") {
     return "你是从源码跑的：在项目目录执行 git pull && npm install，重启即可，不用重装。";
+  }
+  if (kind === "portable") {
+    return "你用的是免安装版：下载新版的 portable.exe 换掉旧的就行。"
+      + "常用的话改装 win-setup.exe 安装版，不用每次先解压，打开快得多。"
+      + "配置、会话、工作区都在 ~/OpenWorkBuddy 目录里，换哪种都不会动它们。";
   }
   const keep = "配置、会话、工作区都在 ~/OpenWorkBuddy 目录里，覆盖安装不会动它们。";
   // macOS 单独说一句：这个人手上那份是**能用的**，可他照着提示去浏览器下一个新 dmg，
