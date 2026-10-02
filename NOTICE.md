@@ -34,6 +34,11 @@ OpenWorkBuddy 自身 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)，�
 
 Apache-2.0 的那条（echarts）要求保留它自己的 NOTICE 和许可头——我们没有改它的源码，
 安装出来的包里原样带着，这一条就算尽到了。
+
+桌面安装包里，mermaid 和 echarts 只带运行时真正读的那个打包好的单文件（`dist/mermaid.min.js`、`dist/echarts.js`），
+外加各自的 package.json、LICENSE 和 NOTICE。单文件里打进了它们依赖的代码（d3、cytoscape、zrender 等），
+这些依赖不再单独附带，许可证原文由打包脚本汇总写进 `node_modules/mermaid/THIRD-PARTY-LICENSES.txt`
+和 `node_modules/echarts/THIRD-PARTY-LICENSES.txt`（见 `scripts/slim-deps.js`）。源码安装和 Docker 照常全量安装，不受影响。
 短剧画布通过 `/vendor/joint/joint.min.js` 使用 `@joint/core` 的原文件，不改源码。
 短剧画布使用 `@dagrejs/dagre` 计算节点的有向无环图（DAG）布局，不改源码。
 

@@ -434,6 +434,125 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
       fs.rmSync(empty, { recursive: true, force: true });
     }
   });
+
+  // —— mermaid / echarts 只带单文件（scripts/slim-deps.js）。
+  // 运行时只读 mermaid/dist/mermaid.min.js 和 echarts/dist/echarts.js，剩下五千多个文件装进去一个字节都不读，
+  // Windows 上却要逐个写、逐个被 Defender 扫。删哪些按 package-lock 现算；这里钉住三件事：
+  // 删得到（排除模式真进了 files）、删不过头（要用的文件和别人也要的依赖都还在）、删了不丢署名
+  const slim = require(path.join(ROOT, "scripts", "slim-deps.js"));
+  const sp = slim.plan();
+  ok(sp.bundles.includes("mermaid") && sp.bundles.includes("echarts"), "mermaid、echarts 都按单文件打包", sp.bundles.join(",") + " 跳过：" + sp.skipped.join(","));
+  ok(sp.dropped.length > 50, "只被它俩用到的依赖整包不带（d3、cytoscape、zrender……）", `${sp.dropped.length} 个`);
+  const pkgDeps = Object.keys(JSON.parse(read("package.json")).dependencies);
+  const droppedNames = sp.dropped.map((d) => d.split("node_modules/").pop());
+  ok(!droppedNames.some((n) => pkgDeps.includes(n)), "直接依赖一个都没被整包删掉", droppedNames.filter((n) => pkgDeps.includes(n)).join(","));
+  // 短剧画布按路径直接读这两个包的文件（server.js 的 /vendor 路由）；mermaid 也依赖 dagre 一系，不能跟着删
+  ok(!droppedNames.includes("@dagrejs/dagre") && !droppedNames.includes("@joint/core"), "  └ 画布直接读的 @dagrejs/dagre、@joint/core 留着");
+  // 装机态真会跑的代码里，谁也不许 require 被删掉的包——否则就是装完用到那一下才 Cannot find module
+  const usesDropped = [];
+  for (const rel of gate.walkGraph()) {
+    if (!rel.endsWith(".js") || !fs.existsSync(path.join(ROOT, rel))) continue;
+    for (const n of gate.bareRequires(read(rel))) if (droppedNames.includes(n)) usesDropped.push(`${rel} → ${n}`);
+  }
+  ok(usesDropped.length === 0, "  └ 装机态的代码里没有一处 require 被删掉的包", usesDropped.join("、"));
+  // 运行时真读的那两处还是那两个文件——哪天改成 require("mermaid") 或读别的文件，单文件就不够了
+  ok(read("browser-render.js").includes('require.resolve("mermaid/dist/mermaid.min.js")') &&
+     slim.BUNDLES.mermaid.keep.includes("dist/mermaid.min.js"), "  └ browser-render.js 读的正是留下的 mermaid.min.js");
+  ok(/require\("echarts"\)/.test(read("diagram.js")) && JSON.parse(read("node_modules/echarts/package.json")).exports["."].require === "./" + slim.BUNDLES.echarts.keep[0],
+     "  └ diagram.js 的 require(\"echarts\") 按 exports 落到留下的 dist/echarts.js");
+
+  const pats = cfgFiles.filter((f) => f.startsWith("!node_modules/"));
+  ok(pats.includes("!node_modules/zrender/**") && pats.some((f) => f.startsWith("!node_modules/mermaid/dist/chunks")),
+     "排除模式真进了 files（被删的依赖、mermaid 拆出来的 chunk 都在里面）", `${pats.length} 条`);
+  const hitsKeep = pats.filter((f) => /^!node_modules\/(mermaid|echarts)\/(package\.json|LICENSE|NOTICE|licenses|dist\/(mermaid\.min\.js|echarts\.js|package\.json)$)/i.test(f) ||
+    /^!node_modules\/(mermaid|echarts)\/(dist\/)?\*\*$/.test(f));
+  ok(hitsKeep.length === 0, "  └ 没有一条排除碰到要留的文件、许可证或 package.json", hitsKeep.join(","));
+
+  // 反向对照：拿一个假仓库算一遍，规则本身对不对——别人也要的依赖留着，被别人依赖的包整包不瘦
+  const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "owb-slimplan-"));
+  try {
+    const put = (rel, obj) => {
+      fs.mkdirSync(path.join(fakeRepo, rel), { recursive: true });
+      fs.writeFileSync(path.join(fakeRepo, rel, "package.json"), JSON.stringify(obj));
+    };
+    const lockOf = (pk) => ({ packages: { "": {}, ...pk } });
+    put("node_modules/mermaid", { name: "mermaid", license: "MIT" });
+    put("node_modules/mermaid/dist/chunks", {});
+    fs.writeFileSync(path.join(fakeRepo, "node_modules/mermaid/dist/mermaid.min.js"), "");
+    fs.writeFileSync(path.join(fakeRepo, "node_modules/mermaid/LICENSE"), "MIT");
+    for (const n of ["only", "shared", "other"]) put("node_modules/" + n, { name: n, version: "1.0.0", license: "MIT" });
+    fs.writeFileSync(path.join(fakeRepo, "node_modules/only/LICENSE"), "only 的许可证原文");
+    const pkgs = {
+      "node_modules/mermaid": { dependencies: { only: "1", shared: "1" } },
+      "node_modules/only": {}, "node_modules/shared": {},
+      "node_modules/other": { dependencies: { shared: "1" } },
+    };
+    fs.writeFileSync(path.join(fakeRepo, "package.json"), JSON.stringify({ dependencies: { mermaid: "1", other: "1" } }));
+    fs.writeFileSync(path.join(fakeRepo, "package-lock.json"), JSON.stringify(lockOf(pkgs)));
+    const fp = slim.plan(fakeRepo);
+    ok(fp.bundles.join() === "mermaid" && fp.dropped.join() === "node_modules/only",
+       "反向对照：只被 mermaid 用的删，别人也用的（shared）留着", JSON.stringify(fp));
+    const ex = slim.bundleExcludes("mermaid", fakeRepo);
+    ok(ex.includes("dist/chunks/") && !ex.some((e) => /mermaid\.min\.js|LICENSE|package\.json/.test(e)),
+       "  └ 包里只删 keep 之外的，单文件、许可证、package.json 不动", ex.join(","));
+    const app = path.join(fakeRepo, "app");
+    slim.writeLicenseDigests(app, fakeRepo);
+    const digest = fs.readFileSync(path.join(app, "node_modules", "mermaid", slim.DIGEST), "utf8");
+    ok(/only@1\.0\.0 — MIT/.test(digest) && digest.includes("only 的许可证原文") && !digest.includes("shared@"),
+       "  └ 被删的依赖许可证原文汇总写进包里，没删的不重复写", digest.length);
+    // 别的依赖也 require mermaid 时，它就不是「只用单文件」了：整包留着，连带的依赖也不删
+    pkgs["node_modules/other"].dependencies.mermaid = "1";
+    fs.writeFileSync(path.join(fakeRepo, "package-lock.json"), JSON.stringify(lockOf(pkgs)));
+    const fp2 = slim.plan(fakeRepo);
+    ok(fp2.bundles.length === 0 && fp2.skipped.join() === "mermaid" && fp2.dropped.length === 0,
+       "反向对照：别的依赖也 require mermaid 就整包不瘦", JSON.stringify(fp2));
+    fs.rmSync(path.join(fakeRepo, "package-lock.json"));
+    ok(slim.plan(fakeRepo).bundles.length === 0, "  └ 没有 package-lock 就什么都不删（宁可包大，不能删错）");
+  } finally {
+    fs.rmSync(fakeRepo, { recursive: true, force: true });
+  }
+
+  // 闸门真跑：照真实规则摆一个瘦好的包能过；多留一个文件、少了要用的那个、单文件偷偷 require 了被删的包——都得红
+  const fakeApp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-slimapp-"));
+  try {
+    for (const b of sp.bundles) {
+      for (const f of ["package.json", ...slim.BUNDLES[b].keep]) {
+        fs.mkdirSync(path.dirname(path.join(fakeApp, "node_modules", b, f)), { recursive: true });
+        fs.copyFileSync(path.join(ROOT, "node_modules", b, f), path.join(fakeApp, "node_modules", b, f));
+      }
+    }
+    slim.writeLicenseDigests(fakeApp);
+    let err = null;
+    try { gate.assertBundlesSlim(fakeApp); } catch (e) { err = e.message; }
+    ok(!err, "瘦好的包能过闸", (err || "").slice(0, 120));
+    ok(gate.checkBundle(fakeApp, "echarts", slim.BUNDLES.echarts) === null, "  └ echarts 单文件拷到隔开仓库的目录里照样 require 得起来");
+    const extra = path.join(fakeApp, "node_modules", "mermaid", "dist", "mermaid.core.mjs");
+    fs.writeFileSync(extra, "");
+    err = null;
+    try { gate.assertBundlesSlim(fakeApp); } catch (e) { err = e.message; }
+    ok(err && /瘦身没生效/.test(err) && err.includes("mermaid/dist/mermaid.core.mjs"), "反向对照：多留一个文件就红，并且点名", (err || "没抛").slice(0, 80));
+    fs.rmSync(extra);
+    fs.mkdirSync(path.join(fakeApp, "node_modules", "zrender"));
+    fs.writeFileSync(path.join(fakeApp, "node_modules", "zrender", "index.js"), "");
+    err = null;
+    try { gate.assertBundlesSlim(fakeApp); } catch (e) { err = e.message; }
+    ok(err && err.includes("node_modules/zrender/"), "反向对照：该整包删的依赖还在就红", (err || "没抛").slice(0, 80));
+    fs.rmSync(path.join(fakeApp, "node_modules", "zrender"), { recursive: true });
+    fs.rmSync(path.join(fakeApp, "node_modules", "mermaid", "dist", "mermaid.min.js"));
+    err = null;
+    try { gate.assertBundlesSlim(fakeApp); } catch (e) { err = e.message; }
+    ok(err && /必定画不出图/.test(err) && err.includes("mermaid.min.js"), "反向对照：要用的单文件被删了就红", (err || "没抛").slice(0, 80));
+    // 单文件里偷偷 require 了被删的包：在仓库底下 require 会顺着上层目录找到仓库自己那份，照样绿。
+    // 拷到隔开的目录里才红得出来
+    fs.writeFileSync(path.join(fakeApp, "node_modules", "echarts", "dist", "echarts.js"), 'module.exports = require("zrender");');
+    const bundleErr = gate.checkBundle(fakeApp, "echarts", slim.BUNDLES.echarts);
+    ok(bundleErr && /require 不起来/.test(bundleErr), "反向对照：单文件 require 了被删的包，隔开仓库一 require 就红", bundleErr || "没报");
+  } finally {
+    fs.rmSync(fakeApp, { recursive: true, force: true });
+  }
+  const iDigest = cfg.indexOf("writeLicenseDigests(appDir)");
+  const iBundles = cfg.indexOf("assertBundlesSlim(appDir)");
+  ok(iDigest > 0 && iBundles > iDigest && iBundles < iSign, "afterPack 先补写许可证汇总、再核瘦身，都在签名之前", { iDigest, iBundles, iSign });
 }
 
 console.log("\n【7】反代模板 —— 流式输出能不能活下来，全看这几行");

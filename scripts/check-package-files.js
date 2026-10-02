@@ -207,19 +207,35 @@ function assertPackComplete(appDir) {
  * exceljs/lib/doc/ 删没了——那是人家的运行时代码，不是测试。静态扫文件名看不出来，
  * 只有真 require 才会红。装机包里 require 不起来的依赖，一个都不许发出去。
  *
- * ESM 包（mermaid 这种）在 Node 22.12+ 上 require 得动；万一撞上老 Node 的 ERR_REQUIRE_ESM，
+ * ESM 包在 Node 22.12+ 上 require 得动；万一撞上老 Node 的 ERR_REQUIRE_ESM，
  * 退回 import() 再试一次，别把「这台机器的 Node 太老」误报成「包坏了」。
+ *
+ * scripts/slim-deps.js 只留单文件的那几个包（mermaid / echarts）另走一条：
+ * 单文件必须在包里；声明了要 require 的，拷到一个跟仓库隔开的临时目录里再 require——
+ * 在包里直接 require 的话，它缺的依赖会顺着上层目录找到仓库自己的 node_modules，删过头也照样绿。
  */
 async function assertDepsRequirable(appDir) {
   const pkg = JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8"));
   const names = Object.keys(pkg.dependencies || {});
+  const slim = require("./slim-deps");
+  const bundles = new Set(slim.plan().bundles);
   const bad = [];
   for (const n of names) {
+    if (bundles.has(n)) {
+      const err = checkBundle(appDir, n, slim.BUNDLES[n]);
+      if (err) bad.push(`${n}：${err}`);
+      continue;
+    }
     let resolved;
     try {
       resolved = require.resolve(n, { paths: [appDir] });
     } catch (e) {
       bad.push(`${n}：连入口都找不到（${firstLine(e)}）`);
+      continue;
+    }
+    // 包里没有时 Node 会一路往上找，打包目录在仓库底下，就找到仓库自己那份了
+    if (path.relative(appDir, resolved).startsWith("..")) {
+      bad.push(`${n}：包里没有，找到的是包外面的 ${resolved}`);
       continue;
     }
     try {
@@ -245,6 +261,28 @@ async function assertDepsRequirable(appDir) {
     );
   }
   console.log(`[打包] 依赖可用核对通过：${names.length} 个生产依赖都 require 得起来`);
+}
+
+/** 只留单文件的包：文件在不在；要 require 的，隔开仓库真 require 一次。没问题返回 null */
+function checkBundle(appDir, name, spec) {
+  const src = path.join(appDir, "node_modules", name);
+  const gone = spec.keep.filter((k) => !fs.existsSync(path.join(src, k)));
+  if (gone.length) return `只留的那个文件不在包里（${gone.join("、")}）`;
+  if (!spec.require) return null;
+  const tmp = fs.mkdtempSync(path.join(require("os").tmpdir(), "owb-bundle-"));
+  try {
+    const dst = path.join(tmp, "node_modules", name);
+    for (const f of ["package.json", ...spec.keep]) {
+      fs.mkdirSync(path.dirname(path.join(dst, f)), { recursive: true });
+      fs.copyFileSync(path.join(src, f), path.join(dst, f));
+    }
+    require(require.resolve(name, { paths: [tmp] }));
+    return null;
+  } catch (e) {
+    return `只留单文件之后 require 不起来（${firstLine(e)}）`;
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 function firstLine(e) {
@@ -288,7 +326,53 @@ function assertSlimmed(appDir) {
   return { files, bytes, leftovers };
 }
 
-module.exports = { walkGraph, missingFrom, assertPackComplete, assertDepsRequirable, assertSlimmed, localRequires, bareRequires, missingDeps, DEAD_WEIGHT, ENTRIES, ASSETS, RUNTIME_PROVIDED, SOURCE_DIRS, sourceDirFiles, missingSourceDirFiles };
+/**
+ * 核一遍 slim-deps 的瘦身有没有真生效、有没有删过头。
+ * 跟 assertSlimmed 同一个理由：排除模式算错了不会报错，只会静默什么都不删（或者把要用的那个文件也删了）。
+ * @returns {{bundles: string[], dropped: number}}
+ */
+function assertBundlesSlim(appDir) {
+  const slim = require("./slim-deps");
+  const p = slim.plan();
+  const missing = [];
+  const leftovers = [];
+  for (const b of p.bundles) {
+    const dir = path.join(appDir, "node_modules", b);
+    for (const k of [...slim.BUNDLES[b].keep, slim.DIGEST]) {
+      if (!fs.existsSync(path.join(dir, k))) missing.push(`node_modules/${b}/${k}`);
+    }
+    const walk = (rel) => {
+      let ents;
+      try { ents = fs.readdirSync(path.join(dir, rel), { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        const r = rel ? rel + "/" + e.name : e.name;
+        if (!rel && slim.ALWAYS_KEEP.test(e.name)) continue;
+        if (e.isDirectory()) { walk(r); continue; }
+        if (!slim.BUNDLES[b].keep.includes(r) && r !== slim.DIGEST) leftovers.push(`node_modules/${b}/${r}`);
+      }
+    };
+    walk("");
+  }
+  for (const d of p.dropped) if (fs.existsSync(path.join(appDir, d))) leftovers.push(d + "/");
+  if (missing.length) {
+    throw new Error(
+      `[打包] 只留单文件的依赖少了要用的文件，装完必定画不出图或缺署名：\n` + missing.map((m) => "  - " + m).join("\n")
+    );
+  }
+  if (leftovers.length) {
+    throw new Error(
+      `[打包] 依赖瘦身没生效，还剩 ${leftovers.length} 处（scripts/slim-deps.js 算出的排除没起作用）：\n` +
+        leftovers.slice(0, 8).map((f) => "  - " + f).join("\n") +
+        (leftovers.length > 8 ? `\n  …还有 ${leftovers.length - 8} 处` : "")
+    );
+  }
+  if (p.bundles.length) {
+    console.log(`[打包] 依赖瘦身核对通过：${p.bundles.join("、")} 只带打包好的单文件，${p.dropped.length} 个只被它们用到的依赖没进包，许可证已汇总`);
+  }
+  return { bundles: p.bundles, dropped: p.dropped.length };
+}
+
+module.exports = { assertBundlesSlim, checkBundle, walkGraph, missingFrom, assertPackComplete, assertDepsRequirable, assertSlimmed, localRequires, bareRequires, missingDeps, DEAD_WEIGHT, ENTRIES, ASSETS, RUNTIME_PROVIDED, SOURCE_DIRS, sourceDirFiles, missingSourceDirFiles };
 
 if (require.main === module) {
   const dir = process.argv[2];

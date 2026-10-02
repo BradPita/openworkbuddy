@@ -12733,7 +12733,7 @@ function keySourcesCheck(app03, app05, toolsSrc, mmSrc) {
 // ================= 安装包命名 + demo 录制脚本 静态闸门 =================
 // v0.1.0 那次多架构 nsis 合成一个 `-win.exe`，portable 却叫 `-win-x64.exe`，文档里写的「双击即装」指到了免安装版。
 // 这里把「配置里的名字」和「四份文档里写的名字」钉在一起，任何一边改了都得同步。
-function packagingCheck(cfg, docs, recorderSrc, pkgJson) {
+function packagingCheck(cfg, docs, recorderSrc, pkgJson, win = {}) {
   const problems = [];
   const nsis = (cfg.nsis || {}).artifactName || "", portable = (cfg.portable || {}).artifactName || "";
   if (!nsis.includes("win-setup")) problems.push("nsis 安装包名字里没有 win-setup（多架构合包 ${arch} 为空，名字必须自己定）");
@@ -12758,6 +12758,15 @@ function packagingCheck(cfg, docs, recorderSrc, pkgJson) {
     if (!bmp) problems.push(`免安装版解压图 ${pt.splashImage} 不存在`);
     else if (bmp.toString("latin1", 0, 2) !== "BM" || bmp.readUInt16LE(28) !== 24) problems.push(`免安装版解压图 ${pt.splashImage} 不是 24 位 BMP（NSIS 只认这个）`);
   }
+  // 向导能选位置以后，最要命的选法是选进数据文件夹：升级、卸载都会把整个安装目录 RMDir /r，工作区和成果跟着没了
+  const nsh = win.nsh || "";
+  if (!/Function \.onVerifyInstDir/.test(nsh)) problems.push("build/installer.nsh 不拦安装目录（.onVerifyInstDir）：选进数据文件夹的话，下次升级连工作区一起删掉");
+  else if (!/\$PROFILE\\OpenWorkBuddy/.test(nsh) || !/ReadEnvStr \$\w+ OPENWORKBUDDY_HOME/.test(nsh)) problems.push("安装目录检查没同时认默认数据根 ~/OpenWorkBuddy 和 OPENWORKBUDDY_HOME");
+  if (nsh && !/^!ifndef BUILD_UNINSTALLER/m.test(nsh)) problems.push("installer.nsh 的安装期代码没挡在 !ifndef BUILD_UNINSTALLER 里：编卸载器时变量没人用，-WX 当场红");
+  // Windows 按 AppUserModelID 认应用：跟安装包快捷方式上写的 appId 差一个字，任务栏就是两个图标、通知不显示
+  const aumid = ((win.mainSrc || "").match(/setAppUserModelId\(app\.isPackaged \? "([^"]+)"/) || [])[1];
+  if (aumid !== cfg.appId) problems.push(`electron-main.js 的 AppUserModelID（${aumid || "没设"}）跟 appId（${cfg.appId}）对不上：任务栏会分成两个图标，通知也不显示`);
+  if (!/appendSwitch\("disk-cache-dir", path\.join\(process\.env\.LOCALAPPDATA/.test(win.mainSrc || "")) problems.push("Windows 上 HTTP 缓存没挪到 %LOCALAPPDATA%：公司电脑开了漫游配置时，每次登录注销都要同步这几百 MB");
   // 作者没有 Windows：发版时那趟静默装 + 启动是 Windows 包唯一一次被真跑起来
   if ("release.yml" in docs && !/run: node scripts\/win-smoke\.js/.test(docs["release.yml"])) problems.push("release.yml 不跑 scripts/win-smoke.js：Windows 包打完没人真装一遍、开一遍就发出去了");
   for (const [name, text] of Object.entries(docs)) {
@@ -13776,7 +13785,8 @@ function testPackagingAndDemoGate() {
   const pkg = fs.readFileSync(path.join(root, "package.json"), "utf8");
   const chk = spawnSync(process.execPath, ["--check", path.join(root, "scripts", "record-demo.js")], { encoding: "utf8" });
   assert(chk.status === 0, "scripts/record-demo.js 语法不过：" + chk.stderr);
-  const problems = packagingCheck(cfg, docs, recorder, pkg);
+  const win = { nsh: fs.readFileSync(path.join(root, "build", "installer.nsh"), "utf8"), mainSrc: fs.readFileSync(path.join(root, "electron-main.js"), "utf8") };
+  const problems = packagingCheck(cfg, docs, recorder, pkg, win);
   assert(problems.length === 0, "安装包命名/录制脚本闸门：\n  " + problems.join("\n  "));
   // 反向对照：把 portable 改回撞名、README 写回旧名、录制脚本把 im 拷进去——每种坏法都得被抓
   const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -13791,12 +13801,17 @@ function testPackagingAndDemoGate() {
     ["免安装版解压时不出图", (() => { const c = clone(cfg); delete c.portable.splashImage; return [c, docs, recorder]; })()],
     ["免安装版解压图换成 PNG", (() => { const c = clone(cfg); c.portable.splashImage = "build/icon.png"; return [c, docs, recorder]; })()],
     ["发版不再真装一遍 Windows 包", [cfg, { ...docs, "release.yml": docs["release.yml"].replace("run: node scripts/win-smoke.js", "run: echo") }, recorder]],
+    ["安装向导不拦数据文件夹", [cfg, docs, recorder, { ...win, nsh: win.nsh.replace("Function .onVerifyInstDir", "Function owbUnused") }]],
+    ["只认默认数据根、不认 OPENWORKBUDDY_HOME", [cfg, docs, recorder, { ...win, nsh: win.nsh.replace(/ReadEnvStr \$owbTmp OPENWORKBUDDY_HOME/, 'StrCpy $owbTmp ""') }]],
+    ["安装期代码漏进卸载器", [cfg, docs, recorder, { ...win, nsh: win.nsh.replace("!ifndef BUILD_UNINSTALLER", "!ifndef OWB_NEVER") }]],
+    ["AppUserModelID 和 appId 对不上", [cfg, docs, recorder, { ...win, mainSrc: win.mainSrc.replace('app.isPackaged ? "com.catcatuncle.openworkbuddy"', 'app.isPackaged ? "com.catcatuncle.owb"') }]],
+    ["缓存留在漫游目录", [cfg, docs, recorder, { ...win, mainSrc: win.mainSrc.replace('appendSwitch("disk-cache-dir"', 'appendSwitch("x-disk-cache-dir"') }]],
   ];
-  for (const [name, [c, d, r]] of variants) {
-    assert(c !== cfg || d !== docs || r !== recorder, "变体「" + name + "」没改动到输入，对照无效");
-    if (!packagingCheck(c, d, r, pkg).length) throw new Error("闸门漏了这种坏法：" + name);
+  for (const [name, [c, d, r, w = win]] of variants) {
+    assert(c !== cfg || d !== docs || r !== recorder || w.nsh !== win.nsh || w.mainSrc !== win.mainSrc, "变体「" + name + "」没改动到输入，对照无效");
+    if (!packagingCheck(c, d, r, pkg, w).length) throw new Error("闸门漏了这种坏法：" + name);
   }
-  console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup（向导式，能选位置）· 免安装版各解各的目录、解压时有图 · 发版前真装一遍 Windows 包 · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
+  console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup（向导式，能选位置，不许选进数据文件夹）· 应用 ID 跟 appId 一致 · 免安装版各解各的目录、解压时有图 · 发版前真装一遍 Windows 包 · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
 }
 
 /**

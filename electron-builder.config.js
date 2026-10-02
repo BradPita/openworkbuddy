@@ -66,13 +66,16 @@ function findAppDir(ctx) {
 }
 
 async function afterPack(ctx) {
-  // 三道闸门全过了再签名：缺文件、依赖 require 不起来、瘦身没生效——
+  // 闸门全过了再签名：缺文件、依赖 require 不起来、瘦身没生效——
   // 任何一条都该在这里红掉，别把一个必定打不开的包签得漂漂亮亮发出去
   const gate = require("./scripts/check-package-files");
   const appDir = findAppDir(ctx);
+  // mermaid / echarts 只带了单文件，被删掉的那批依赖的许可证原文汇总补写进去（核对时要查它在不在）
+  require("./scripts/slim-deps").writeLicenseDigests(appDir);
   gate.assertPackComplete(appDir);
   await gate.assertDepsRequirable(appDir);
   gate.assertSlimmed(appDir);
+  gate.assertBundlesSlim(appDir);
   await adhocSign(ctx);
 }
 
@@ -139,6 +142,11 @@ module.exports = {
     // lib/emoji/test/ 下、exceljs 的核心在 lib/doc/ 下，删完 mermaid 和 exceljs 都 require 不起来。
     // 那条规则只省 1 MB，换的是整包打不开——不做。留下的三条只按「运行时永远不读的文件类型」删。
     // LICENSE / *.md 一律留着：MIT 之类的许可证要求随分发附上原文，省这几 MB 不值当
+    //
+    // mermaid / echarts 运行时各只读一个打包好的单文件，其余源码和只被它俩用到的依赖（d3、cytoscape、zrender……）
+    // 一个字节都不读，却占了 node_modules 一半的文件数。删哪些由 scripts/slim-deps.js 按 package-lock 现算，
+    // 被删依赖的许可证由 afterPack 汇总写回，再由 assertBundlesSlim 核对删得对不对
+    ...require("./scripts/slim-deps").excludePatterns(),
   ],
 
   mac: {

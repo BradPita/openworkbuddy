@@ -204,6 +204,12 @@ if (NO_GPU) {
 // 前端的断流看门狗、审批倒计时都挂在计时器上，晚一分钟才发现断流，用户切回来看到的是一条早就断了的流。
 // 必须在 ready 之前设
 try { app.commandLine.appendSwitch("disable-features", "IntensiveWakeUpThrottling"); } catch {}
+// Windows 上 userData 在 %APPDATA%（Roaming）：公司域账号开了漫游配置时，几百 MB 网页缓存每次登录注销
+// 都要跟服务器同步一遍。只把 HTTP 缓存挪到本机的 %LOCALAPPDATA%；localStorage、Cookie 原地不动——
+// 那些一挪用户就被登出了
+if (process.platform === "win32" && process.env.LOCALAPPDATA && !process.env.OWB_USER_DATA_DIR) {
+  try { app.commandLine.appendSwitch("disk-cache-dir", path.join(process.env.LOCALAPPDATA, "openworkbuddy", "Cache")); } catch {}
+}
 
 let win;
 let PAGE_UP = false; // 页面真加载出来了：之后再有偶发异常，不该把用户正在做的事掐掉
@@ -308,6 +314,12 @@ app.setPath("userData", path.join(app.getPath("appData"), "openworkbuddy"));
 // 起测试就等于在他那台上触发 second-instance（窗口被拽到前台）。平时不设
 if (process.env.OWB_USER_DATA_DIR) app.setPath("userData", path.resolve(process.env.OWB_USER_DATA_DIR));
 app.setName("OpenWorkBuddy");
+// Windows 按 AppUserModelID 认「这是哪个应用」：安装程序给开始菜单和桌面快捷方式写的是 appId，
+// 进程自己不设，Electron 会在第一次弹通知时编一个 electron.app.OpenWorkBuddy——通知没图标没署名、
+// 有的直接被系统吞掉，钉在任务栏的图标和开着的窗口也分成两个按钮。
+// 必须和 electron-builder.config.js 的 appId 一字不差，并且赶在建任何窗口、发任何通知之前。
+// 开发态没有快捷方式可对，用 exe 路径当 ID，别冒领装好的那份
+if (process.platform === "win32") app.setAppUserModelId(app.isPackaged ? "com.catcatuncle.openworkbuddy" : process.execPath);
 /**
  * 「关于」面板那行版权：许可证和主页都从 package.json 读。
  * 以前写死 "MIT"，许可证早换成 PolyForm-Noncommercial 了，面板还在说 MIT——对外等于许了一个不存在的授权。
