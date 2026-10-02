@@ -260,6 +260,12 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Oct 2** Prompt templates open a fill-in form first, with choices, defaults and a live preview; select text and click "Make a blank" to write one; deletes can be undone
+- **Oct 2** The Windows installer is a wizard: choose the drive, see progress; the package went from over ten thousand files to about four thousand
+- **Oct 2** Windows tasks no longer flash a black window; Chinese paths, GBK output and high-DPI display fixed; the delete guard catches twenty-odd more spellings
+- **Oct 2** PPT preview follows each slide's real layout; the canvas keeps image proportions and the timeline is a film strip; the output panel closes on narrow windows
+- **Oct 2** Model channels fixed: GLM on Volcano Ark no longer rejected, wrong-channel models are flagged; Tongyi international and Wanxiang image jobs work
+- **Oct 1** Saying "install this skill" in chat installs it into the skill library; connecting an MCP server goes straight to the Connectors page
 - **Oct 1** Long Feishu replies are no longer cut off: they're split into several messages, and charts are sent as images
 - **Oct 1** Older conversations: files already in the workspace root are edited in place, and attachments still open after you switch folders
 - **Oct 1** The CLI gives each conversation its own folder too; "New task" while another task runs no longer lands in that task's folder; Copy works again
