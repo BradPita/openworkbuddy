@@ -4579,6 +4579,7 @@ app.post("/api/pick-folder", async (_req, res) => {
  */
 function openWithSystem(target) {
   const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  // 不加 windowsHide：要的就是打开一个给人看的窗口，加了资源管理器那扇窗会被藏掉
   require("child_process").execFile(opener, [String(target)], () => {});
 }
 app.post("/api/open-workspace", (_req, res) => {
@@ -4590,14 +4591,26 @@ app.post("/api/open-workspace", (_req, res) => {
 // 说明一句免得误解：机器人「收消息」必须有应用的 app_id + app_secret，这是飞书的设计，扫码替代不了。
 // 扫码解决的是另一半——把「你本人」的身份授权出来，之后读日历/文档/邮件是以你的身份调的。
 const LARK_TMP = path.join(require("os").tmpdir(), "openworkbuddy-lark");
+/**
+ * lark-cli 在 Windows 上是 npm 装的 .cmd 垫片：按名字直接 execFile 找不到它（只认 .exe），
+ * 找到了新版 Node 也不许不经 shell 起批处理。先认出全路径，再走引擎那套起法（engines/win.js，顺带不弹黑窗）
+ */
+function larkBin() {
+  if (process.platform !== "win32") return "lark-cli";
+  return require("./engines/which").findIn(shellPath().split(path.delimiter), "lark-cli") || "lark-cli";
+}
+/** 同 execFile；起不来时回调里给 err，返回 null */
+function larkExec(args, opts, cb) {
+  return require("./engines/win").execFile(larkBin(), args, opts, cb);
+}
 function larkRun(args, { timeout = 60000, cwd } = {}) {
   return new Promise((resolve) => {
-    const child = require("child_process").execFile(
-      "lark-cli", args,
+    const child = larkExec(
+      args,
       { timeout, cwd: cwd || LARK_TMP, env: { ...process.env, PATH: shellPath() }, maxBuffer: 4 << 20 },
       (err, stdout, stderr) => resolve({ ok: !err, code: err ? err.code : 0, stdout: stdout || "", stderr: stderr || "" }),
     );
-    child.on("error", () => {});
+    if (child) child.on("error", () => {});
   });
 }
 function larkJson(s) { try { return JSON.parse(String(s).trim()); } catch { return null; } }
@@ -4661,8 +4674,8 @@ app.post("/api/feishu/lark-cli/bind", (_req, res) => {
   if (!f.app_id || !f.app_secret) return res.status(400).json({ error: "先在上面填好 App ID / App Secret 并保存" });
   fs.mkdirSync(LARK_TMP, { recursive: true });
   // secret 走 stdin，不进进程参数表（ps 能看到 argv）
-  const child = require("child_process").execFile(
-    "lark-cli", ["config", "init", "--app-id", f.app_id, "--app-secret-stdin", "--brand", "feishu", "--lang", "zh"],
+  const child = larkExec(
+    ["config", "init", "--app-id", f.app_id, "--app-secret-stdin", "--brand", "feishu", "--lang", "zh"],
     { timeout: 60000, cwd: LARK_TMP, env: { ...process.env, PATH: shellPath() } },
     (err, stdout, stderr) => {
       if (res.headersSent) return;
@@ -4670,6 +4683,7 @@ app.post("/api/feishu/lark-cli/bind", (_req, res) => {
       res.json({ ok: true });
     },
   );
+  if (!child) return; // 起不来：回调里已经回过话了
   child.on("error", (e) => { if (!res.headersSent) res.status(400).json({ error: "lark-cli 没装或调不起来：" + e.message }); });
   try { child.stdin.end(f.app_secret + "\n"); } catch {}
 });
@@ -4688,9 +4702,11 @@ app.post("/api/feishu/app/create", async (_req, res) => {
   const env = { ...process.env, PATH: shellPath() };
   delete env.OPENCLAW_HOME; delete env.HERMES_HOME;
   let out = "";
+  // Windows 上经 launchPlan 起（理由见 larkBin），windowsHide 由它给；别的系统跟以前一样直接起
+  const plan = require("./engines/win").launchPlan(larkBin(), ["config", "init", "--new", "--brand", "feishu", "--lang", "zh"]);
   const child = require("child_process").spawn(
-    "lark-cli", ["config", "init", "--new", "--brand", "feishu", "--lang", "zh"],
-    { cwd: LARK_TMP, env, stdio: ["ignore", "pipe", "pipe"] },
+    plan.bin, plan.args,
+    { cwd: LARK_TMP, env: { ...env, ...plan.env }, stdio: ["ignore", "pipe", "pipe"], ...(process.platform === "win32" ? plan.opts : {}) },
   );
   child.stdout.on("data", (c) => (out += c));
   child.stderr.on("data", (c) => (out += c));
@@ -4770,8 +4786,8 @@ app.post("/api/feishu/qr/start", async (req, res) => {
   } catch {}
 
   // 阻塞式轮询交给后台子进程，前端只问我们自己的 status
-  const child = require("child_process").execFile(
-    "lark-cli", ["auth", "login", "--device-code", j.device_code, "--json"],
+  const child = larkExec(
+    ["auth", "login", "--device-code", j.device_code, "--json"],
     { timeout: (j.expires_in || 600) * 1000 + 15000, cwd: LARK_TMP, env: { ...process.env, PATH: shellPath() } },
     (err, stdout, stderr) => {
       if (!larkQr || larkQr.device_code !== j.device_code) return; // 已被新的一轮顶掉
@@ -4779,7 +4795,7 @@ app.post("/api/feishu/qr/start", async (req, res) => {
       else { larkQr.state = "ok"; larkQr.result = larkJson(stdout) || {}; }
     },
   );
-  child.on("error", (e) => { if (larkQr) { larkQr.state = "error"; larkQr.error = e.message; } });
+  if (child) child.on("error", (e) => { if (larkQr) { larkQr.state = "error"; larkQr.error = e.message; } });
   larkQr = { device_code: j.device_code, url: j.verification_url, expires_at: Date.now() + (j.expires_in || 600) * 1000, state: "pending", child };
   res.json({ ok: true, url: j.verification_url, qr: dataUri, expires_in: j.expires_in || 600 });
 });
@@ -4915,7 +4931,7 @@ let tarVersionText = null; // 本机 tar 是哪一家：一个进程里问一次
 function backupExcludeArgs() {
   if (!tarVersionText) {
     tarVersionText = new Promise((resolve) => {
-      require("child_process").execFile("tar", ["--version"], { timeout: 10000 }, (e, out) => {
+      require("child_process").execFile("tar", ["--version"], { timeout: 10000, windowsHide: true }, (e, out) => {
         if (e) tarVersionText = null; // 没问成下回再问；这一回按认不出处理，一个都不排除
         resolve(e ? "" : String(out || ""));
       });
@@ -4974,7 +4990,7 @@ function makeBackup(tag) {
     if (!entries.length) return reject(new Error("没有可备份的数据"));
     backupExcludeArgs().then((excludes) => require("child_process").execFile(
       "tar", ["-czf", path.join(BACKUP_DIR, name), ...excludes, "-C", DATA_DIR, ...entries],
-      { timeout: 300000 },
+      { timeout: 300000, windowsHide: true },
       (err) => {
         if (err) return reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带；更老的 Windows 请先升级系统）" : "tar 打包失败：" + err.message));
         // 包里整整齐齐装着 config.json（九把 Key）、账号表、积分账本、审计流水。
@@ -5025,10 +5041,10 @@ const BACKUP_SAFE_ENTRY = new RegExp(
 function inspectBackup(p) {
   const execFile = require("child_process").execFile;
   // 32MB 的清单大概装得下四十万条；再多的包不是正常备份，让它在这儿失败比解到一半失败强
-  const opt = { timeout: 300000, maxBuffer: 32 * 1024 * 1024 };
+  const opt = { timeout: 300000, maxBuffer: 32 * 1024 * 1024, windowsHide: true };
   const run = (args) =>
     new Promise((resolve, reject) =>
-      execFile("tar", args, opt, (err, out) => {
+      execFile("tar", args, opt, (err, out) => { // windowsHide 在 opt 里
         if (!err) return resolve(String(out || ""));
         if (err.code === "ENOENT") return reject(new Error("系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）"));
         if (err.code === "ENOBUFS") return reject(new Error("这个包里的文件太多了，不像是 OpenWorkBuddy 的备份"));
@@ -5141,7 +5157,7 @@ app.post("/api/backup/restore", async (req, res) => {
     await new Promise((resolve, reject) =>
       // --no-same-owner：包可能是从另一台机器导进来的，里面记的 uid 跟这儿对不上，
       // 不加这个的话以 root 跑的服务会把文件的属主改成那台机器上的号，恢复完自己反而读不了
-      require("child_process").execFile("tar", ["-xzf", p, "--no-same-owner", "-C", DATA_DIR], { timeout: 300000 },
+      require("child_process").execFile("tar", ["-xzf", p, "--no-same-owner", "-C", DATA_DIR], { timeout: 300000, windowsHide: true },
         (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）" : "tar 解包失败：" + err.message)) : resolve()))
     );
     security.audit("数据恢复", `已从 ${path.basename(p)} 恢复（恢复前现状已存为 ${safety}）`, "放行");
@@ -5954,7 +5970,7 @@ app.post("/api/files/copy", async (req, res) => {
         return res.json({ ok: true, kind: "file", name: path.basename(p) });
       }
     } catch {}
-    const r = require("./cli-attach.js").writeClipboard({ file: p });
+    const r = await require("./cli-attach.js").writeClipboardAsync({ file: p });
     if (!r.ok) return res.status(400).json({ error: r.why || "剪贴板写不进去" });
     res.json({ ok: true, kind: r.kind, name: path.basename(p) });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -7548,6 +7564,7 @@ app.post("/api/eval/start", (req, res) => {
   const child = require("child_process").spawn(require("./electron-bridge").nodeExec(), args, {
     cwd: appPath(),
     env: { ...process.env, OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
+    windowsHide: true,
   });
   let buf = "";
   const onData = (d) => {

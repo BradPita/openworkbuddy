@@ -22,6 +22,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { StringDecoder } = require("string_decoder");
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -392,6 +393,18 @@ function sameTarget(prev, s) {
 
 const CLIENT_INFO = { name: "openworkbuddy", version: "0.1.0" };
 
+/** Windows：命令名 → 真正的文件（npx → C:\…\npm\npx.cmd）。认不出返回空 */
+function resolveWinCommand(cmd) {
+  const which = require("./engines/which");
+  const s = String(cmd || "");
+  if (!s) return "";
+  if (/[\\/]/.test(s)) {
+    for (const ext of ["", ".cmd", ".exe", ".bat"]) if (which.runnable(s + ext)) return s + ext;
+    return "";
+  }
+  return which.findIn(which.searchDirs(), s);
+}
+
 /** 子进程 + 按行 JSON-RPC。响应是异步回来的，所以要自己维护 id → pending 表。 */
 class StdioTransport {
   constructor(name, { command, args = [], env = {}, cwd }) {
@@ -408,12 +421,25 @@ class StdioTransport {
   }
 
   async open() {
-    this.proc = spawn(this.command, this.args, {
-      env: { ...process.env, ...this.env },
+    let bin = this.command, args = this.args, extra = {}, env = {};
+    if (process.platform === "win32") {
+      // npx、uvx 这些在 Windows 上是 .cmd 垫片。以前整条交给 shell 拼：带空格的参数（C:\Users\张 三\…）当场断开，
+      // 而且没有 windowsHide——MCP 服务开着多久，桌面上就挂多久一个黑窗口。
+      // 先认出真身，再走引擎同一套起法（拆垫片 / 直接起 / 实在不行才经 cmd），windowsHide 由它给
+      const real = resolveWinCommand(this.command);
+      if (real) {
+        const plan = require("./engines/win").launchPlan(real, this.args);
+        ({ bin, args, opts: extra, env } = plan);
+      } else extra = { shell: true, windowsHide: true }; // 认不出：照旧让 cmd 自己去找，至少不弹窗
+    }
+    this.proc = spawn(bin, args, {
+      env: { ...process.env, ...env, ...this.env },
       cwd: this.cwd || undefined,
-      shell: process.platform === "win32", // npx 等命令在 Windows 上需要 shell
       stdio: ["pipe", "pipe", "pipe"],
+      ...extra,
     });
+    // 按流解码：一个汉字被切在两块中间，toString 各解各的，结果里就多出两个 �
+    this.dec = new StringDecoder("utf8");
     this.proc.stdout.on("data", (d) => this._onData(d));
     this.proc.stderr.on("data", (d) => this._onStderr(d));
     this.proc.on("error", (e) => this._failAll(e));
@@ -456,11 +482,14 @@ class StdioTransport {
   }
 
   close() {
-    try { this.proc && this.proc.kill(); } catch {}
+    if (!this.proc) return;
+    // Windows 上 kill() 只杀得到最外面一层（经 cmd 起的那种，真正的服务是它的孩子），得 taskkill /T
+    if (process.platform === "win32") require("./engines/win").killTree(this.proc, "SIGKILL");
+    else try { this.proc.kill(); } catch {}
   }
 
   _onData(d) {
-    this.buf += d.toString();
+    this.buf += this.dec ? this.dec.write(d) : String(d);
     let idx;
     while ((idx = this.buf.indexOf("\n")) >= 0) {
       const line = this.buf.slice(0, idx).trim();
@@ -989,5 +1018,5 @@ class McpManager {
 module.exports = {
   McpManager, McpClient, StdioTransport, HttpTransport, PROTOCOL_VERSION, whyFailed,
   renderContent, cfgFingerprint, MAX_TOOL_PAGES, TOOLS_CACHE_REL, MEDIA_REL,
-  redactUrl, redactServer, secretValues, scrubText, sameTarget,
+  redactUrl, redactServer, secretValues, scrubText, sameTarget, resolveWinCommand,
 };

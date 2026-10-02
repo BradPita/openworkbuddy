@@ -135,6 +135,26 @@ function launchPlan(bin, args = [], deps = {}) {
   };
 }
 
+/**
+ * execFile 的跨平台版：只要输出、等它退出的那种短命令（--help、debug models）用它。
+ * 直接 execFile 一个 .cmd 垫片，新版 Node 当场抛 EINVAL（不许不经 shell 起批处理），
+ * 设置页的模型候选就整个拿不到；而且不带 windowsHide 每探一次闪一个黑窗口。
+ * 起不来时照 execFile 的规矩回调 err，不往外抛。
+ */
+function execFile(bin, args, opts, cb, deps = {}) {
+  const plan = launchPlan(bin, args, deps);
+  const o = { ...(opts || {}), ...plan.opts };
+  delete o.detached; // 等它退出就完事，用不着自成进程组
+  if (Object.keys(plan.env).length) o.env = { ...((opts && opts.env) || process.env), ...plan.env };
+  const run = deps.execFile || require("child_process").execFile;
+  try {
+    return run(plan.bin, plan.args, o, cb);
+  } catch (e) {
+    process.nextTick(() => cb(e, "", ""));
+    return null;
+  }
+}
+
 /** 杀掉整棵进程树。Windows 没有进程组这一说，用 taskkill /T；别的系统按进程组发信号 */
 function killTree(child, signal, deps = {}) {
   const win = deps.win === undefined ? isWin() : deps.win;
@@ -149,4 +169,4 @@ function killTree(child, signal, deps = {}) {
   try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch {} }
 }
 
-module.exports = { isWin, isBatch, shimScript, pickNode, escapeArg, launchPlan, killTree, CMD_MAX };
+module.exports = { isWin, isBatch, shimScript, pickNode, escapeArg, launchPlan, execFile, killTree, CMD_MAX };

@@ -75,7 +75,7 @@ function runOne(hook, { cwd, env, stopSignal } = {}) {
     let child;
     try {
       child = spawn(hook.run, {
-        shell: true, cwd, detached: process.platform !== "win32",
+        shell: true, cwd, detached: process.platform !== "win32", windowsHide: true,
         env: { ...process.env, ...(env || {}) },
         stdio: ["ignore", "pipe", "pipe"],
       });

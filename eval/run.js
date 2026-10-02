@@ -124,7 +124,7 @@ const JUDGE_SYSTEM = `你是严格的 AI 智能体评测评委。机器已经判
 
 function gitCommit() {
   try {
-    const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: path.join(__dirname, ".."), encoding: "utf8", timeout: 5000 });
+    const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: path.join(__dirname, ".."), encoding: "utf8", timeout: 5000, windowsHide: true });
     return r.status === 0 ? String(r.stdout).trim() : "";
   } catch { return ""; }
 }

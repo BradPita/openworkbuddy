@@ -1098,21 +1098,16 @@ function killChildren(sig, extra = typeof serverRoots === "function" ? serverRoo
   try {
     if (process.platform === "win32") {
       // Windows 没有进程组、也没有 ps：PowerShell 列出直接子进程（带命令行，好认出 --type= 的 Electron 自家进程），
-      // taskkill /T 连孙子一起带走。不分先礼后兵，一律 /F：走到这一步已经给过它们 3 秒了
-      let n = 0;
-      for (const root of roots) {
-        const r = cp.spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-          `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${root}' | ForEach-Object { [string]$_.ProcessId + ' ${root} 0 ' + $_.Name + ' ' + $_.CommandLine }`],
-        { encoding: "utf8", timeout: 5000, windowsHide: true });
-        const { pids } = childTree(r.stdout, root, keep.concat(r.pid || []));
-        for (const p of pids) {
-          try { cp.spawnSync("taskkill", ["/PID", String(p), "/T", "/F"], { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch {}
-        }
-        n += pids.length;
+      // taskkill /T 连孙子一起带走。不分先礼后兵，一律 /F：走到这一步已经给过它们 3 秒了。
+      // 退出收尾走的是下面的异步版 killChildrenWin；这里只剩关机、重启应用那两条来不及等的路
+      const r = cp.spawnSync("powershell.exe", winChildArgs(roots), { encoding: "utf8", timeout: 5000, windowsHide: true });
+      const pids = winTargets(r.stdout, roots, keep.concat(r.pid || []));
+      if (pids.length) {
+        try { cp.spawnSync("taskkill", winKillArgs(pids), { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch {}
       }
-      return n;
+      return pids.length;
     }
-    // -ww：不截断命令行，--type= 在很长的一串参数后面
+    // -ww：不截断命令行，--type= 在很长的一串参数后面。不加 windowsHide：Windows 在上面那段就 return 了
     const r = cp.spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,pgid=,args="], { encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
     let n = 0;
     for (const root of roots) {
@@ -1122,6 +1117,53 @@ function killChildren(sig, extra = typeof serverRoots === "function" ? serverRoo
       n += pids.length;
     }
     return n;
+  } catch (e) {
+    bootLog("▲ 清子进程出错：" + String((e && e.message) || e));
+    return 0;
+  }
+}
+
+/** Windows：一次 PowerShell 列出这几个根底下的直接子进程。它冷启动就要一两秒，别每个根起一次 */
+function winChildArgs(roots) {
+  const filter = roots.map((r) => `ParentProcessId=${Number(r)}`).join(" OR ");
+  return ["-NoProfile", "-NonInteractive", "-Command",
+    `Get-CimInstance Win32_Process -Filter '${filter}' | ForEach-Object { [string]$_.ProcessId + ' ' + [string]$_.ParentProcessId + ' 0 ' + $_.Name + ' ' + $_.CommandLine }`];
+}
+
+/** 上面列出来的 → 各根底下要送走的 pid，合在一起 */
+function winTargets(out, roots, keep) {
+  const all = new Set();
+  for (const root of roots) for (const p of childTree(out, root, keep).pids) all.add(p);
+  return [...all];
+}
+
+/** 一条 taskkill 带走全部：每个 pid 起一次 taskkill 也是一次进程启动 */
+function winKillArgs(pids) {
+  return ["/T", "/F", ...pids.flatMap((p) => ["/PID", String(p)])];
+}
+
+/**
+ * killChildren 的 Windows 异步版，退出收尾用。同步那版要干等 PowerShell 冷启动，
+ * 这一两秒主线程卡住，窗口标题栏挂上「未响应」，人以为退出卡死了，再点一下就成了强制结束。
+ */
+async function killChildrenWin(extra = typeof serverRoots === "function" ? serverRoots() : []) {
+  const cp = require("child_process");
+  const keep = [];
+  try { for (const m of app.getAppMetrics()) keep.push(m.pid); } catch {}
+  const roots = [process.pid, ...extra];
+  const run = (bin, args) => new Promise((resolve) => {
+    /** @type {any} */
+    let child = null;
+    try {
+      child = cp.execFile(bin, args, { encoding: "utf8", timeout: 5000, windowsHide: true, maxBuffer: 16 << 20 },
+        (_e, out) => resolve({ out: String(out || ""), pid: (child && child.pid) || 0 }));
+    } catch { resolve({ out: "", pid: 0 }); }
+  });
+  try {
+    const r = await run("powershell.exe", winChildArgs(roots));
+    const pids = winTargets(r.out, roots, keep.concat(r.pid || []));
+    if (pids.length) await run("taskkill", winKillArgs(pids));
+    return pids.length;
   } catch (e) {
     bootLog("▲ 清子进程出错：" + String((e && e.message) || e));
     return 0;
@@ -1140,6 +1182,9 @@ function shutdown() {
   if (SHUTDOWN) return SHUTDOWN;
   SHUTDOWN = (async () => {
     const t0 = Date.now();
+    const onWin = process.platform === "win32";
+    // Windows 上收尾要几秒（等任务停、PowerShell 列进程），窗口先收起来：点了关闭窗口还杵着，人会再点、会去任务管理器结束
+    if (onWin && win && !win.isDestroyed()) win.hide();
     let gaveUp = false;
     const settle = (async () => {
       const ids = await runningTasks();
@@ -1159,9 +1204,10 @@ function shutdown() {
     clearTimeout(timer);
     gaveUp = true;
     if (late) bootLog(`▲ 退出：等了 ${SHUTDOWN_WAIT_MS}ms 任务还没收完，不等了`);
-    const termed = killChildren("SIGTERM");
+    // Windows 那版一律 taskkill /F，一遍就够，不补第二遍
+    const termed = onWin ? await killChildrenWin() : killChildren("SIGTERM");
     let killed = 0;
-    if (termed) {
+    if (termed && !onWin) {
       await new Promise((r) => setTimeout(r, 500));
       killed = killChildren("SIGKILL"); // 重新列一遍：半秒里走掉的不会再挨一下，pid 被别人复用了也伤不着
     }

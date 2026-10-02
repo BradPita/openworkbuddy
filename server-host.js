@@ -46,6 +46,7 @@ async function reapDescendants() {
   if (process.platform === "win32") return 0; // Windows 上由主进程按父进程号 taskkill /T（electron-main.js killChildren）
   const cp = require("child_process");
   const list = () => {
+    // 不加 windowsHide：Windows 在函数开头就 return 了
     const r = cp.spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8", timeout: 5000 });
     const rows = [];
     for (const line of String(r.stdout || "").split("\n")) {

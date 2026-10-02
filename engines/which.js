@@ -117,6 +117,7 @@ function askLoginShell(name, timeoutMs = 6000) {
     const shell = process.env.SHELL || "/bin/zsh";
     let child;
     try {
+      // 不加 windowsHide：Windows 上开头就 return 了
       child = spawn(shell, ["-lic", `command -v ${name} 2>/dev/null | head -1`], {
         stdio: ["ignore", "pipe", "ignore"],
         env: { ...process.env, PATH: augmentedPath() },

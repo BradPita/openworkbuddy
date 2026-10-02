@@ -20,7 +20,7 @@ const { spawnSync } = require("child_process");
 // 子进程跑 node 验证成果代码：桌面版里 execPath 是 Electron，必须 ELECTRON_RUN_AS_NODE
 function runNode(args, cwd) {
   return spawnSync(process.execPath, args, {
-    cwd, timeout: 15000, encoding: "utf8",
+    cwd, timeout: 15000, encoding: "utf8", windowsHide: true,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
   });
 }

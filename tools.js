@@ -10,7 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { spawn, spawnSync } = require("child_process");
-const { StringDecoder } = require("string_decoder");
+const { outDecoder } = require("./lib/out-decode");
 const security = require("./security");
 const memory = require("./memory");
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
@@ -986,7 +986,8 @@ function pruneOldOutLogs() {
 }
 
 function makeOutSink(kind, headMax, tailMax) {
-  const dec = new StringDecoder("utf8"); // 一个中文字被切在两个 chunk 中间会变乱码，必须按流解码
+  // 一个中文字被切在两个 chunk 中间会变乱码，必须按流解码；Windows 上 cmd 自带命令吐的是 GBK，见 lib/out-decode.js
+  const dec = outDecoder();
   let head = "", tail = "", total = 0, fd = null, rel = "", buf = [], bufLen = 0;
   function openSpill() {
     try {
@@ -1054,11 +1055,15 @@ function makeOutSink(kind, headMax, tailMax) {
  * 但用户已经明确说了停，不能无限等——给 grace 毫秒，到点还在就硬杀。
  */
 function killTree(child, grace = 2000) {
+  if (process.platform === "win32") {
+    // 没有先礼后兵这一说（不带 /F 的 taskkill 对没窗口的命令行程序不起作用），一遍 /F 连孙子带走就够了。
+    // error 要接住：taskkill 万一起不来，没人接的 error 事件会把整个服务进程带走
+    try { spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {}); }
+    catch { try { child.kill(); } catch {} }
+    return;
+  }
   const send = (sig) => {
-    try {
-      if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-      else process.kill(-child.pid, sig);
-    } catch {
+    try { process.kill(-child.pid, sig); } catch {
       try { child.kill(sig); } catch {}
     }
   };
@@ -1135,6 +1140,7 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
       env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", ...depsGuardEnv(cwd, code, process.env.PATH) },
       // 同 runShell：脚本里读 stdin 就当场读到结尾，别空等到超时
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const out = makeOutSink("node", 8000, 8000);
     const err = makeOutSink("node-err", 4000, 6000);
@@ -1190,10 +1196,22 @@ function depsGuardEnv(cwd, text, basePath) {
   } catch { return {}; }
 }
 
+/**
+ * Windows 上让 Python 往管道里写 UTF-8。不设的话它按系统代码页（中文系统 GBK）写，
+ * print 一个 emoji 或生僻字当场 UnicodeEncodeError，脚本半路崩掉；用户自己设过的不动。
+ */
+function winTextEnv(env = process.env, platform = process.platform) {
+  if (platform !== "win32") return {};
+  return { PYTHONUTF8: env.PYTHONUTF8 || "1", PYTHONIOENCODING: env.PYTHONIOENCODING || "utf-8" };
+}
+
 /** 按平台挑 shell：macOS zsh；Linux bash（没有就 sh）；Windows cmd（ComSpec） */
-function pickShell(command) {
-  if (process.platform === "win32") {
-    return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", command], opts: { windowsVerbatimArguments: true } };
+function pickShell(command, platform = process.platform) {
+  if (platform === "win32") {
+    // 整条命令外面再包一层引号：/s 会剥掉最外面那对。不包的话，以引号开头又以引号结尾的命令
+    // （`"C:\Program Files\x.exe" "a b"`）首尾两个引号被剥掉，路径当场断成两截。Node 自己 shell:true 也是这么拼的。
+    // windowsHide：服务进程没有控制台，不加的话每跑一条命令弹一个黑窗口
+    return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", `"${command}"`], opts: { windowsVerbatimArguments: true, windowsHide: true } };
   }
   // macOS 上 -o nonomatch 是必须的：zsh 默认通配符没匹配上就**整条命令拒绝执行**，
   // 而模型写的是 bash 味的命令。真实会话里这一条烧掉 10 次——
@@ -1202,7 +1220,7 @@ function pickShell(command) {
   //   `for f in *.md; do ...; done` 没匹配上 → 整个循环连同后面的收尾全不执行，exit 1；
   //   `curl http://a.com/x?id=1` 不加引号 → ? 和 [] 在 zsh 里也是通配符，命令直接不跑。
   // 关掉之后行为跟 bash 一致：通配符原样传给命令，由命令自己报错，脚本接着往下走。
-  if (process.platform === "darwin") return { bin: "/bin/zsh", args: ["-o", "nonomatch", "-c", command], opts: {} };
+  if (platform === "darwin") return { bin: "/bin/zsh", args: ["-o", "nonomatch", "-c", command], opts: {} };
   const bash = fs.existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
   return { bin: bash, args: ["-c", command], opts: {} };
 }
@@ -1260,7 +1278,7 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
       cwd: cwd || ws(),
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
-      env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()) },
+      env: { ...process.env, ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()) },
       // stdin 不给：留着一根没人写的管道，`read`、python 的 input()、npm init 这种等输入的命令
       // 会一直等到超时才回来。给 /dev/null，它当场读到结尾，要么走默认值要么报错退出
       stdio: ["ignore", "pipe", "pipe"],
@@ -2090,7 +2108,7 @@ function startBackground(cmd, cwd, opts, keep = false) {
         cwd: cwd || ws(),
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()) },
+        env: { ...process.env, ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()) },
         ...sh.opts,
       });
     },
@@ -2111,7 +2129,13 @@ function hookBgExit() {
   if (bgExitHooked) return;
   bgExitHooked = true;
   // 进程退出时把后台那几条一起收掉：不然一个 npm run dev 会在我们走了之后一直占着端口
-  const reap = () => CT.bgKillAll((c) => { try { if (process.platform === "win32") c.kill(); else process.kill(-c.pid, "SIGTERM"); } catch {} });
+  // Windows 上 c.kill() 只杀得到 cmd 那一层，npm run dev 起的 node 会活下来接着占端口；exit 里不能等异步，用同步的 taskkill
+  const reap = () => CT.bgKillAll((c) => {
+    try {
+      if (process.platform === "win32") require("child_process").spawnSync("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 3000 });
+      else process.kill(-c.pid, "SIGTERM");
+    } catch {}
+  });
   process.on("exit", reap);
 }
 hookBgExit();
@@ -2150,6 +2174,7 @@ function psRows(text) {
 /** 异步列一次全机进程；ps 跑不了返回 null——认不出是谁就不杀 */
 function psList() {
   return new Promise((resolve) => {
+    // 不加 windowsHide：调它的几处（groupAlive / trackBgGroup / reapStrays）在 Windows 上都先 return 了
     require("child_process").execFile("ps", PS_ARGS, { env: PS_ENV(), maxBuffer: 16 * 1048576, timeout: 5000 }, (err, stdout) => resolve(err ? null : psRows(stdout)));
   });
 }
@@ -2286,6 +2311,7 @@ async function reapLeftoverStrays() {
 function reapStraysAtExit() {
   if (!strays.size || process.platform === "win32") return;
   let rows = null;
+  // 不加 windowsHide：Windows 上面一行就 return 了
   try { rows = psRows(require("child_process").execFileSync("ps", PS_ARGS, { env: PS_ENV(), encoding: "utf8", timeout: 3000, maxBuffer: 16 * 1048576 })); } catch {}
   if (!rows) return;
   for (const g of verifiedPgids([...strays.values()], rows)) { try { process.kill(-g, "SIGTERM"); } catch {} }
@@ -4912,4 +4938,4 @@ const diskConnectorHost = {
 };
 
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector };

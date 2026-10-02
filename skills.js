@@ -529,7 +529,7 @@ async function installFromGitHub(url, opts = {}) {
     let commit = "";
     try {
       const { spawnSync } = require("child_process");
-      const r = spawnSync("git", ["-C", tmp, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 10000 });
+      const r = spawnSync("git", ["-C", tmp, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 10000, windowsHide: true });
       if (r.status === 0) commit = String(r.stdout || "").trim().slice(0, 40);
     } catch {}
     // 先把这个仓库里的技能全扫一遍，再决定动不动手。
@@ -606,7 +606,7 @@ function cloneRepo({ owner, repo, branch, subpath }) {
   const cleanup = () => fs.rmSync(tmp, { recursive: true, force: true });
   const url = `https://github.com/${owner}/${repo}.git`;
   const br = branch ? ["--branch", branch] : [];
-  const run = (args) => spawnSync("git", args, { timeout: 180000, encoding: "utf8" });
+  const run = (args) => spawnSync("git", args, { timeout: 180000, encoding: "utf8", windowsHide: true });
 
   if (subpath) {
     const r = run(["clone", "--depth", "1", "--filter=blob:none", "--sparse", ...br, url, tmp]);

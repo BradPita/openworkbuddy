@@ -39,7 +39,7 @@ const GIT_TIMEOUT = 60000;
 
 function git(cwd, args, opt) {
   return spawnSync("git", ["-C", cwd, ...args], {
-    encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, ...opt,
+    encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, windowsHide: true, ...opt,
   });
 }
 const out = (r) => (r && r.status === 0 ? String(r.stdout || "").trim() : "");
@@ -128,7 +128,7 @@ const repoCache = new Map(); // 绝对路径 → { at, p }
 function gitAsync(cwd, args, opt) {
   return new Promise((resolve) => {
     childProcess.execFile("git", ["-C", cwd, ...args], {
-      encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, ...opt,
+      encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, windowsHide: true, ...opt,
     }, (err, stdout, stderr) => {
       // 跟 spawnSync 的返回长一个样，out() 两边通用：没起来（没装 git / 超时被杀）算非 0
       resolve({ status: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr });
@@ -136,10 +136,25 @@ function gitAsync(cwd, args, opt) {
   });
 }
 
-/** repoOf 的异步版，一步不差地照抄：是不是仓库、仓库根、主仓库，三问 */
+/**
+ * 往上找有没有 .git（仓库里是目录，分身里是个文件）。一个都没有就不必起 git：Windows 上起一次进程几十毫秒，
+ * 而「不是仓库」不进缓存，工作区不是仓库的人每一轮都要白起好几次
+ */
+async function hasGitAbove(dir) {
+  if (process.env.GIT_DIR) return true;
+  for (let d = path.resolve(dir); ;) {
+    try { await fs.promises.stat(path.join(d, ".git")); return true; } catch {}
+    const up = path.dirname(d);
+    if (up === d) return false;
+    d = up;
+  }
+}
+
+/** repoOf 的异步版：是不是仓库、仓库根、主仓库，三问。多一步：往上连 .git 都没有就不起 git */
 async function repoOfAsync(dir) {
   if (!dir) return null;
   try { if (!(await fs.promises.stat(dir)).isDirectory()) return null; } catch { return null; }
+  if (!(await hasGitAbove(dir))) return null;
   if (out(await gitAsync(dir, ["rev-parse", "--is-inside-work-tree"])) !== "true") return null;
   const root = out(await gitAsync(dir, ["rev-parse", "--show-toplevel"]));
   if (!root) return null;
@@ -188,7 +203,7 @@ function seedFrom(src, dst) {
     if (names) {
       const patch = git(src, ["diff", "HEAD", "--binary"], { encoding: "buffer", maxBuffer: 256 * 1048576 });
       if (patch.status === 0 && patch.stdout && patch.stdout.length) {
-        const ap = spawnSync("git", ["-C", dst, "apply", "--whitespace=nowarn"], { input: patch.stdout, encoding: "utf8", timeout: GIT_TIMEOUT });
+        const ap = spawnSync("git", ["-C", dst, "apply", "--whitespace=nowarn"], { input: patch.stdout, encoding: "utf8", timeout: GIT_TIMEOUT, windowsHide: true });
         if (ap.status === 0) note.patched = names.split("\n").length;
         else note.skipped = "没提交的改动打不进分身（" + String(ap.stderr || "").trim().split("\n")[0].slice(0, 80) + "）";
       }
@@ -435,5 +450,5 @@ function hint(info) {
 module.exports = {
   repoOf, plan, repoOfAsync, planAsync, open, defaultStore, list, status, close, release, sweep, hint, commitAll, markOf,
   BRANCH_PREFIX, KEEP_DAYS,
-  _internals: { git, gitAsync, repoOfCached, repoCache, REPO_TTL, seedFrom, keyOf, safeName, metaPath, readMeta, SEED_MAX_FILES, SEED_MAX_BYTES },
+  _internals: { git, gitAsync, hasGitAbove, repoOfCached, repoCache, REPO_TTL, seedFrom, keyOf, safeName, metaPath, readMeta, SEED_MAX_FILES, SEED_MAX_BYTES },
 };

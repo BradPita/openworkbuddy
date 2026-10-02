@@ -348,8 +348,13 @@ console.log("\n⑧b 写剪贴板：文件 > 路径，而且得说得出放进去
     "★名字里的空格要用引号包起来★ AppleScript 里裸写会当场语法错", mac[0].args[1]);
   const win = A.clipboardPutPlan("win32", "C:\\w\\a.mp3");
   eq(win.map((s) => s.kind), ["file", "path"], "Windows 上同一个顺序");
-  ok(win[0].args.join(" ").includes("-Path") && win[1].args.join(" ").includes("-Value"),
-    "★-Path 放的是文件，-Value 放的是字★ 两个参数差一个词，结果完全是两回事", win.map((s) => s.args.join(" ")));
+  ok(win[0].args.join(" ").includes("-LiteralPath 'C:\\w\\a.mp3'") && win[1].args.join(" ").includes("-Value 'C:\\w\\a.mp3'"),
+    "★-LiteralPath 放的是文件，-Value 放的是字★ 两个参数差一个词，结果完全是两回事", win.map((s) => s.args.join(" ")));
+  const odd = A.clipboardPutPlan("win32", "C:\\w\\$HOME 小王’s [终版].pptx")[0].args[2];
+  eq(odd, "Set-Clipboard -LiteralPath 'C:\\w\\$HOME 小王’’s [终版].pptx'",
+    "★名字里带 $、弯引号、方括号★ 单引号里 $ 不展开；弯引号 PowerShell 也当单引号认，得成对；方括号走 -LiteralPath 不当通配符");
+  eq(A.psQuote("it's"), "'it''s'", "单引号成对写");
+  ok(!/Save\("/.test(A.clipboardPlan("win32", "C:\\t\\$x.png")[1].args[2]), "读剪贴板存图那条也不用双引号（$ 会被展开）");
   const lin = A.clipboardPutPlan("linux", "/w/配乐.mp3");
   eq(lin.map((s) => s.kind), ["file", "file", "path", "path"],
     "Linux 上 Wayland 和 X11 各试一遍，但两个文件那档要排在两个路径那档前面");
@@ -384,6 +389,29 @@ console.log("\n⑧b 写剪贴板：文件 > 路径，而且得说得出放进去
   ok(A.writeClipboard({ platform: "aix", file: "/w/a.mp3", run: () => ({ status: 0 }) }).why.includes("aix"),
     "★不支持的系统直说是系统的事★ 跟「命令跑挂了」混为一谈，人会去装一个根本不存在的东西");
 }
+
+console.log("\n⑧c 服务端写剪贴板：异步，不卡住整个服务");
+const asyncChecks = (async () => {
+  const seen = [];
+  const run = (table) => async (cmd, args, step) => { seen.push(cmd + ":" + step.kind); await new Promise((r) => setImmediate(r)); const v = table[step.kind]; if (v instanceof Error) throw v; return v || { status: 0 }; };
+  eq(await A.writeClipboardAsync({ platform: "win32", file: "C:\\w\\a.mp3", run: run({}) }), { ok: true, kind: "file", file: "C:\\w\\a.mp3" }, "异步版：第一档成了就停");
+  eq(seen, ["powershell:file"], "  └ 不多跑第二条（会把文件盖成一行路径）");
+  seen.length = 0;
+  eq((await A.writeClipboardAsync({ platform: "win32", file: "C:\\w\\a.mp3", run: run({ file: { status: 1 } }) })).kind, "path", "  └ 放不进文件退而放路径");
+  const dead = await A.writeClipboardAsync({ platform: "win32", file: "C:\\w\\a.mp3", run: run({ file: new Error("EPERM"), path: { status: null, error: new Error("spawn powershell ENOENT") } }) });
+  ok(dead.ok === false && dead.tried.length === 2 && /EPERM/.test(dead.tried[0]) && /ENOENT/.test(dead.tried[1]), "  └ 都挂了：不抛，把试过的两条摆出来", dead);
+  // 默认跑法真起一次 node（不碰剪贴板）：退出码、起不来、stdin 都要对上 spawnSync 那个形状
+  const node = process.execPath;
+  eq(await A._runAsync(node, ["-e", "process.exit(3)"], {}), { status: 3 }, "  └ 默认跑法：退出码照实带回");
+  const miss = await A._runAsync("owb-no-such-cmd-xyz", [], {});
+  ok(miss.status === null && miss.error && /ENOENT/.test(miss.error.code || miss.error.message), "  └ 命令起不来：带回 error，不抛", miss);
+  eq(await A._runAsync(node, ["-e", "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.exit(s==='file:///w/a'?0:5))"], { stdin: "file:///w/a" }), { status: 0 },
+    "  └ stdin 写进去了，而且关上了（PowerShell 碰上开着的管道会一直等）");
+  eq(await A._runAsync(node, ["-e", "process.stdin.on('end',()=>process.exit(0)).resume()"], {}), { status: 0 }, "  └ 没东西要写也把 stdin 关上");
+  const SRV = require("fs").readFileSync(require("path").join(__dirname, "..", "server.js"), "utf8");
+  ok(/await require\("\.\/cli-attach\.js"\)\.writeClipboardAsync\(\{ file: p \}\)/.test(SRV) && !/\.writeClipboard\(\{ file: p \}\)/.test(SRV),
+    "★服务端走异步版★ 同步那版在 Windows 上一等一两秒，整个服务停着", "");
+})();
 
 // ── ⑨ cli.js 的接线 ──────────────────────────────────────────────────────
 console.log("\n⑨ cli.js 接线：顺序和边界");
@@ -473,5 +501,7 @@ console.log("\n⑪ cli-attach 自己不说话、不做主");
     "fs 和 run 都能从外面塞进来——所以上面那些时序才真对得了");
 }
 
-console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
-process.exit(fail === 0 ? 0 : 1);
+asyncChecks.catch((e) => { fail++; console.log("  ✗ 异步那段抛了：" + (e && e.stack || e)); }).then(() => {
+  console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
+  process.exit(fail === 0 ? 0 : 1);
+});

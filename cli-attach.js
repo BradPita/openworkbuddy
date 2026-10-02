@@ -253,6 +253,14 @@ const anyImage = (names) => (names || []).some((n) => IMAGE_EXT.test(String(n)))
  * 返回的是一张命令表，不是执行结果：这样「哪个系统用什么命令、按什么顺序试」
  * 能在测试里直接对，不用真去动一台机器的剪贴板。
  */
+/**
+ * 一段字放进 PowerShell 单引号里。双引号里 $ 和反引号会被展开（名字带 $ 的文件就成了另一个路径）；
+ * 单引号里只有引号本身要成对写——PowerShell 把弯引号 ‘’‚‛ 也当单引号认，中文文件名里常见，一起成对
+ */
+function psQuote(s) {
+  return "'" + String(s).replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&") + "'";
+}
+
 function clipboardPlan(platform, dest) {
   const to = String(dest || "");
   if (platform === "darwin") {
@@ -272,7 +280,7 @@ function clipboardPlan(platform, dest) {
     const ps = (script) => ({ cmd: "powershell", args: ["-NoProfile", "-Command", script] });
     return [
       Object.assign({ kind: "files" }, ps("Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }")),
-      Object.assign({ kind: "image", writesFile: true }, ps(`$i = Get-Clipboard -Format Image; if ($i) { $i.Save(${JSON.stringify(to)}) } else { exit 1 }`)),
+      Object.assign({ kind: "image", writesFile: true }, ps(`$i = Get-Clipboard -Format Image; if ($i) { $i.Save(${psQuote(to)}) } else { exit 1 }`)),
       Object.assign({ kind: "text" }, ps("Get-Clipboard -Raw")),
     ];
   }
@@ -301,7 +309,7 @@ function readClipboard(o) {
   const platform = opt.platform || process.platform;
   const dest = opt.dest || "";
   const fsx = opt.fs || fs;
-  const run = opt.run || ((cmd, args) => require("child_process").spawnSync(cmd, args, { maxBuffer: 256 * 1048576 }));
+  const run = opt.run || ((cmd, args) => require("child_process").spawnSync(cmd, args, { maxBuffer: 256 * 1048576, windowsHide: true }));
   const plan = clipboardPlan(platform, dest);
   if (!plan.length) return { kind: "unsupported", why: `${platform} 上没有能读剪贴板的现成命令` };
 
@@ -366,8 +374,9 @@ function clipboardPutPlan(platform, file) {
   if (platform === "win32") {
     const ps = (script) => ({ cmd: "powershell", args: ["-NoProfile", "-Command", script] });
     return [
-      Object.assign({ kind: "file" }, ps(`Set-Clipboard -Path ${JSON.stringify(f)}`)),
-      Object.assign({ kind: "path" }, ps(`Set-Clipboard -Value ${JSON.stringify(f)}`)),
+      // -LiteralPath：-Path 把 [ ] 当通配符，「报告[终版].pptx」会找不到
+      Object.assign({ kind: "file" }, ps(`Set-Clipboard -LiteralPath ${psQuote(f)}`)),
+      Object.assign({ kind: "path" }, ps(`Set-Clipboard -Value ${psQuote(f)}`)),
     ];
   }
   if (platform === "linux") {
@@ -393,16 +402,57 @@ function writeClipboard(o) {
   const platform = opt.platform || process.platform;
   const file = opt.file || "";
   const run = opt.run || ((cmd, args, step) =>
-    require("child_process").spawnSync(cmd, args, { input: (step && step.stdin) || undefined }));
+    require("child_process").spawnSync(cmd, args, { input: (step && step.stdin) || undefined, windowsHide: true }));
   const plan = clipboardPutPlan(platform, file);
   if (!plan.length) return { ok: false, why: `${platform} 上没有能写剪贴板的现成命令` };
   const tried = [];
   for (const step of plan) {
     let r = null;
     try { r = run(step.cmd, step.args, step); } catch (e) { tried.push(`${step.cmd}: ${e.message}`); continue; }
-    if (!r || r.error) { tried.push(`${step.cmd}: ${(r && r.error && r.error.message) || "起不来"}`); continue; }
-    if (r.status !== 0) { tried.push(`${step.cmd}: 退出码 ${r.status}`); continue; }
-    return { ok: true, kind: step.kind, file };
+    if (putStepOk(step, r, tried)) return { ok: true, kind: step.kind, file };
+  }
+  return { ok: false, why: "剪贴板写不进去", tried };
+}
+
+/** 这一步跑完算不算成：没成把原因记进 tried */
+function putStepOk(step, r, tried) {
+  if (!r || r.error) { tried.push(`${step.cmd}: ${(r && r.error && r.error.message) || "起不来"}`); return false; }
+  if (r.status !== 0) { tried.push(`${step.cmd}: 退出码 ${r.status}`); return false; }
+  return true;
+}
+
+/** 起一条命令，等它退出；跟 spawnSync 的返回长一个样（status / error） */
+function runAsync(cmd, args, step) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      // windowsHide：服务进程没有控制台，不加会闪一下 PowerShell 黑窗
+      child = require("child_process").execFile(cmd, args, { windowsHide: true, timeout: 15000 }, (err) => {
+        if (!err) return resolve({ status: 0 });
+        resolve(typeof err.code === "number" ? { status: err.code } : { status: null, error: err });
+      });
+    } catch (e) { resolve({ status: null, error: e }); return; }
+    // stdin 一定要关上：PowerShell 碰上一根开着没人写的管道，会一直等到超时
+    try { child.stdin.end((step && step.stdin) || undefined); } catch {}
+  });
+}
+
+/**
+ * writeClipboard 的异步版，给服务端用。Windows 上 PowerShell 冷启动要一两秒，
+ * 同步等这一下整个服务都停着：别的对话的流、预览、按钮全卡住。
+ */
+async function writeClipboardAsync(o) {
+  const opt = o || {};
+  const platform = opt.platform || process.platform;
+  const file = opt.file || "";
+  const run = opt.run || runAsync;
+  const plan = clipboardPutPlan(platform, file);
+  if (!plan.length) return { ok: false, why: `${platform} 上没有能写剪贴板的现成命令` };
+  const tried = [];
+  for (const step of plan) {
+    let r = null;
+    try { r = await run(step.cmd, step.args, step); } catch (e) { tried.push(`${step.cmd}: ${e.message}`); continue; }
+    if (putStepOk(step, r, tried)) return { ok: true, kind: step.kind, file };
   }
   return { ok: false, why: "剪贴板写不进去", tried };
 }
@@ -413,5 +463,5 @@ module.exports = {
   parseLine, atToken, collect, note, withNote, anyImage,
   cleanName, freeName, stampName, isInside,
   clipboardPlan, readClipboard,
-  clipboardPutPlan, writeClipboard,
+  clipboardPutPlan, writeClipboard, writeClipboardAsync, psQuote, _runAsync: runAsync,
 };

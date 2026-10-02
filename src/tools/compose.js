@@ -191,6 +191,7 @@ async function probeAll(bin, cwd, rels) {
 function hasCjkFonts() {
   if (process.platform !== "linux") return Promise.resolve(undefined);
   return new Promise((resolve) => {
+    // 不加 windowsHide：只在 Linux 走得到
     require("child_process").execFile("fc-list", [":lang=zh", "family"], { timeout: 5000, maxBuffer: 1 << 20 }, (err, stdout) => {
       resolve(err ? undefined : String(stdout || "").trim().length > 0);
     });

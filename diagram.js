@@ -76,7 +76,7 @@ async function renderDot(source) {
 async function renderPlantuml(source, fmt) {
   const src = /^\s*@start/.test(source) ? source : `@startuml\n${source}\n@enduml`;
   const local = spawnSync("plantuml", [`-t${fmt}`, "-pipe", "-charset", "UTF-8"], {
-    input: src, timeout: 30000, maxBuffer: 32 * 1024 * 1024,
+    input: src, timeout: 30000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
   });
   if (!local.error && local.status === 0 && local.stdout && local.stdout.length > 100) return local.stdout;
   const cfg = diagramCfg();
@@ -147,11 +147,12 @@ async function svgToPngAnyhow(svg) {
       // 写完了就自己把它收掉。等退出的写法会白等满整个超时，然后因为「超时被杀」把
       // 那张已经好端端躺在盘上的图丢掉，最后只交付 SVG，用户看到的是「本环境无法转 PNG」。
       // --user-data-dir 也是必须的：不给就去开用户正开着的那份 Chrome 配置，抢锁、拖慢，还动人家的浏览器
+      // windowsHide：无头 Chrome 本来没窗口，加上只为它顺手起的命令行小工具不闪
       const cp = spawn(chrome, [
         "--headless", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
         `--user-data-dir=${path.join(dir, "profile")}`, "--no-first-run", "--no-default-browser-check",
         `--screenshot=${pngFile}`, `--window-size=${Math.ceil(w)},${Math.ceil(h)}`, `file://${htmlFile}`,
-      ], { stdio: "ignore", detached: true });
+      ], { stdio: "ignore", detached: true, windowsHide: true });
       let done = false;
       cp.on("exit", () => { done = true; });
       cp.on("error", () => { done = true; });

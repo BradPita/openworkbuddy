@@ -20,6 +20,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { outDecoder } = require("./lib/out-decode");
 
 // ─────────────────────────────────────────────────────────────
 // 1. 按文件名找文件（glob）
@@ -178,17 +179,19 @@ function bgStart({ command, cwd, spawnFn, logDir, owner = "", session = "", keep
     try { log = fs.createWriteStream(logFile, { flags: "a" }); log.on("error", () => { log = null; }); } catch { log = null; }
   }
   const endLog = () => { if (log) { try { log.end(); } catch {} log = null; } };
-  const take = (d) => {
-    const s = d.toString("utf8");
+  const take = (s) => {
+    if (!s) return;
     job.total += s.length;
     job.buf += s;
     if (job.buf.length > BG_KEEP) { const cut = job.buf.length - BG_KEEP; job.buf = job.buf.slice(cut); job.dropped += cut; }
     if (log) { try { log.write(s); } catch {} }
   };
-  if (child.stdout) child.stdout.on("data", take);
-  if (child.stderr) child.stderr.on("data", take);
-  child.on("close", (code, signal) => { job.exit = code; job.signal = signal; job.endedAt = Date.now(); endLog(); });
-  child.on("error", (e) => { take(Buffer.from(`\n[启动失败] ${e.message}\n`)); job.exit = -1; job.endedAt = Date.now(); endLog(); });
+  // 按流解码，两路各一个：半个汉字切在两块中间不变乱码；Windows 上 cmd 自带命令吐 GBK 也认得（lib/out-decode.js）
+  const decOut = outDecoder(), decErr = outDecoder();
+  if (child.stdout) child.stdout.on("data", (d) => take(decOut.write(d)));
+  if (child.stderr) child.stderr.on("data", (d) => take(decErr.write(d)));
+  child.on("close", (code, signal) => { take(decOut.end()); take(decErr.end()); job.exit = code; job.signal = signal; job.endedAt = Date.now(); endLog(); });
+  child.on("error", (e) => { take(`\n[启动失败] ${e.message}\n`); job.exit = -1; job.endedAt = Date.now(); endLog(); });
   bg.set(id, job);
   return { id, job };
 }

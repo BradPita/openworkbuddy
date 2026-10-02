@@ -19,7 +19,7 @@ const DIFF_MAX = 80000;   // 字符。再多模型也看不仔细，不如让人
 const UNTRACKED_MAX = 50;
 
 function git(cwd, args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 20000, stdio: ["ignore", "pipe", "pipe"] });
+  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 20000, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 }
 
 /** 取改动。返回 { error } 或 { base, label, diff, stat, untracked, total, truncated, empty } */

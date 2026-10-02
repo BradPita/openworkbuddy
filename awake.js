@@ -98,6 +98,7 @@ function acquireAssertion() {
   try {
     const { spawn } = require("child_process");
     // -i 阻止空闲睡眠；-m 阻止磁盘转入空闲；-w 盯住自己的 pid，进程退了断言自动释放
+    // 不加 windowsHide：只在 macOS 走得到（上面不是 darwin 就 return 了）
     caffProc = spawn("caffeinate", ["-i", "-m", "-w", String(process.pid)], { stdio: "ignore", detached: true });
     caffProc.on("error", () => {
       caffProc = null;

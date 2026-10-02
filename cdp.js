@@ -179,6 +179,7 @@ async function profileOwner(dir) {
   try { pid = Number((/-(\d+)$/.exec(fs.readlinkSync(path.join(dir, "SingletonLock"))) || [])[1]) || 0; } catch {}
   if (!pid) return none;
   /** @type {string} */
+  // 不加 windowsHide：Windows 上开头就 return 了
   const cmd = await new Promise((res) => execFile("ps", ["-p", String(pid), "-o", "command="], { timeout: 3000 }, (e, out) => res(e ? "" : String(out || ""))));
   if (!cmd.includes(`--user-data-dir=${dir}`)) return none;
   return { pid, headless: /--headless\b/.test(cmd) };
@@ -248,6 +249,7 @@ async function launch(input = {}) {
   // 「Error creating WebGL context」，而页面本身一点毛病没有。
   if (wantHeadless(input)) args.push("--headless=new", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-dev-shm-usage");
   args.push("about:blank");
+  // 不加 windowsHide：有头模式这就是给人看、给人点的那扇 Chrome 窗口，加了第一次显示会被藏掉；无头本来就没窗口
   const child = spawn(bin, args, { detached: true, stdio: "ignore" });
   child.on("error", () => {});
   child.unref();
@@ -316,6 +318,7 @@ async function spawnIsolated(opts = {}) {
   const logFile = path.join(dir, "owb-chrome-stderr.log");
   let errFd = -1;
   try { errFd = fs.openSync(logFile, "w"); } catch {}
+  // 不加 windowsHide：opts.headless:false 时要的就是一扇看得见的窗口；无头本来就没窗口
   const child = spawn(bin, args, { detached: true, stdio: ["ignore", "ignore", errFd >= 0 ? errFd : "ignore"] });
   if (errFd >= 0) { try { fs.closeSync(errFd); } catch {} }
   // 压根没起来（没执行权限、路径是个目录）时只有 error、没有 exit，不记下来就会干等满超时

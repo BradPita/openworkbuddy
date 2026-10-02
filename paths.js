@@ -85,6 +85,7 @@ let canClone = process.platform === "darwin";
 function copyTree(from, to) {
   if (canClone) {
     try {
+      // 不加 windowsHide：canClone 只在 macOS 上为真
       require("child_process").execFileSync("/bin/cp", ["-Rc", from, to], { stdio: "ignore" });
       return;
     } catch {

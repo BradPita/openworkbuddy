@@ -1424,6 +1424,49 @@ async function runShellLifecycle() {
   ].join("\r\n") + "\r\n", 1000, []);
   eq(JSON.stringify(winTree), '{"pids":[4321,4400,4600],"groups":[]}',
      "Windows 那份（PowerShell 拼的「pid 父pid 0 名字 命令行」，\\r\\n 换行）也解析得了；--type= 的不碰；没有进程组");
+
+  // ---- Windows：几个根一次 PowerShell 列完、一条 taskkill 带走 ----
+  const winChildArgs = load("winChildArgs", {});
+  const winKillArgs = load("winKillArgs", {});
+  const winTargets = load("winTargets", { childTree });
+  ok(/-Filter 'ParentProcessId=1000 OR ParentProcessId=2000'/.test(winChildArgs([1000, 2000]).join(" ")),
+     "Windows：主进程和服务进程两个根，一次 PowerShell 一起列（冷启动一两秒，别起两回）", winChildArgs([1000, 2000]));
+  eq(JSON.stringify(winKillArgs([11, 22])), '["/T","/F","/PID","11","/PID","22"]', "  └ 一条 taskkill 带走全部；/T 连孙子，/F 才杀得动控制台程序");
+  const WIN_PS = ["11 1000 0 node.exe node a.js", "22 2000 0 cmd.exe cmd /c x", "33 1000 0 powershell.exe powershell", "44 2000 0 x.exe x --type=utility"].join("\r\n");
+  eq(JSON.stringify(winTargets(WIN_PS, [1000, 2000], [33]).sort()), "[11,22]", "  └ 两个根底下的合在一起；列进程那个 PowerShell 自己、--type= 的不算");
+  {
+    const calls = [];
+    const fakeCp = { execFile: (bin, args, opts, cb) => {
+      calls.push({ bin, args, opts });
+      const child = { pid: bin === "powershell.exe" ? 33 : 34 };
+      setTimeout(() => cb(null, bin === "powershell.exe" ? WIN_PS + "\r\n55 1000 0 gpu.exe gpu\r\n" : ""), 5);
+      return child;
+    } };
+    const killChildrenWin = load("killChildrenWin", {
+      require: (m) => (m === "child_process" ? fakeCp : require(m)),
+      app: { getAppMetrics: () => [{ pid: 55 }] }, process: { pid: 1000 }, serverRoots: () => [2000],
+      childTree, winChildArgs, winTargets, winKillArgs, bootLog: () => {},
+    });
+    eq(await killChildrenWin(), 2, "退出收尾（Windows 异步版）：送走两个；Electron 自己的、列进程的 PowerShell 不碰");
+    eq(calls.map((c) => c.bin).join(","), "powershell.exe,taskkill", "  └ 一次列、一次杀，没有第三个进程");
+    ok(calls.every((c) => c.opts.windowsHide === true), "  └ 两个都 windowsHide：退出时不闪黑窗", calls.map((c) => c.opts));
+    eq(JSON.stringify(calls[1].args), '["/T","/F","/PID","11","/PID","22"]', "  └ 杀的正好是那两个");
+    calls.length = 0;
+    const fakeEmpty = { execFile: (bin, args, opts, cb) => { calls.push(bin); setTimeout(() => cb(null, ""), 5); return { pid: 33 }; } };
+    const kcwEmpty = load("killChildrenWin", {
+      require: (m) => (m === "child_process" ? fakeEmpty : require(m)),
+      app: { getAppMetrics: () => [] }, process: { pid: 1000 }, serverRoots: () => [],
+      childTree, winChildArgs, winTargets, winKillArgs, bootLog: () => {},
+    });
+    eq(await kcwEmpty(), 0, "  └ 没子进程：返回 0");
+    eq(calls.join(","), "powershell.exe", "  └ 没东西要杀就不起 taskkill");
+    const kcwThrow = load("killChildrenWin", {
+      require: (m) => (m === "child_process" ? { execFile: () => { throw new Error("EPERM"); } } : require(m)),
+      app: { getAppMetrics: () => [] }, process: { pid: 1000 }, serverRoots: () => [],
+      childTree, winChildArgs, winTargets, winKillArgs, bootLog: () => {},
+    });
+    eq(await kcwThrow(), 0, "  └ PowerShell 起不来：返回 0，不抛（退出照样得退）");
+  }
   if (process.platform !== "win32") {
     const cp = require("child_process");
     const alive = (p) => { try { process.kill(p, 0); return true; } catch { return false; } };
@@ -1501,6 +1544,36 @@ async function runShellLifecycle() {
     const t0 = Date.now();
     await s.shutdown();
     ok(s.stops.length === 0 && s.kills.join(",") === "SIGTERM" && Date.now() - t0 < 80, "没有在跑的任务：不叫停、不白等，直接清子进程", { stops: s.stops, took: Date.now() - t0 });
+  }
+  {
+    // Windows：窗口先收起来；子进程走异步那版、一遍 /F 就完，不补第二遍；同步的 killChildren 一次都不碰
+    const st = { running: ["a"], stopWorks: true, hiddenAtPoll: [] };
+    const seen = { hide: 0, win: 0, sync: 0 };
+    const shutdown = load("shutdown", {
+      SHUTDOWN: null, SHUTDOWN_WAIT_MS: 80, process: { platform: "win32" },
+      win: { isDestroyed: () => false, hide: () => seen.hide++ },
+      runningTasks: async () => { st.hiddenAtPoll.push(seen.hide); return st.running.slice(); },
+      apiCall: async (_m, _p, body) => { st.running = st.running.filter((x) => x !== body.sessionId); return { ok: true }; },
+      killChildren: () => { seen.sync++; return 0; },
+      killChildrenWin: async () => { seen.win++; return 3; },
+      bootLog: () => {},
+    });
+    const t0 = Date.now();
+    await within(shutdown(), "Windows 收尾");
+    eq(seen.hide, 1, "Windows 退出：窗口先收起来（点了关闭还杵着，人会再点、会去任务管理器结束）");
+    eq(st.hiddenAtPoll[0], 1, "  └ 是在等任务停之前就收，不是等完才收");
+    ok(seen.win === 1 && seen.sync === 0, "  └ 子进程走异步那版一次；同步的（会卡住主线程）不碰", seen);
+    ok(Date.now() - t0 < 450, "  └ 杀了 3 个也不补等半秒再来一遍：taskkill /F 一遍就够", Date.now() - t0);
+  }
+  {
+    const seen = { hide: 0 };
+    const shutdown = load("shutdown", {
+      SHUTDOWN: null, SHUTDOWN_WAIT_MS: 80, process: { platform: "win32" },
+      win: { isDestroyed: () => true, hide: () => seen.hide++ },
+      runningTasks: async () => [], apiCall: async () => ({}), killChildren: () => 0, killChildrenWin: async () => 0, bootLog: () => {},
+    });
+    await within(shutdown(), "Windows 收尾（窗口已销毁）");
+    eq(seen.hide, 0, "  └ 窗口已经没了：不去碰它（碰了就抛）");
   }
   {
     const st = { running: [], killThrows: true };

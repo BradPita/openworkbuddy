@@ -27,7 +27,7 @@ const { resolveBin } = require("./which");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile } = require("child_process");
+const { execFile } = require("./win"); // 不直接用 child_process 的：Windows 上 .cmd 垫片起不来、还闪黑窗
 const { dataPath } = require("../paths");
 
 const ID = "codex";

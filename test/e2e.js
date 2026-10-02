@@ -10153,6 +10153,8 @@ testCanvasEdgeVersion();
   await testAdminModelsPage();
   testPackagingAndDemoGate();
   await testPortableTempSweep();
+  testWindowsHideStatic();
+  await testWindowsChildProcess();
   await testImInboundMedia();
   await testImCredentialGuard();
   await testUpdaterVersions();
@@ -13850,6 +13852,200 @@ async function testPortableTempSweep() {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
   console.log("✅ 免安装版临时目录：被强杀留下的两种都清掉；正在跑的、自己、别的应用、刚建的、名字不对的一个不碰");
+}
+
+/**
+ * Windows 上起子进程不许闪黑窗。
+ *
+ * 桌面版的服务端跑在 utilityProcess 里，Electron 主进程也一样：两个都没有控制台。
+ * 从它们直接起一个控制台程序（cmd、git、tar、taskkill、PowerShell、ffmpeg……），不带 windowsHide，
+ * Windows 就给它新开一个黑窗口——跑一条命令闪一下；MCP 服务这种常驻的，开着多久黑窗口就挂多久。
+ * Mac 上这个选项什么都不做，所以漏了在这边永远看不出来，只能静态扫。
+ *
+ * 扫的范围就是进安装包、在 Node 里跑的那些（顶层 *.js、engines/routes/src/lib、eval 那两个）。
+ * 每一处 child_process 调用要么自己带 windowsHide，要么摊开的是已知带它的 opts（pickShell / launchPlan 给的），
+ * 要么上面三行内写明「不加 windowsHide：原因」（要的就是那扇窗口，或者那条路 Windows 上根本走不到）。
+ * 经 run_shell 起的脚本自己再起的子进程不用管：它们挂在 cmd 那个已经藏起来的控制台上。
+ */
+function windowsHideOffenders(rel, src) {
+  const acorn = require("acorn");
+  const FN = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"]);
+  const REQ = String.raw`require\(\s*["'](?:node:)?child_process["']\s*\)`;
+  const local = new Map(); // 本文件里的名字 → child_process 上的哪个函数
+  for (const m of src.matchAll(new RegExp(String.raw`(?:const|let|var)\s*\{([^}]*)\}\s*=\s*` + REQ, "g"))) {
+    for (const part of m[1].split(",")) {
+      const [from, to] = part.split(":").map((x) => x.trim());
+      if (from) local.set(to || from, from);
+    }
+  }
+  const mods = new Set([...src.matchAll(new RegExp(String.raw`(?:const|let|var)\s+(\w+)\s*=\s*` + REQ, "g"))].map((m) => m[1]));
+  const lines = src.split("\n");
+  const SPREAD = /\.\.\.(?:sh|plan|p)\.opts\b|\.\.\.shOpts\b|\.\.\.extra\b/;
+  const EXEMPT = /不加 windowsHide|windowsHide 在|windowsHide 由/;
+  const ast = acorn.parse(src, { ecmaVersion: "latest", sourceType: "script", allowHashBang: true, allowReturnOutsideFunction: true, locations: true });
+  const out = [];
+  let seen = 0;
+  (function visit(n) {
+    if (!n || typeof n.type !== "string") return;
+    if (n.type === "CallExpression" && n.arguments.length) {
+      const c = n.callee;
+      let fn = "";
+      if (c.type === "Identifier" && FN.has(local.get(c.name))) fn = local.get(c.name);
+      else if (c.type === "MemberExpression" && !c.computed && FN.has(c.property.name)) {
+        const obj = src.slice(c.object.start, c.object.end);
+        if ((c.object.type === "Identifier" && mods.has(obj)) || new RegExp("^" + REQ + "$").test(obj)) fn = c.property.name;
+      }
+      if (fn) {
+        seen++;
+        const text = src.slice(n.start, n.end);
+        const near = lines.slice(Math.max(0, n.loc.start.line - 4), n.loc.end.line).join("\n");
+        if (!/windowsHide/.test(text) && !SPREAD.test(text) && !EXEMPT.test(near)) {
+          out.push(`${rel}:${n.loc.start.line} ${fn}(${src.slice(n.arguments[0].start, n.arguments[0].end).slice(0, 50)})`);
+        }
+      }
+    }
+    for (const k in n) {
+      if (k === "loc") continue;
+      const v = n[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v.type === "string") visit(v);
+    }
+  })(ast);
+  return { out, seen };
+}
+
+function testWindowsHideStatic() {
+  const ROOT = path.join(__dirname, "..");
+  const files = fs.readdirSync(ROOT).filter((f) => f.endsWith(".js") && !["electron-builder.config.js", "eslint.config.js", "market.js"].includes(f));
+  const walk = (dir) => {
+    if (!fs.existsSync(path.join(ROOT, dir))) return;
+    for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const rel = dir + "/" + e.name;
+      if (e.isDirectory()) walk(rel);
+      else if (e.name.endsWith(".js")) files.push(rel);
+    }
+  };
+  for (const d of ["engines", "routes", "src", "lib"]) walk(d);
+  files.push("eval/run.js", "eval/tasks.js");
+  const bad = [];
+  let seen = 0;
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    if (!/child_process/.test(src)) continue;
+    const r = windowsHideOffenders(rel, src);
+    bad.push(...r.out);
+    seen += r.seen;
+  }
+  assert(seen >= 40, "扫到的 child_process 调用才 " + seen + " 处，扫描器多半没认出调用，这条测试等于没测");
+  assert.deepStrictEqual(bad, [], "这些地方起子进程没带 windowsHide（Windows 上会闪黑窗）；真不该加的，上面写一行「// 不加 windowsHide：原因」：\n" + bad.join("\n"));
+  // ★反向对照★ 扫描器本身：该抓的抓得到，不该抓的不误抓
+  const probe = (src) => windowsHideOffenders("probe.js", src).out.length;
+  assert.strictEqual(probe('const { spawn } = require("child_process");\nspawn("git", ["status"], { cwd: "x" });'), 1, "★反向对照★ 没带 windowsHide 的 spawn 没被抓到");
+  assert.strictEqual(probe('const { execFile: ef } = require("child_process");\nef("tar", ["-xf", "a"], () => {});'), 1, "★反向对照★ 改了名的 execFile 没被抓到");
+  assert.strictEqual(probe('require("child_process").execFileSync("ps", []);'), 1, "★反向对照★ 直接 require(...).execFileSync 没被抓到");
+  assert.strictEqual(probe('const cp = require("child_process");\ncp.spawnSync("taskkill", ["/F"], {});'), 1, "★反向对照★ cp.spawnSync 没被抓到");
+  assert.strictEqual(probe('const { spawn } = require("child_process");\n// 不加 windowsHide：只在 macOS 走得到\nspawn("caffeinate", ["-i"]);'), 0, "写明了原因的还被抓");
+  assert.strictEqual(probe('const { spawn } = require("child_process");\nspawn("git", [], { windowsHide: true });'), 0, "带了 windowsHide 的还被抓");
+  assert.strictEqual(probe('const { spawn } = require("child_process");\nconst re = /x/;\nre.exec("x");\nfoo.spawn("y");'), 0, "正则的 .exec、别的对象的 spawn 被当成起子进程了");
+  console.log(`✅ Windows 不闪黑窗：进安装包的 ${seen} 处起子进程全带 windowsHide 或写明了为什么不带；扫描器自己的正反对照都对`);
+}
+
+async function testWindowsChildProcess() {
+  const os = require("os");
+  const tools = require("../tools");
+  const { outDecoder } = require("../lib/out-decode");
+  const win = require("../engines/win");
+
+  // ① cmd 的引号：/s 剥最外面一对，所以整条再包一层；windowsHide 跟着走
+  const sh = tools._internals.pickShell('"C:\\Program Files\\x.exe" "a b"', "win32");
+  assert.deepStrictEqual(sh.args, ["/d", "/s", "/c", '""C:\\Program Files\\x.exe" "a b""'], "cmd 那条命令外面没多包一层引号：" + JSON.stringify(sh.args));
+  assert(sh.opts.windowsVerbatimArguments === true && sh.opts.windowsHide === true, "Windows 的 shell 没带 windowsVerbatimArguments / windowsHide：" + JSON.stringify(sh.opts));
+  assert.deepStrictEqual(tools._internals.pickShell("echo hi", "darwin").opts, {}, "macOS 上 pickShell 多带了东西");
+
+  // ② Python 在 Windows 上往管道写 UTF-8；用户自己设过的不动；别的系统不加
+  const { winTextEnv } = tools._internals;
+  assert.deepStrictEqual(winTextEnv({}, "win32"), { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }, "Windows 上没让 Python 写 UTF-8");
+  assert.deepStrictEqual(winTextEnv({ PYTHONIOENCODING: "gbk" }, "win32").PYTHONIOENCODING, "gbk", "用户自己设的 PYTHONIOENCODING 被盖掉了");
+  assert.deepStrictEqual(winTextEnv({}, "darwin"), {}, "macOS 上也塞了 Python 编码变量");
+  const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  assert((toolsSrc.match(/\.\.\.process\.env, \.\.\.winTextEnv\(\)/g) || []).length >= 2, "run_shell / 后台命令的 env 里没接上 winTextEnv");
+
+  // ③ 输出解码：中文 Windows 上 cmd 自带命令写 GBK；一个字被切成好几块也不能出 �
+  const feed = (buf, opt) => { const d = outDecoder(opt); let s = ""; for (const b of buf) s += d.write(Buffer.from([b])); return { s: s + d.end(), enc: d.encoding() }; };
+  const gbk = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x20, 0x6f, 0x6b]); // 「中文 ok」的 GBK
+  const g = feed(gbk, { win: true });
+  assert.strictEqual(g.s, "中文 ok", "GBK 输出一个字节一个字节来，解出来不对：" + JSON.stringify(g));
+  assert.strictEqual(g.enc, "gbk", "认出 GBK 以后编码没切过去");
+  const utf = Buffer.from("你好 😀 ok", "utf8");
+  const u = feed(utf, { win: true });
+  assert.strictEqual(u.s, "你好 😀 ok", "UTF-8 被切碎了再拼，Windows 这版解错了：" + JSON.stringify(u));
+  assert.strictEqual(u.enc, "utf-8", "好好的 UTF-8 被误判成 GBK");
+  const mixed = outDecoder({ win: true });
+  const m = mixed.write(Buffer.from("ok ", "utf8")) + mixed.write(Buffer.from([0xd6, 0xd0])) + mixed.end();
+  assert.strictEqual(m, "ok 中", "前面 UTF-8 后面 GBK：已经解好的那段丢了或者后面没切：" + JSON.stringify(m));
+  assert.strictEqual(feed(utf, { win: false }).s, "你好 😀 ok", "macOS / Linux 上 UTF-8 拼不回来了");
+  // ★反向对照★ 不认 GBK（按老办法 UTF-8 硬解）就是满屏 �：这条测试抓得住
+  assert(feed(gbk, { win: false }).s.includes("\ufffd"), "★反向对照★ 按 UTF-8 解 GBK 居然没出 �，上面那条没测到东西");
+
+  // ④ 引擎/飞书 CLI 起 .cmd 垫片：拆成 node + 脚本起，带 windowsHide，不带 detached；起不来回调报错、不抛
+  const rec = [];
+  const deps = (over) => ({
+    win: true,
+    shimScript: () => "C:\\npm\\node_modules\\x\\cli.js",
+    pickNode: () => ({ bin: "C:\\app\\OpenWorkBuddy.exe", asNode: true }),
+    execFile: (b, a, o, cb) => { rec.push({ b, a, o }); setImmediate(() => cb(null, "1.0.0", "")); return { pid: 1 }; },
+    ...over,
+  });
+  const r1 = await new Promise((res) => win.execFile("C:\\npm\\x.cmd", ["--version"], { timeout: 5, env: { A: "1" } }, (e, out) => res({ e, out }), deps()));
+  assert(!r1.e && r1.out === "1.0.0", "win.execFile 回调没拿到输出：" + JSON.stringify(r1));
+  assert.strictEqual(rec[0].b, "C:\\app\\OpenWorkBuddy.exe", ".cmd 没拆成 node 起（新版 Node 直接起 .cmd 报 EINVAL）");
+  assert.deepStrictEqual(rec[0].a, ["C:\\npm\\node_modules\\x\\cli.js", "--version"], "拆垫片后参数不对：" + JSON.stringify(rec[0].a));
+  assert(rec[0].o.windowsHide === true && !("detached" in rec[0].o) && rec[0].o.timeout === 5, "opts 不对（要 windowsHide、不要 detached、调用方的保留）：" + JSON.stringify(rec[0].o));
+  assert(rec[0].o.env.A === "1" && rec[0].o.env.ELECTRON_RUN_AS_NODE === "1", "env 没合上：调用方的丢了，或没让 Electron 当 node 用");
+  const r2 = await new Promise((res) => win.execFile("x.exe", [], {}, (e) => res(e), deps({ execFile: () => { throw new Error("EINVAL"); } })));
+  assert(r2 && /EINVAL/.test(r2.message), "同步就抛的（EINVAL）没转成回调里的错");
+  rec.length = 0;
+  await new Promise((res) => win.execFile("/usr/local/bin/claude", ["-v"], {}, res, deps({ win: false })));
+  assert(rec[0].b === "/usr/local/bin/claude" && !("detached" in rec[0].o), "macOS 上 win.execFile 改了起法，或带上了 detached");
+  for (const f of ["engines/claude-code.js", "engines/codex.js"]) {
+    assert(/const \{ execFile \} = require\("\.\/win"\)/.test(fs.readFileSync(path.join(__dirname, "..", f), "utf8")), f + " 又直接用 child_process 的 execFile 了（Windows 上 .cmd 垫片起不来）");
+  }
+
+  // ⑤ MCP 服务：命令名 → 真身（npx → npx.cmd）；认得出就走拆垫片那套
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-winproc-"));
+  try {
+    const { resolveWinCommand } = require("../mcp");
+    fs.writeFileSync(path.join(tmp, "srv.cmd"), "@echo off\n");
+    fs.chmodSync(path.join(tmp, "srv.cmd"), 0o755);
+    assert.strictEqual(resolveWinCommand(path.join(tmp, "srv")), path.join(tmp, "srv.cmd"), "带路径的命令没补出 .cmd");
+    assert.strictEqual(resolveWinCommand(path.join(tmp, "nope")), "", "不存在的命令没返回空");
+    assert.strictEqual(resolveWinCommand(""), "", "空命令没返回空");
+    const mcpSrc = fs.readFileSync(path.join(__dirname, "..", "mcp.js"), "utf8");
+    assert(/const real = resolveWinCommand\(this\.command\);\s*if \(real\) \{\s*const plan = require\("\.\/engines\/win"\)\.launchPlan\(real, this\.args\);/.test(mcpSrc), "MCP 在 Windows 上没走 launchPlan");
+
+    // ⑥ 工作区不是 git 仓库：往上一个 .git 都没有就不起 git（Windows 上起一次几十毫秒，每轮好几次）
+    const { hasGitAbove } = require("../worktree")._internals;
+    const deep = path.join(tmp, "a", "b");
+    fs.mkdirSync(deep, { recursive: true });
+    const gd = process.env.GIT_DIR;
+    delete process.env.GIT_DIR;
+    try {
+      const outside = !(await hasGitAbove(tmp));
+      if (outside) {
+        assert.strictEqual(await hasGitAbove(deep), false, "往上没有 .git 还说有");
+        fs.writeFileSync(path.join(tmp, "a", ".git"), "gitdir: /x\n"); // 分身里 .git 是个文件
+        assert.strictEqual(await hasGitAbove(deep), true, "上面有 .git（文件形式）没认出来");
+        fs.rmSync(path.join(tmp, "a", ".git"));
+        process.env.GIT_DIR = "/x/.git";
+        assert.strictEqual(await hasGitAbove(deep), true, "设了 GIT_DIR 还说不是仓库");
+      } else console.log("  (临时目录本身在某个 git 仓库里，hasGitAbove 的反面那条跳过)");
+    } finally {
+      if (gd === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = gd;
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  console.log("✅ Windows 起子进程：cmd 引号、Python 写 UTF-8、GBK 输出自动认、.cmd 垫片拆开起、MCP 认真身、不是仓库不起 git");
 }
 
 /**

@@ -876,6 +876,7 @@ function checkAccessibility() {
 function checkAutomation() {
   if (process.platform !== "darwin") return Promise.resolve("unknown");
   return new Promise((resolve) => {
+    // 不加 windowsHide：只在 macOS 走得到
     const c = spawn("osascript", ["-e", 'tell application "System Events" to count processes'], { timeout: 8000 });
     let err = "";
     c.stderr.on("data", (d) => (err += d));
@@ -892,7 +893,7 @@ const PREF_PANES = {
 function openPrefPane(pane) {
   const url = PREF_PANES[pane];
   if (!url || process.platform !== "darwin") return false;
-  spawn("open", [url], { detached: true }).unref();
+  spawn("open", [url], { detached: true }).unref(); // 不加 windowsHide：只在 macOS 走得到
   return true;
 }
 

@@ -2696,6 +2696,7 @@ function splitFiles(text) {
       process.on("SIGINT", hush);
       try { process.stdin.setRawMode(false); } catch {}
       process.stdout.write(PASTE_OFF);
+      // 不加 windowsHide：编辑器就是要给人用的；记事本这种窗口程序加了会被藏起来
       const r = spawnSync(`${ed} ${q}`, { stdio: "inherit", shell: true });
       if (r.error) why = `编辑器没打开（${ed}）：${r.error.message}`;
       else if (r.signal) why = `编辑器被 ${r.signal} 停了（${ed}），没用它的`;
@@ -2984,9 +2985,9 @@ function splitFiles(text) {
         } catch { return { path: p, state: "gone" }; }
       });
       let git = "", notRepo = false;
-      const inRepo = spawnSync("git", ["-C", ws, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" });
+      const inRepo = spawnSync("git", ["-C", ws, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8", windowsHide: true });
       if (inRepo.status === 0 && String(inRepo.stdout).trim() === "true") {
-        const d = spawnSync("git", ["-C", ws, "diff", "--stat", "HEAD"], { encoding: "utf8" });
+        const d = spawnSync("git", ["-C", ws, "diff", "--stat", "HEAD"], { encoding: "utf8", windowsHide: true });
         git = d.status === 0 ? String(d.stdout).trim() : "";
         if (!git) git = "跟 HEAD 一模一样，没有未提交的改动。";
       } else notRepo = true;
@@ -3188,6 +3189,7 @@ function splitFiles(text) {
       // kind === "dir"：不给名字 = 打开工作目录本身，人到访达/资源管理器里自己挑
       const target = hit.kind === "file" ? path.join(dir, hit.name) : dir;
       const { cmd, args } = termImage.openerFor(process.platform, target);
+      // 不加 windowsHide：要的就是打开一扇给人看的窗口
       const r = spawnSync(cmd, args, { stdio: "ignore" });
       // 打不开的原因就两种：没有这个命令（Linux 精简装没 xdg-open），或者系统没给它配默认程序。
       // 两种都不该只说一句「失败」——把绝对路径给出去，人至少能自己复制过去打开

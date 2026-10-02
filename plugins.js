@@ -367,13 +367,13 @@ async function installPluginFromGitHub(url) {
   try {
     const br = branch ? ["--branch", branch] : [];
     const gitUrl = `https://github.com/${owner}/${repo}.git`;
-    let r = spawnSync("git", ["clone", "--depth", "1", "--filter=blob:none", "--sparse", ...br, gitUrl, tmp], { timeout: 180000, encoding: "utf8" });
-    if (r.status === 0 && subpath) spawnSync("git", ["-C", tmp, "sparse-checkout", "set", subpath], { timeout: 60000, encoding: "utf8" });
-    else if (r.status === 0 && !subpath) spawnSync("git", ["-C", tmp, "sparse-checkout", "disable"], { timeout: 60000, encoding: "utf8" });
+    let r = spawnSync("git", ["clone", "--depth", "1", "--filter=blob:none", "--sparse", ...br, gitUrl, tmp], { timeout: 180000, encoding: "utf8", windowsHide: true });
+    if (r.status === 0 && subpath) spawnSync("git", ["-C", tmp, "sparse-checkout", "set", subpath], { timeout: 60000, encoding: "utf8", windowsHide: true });
+    else if (r.status === 0 && !subpath) spawnSync("git", ["-C", tmp, "sparse-checkout", "disable"], { timeout: 60000, encoding: "utf8", windowsHide: true });
     if (r.status !== 0) {
       fs.rmSync(tmp, { recursive: true, force: true });
       fs.mkdirSync(tmp, { recursive: true });
-      r = spawnSync("git", ["clone", "--depth", "1", ...br, gitUrl, tmp], { timeout: 180000, encoding: "utf8" });
+      r = spawnSync("git", ["clone", "--depth", "1", ...br, gitUrl, tmp], { timeout: 180000, encoding: "utf8", windowsHide: true });
       if (r.status !== 0) throw new PluginError(`git clone 失败：${(r.stderr || r.error?.message || "").trim().slice(0, 300)}`);
     }
 
