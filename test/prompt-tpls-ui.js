@@ -4,7 +4,8 @@
 /**
  * 参考模板库那一页，真点一遍：
  *
- *   A 成员：新建、改、删自己的；照着内置模板改一份（原件跟着藏起）；藏一条内置的、再放回；
+ *   A 成员：新建、改、删自己的（删了能撤销）；带空的模板先出填空表，没填完的到输入框里按 Tab 跳；
+ *     编辑框里选中字点「设为填空」、下面列出几个空、能试填；照着内置模板改一份（原件跟着藏起）；藏一条内置的、再放回；
  *     改过没存按 Esc 先问一句，「接着改」字还在
  *   B 管理员：新建时能挑「放在 公司」，提示跟着换；藏内置模板先问「只对我 / 对全组织」
  *   C 再换回成员：公司那条只能「存一份给自己」，没有改 / 删；管理员对全组织藏的，成员这边只有一句说明、没有「放回」
@@ -227,14 +228,136 @@ async function main() {
   await until(`!(renderPromptPage._s.data.mine.hidden || []).includes("b-research-compare")`, "放回");
   ok((await chips()).includes("已藏起 1"), "放回一条，剩「已藏起 1」", await chips());
 
+  // ── 用模板：先问几个空 ──
+  const sheet = () => run(`(() => { const b = document.querySelector(".tpl-fill"); if (!b) return null;
+    return { title: b.querySelector(".ask-t").firstChild.textContent,
+      fields: [...b.querySelectorAll(".tpl-fill-f")].map((f) => ({ label: f.querySelector(".tpl-fill-lb").textContent,
+        tag: f.querySelector(".tpl-fill-in").tagName, value: f.querySelector(".tpl-fill-in").value,
+        picks: [...f.querySelectorAll(".tpl-fill-pk")].map((x) => x.textContent + (x.classList.contains("on") ? "*" : "")) })),
+      filled: [...b.querySelectorAll(".tpl-fill-pv mark.on")].map((m) => m.textContent),
+      tip: (b.querySelector(".tpl-fill-tip") || {}).textContent || "" }; })()`);
+  const sheetSet = (i, v) => run(`(() => { const el = document.querySelectorAll(".tpl-fill .tpl-fill-in")[${i}]; el.value = ${JSON.stringify(v)};
+    el.dispatchEvent(new Event("input", { bubbles: true })); return 1; })()`);
+  await clickChip("全部");
+  await clickOp("把结论做成图表", ".tpl-use");
+  await until(`!!document.querySelector(".tpl-fill")`, "带空的模板点「填进输入框」：先出填空表");
+  {
+    const s0 = await sheet();
+    ok(s0.fields.length === 2 && s0.fields[0].label === "粘贴数据" && s0.fields[0].tag === "TEXTAREA", "「粘贴数据」给多行框", s0.fields);
+    ok(s0.fields[1].label === "图表" && s0.fields[1].picks.join("|") === "折线*|柱状|饼图|散点", "「图表」四个选项点着选，默认第一个", s0.fields[1]);
+    ok(s0.filled.join("|") === "折线" && /还空着 1 个/.test(s0.tip), "预览里已经填上默认值；提示还空着 1 个", s0);
+    ok(await run(`document.activeElement === document.querySelector(".tpl-fill .tpl-fill-in")`), "焦点落在第一个没填的格子上");
+  }
+  await sheetSet(0, "一月 3\n二月 5");
+  await run(`[...document.querySelectorAll(".tpl-fill .tpl-fill-pk")].find((x) => x.textContent === "柱状").click()`);
+  {
+    const s1 = await sheet();
+    ok(s1.fields[1].picks.join("|") === "折线|柱状*|饼图|散点" && s1.filled.includes("柱状") && s1.filled.includes("一月 3\n二月 5") && s1.tip === "",
+      "选「柱状」、填上数据：预览跟着变，提示没了", s1);
+  }
+  await key("Enter", ", metaKey: true, ctrlKey: true");
+  await until(`!document.querySelector(".tpl-fill")`, "⌘/Ctrl+回车：填进去");
+  {
+    const v = await run(`inputEl.value`);
+    ok(v.includes("要求：柱状") && v.includes("一月 3\n二月 5") && !v.includes("__"), "输入框里是填好的全文，一条下划线都不剩", v.slice(0, 120));
+  }
+  await open();
+  await clickOp("把结论做成图表", ".tpl-use");
+  await until(`!!document.querySelector(".tpl-fill")`, "再开一次");
+  {
+    const s2 = await sheet();
+    ok(s2.fields[0].value === "一月 3\n二月 5" && s2.fields[1].picks.includes("柱状*"), "上次填的值还在", s2.fields);
+  }
+  await run(`inputEl.value = "别动我"`);
+  await key("Escape");
+  await until(`!document.querySelector(".tpl-fill")`, "Esc 关表");
+  ok((await run(`inputEl.value`)) === "别动我", "Esc：输入框一个字没动");
+
+  // 只填一部分：剩下的留着，到输入框里按 Tab 接着填
+  await open();
+  await clickOp("材料整理成 PPT", ".tpl-use");
+  await until(`!!document.querySelector(".tpl-fill")`, "PPT 模板出表");
+  {
+    const s3 = await sheet();
+    ok(s3.fields.map((f) => f.label + "=" + f.value).join("|") === "要整理的内容=|页数=10", "页数预先填好 10，要整理的内容空着", s3.fields);
+  }
+  await run(`document.querySelector(".tpl-fill .ask-ok").click()`);
+  await until(`!document.querySelector(".tpl-fill")`, "只填一部分也能填进去");
+  {
+    const r = await run(`({ v: inputEl.value, sel: inputEl.value.slice(inputEl.selectionStart, inputEl.selectionEnd), toast: document.getElementById("owb-toast").textContent })`);
+    ok(r.v.includes("页数控制在 10 页") && r.sel.startsWith("__要整理的内容"), "页数填上了；没填的那个空被选中，接着打字就替换", r);
+    ok(r.toast === "还有 1 个空，按 Tab 跳到下一个", "提示还有几个空、按 Tab", r.toast);
+  }
+  // 「空着填进去」：原文照旧进去；Tab / Shift+Tab 在空之间跳
+  await open();
+  await clickOp("材料整理成 PPT", ".tpl-use");
+  await until(`!!document.querySelector(".tpl-fill")`, "再开");
+  await run(`document.querySelector(".tpl-fill .tpl-fill-raw").click()`);
+  await until(`!document.querySelector(".tpl-fill")`, "点「空着填进去」");
+  {
+    const tab = (shift) => run(`(() => { inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: ${shift}, bubbles: true, cancelable: true }));
+      return inputEl.value.slice(inputEl.selectionStart, inputEl.selectionEnd); })()`);
+    ok((await run(`inputEl.value.slice(inputEl.selectionStart, inputEl.selectionEnd)`)).startsWith("__要整理的内容"), "原文进去，选中第一个空");
+    ok((await tab(false)) === "__页数=10__", "Tab：跳到下一个空");
+    ok((await tab(false)).startsWith("__要整理的内容"), "再 Tab：绕回第一个");
+    ok((await tab(true)) === "__页数=10__", "Shift+Tab：往回跳");
+    await run(`inputEl.value = "没有空的一句话"; inputEl.setSelectionRange(0, 0)`);
+    ok(!(await run(`!inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }))`)), "没有空的时候 Tab 不拦，照常切焦点");
+  }
+  // ── 写模板：选中点「设为填空」 ──
+  await open();
+  await run(`document.querySelector(".hub-head .tpl-new").click()`);
+  await until(`!!document.querySelector(".tpl-ed")`, "新建");
+  const strip = () => run(`[...document.querySelectorAll(".tpl-ed .tpl-blanks > *")].map((x) => x.textContent)`);
+  ok((await strip()).join("|") === "还没有空：选中要换的字，点「设为填空」", "空着时下面那一排说怎么挖空", await strip());
+  await fill("p", "帮我写 产品名 的介绍，语气 正式/轻松");
+  await run(`(() => { const ta = document.querySelector('.tpl-ed [data-k="p"]'); ta.setSelectionRange(4, 7); document.querySelector(".tpl-ed .tpl-mk").click(); })()`);
+  {
+    const r = await run(`(() => { const ta = document.querySelector('.tpl-ed [data-k="p"]'); return { v: ta.value, sel: ta.value.slice(ta.selectionStart, ta.selectionEnd) }; })()`);
+    ok(r.v === "帮我写 __产品名__ 的介绍，语气 正式/轻松" && r.sel === "产品名", "选中「产品名」点「设为填空」：下划线自己加上，名字还选着", r);
+    ok((await strip()).join("|") === "1 个空|产品名|试填一下", "下面列出这一个空", await strip());
+  }
+  await run(`(() => { const ta = document.querySelector('.tpl-ed [data-k="p"]'); const i = ta.value.indexOf("正式/轻松"); ta.setSelectionRange(i, i + 5);
+    ta.dispatchEvent(new KeyboardEvent("keydown", { key: "e", metaKey: true, ctrlKey: true, bubbles: true, cancelable: true })); })()`);
+  {
+    const v = (await editor()).p;
+    ok(v.endsWith("语气 __正式/轻松__"), "⌘/Ctrl+E 也行", v);
+    ok((await strip()).join("|") === "2 个空|产品名|选一个正式/轻松|试填一下", "选项那个空列成「选一个 正式/轻松」", await strip());
+  }
+  await run(`document.querySelector(".tpl-ed .tpl-blank").click()`);
+  ok((await run(`(() => { const ta = document.querySelector('.tpl-ed [data-k="p"]'); return ta.value.slice(ta.selectionStart, ta.selectionEnd); })()`)) === "产品名", "点下面那枚「产品名」：正文里选中它");
+  await run(`document.querySelector(".tpl-ed .tpl-try").click()`);
+  await until(`!!document.querySelector(".tpl-fill")`, "「试填一下」");
+  {
+    const s4 = await sheet();
+    ok(s4.title === "试填一下" && s4.fields.length === 2 && !(await run(`!!document.querySelector(".tpl-fill .tpl-fill-raw")`)), "试填：同一张表，只有「看完了」", s4);
+  }
+  await key("Escape");
+  await until(`!document.querySelector(".tpl-fill")`, "Esc 关的是试填那张");
+  ok(!!(await editor()) && !(await run(`[...document.querySelectorAll(".ask-box .ask-t")].some((x) => x.textContent === "改的还没存，丢掉吗？")`)), "编辑框还在，没被一起问「丢掉吗」");
+  await run(`(() => { const ta = document.querySelector('.tpl-ed [data-k="p"]'); ta.setSelectionRange(6, 6); document.querySelector(".tpl-ed .tpl-mk").click(); })()`);
+  ok((await editor()).p.startsWith("帮我写 产品名 的介绍"), "光标在空里再点一次：拆回普通字", (await editor()).p);
+  await key("Escape");
+  await until(`[...document.querySelectorAll(".ask-box .ask-t")].some((x) => x.textContent === "改的还没存，丢掉吗？")`, "关编辑框问丢不丢");
+  await run(`[...document.querySelectorAll(".ask-box .ask-ok")].pop().click()`);
+  await until(`!document.querySelector(".tpl-ed")`, "丢掉");
+  await open();
+
   // 删自己的
   await clickChip("我的");
   ok((await cards()).length === 2, "「我的」栏里两条");
   await clickOp("客户回访话术 v2", ".tpl-del");
-  await until(`[...document.querySelectorAll(".ask-box .ask-t")].some((x) => x.textContent === "删掉「客户回访话术 v2」？")`, "点「删」先问");
-  ok(await run(`document.activeElement === [...document.querySelectorAll(".ask-box .ask-no")].pop()`), "焦点落在「算了」上");
-  await run(`[...document.querySelectorAll(".ask-box .ask-ok")].pop().click()`);
-  await until(`![...document.querySelectorAll("#tpl-grid .tpl-card .tt")].some((x) => x.textContent === "客户回访话术 v2")`, "删掉了");
+  await until(`![...document.querySelectorAll("#tpl-grid .tpl-card .tt")].some((x) => x.textContent === "客户回访话术 v2")`, "点「删」：不先问，直接没了");
+  ok(!(await run(`!!document.querySelector(".ask-mask")`)), "没弹「确定吗」");
+  await until(`(document.getElementById("owb-toast") || {}).textContent === "删掉了，点这里撤销"`, "给一条能点的撤销");
+  await run(`document.getElementById("owb-toast").click()`);
+  await until(`[...document.querySelectorAll("#tpl-grid .tpl-card .tt")].some((x) => x.textContent === "客户回访话术 v2")`, "点撤销：回来了");
+  {
+    const back = (await api("alice")).mine.items.find((x) => x.t === "客户回访话术 v2");
+    ok(back && back.p.includes("__客户__") && back.icon === "mail" && back.c === "销售", "回来的那条正文、图标、分类都在", back);
+  }
+  await clickOp("客户回访话术 v2", ".tpl-del");
+  await until(`![...document.querySelectorAll("#tpl-grid .tpl-card .tt")].some((x) => x.textContent === "客户回访话术 v2")`, "再删一次，这回不撤");
   ok((await api("alice")).mine.items.length === 1, "服务端也只剩一条");
   ok(audits.length === 0, "成员这一路一条组织审计都没记");
 
@@ -351,6 +474,28 @@ async function main() {
     await run(`[...document.querySelectorAll(".ask-box .ask-ok")].pop().click()`);
     await sleep(60);
   }
+  await clickOp("写本周周报", ".tpl-use");
+  await until(`!!document.querySelector(".tpl-fill")`, "英文下点「填进输入框」");
+  await sleep(80);
+  {
+    // 空的名字和预览里的正文是模板作者写的中文，不算
+    const t = await run(`(() => { const b = document.querySelector(".tpl-fill"); const t = [];
+      const walk = (n) => { for (const c of n.childNodes) { if (c.nodeType === 3) t.push(c.nodeValue); else if (c.nodeType === 1 && !c.matches("pre, [translate=no]")) walk(c); } };
+      walk(b); for (const el of b.querySelectorAll("[placeholder]")) t.push(el.getAttribute("placeholder")); return t.join(" ").replace(/\\s+/g, " ").trim(); })()`);
+    ok(!CJK.test(t), "填空表：标题、按钮、提示都翻了", t);
+  }
+  await key("Escape");
+  await run(`document.querySelector(".hub-head .tpl-new").click()`);
+  await until(`!!document.querySelector(".tpl-ed")`, "英文下再开编辑框");
+  await run(`(() => { const ta = document.querySelector('.tpl-ed [data-k="p"]'); ta.value = "a b"; ta.setSelectionRange(0, 1); document.querySelector(".tpl-ed .tpl-mk").click(); })()`);
+  await sleep(80);
+  {
+    const t = await boxText();
+    ok(!CJK.test(t.replace(/__a__|\ba\b/g, "")), "挖了空之后，下面那一排（几个空、试填一下）也翻了", t);
+  }
+  await key("Escape");
+  await sleep(40);
+  if (await run(`!!document.querySelector(".tpl-ed")`)) { await run(`[...document.querySelectorAll(".ask-box .ask-ok")].pop().click()`); await sleep(60); }
   await clickOp("写本周周报", ".tpl-hide");
   await until(`!!document.querySelector('.ask-box [data-sc="org"]')`, "英文下点「藏起来」");
   await sleep(80);
@@ -364,7 +509,8 @@ async function main() {
     const s = await run(`[
       I18N.tr("已藏起 3", "en"), I18N.tr("自己加的模板没取到：HTTP 500", "en"),
       I18N.tr("没藏成：HTTP 500", "en"), I18N.tr("没放回：HTTP 500", "en"), I18N.tr("没删掉：HTTP 500", "en"),
-      I18N.tr("藏起来了，「已藏起」里能放回", "en"), I18N.tr("存好了", "en"), I18N.tr("删掉了", "en")]`);
+      I18N.tr("藏起来了，「已藏起」里能放回", "en"), I18N.tr("存好了", "en"), I18N.tr("删掉了，点这里撤销", "en"),
+      I18N.tr("没救回来：HTTP 500", "en"), I18N.tr("放回来了", "en"), I18N.tr("还有 2 个空，按 Tab 跳到下一个", "en")]`);
     ok(s.every((x) => !CJK.test(x)), "toast 和带数目的那几句也有译文", s);
   }
   await run('I18N.setLang("zh")');

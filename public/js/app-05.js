@@ -260,7 +260,7 @@ async function renderHubMcp(box) {
 // id 是「藏起来」和「照着改一份」认这条用的，存在各人和各组织的盘上——只加不改，改了的话藏过的又冒出来。
 const PROMPT_TPLS = [
   { id: "b-web-dashboard", c: "网页", icon: "monitor", t: "做一个工作台/仪表盘", d: "先定视觉方向，再按数据排版",
-    p: `做一个「__主题__工作台」单页网站：\n\n【内容】顶部标题栏 + 关键指标卡（几个由数据说了算，别凑整）+ 主区域（__放什么__）+ 侧边__放什么__\n【数据】用我工作区里的 __文件名__；没有数据就先造 8 条像真的示例数据，并在页面上标注「示例数据」\n【技术】单文件 HTML，CSS/JS 全部内联，脚本样式不引外部 CDN，断网也能打开\n【风格】动笔前先说一句这页的参照物和主色（比如「像终端里的监控面板，暗底信号绿」），别默认白底蓝标题\n【体验】移动端优先；跟随系统深浅色，纯暗色风格则写死 color-scheme；交互要有 hover/点击反馈\n\n做完把文件读回来自查一遍：有没有引用外部资源、有没有空的 onclick。` },
+    p: `做一个「__主题__工作台」单页网站：\n\n【内容】顶部标题栏 + 关键指标卡（几个由数据说了算，别凑整）+ 主区域（__主区域放什么__）+ 侧边__侧边放什么__\n【数据】用我工作区里的 __文件名__；没有数据就先造 8 条像真的示例数据，并在页面上标注「示例数据」\n【技术】单文件 HTML，CSS/JS 全部内联，脚本样式不引外部 CDN，断网也能打开\n【风格】动笔前先说一句这页的参照物和主色（比如「像终端里的监控面板，暗底信号绿」），别默认白底蓝标题\n【体验】移动端优先；跟随系统深浅色，纯暗色风格则写死 color-scheme；交互要有 hover/点击反馈\n\n做完把文件读回来自查一遍：有没有引用外部资源、有没有空的 onclick。` },
   { id: "b-web-landing", c: "网页", icon: "target", t: "做一个产品落地页", d: "先给三版方向，选一版再动笔",
     p: `帮我做一个「__产品名__」的落地页（单文件 HTML）：\n\n先别动手——给我三个不同的视觉方向，每个一句话说清参照物、主色、首屏怎么组织（比如「像一份纸质说明书：暖白底、衬线标题、首屏只有一句话和一张大图」），我选一个你再写；\n首屏一句话说清「给谁解决什么问题」，别写形容词堆砌；\n往下放什么按这个产品的实际情况定（卖点、真实案例、定价、常见问题、用前用后对比都行），别套「三个卖点＋五条 FAQ」的固定模板；\n底部行动召唤按钮。\n\nCSS 内联，移动端优先。` },
   { id: "b-research-deep", c: "研究", icon: "search", t: "深度研究一个课题", d: "拆子问题→逐个查证→自我挑刺→带来源报告",
@@ -270,15 +270,15 @@ const PROMPT_TPLS = [
   { id: "b-data-report", c: "数据", icon: "chart-column", t: "数据文件变分析报告", d: "读数→算指标→画图→写结论",
     p: `读取工作区里的 __文件名__，做一份分析：\n\n1) 先告诉我这份数据有多少行、有哪些字段、有没有缺失或异常值；\n2) 算出这几个指标：__指标1__、__指标2__ 的环比/同比变化；\n3) 画 2-3 张图（趋势 + 构成），存成图片；\n4) 输出一份 Word 报告：结论写最前面，图表跟在对应结论后面。\n\n算不出来的指标直接说算不出来，别用估计值糊弄。` },
   { id: "b-data-chart", c: "数据", icon: "trending-up", t: "把结论做成图表", d: "指定图表类型，输出可直接用的图片",
-    p: `把下面这组数据画成图：\n\n__粘贴数据__\n\n要求：__折线/柱状/饼图/散点__，中文标签不要乱码，坐标轴带单位，标题写结论不写「XX图」。\n生成图片存到工作区，并告诉我文件名。` },
+    p: `把下面这组数据画成图：\n\n__粘贴数据__\n\n要求：__图表=折线/柱状/饼图/散点__，中文标签不要乱码，坐标轴带单位，标题写结论不写「XX图」。\n生成图片存到工作区，并告诉我文件名。` },
   { id: "b-office-ppt", c: "办公", icon: "presentation", t: "材料整理成 PPT", d: "16:9，每页一个主题，标题写结论",
-    p: `把 __工作区里的 XX 文件 / 下面这段内容__ 整理成一份 16:9 的 PPT：\n\n页数控制在 __10__ 页以内；\n每页一个主题，标题直接写结论（比如「获客成本降了 32%」而不是「获客成本分析」）；\n有数据的页配图表，没数据的页别硬凑图；\n最后一页是行动建议，具体到谁在什么时候做什么。` },
+    p: `把 __要整理的内容（工作区里的文件名，或直接粘贴）__ 整理成一份 16:9 的 PPT：\n\n页数控制在 __页数=10__ 页以内；\n每页一个主题，标题直接写结论（比如「获客成本降了 32%」而不是「获客成本分析」）；\n有数据的页配图表，没数据的页别硬凑图；\n最后一页是行动建议，具体到谁在什么时候做什么。` },
   { id: "b-office-minutes", c: "办公", icon: "notebook-pen", t: "会议记录变纪要", d: "决议 / 待办 / 待议 三段式",
     p: `把下面这段会议记录整理成纪要：\n\n__粘贴记录__\n\n分三段：\n【结论与决议】已经拍板的事；\n【待办】谁 · 做什么 · 什么时候前完成（没说负责人就写「待认领」）；\n【待议】有争议或没结论的。\n\n原文里没说的一律不许补充推断。` },
   { id: "b-office-weekly", c: "办公", icon: "calendar-days", t: "写本周周报", d: "读工作区产出，自动汇总成周报",
-    p: `帮我写这周的周报：\n\n先看看工作区里这周新增/修改了哪些文件，作为素材；\n补充这些我口述的进展：__…__\n\n格式：本周完成（带可验证的结果，不写「推进了」这种虚词）→ 下周计划 → 需要支持的事。\n控制在一页内。` },
+    p: `帮我写这周的周报：\n\n先看看工作区里这周新增/修改了哪些文件，作为素材；\n补充这些我口述的进展：__口述的进展__\n\n格式：本周完成（带可验证的结果，不写「推进了」这种虚词）→ 下周计划 → 需要支持的事。\n控制在一页内。` },
   { id: "b-content-article", c: "内容", icon: "pencil", t: "写一篇公众号文章", d: "先给选题角度再动笔",
-    p: `写一篇关于「__主题__」的公众号文章：\n\n先给我 3 个不同的切入角度，我选一个你再动笔；\n目标读者是 __谁__，他们最关心 __什么__；\n开头 3 句话内必须让读者觉得「这说的是我」；\n中间要有具体的例子或数字，不要通篇讲道理；\n字数 __1500__ 字左右。` },
+    p: `写一篇关于「__主题__」的公众号文章：\n\n先给我 3 个不同的切入角度，我选一个你再动笔；\n目标读者是 __读者是谁__，他们最关心 __他们最关心什么__；\n开头 3 句话内必须让读者觉得「这说的是我」；\n中间要有具体的例子或数字，不要通篇讲道理；\n字数 __字数=1500__ 字左右。` },
   { id: "b-content-multi", c: "内容", icon: "megaphone", t: "一条内容改成多平台版本", d: "同一个内核，不同平台的话术",
     p: `把下面这条内容改写成三个版本：\n\n__粘贴原文__\n\n① 公众号（正式、有结构、能读 3 分钟）\n② 小红书（口语、有情绪、带 emoji 和话题标签）\n③ 朋友圈（100 字内，一句话钩子）\n\n内核信息保持一致，别为了适配平台把事实改了。` },
   { id: "b-team-delegate", c: "团队", icon: "users", t: "整团派活（专家团接力）", d: "一句话把复杂任务交给一支团队",
@@ -286,7 +286,7 @@ const PROMPT_TPLS = [
   { id: "b-team-expert", c: "团队", icon: "id-card", t: "指名派给某个专家", d: "点名让某位专家单独干",
     p: `请把这件事委派给专家「__专家名__」：\n\n__任务描述__\n\n它汇报完你要替我核一遍再转给我。` },
   { id: "b-auto-daily", c: "自动化", icon: "clock", t: "让它每天自动干一件事", d: "配合侧栏「自动化」建定时任务",
-    p: `每天早上帮我做这件事（我待会去「自动化」里把它设成定时任务）：\n\n__要做什么__\n\n输出格式：__…__。如果当天没有值得说的变化，就明确回一句「今天无异常」，不要为了凑字数编内容。` },
+    p: `每天早上帮我做这件事（我待会去「自动化」里把它设成定时任务）：\n\n__要做什么__\n\n输出格式：__输出格式__。如果当天没有值得说的变化，就明确回一句「今天无异常」，不要为了凑字数编内容。` },
 ];
 
 /**
@@ -364,7 +364,10 @@ function openPromptTplEditor(o) {
       `<label class="tpl-f"><span>标题</span><input class="ask-in" data-k="t" maxlength="40" autocomplete="off"></label>` +
       `<div class="tpl-f2"><label class="tpl-f"><span>分类</span><input class="ask-in" data-k="c" maxlength="12" list="tpl-cat-dl" placeholder="其他" autocomplete="off"></label>` +
       `<label class="tpl-f"><span>一句话说明</span><input class="ask-in" data-k="d" maxlength="80" placeholder="选填" autocomplete="off"></label></div>` +
-      `<label class="tpl-f"><span>提示词</span><textarea class="tpl-p" data-k="p" maxlength="8000" rows="9" placeholder="要换的地方写成 __占位__，填进输入框时会先选中它"></textarea></label>` +
+      `<div class="tpl-f"><div class="tpl-p-hd"><label for="tpl-p-in">提示词</label>` +
+      `<button type="button" class="btn-plain tpl-mk" title="${esc(modKeyName() + "+E")}">${ic("brackets")}设为填空</button></div>` +
+      `<textarea id="tpl-p-in" class="tpl-p" data-k="p" maxlength="8000" rows="9" placeholder="照常写。要别人换掉的字选中它，点「设为填空」"></textarea>` +
+      `<div class="tpl-blanks"></div></div>` +
       `<div class="tpl-f"><span>图标</span><div class="tpl-icons">${icons.map(n =>
         `<button type="button" class="tpl-ico${n === icon ? " on" : ""}" data-ic="${esc(n)}" aria-label="${esc(n)}">${ic(n)}</button>`).join("")}</div></div>` +
       (pickScope ? `<div class="tpl-f"><span>放在</span><div class="tpl-scope"><button type="button" data-sc="mine">我的</button><button type="button" data-sc="org">公司</button></div></div>` : "") +
@@ -408,6 +411,7 @@ function openPromptTplEditor(o) {
     function onKey(e) {
       if (imeKey(e)) return;              // 拼音打一半按 Esc 是撤掉候选词，不是关窗
       if (askConfirm._close) return;      // 「丢掉吗」那一问开着时，键归它
+      if (document.querySelector(".tpl-fill")) return;   // 「试填一下」那张表叠在上面时，Esc 关的是它
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); leave(); }
       else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); save(); }
     }
@@ -420,8 +424,10 @@ function openPromptTplEditor(o) {
     okBtn.onclick = save;
     $(".ask-no").onclick = leave;
     wrap.onmousedown = (e) => { if (e.target === wrap) leave(); };
+    const paintBlanks = bindBlankTools(wrap, field("p"), paint);
     document.addEventListener("keydown", onKey, true);
     paint();
+    paintBlanks();
     field("t").focus();
   });
 }
@@ -536,7 +542,7 @@ function renderPromptPage() {
       const t = list[+card.dataset.i];
       const on = (sel, fn) => { const b = card.querySelector(sel); if (b) b.onclick = fn; };
       card.onclick = (e) => { if (e.target.closest("button")) return; card.classList.toggle("open"); };
-      on(".tpl-use", () => startTaskWith(t.p));
+      on(".tpl-use", () => useTplWithBlanks(t));
       on(".tpl-copy", async (e) => {
         const b = e.currentTarget;
         if (!(await copyText(t.p))) return toast("复制失败，手动选中上面的文字吧", "circle-x");
@@ -545,12 +551,16 @@ function renderPromptPage() {
       on(".tpl-edit", () => edit(t.layer === "builtin" ? { base: t, hide: t.id } : { base: t, id: t.id, scope: t.layer }));
       on(".tpl-fork", () => edit({ base: t, scope: "mine", fork: true }));
       on(".tpl-del", async () => {
-        const yes = await askConfirm({ title: `删掉「${t.t}」？`, hint: t.layer === "org" ? "全组织都会少这一条，删了找不回来" : "删了找不回来", ok: "删掉", danger: true });
-        if (!yes) return;
+        // 不先问：删完给一条能点的撤销，比「确定吗」那一下更不打断人，手滑了也救得回来
         const why = await deletePromptTpl(t.layer, t.id);
         if (why) return toast(`没删掉：${why}`, "circle-x");
-        toast("删掉了", "circle-check");
         reload();
+        toast("删掉了，点这里撤销", "rotate-ccw", async () => {
+          const { data, why: w } = await postJson("/api/prompt-tpls", { scope: t.layer, t: t.t, c: t.c, d: t.d || "", p: t.p, icon: t.icon });
+          if (!data || !data.ok) return toast(`没救回来：${w || "没存上"}`, "circle-x");
+          toast("放回来了", "circle-check");
+          reload();
+        });
       });
       on(".tpl-hide", async () => {
         const scope = canOrg ? await askPromptTplHideScope(t.t) : "mine";
@@ -568,7 +578,7 @@ function renderPromptPage() {
   };
   page.innerHTML = `
     <div class="hub-head">
-      <div class="hub-sec-title" style="margin:0">照着抄就行 <span class="sub">点卡片看全文；带 __下划线__ 的地方换成你的内容；「填进输入框」直接开一条新任务</span></div>
+      <div class="hub-sec-title" style="margin:0">照着抄就行 <span class="sub">点卡片看全文；「填进输入框」先问几个空，填完开一条新任务</span></div>
       <div class="hub-search" style="margin-left:auto">${ic("search")}<input id="tpl-q" placeholder="搜模板…"></div>
       <button class="btn-brand tpl-new">${ic("plus")}新建模板</button>
     </div>
