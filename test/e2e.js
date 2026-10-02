@@ -12742,6 +12742,11 @@ function packagingCheck(cfg, docs, recorderSrc, pkgJson) {
   for (const name of ["nsis", "portable"]) if (!archOf(name).includes("x64") || !archOf(name).includes("arm64")) problems.push(`win ${name} 没同时打 x64+arm64`);
   const macArch = ((cfg.mac || {}).target || []).flatMap((t) => t.arch || []);
   if (!macArch.includes("arm64") || !macArch.includes("x64")) problems.push("mac 没同时打 arm64+x64");
+  // 一键装双击后一声不吭装进 %LOCALAPPDATA%\Programs，选不了位置、也看不出装没装上，报上来就是「双击了没反应」
+  const ns = cfg.nsis || {};
+  if (ns.oneClick !== false || ns.allowToChangeInstallationDirectory !== true) problems.push("Windows 安装包变回一键装了：用户选不了装在哪个盘，也看不到安装向导和进度");
+  // 作者没有 Windows：发版时那趟静默装 + 启动是 Windows 包唯一一次被真跑起来
+  if ("release.yml" in docs && !/run: node scripts\/win-smoke\.js/.test(docs["release.yml"])) problems.push("release.yml 不跑 scripts/win-smoke.js：Windows 包打完没人真装一遍、开一遍就发出去了");
   for (const [name, text] of Object.entries(docs)) {
     if (!text.includes("win-setup.exe")) problems.push(`${name} 没写安装包 win-setup.exe`);
     if (!/win-(x64|arm64)-portable\.exe/.test(text)) problems.push(`${name} 没写免安装版 -portable.exe`);
@@ -13767,12 +13772,15 @@ function testPackagingAndDemoGate() {
     ["README 写回旧名", [cfg, { ...docs, "README.md": docs["README.md"].replace("win-setup.exe", "win-x64.exe") }, recorder]],
     ["录制脚本带上 im", [cfg, docs, recorder.replace('const keep = ["provider"', 'const keep = ["im", "provider"')]],
     ["录制脚本不删演示目录", [cfg, docs, recorder.replace("fs.rmSync(home, { recursive: true, force: true })", "0")]],
+    ["安装包退回一键装", (() => { const c = clone(cfg); c.nsis.oneClick = true; return [c, docs, recorder]; })()],
+    ["安装向导不让选位置", (() => { const c = clone(cfg); delete c.nsis.allowToChangeInstallationDirectory; return [c, docs, recorder]; })()],
+    ["发版不再真装一遍 Windows 包", [cfg, { ...docs, "release.yml": docs["release.yml"].replace("run: node scripts/win-smoke.js", "run: echo") }, recorder]],
   ];
   for (const [name, [c, d, r]] of variants) {
     assert(c !== cfg || d !== docs || r !== recorder, "变体「" + name + "」没改动到输入，对照无效");
     if (!packagingCheck(c, d, r, pkg).length) throw new Error("闸门漏了这种坏法：" + name);
   }
-  console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
+  console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup（向导式，能选位置）· 发版前真装一遍 Windows 包 · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
 }
 
 /**

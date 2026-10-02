@@ -201,9 +201,17 @@ module.exports = {
   },
   nsis: {
     artifactName: "${productName}-${version}-win-setup.${ext}",
-    // 真·一键：不问装哪、不要管理员权限（装进用户目录），装完直接启动
-    oneClick: true,
+    // 向导式：先问「只给我装 / 给这台电脑所有人装」，再让选装在哪个盘哪个文件夹，装的时候有进度条，
+    // 最后一页勾着「运行 OpenWorkBuddy」。以前是一键装：双击后一声不吭装进 %LOCALAPPDATA%\Programs、
+    // 装完自己启动，用户既选不了位置，也看不出装没装上——报上来就是「双击了没反应」。
+    //   · 只给自己装不要管理员权限；给所有人装（默认 Program Files）会弹一次 UAC。装哪儿都行：
+    //     应用目录只读不写，用户数据一律在 ~/OpenWorkBuddy（paths.js DATA_DIR）。
+    //   · 选了 D:\ 这种盘根，装的时候自动补一层 OpenWorkBuddy 文件夹，不会把一万多个文件撒在盘根。
+    //   · 升级时默认装回上次那个位置（注册表 InstallLocation）。一键装那批老用户装在
+    //     %LOCALAPPDATA%\Programs\openworkbuddy，跟新默认的 …\OpenWorkBuddy 只差大小写，Windows 上是同一个文件夹。
+    oneClick: false,
     perMachine: false,
+    allowToChangeInstallationDirectory: true,
     runAfterFinish: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,

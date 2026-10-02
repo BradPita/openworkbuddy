@@ -69,6 +69,10 @@ jobs:
       - run: npm run ${{ matrix.script }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+      # 作者只有 Mac，Windows 包以前打完就上传，没在 Windows 上真启动过一次。
+      # 这里静默装上、打开、等页面加载完；起不来这条腿就红，坏包进不了 Release（mac 那条照发）
+      - if: runner.os == 'Windows'
+        run: node scripts/win-smoke.js dist
       - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
@@ -134,7 +138,7 @@ jobs:
               —— ⚠️ **下 dmg 的第一次打开一定会弹「未打开“OpenWorkBuddy”· Apple 无法验证…」，只有「完成 / 移到废纸篓」两个按钮。**
               点**「完成」**→ **系统设置 → 隐私与安全性** → 滚到最下面 → 点**「仍要打开」**→ 输开机密码。做这一次就够了。
               细节和另外两条路见下面「第一次打开会被系统拦一下」。
-            - **Windows（x64 / ARM 同一个包）** → `OpenWorkBuddy-*-win-setup.exe` ← **绝大多数人下这个**（双击即装，装完自动启动，装时自动选架构）
+            - **Windows（x64 / ARM 同一个包）** → `OpenWorkBuddy-*-win-setup.exe` ← **绝大多数人下这个**（双击打开安装向导，能选装在哪个盘，有进度条，装时自动选架构）
             - **Windows 免安装版** → `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`
               —— **只在公司电脑不让装软件时才用**。它的原理是自解压：每次启动都要把整个应用解压到 `%TEMP%`，
               还要被 Defender 逐个扫一遍，第一次可能要等好几分钟，期间任务管理器里有进程、屏幕上什么都没有。
@@ -184,6 +188,7 @@ jobs:
 
             | 现象 | 解法 |
             |---|---|
+            | 双击安装包没反应，也没弹「Windows 已保护你的电脑」 | 看 360 / 火绒 / 电脑管家的隔离区，把 OpenWorkBuddy 恢复并加进信任 |
             | 免安装版双击后只有进程、没有窗口 | 改用 `-win-setup.exe` 安装版（免安装版每次启动都要解压整包） |
             | 窗口不出现，或者出来一整片黑 | 在 `~/OpenWorkBuddy/config.json` 的 `server` 里加 `"disable_gpu": true` |
             | 弹框说「放数据的文件夹建不起来」 | 设环境变量 `OPENWORKBUDDY_HOME` 指到本机一个能写的文件夹 |
