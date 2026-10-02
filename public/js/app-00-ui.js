@@ -273,10 +273,32 @@ function applyStoredW() {
     document.documentElement.style.setProperty(c.css, Math.round(Math.max(c.min, Math.min(rszRoom(k), v))) + "px");
   });
 }
+// 预览、成果两栏都开着，窗口又放不下几栏的最小宽度时，让成果栏浮在预览上面（CSS 那边是 html.owb-fp-float）。
+// 不让的话多出来的那截被 body 的 overflow:hidden 切掉，最右边成果栏的关闭钮整个看不见。
+// 判据只读各栏的 min-width 和侧栏实宽，不读两栏此刻的宽度——它们正在过渡动画里，读到的是半路的值。
+// 小屏（≤900）两栏本来就是浮层，同时开着时成果栏照样往下让出预览的标题栏
+function fitPanels() {
+  const pv = document.getElementById("preview-panel"), fp = document.getElementById("files-panel");
+  if (!pv || !fp) return;
+  let float = false;
+  if (pv.classList.contains("show") && fp.classList.contains("show")) {
+    const minW = (el) => (el ? parseFloat(getComputedStyle(el).minWidth) || 0 : 0);
+    float = window.innerWidth <= RSZ_SMALL
+      || rszW("aside") + minW(document.querySelector(".main")) + minW(pv) + minW(fp) > window.innerWidth;
+    const head = pv.querySelector(".pv-head");
+    if (float && head) document.documentElement.style.setProperty("--owb-fp-top", Math.round(head.getBoundingClientRect().bottom) + "px");
+  }
+  if (document.documentElement.classList.contains("owb-fp-float") !== float) document.documentElement.classList.toggle("owb-fp-float", float);
+}
 function initResizers() {
   applyStoredW();
+  fitPanels();
   let raf = 0;
-  window.addEventListener("resize", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(applyStoredW); });
+  window.addEventListener("resize", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { applyStoredW(); fitPanels(); }); });
+  // 两栏开关、侧栏收起/展开都是改 class，盯着 class 变化重判一次
+  const fitMo = new MutationObserver(fitPanels);
+  ["preview-panel", "files-panel"].forEach((id) => { const n = document.getElementById(id); if (n) fitMo.observe(n, { attributes: true, attributeFilter: ["class"] }); });
+  fitMo.observe(document.body, { attributes: true, attributeFilter: ["class"] });
   document.querySelectorAll(".rsz").forEach((h) => {
     const key = h.dataset.rsz;
     if (!RSZ[key]) return;

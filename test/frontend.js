@@ -12353,8 +12353,8 @@ const ICO_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</st
   + `<button id="pv-rv" class="icon-btn"><svg class="i"><use href="#i-folder-open"></use></svg></button>`
   + `<a id="pv-dl" class="icon-btn" href="#" download><svg class="i"><use href="#i-download"></use></svg></a>`
   + `<button id="pv-close" class="icon-btn"><svg class="i"><use href="#i-x"></use></svg></button></div>`
-  + `<div class="fx-row files-panel"><h2><span><svg class="i"><use href="#i-folder-open"></use></svg> 成果文件</span>`
-  + `<a href="#" class="link">打开文件夹</a><span style="flex:1"></span>`
+  + `<div class="fx-row files-panel"><h2><span class="fp-title"><svg class="i"><use href="#i-folder-open"></use></svg> <span class="fp-title-t">成果文件</span></span>`
+  + `<span class="fp-acts"><a href="#" class="link">打开文件夹</a><a href="#" class="link">整理文件夹</a></span>`
   + `<button id="fp-close" class="icon-btn"><svg class="i"><use href="#i-x"></use></svg></button></h2></div>`
   + `<div class="fx-row m-head"><h3 id="m-title">设置</h3><button id="m-close" class="m-close"><svg class="i"><use href="#i-x"></use></svg></button></div>`
   + `<div class="fx-row side-nav"><div class="item nav-head"><span class="ic"><svg class="i"><use href="#i-folder"></use></svg></span>`
@@ -14220,6 +14220,66 @@ const PANELVIS_CHECKS = `
 })()
 `;
 
+// ================= 预览、成果两栏同时开着，两个关闭钮都得在窗口里 =================
+// Windows 开 125%/150% 缩放，窗口只剩 1024～1536 宽。原来两栏都不肯缩，几栏最小宽度一加超过窗口，
+// body 是 overflow:hidden，最右边成果栏连同关闭钮整个挤到屏幕外（1280 宽时一个像素都看不见）；
+// 栏里那一行标题也比栏宽，得把栏拖宽才看得见关闭钮。
+// 真 markup + 真 CSS + app-00-ui.js 里真的 fitPanels 一起切进来，按 Windows 上常见的几个宽度挨个量
+const FIT_SRC = (() => {
+  const a = UI00_SRC.indexOf("const RSZ_MAIN_MIN"), b = UI00_SRC.indexOf("function initResizers");
+  if (a < 0 || b <= a || !UI00_SRC.slice(a, b).includes("function fitPanels")) throw new Error("app-00-ui.js 里的 fitPanels 那段找不到了（改名/挪走？），两栏同开的测试没法定位真源码");
+  return UI00_SRC.slice(a, b);
+})();
+const PANELFIT_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "\nhtml,body{height:100%}body{margin:0;display:flex;overflow:hidden}</style><body><aside></aside><div class=\"main\"></div>" + PANEL_MARKUP + "</body>";
+const PANELFIT_CHECKS = (opts) => FIT_SRC + `
+;(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) { names.push(name); return; } fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const slow = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--owb-t-slow")) || 0;
+  const settle = () => new Promise((r) => setTimeout(r, Math.round(slow * 1000) + 150));
+  const vw = innerWidth, W = ${JSON.stringify(opts.width)};
+  ok("先验料：窗口真是 " + W + " 宽（不然量的是别的宽度）", vw === W, "innerWidth " + vw);
+  if (${JSON.stringify(!!opts.collapsed)}) document.body.classList.add("side-collapsed");
+  document.getElementById("pv-name").textContent = "2026年第三季度经营分析汇报_最终版_v3.pptx";
+  const pv = document.getElementById("preview-panel"), fp = document.getElementById("files-panel");
+  pv.classList.add("show"); fp.classList.add("show");
+  fitPanels();
+  await settle();
+  // 在不在窗口里 + 中心那一点点下去是不是它自己（浮起来的成果栏不许盖住预览的关闭钮）
+  const seen = (sel) => {
+    const el = document.querySelector(sel);
+    if (!el || getComputedStyle(el).display === "none") return { ok: true, why: "没显示" };
+    const b = el.getBoundingClientRect();
+    if (b.width < 1 || b.left < 0 || b.right > vw + 0.5 || b.top < 0 || b.bottom > innerHeight) return { ok: false, why: Math.round(b.left) + "～" + Math.round(b.right) + " / 窗口 " + vw };
+    const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+    return { ok: !!hit && (hit === el || el.contains(hit)), why: "中心点上是 " + (hit ? (hit.id || hit.className || hit.tagName) : "空") };
+  };
+  const tag = W + (${JSON.stringify(!!opts.collapsed)} ? "·侧栏收起" : "") + (document.documentElement.classList.contains("owb-fp-float") ? "·成果栏浮起" : "");
+  for (const [sel, cn] of [["#pv-close", "预览的关闭钮"], ["#pv-dl", "预览的下载钮"], ["#fp-close", "成果栏的关闭钮"], ["#open-ws", "「打开文件夹」"], ["#fp-sweep", "「整理文件夹」"]]) {
+    const r = seen(sel);
+    ok(tag + "：" + cn + "在窗口里、点得着", r.ok, r.why);
+  }
+  const fb = document.getElementById("fp-close").getBoundingClientRect();
+  ok(tag + "：成果栏关闭钮还是 30×30", Math.round(fb.width) === 30 && Math.round(fb.height) === 30, Math.round(fb.width) + "×" + Math.round(fb.height));
+  const h2 = fp.querySelector("h2");
+  ok(tag + "：成果栏标题那一行不比栏宽（不用拖宽才看得全）", h2.scrollWidth <= h2.clientWidth + 1, h2.scrollWidth + " / " + h2.clientWidth);
+
+  if (${JSON.stringify(!!opts.reverse)}) {
+    // 反向对照：两栏改回都不肯缩、也不许浮起来，同一个宽度就该把成果栏挤出去
+    const st = document.createElement("style");
+    st.textContent = ".preview-panel.show,.files-panel.show{flex-shrink:0!important}body .main{min-width:460px!important}";
+    document.head.appendChild(st);
+    document.documentElement.classList.remove("owb-fp-float");
+    await settle();
+    const r = seen("#fp-close");
+    ok("★反向对照★ " + W + "：两栏改回不肯缩、不浮起，成果栏关闭钮立刻出了窗口", !r.ok, r.why);
+    st.remove();
+  }
+  if (fails.length) throw new Error("两栏同开：" + names.length + " 条过，挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
+  return names;
+})()`;
+
 // 行里那几个「鼠标扫过才冒出来」的操作：移除项目、删掉任务、只整理这个任务、复制我发的话。
 // 之前它们是拿 visibility:hidden 藏的——而 visibility:hidden 同时把元素踢出 Tab 序，
 // 于是纯键盘的人这辈子够不着「移除项目」；.del/.hx 还是 <span>，连自己的焦点都没有。
@@ -14785,6 +14845,18 @@ app.whenReady().then(async () => {
         if (!motion && w > 900) for (const n of namesPV) console.log("  ✓ " + n);
         console.log(`✅ 前端：关着的侧滑面板不进 Tab 序（${label} ${w}×${h}·关着 0 个·打开全回来·熄灯等宽度收完·删掉那条当场变红）${namesPV.length} 项通过`);
       } finally { if (!winPV.isDestroyed()) winPV.destroy(); }
+    }
+
+    // Windows 上 125%/150% 缩放后常见的几个窗口宽度，外加侧栏收起、手机宽度两档
+    for (const o of [{ width: 1024 }, { width: 1180 }, { width: 1280, reverse: true }, { width: 1366 }, { width: 1536 }, { width: 1920 }, { width: 1024, collapsed: true }, { width: 800 }]) {
+      const winFit = mkWin({ show: false, width: o.width, height: 760, useContentSize: true, webPreferences: { offscreen: true } });
+      try {
+        await winFit.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PANELFIT_HTML));
+        const namesFit = await winFit.webContents.executeJavaScript(PANELFIT_CHECKS(o), true)
+          .catch((e) => { throw new Error("[两栏同开·" + o.width + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (o.width === 1280) for (const n of namesFit) console.log("  ✓ " + n);
+        console.log(`✅ 前端：预览、成果两栏同开，关闭钮都在窗口里（${o.width}${o.collapsed ? "·侧栏收起" : ""}${o.reverse ? "·含反向对照" : ""}）${namesFit.length} 项通过`);
+      } finally { if (!winFit.isDestroyed()) winFit.destroy(); }
     }
 
     // 行里那几个「鼠标扫过才冒出来」的操作。用户拿键盘走这一趟：Tab 停在行上 → 操作显形 →

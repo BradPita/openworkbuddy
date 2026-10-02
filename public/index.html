@@ -1032,8 +1032,12 @@
     color: var(--owb-brand-text); font-size: 14px; font-weight: 500; pointer-events: none; z-index: 14; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
+  /* 预览和成果两栏同时开着时正文让一点；预览栏也跟着能缩（flex-shrink 3：先缩宽的预览，成果栏少缩）。
+     原来两栏都不肯缩，Windows 开 125%/150% 缩放后窗口只剩 1280～1536 宽，
+     几栏最小宽度一加就超出窗口，body 又是 overflow:hidden，成果栏连同它的关闭钮整个被挤到屏幕外 */
+  body:has(#preview-panel.show):has(#files-panel.show) .main { min-width: 400px; }
   .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-canvas); overflow: hidden; visibility: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s linear var(--owb-t-slow); display: flex; flex-direction: column; }
-  .preview-panel.show { width: var(--owb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
+  .preview-panel.show { width: var(--owb-pv-w, 44%); flex-shrink: 3; min-width: 320px; max-width: calc(100vw - 300px); visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
   .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--owb-border); font-size: 14px; }
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 几何统一到桥接层（这一排四颗都带 .icon-btn），这里只留颜色 */
@@ -1139,8 +1143,12 @@
   .pv-code-src .c-kw  { color: var(--owb-code-kw); }
   .pv-code-src .c-key { color: var(--owb-code-key); }
   /* ---------- 右侧成果面板 ---------- */
-  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-shell); overflow: hidden; visibility: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s linear var(--owb-t-slow); display: flex; flex-direction: column; }
-  .files-panel.show { width: var(--owb-fp-w, clamp(230px, 20vw, 300px)); visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
+  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-shell); overflow: hidden; visibility: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s linear var(--owb-t-slow); display: flex; flex-direction: column; container: fp / inline-size; }
+  .files-panel.show { width: var(--owb-fp-w, clamp(230px, 20vw, 300px)); flex-shrink: 1; min-width: 200px; visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
+  /* 让完还放不下（窗口太窄，或侧栏拖得很宽）：app-00-ui.js 的 fitPanels 在 <html> 上挂 owb-fp-float，
+     成果栏改成浮在预览上面，顶端让出预览的标题栏（--owb-fp-top），两边的关闭钮都看得见、点得着 */
+  html.owb-fp-float .files-panel.show { position: fixed; right: 0; top: var(--owb-fp-top, 44px); bottom: 0; z-index: 40; box-shadow: -8px 0 28px rgba(23,24,28,.15); }
+  @media (min-width: 901px) { html.owb-fp-float .files-panel.show { width: min(var(--owb-fp-w, 280px), 40vw); } }
   /* 左右两栏拖着改宽：抓边上那条 7px 的缝，双击回默认，←/→ 也能推。
      宽度写在 :root 的变量里（JS 存 localStorage），CSS 里的默认值就是没拖过时的样子。
      拖的时候把 width 过渡关掉，否则手在动、栏在追，跟手感全没了 */
@@ -1297,7 +1305,14 @@
   .file-item .rv + .dl { margin-left: 0; }        /* 两个按钮并排时只让第一个吃掉空白 */
   .out-row .rv { cursor: pointer; font-size: 12px; }
   .file-item .dl:hover { background: var(--owb-border); color: var(--owb-brand-text); }
-  .files-panel h2 { font-size: 14px; font-weight: 600; color: var(--owb-text-2); padding: 16px 12px 8px 16px; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+  .files-panel h2 { font-size: 14px; font-weight: 600; color: var(--owb-text-2); padding: 16px 12px 8px 16px; white-space: nowrap; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .files-panel h2 .fp-title { min-width: 0; overflow: hidden; }
+  .fp-title-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .fp-acts { display: flex; gap: 8px; margin-right: auto; font-size: 12px; font-weight: 400; }
+  #fp-close { margin-left: auto; }
+  /* 栏窄了（默认宽度 230～300 大多落在这一档；一行要 276px 上下），两个链接换到第二行，关闭钮留在第一行右上角。
+     原来一行挤不下就只能把栏拖宽才看得见关闭钮 */
+  @container fp (max-width: 289px) { .fp-acts { order: 1; flex-basis: 100%; } }
   /* 几何统一到桥接层，这里只留颜色 */
   #fp-close { border: none; background: transparent; font-size: 14px; cursor: pointer; color: var(--owb-text-2); }
   #fp-close:hover { background: var(--owb-bg-hover); }
@@ -3029,7 +3044,7 @@
 
 <div class="files-panel" id="files-panel">
   <div class="rsz l" data-rsz="fp" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整成果文件面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
-  <h2><span><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><a href="#" id="fp-sweep" class="link" style="font-weight:400;font-size: 12px" title="看看哪些是任务跑完剩下的中间文件">整理文件夹</a><span style="flex:1"></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
+  <h2><span class="fp-title"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> <span class="fp-title-t">成果文件</span></span><span class="fp-acts"><a href="#" id="open-ws" class="link">打开文件夹</a><a href="#" id="fp-sweep" class="link" title="看看哪些是任务跑完剩下的中间文件">整理文件夹</a></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
   <div class="fp-filter" id="fp-filter" hidden>
     <div class="fp-segs" id="fp-scope" hidden></div>
     <input id="fp-q" class="fp-q" type="search" placeholder="按名字找：文件名、文件夹名…" autocomplete="off" spellcheck="false" aria-label="按名字筛选成果文件" hidden>
