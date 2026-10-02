@@ -499,6 +499,8 @@ function canvasPersist() {
   // 十二镜的戏要跑六十来趟。收在这儿而不是收在调用方：canvasConnect 里那句存盘也在这条路上。
   // 顺带一个好处——整次展开只记一条撤销，按一次 ⌘Z 回到展开前，而不是要按六十次。
   if (canvasState.bulk) return;
+  // 卡片按内容量高、给长高的卡往下让位，都是从内容算出来的，不算一次改动（见 canvasFitFlush）
+  if (canvasState.fitting) return;
   if (!canvasState.graph || typeof localStorage === "undefined") return;
   const snapshot = canvasSnapshot();
   try { localStorage.setItem(canvasStorageKey(), JSON.stringify({ ...snapshot, version: 3, savedAt: Date.now() })); } catch {}
@@ -897,6 +899,9 @@ function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
     canvasState.graph.clear(); const byId = new Map();
     restoredSnapshot.nodes.forEach((item) => { const node = canvasAddNode(item.kind, keep.has(item.id) ? keep.get(item.id) : item.payload, item.position, { persist: false, skipSelect: true, id: item.id }); if (node) { if (item.size) node.resize(Number(item.size.width) || node.size().width, Number(item.size.height) || node.size().height); byId.set(item.id, node); } });
     (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target)), edge.relation));
+    // 卡高当场量完，别等下一拍：底下记服务器那份指纹要的是量完的样子，
+    // 不然量完的那一下跟服务器那份对不上，就成了一次「本机改动」被写回去
+    canvasFitFlush();
     // 加载或同步不应抢走画布空间：只保留用户已经打开、且仍存在的节点属性。
     // 选中的是一片就还它一片——框选十二个之后来一趟同步只剩一个还选着的话，
     // 下一下 Delete 删掉的就不是他以为的那一片。对方真删掉的那几个才从集合里去掉。

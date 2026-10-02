@@ -78,6 +78,27 @@ function canvasTimelineIsOpen() {
   try { return localStorage.getItem("openworkbuddy.canvas.timeline") !== "0"; } catch { return true; }
 }
 function canvasTimelineNum(n) { return String(Math.round((Number(n) || 0) * 10) / 10); }
+// 片内时间码 m:ss。时间线上每格左下角那个是「这一镜从成片第几秒开始」
+function canvasTimelineClock(sec) { const t = Math.max(0, Math.floor(Number(sec) || 0)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; }
+// 这一镜三样东西各自什么状态：有了 / 缺（成片要它） / 用不上（有视频就不要首帧，没台词就不要配音）
+function canvasTimelineParts(s) {
+  const has = (x) => !!(x && x.ok);
+  return [
+    { key: "首帧", state: has(s.frame) ? "ok" : has(s.video) ? "off" : "miss" },
+    { key: "视频", state: has(s.video) ? "ok" : "miss" },
+    { key: "配音", state: has(s.audio) ? "ok" : s.needsVoice ? "miss" : "off" },
+  ];
+}
+// 这一格的画面。首帧铺成胶片条：一帧挨一帧排满整格，第一帧完整摆着，竖的、横的都不拉不裁。
+// 只有视频没首帧的，放视频自己的第一帧
+function canvasTimelineThumb(s) {
+  if (s.frame && s.frame.ok) {
+    const url = canvasFileUrl(s.frame.rel || s.frame.path, 320);
+    return `<span class="ctl-thumb is-film" style="background-image:url(&quot;${esc(url)}&quot;)"><img src="${esc(url)}" alt="" draggable="false" data-ctl-aspect="${esc(s.frame.path)}">`;
+  }
+  if (s.video && s.video.ok) return `<span class="ctl-thumb"><video src="${esc(canvasFileUrl(s.video.rel || s.video.path))}#t=0.1" muted preload="metadata" tabindex="-1" aria-hidden="true" data-ctl-aspect="${esc(s.video.path)}"></video>`;
+  return `<span class="ctl-thumb">${ic("image")}`;
+}
 
 /** 画那条时间线。没有镜头的画布（不是短剧）整条不出现 */
 function canvasRenderTimeline() {
@@ -89,12 +110,17 @@ function canvasRenderTimeline() {
   const lacking = shots.filter((s) => s.missing.length);
   const total = shots.reduce((sum, s) => sum + s.seconds, 0);
   const keep = box.querySelector(".ctl-strip")?.scrollLeft || 0;
-  const cells = open ? shots.map((s) => {
-    const thumb = s.frame && s.frame.ok ? canvasFileUrl(s.frame.rel || s.frame.path, 320) : "";
+  const pb = canvasState.playback, playing = pb && !pb.ended && pb.shots[pb.index] ? String(pb.shots[pb.index].nodeId) : "";
+  // 方向键在格子之间走，Tab 只停一格（选中的那格，没有就第一格）：三十镜不该是三十个 Tab 站
+  const home = Math.max(0, shots.findIndex((s) => canvasState.selectedIds.has(s.nodeId)));
+  let clock = 0;
+  const starts = shots.map((s) => { const at = clock; clock += s.seconds; return at; });
+  const cells = open ? shots.map((s, i) => {
     const tip = [s.id, ...s.missing.map((k) => canvasT("缺" + k))].join(" · ");
     // 格子宽窄跟着时长走，一眼看得出哪一镜长：一秒 16px，夹在 80–160 之间
     const w = Math.round(Math.min(160, Math.max(80, s.seconds * 16)));
-    return `<button type="button" class="ctl-cell${s.missing.length ? " is-lacking" : ""}${canvasState.selectedIds.has(s.nodeId) ? " is-selected" : ""}" data-ctl-shot="${esc(s.nodeId)}" title="${esc(tip)}" style="--ctl-w:${w}px"><span class="ctl-thumb">${thumb ? `<img src="${esc(thumb)}" alt="" loading="lazy" draggable="false">` : ic(s.video && s.video.ok ? "video" : "image")}</span><span class="ctl-cap"><b>${esc(s.id)}</b><span>${esc(canvasT("{n} 秒", { n: canvasTimelineNum(s.seconds) }))}</span></span>${s.missing.length ? '<i class="ctl-dot" aria-hidden="true"></i>' : ""}</button>`;
+    const pips = canvasTimelineParts(s).map((x) => `<i class="is-${x.state}"></i>`).join("");
+    return `<button type="button" class="ctl-cell${s.missing.length ? " is-lacking" : ""}${canvasState.selectedIds.has(s.nodeId) ? " is-selected" : ""}${playing === String(s.nodeId) ? " is-playing" : ""}" data-ctl-shot="${esc(s.nodeId)}" data-ctl-i="${i}" tabindex="${i === home ? 0 : -1}" title="${esc(tip)}" style="--ctl-w:${w}px">${canvasTimelineThumb(s)}<span class="ctl-tc">${canvasTimelineClock(starts[i])}</span></span><span class="ctl-pips" aria-hidden="true">${pips}</span><span class="ctl-cap"><b>${esc(s.id)}</b><span>${esc(canvasT("{n} 秒", { n: canvasTimelineNum(s.seconds) }))}</span></span>${s.missing.length ? '<i class="ctl-dot" aria-hidden="true"></i>' : ""}</button>`;
   }).join("") : "";
   box.hidden = false;
   box.classList.toggle("is-open", open);
@@ -116,11 +142,85 @@ function canvasRenderTimeline() {
       btn.classList.add("is-selected");
     });
     btn.addEventListener("dblclick", () => canvasPlaybackStart(btn.dataset.ctlShot));   // 双击从这一镜往后连着放
+    const i = Number(btn.dataset.ctlI);
+    btn.addEventListener("pointerenter", () => canvasTimelinePeekSoon(box, btn, shots[i], starts[i]));
+    btn.addEventListener("pointerleave", () => canvasTimelinePeekHide(box));
   });
+  // 格子里的图、视频到了就记下它的宽高比：悬停放大那张按它摆，画布上同一个文件的卡也不用再等
+  box.querySelectorAll("[data-ctl-aspect]").forEach((el) => {
+    const read = () => { const w = el.naturalWidth || el.videoWidth, h = el.naturalHeight || el.videoHeight; if (w > 0 && h > 0) CANVAS_ASPECTS.set(String(el.dataset.ctlAspect || "").trim(), w / h); };
+    if ((el.complete && el.naturalWidth) || el.videoWidth) read(); else el.addEventListener(el.tagName === "VIDEO" ? "loadedmetadata" : "load", read, { once: true });
+  });
+  if (strip) {
+    strip.addEventListener("scroll", () => canvasTimelinePeekHide(box), { passive: true });
+    // ←/→ 在镜头之间走，Home/End 到头到尾。走到哪格就选中哪格、画布跟过去，跟点一下一样。
+    // 截住不往上冒：画布页自己也认方向键（挪选中的卡），不截的话格子一换、身后的卡也跟着挪
+    strip.addEventListener("keydown", (e) => {
+      const cur = e.target.closest && e.target.closest("[data-ctl-shot]");
+      if (!cur || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      e.preventDefault(); e.stopPropagation();
+      const all = [...strip.querySelectorAll("[data-ctl-shot]")], at = all.indexOf(cur);
+      const to = all[e.key === "Home" ? 0 : e.key === "End" ? all.length - 1 : Math.max(0, Math.min(all.length - 1, at + (e.key === "ArrowRight" ? 1 : -1)))];
+      if (!to || to === cur) return;
+      all.forEach((el) => { el.tabIndex = el === to ? 0 : -1; });
+      to.focus({ preventScroll: true }); canvasTimelineReveal(strip, to); to.click();
+    });
+  }
   box.querySelectorAll("[data-ctl-focus]").forEach((btn) => btn.addEventListener("click", () => canvasProgressFocus([btn.dataset.ctlFocus])));
   box.querySelectorAll("[data-ctl-attach]").forEach((btn) => btn.addEventListener("click", () => canvasCastAttach([[btn.dataset.ctlAttach, btn.dataset.ctlAttachShot]])));
   box.querySelector("[data-ctl-attach-all]")?.addEventListener("click", () => canvasCastAttach(canvasCastRows(canvasTimelineShots()).flatMap((r) => r.loose.map((x) => [r.node.id, x.shot.nodeId]))));
   box.querySelector("[data-ctl-cast-close]")?.addEventListener("click", () => { canvasState.castOpen = false; canvasRenderTimeline(); });
+}
+
+/** 让这一格露在时间线的可见范围里。不用 scrollIntoView：它会连带把整页也滚一下 */
+function canvasTimelineReveal(strip, cell) {
+  if (!strip || !cell) return;
+  const sr = strip.getBoundingClientRect(), cr = cell.getBoundingClientRect();
+  if (cr.left < sr.left) strip.scrollLeft -= sr.left - cr.left + 8;
+  else if (cr.right > sr.right) strip.scrollLeft += cr.right - sr.right + 8;
+}
+/** 连播放到哪一镜，时间线上哪一格就亮着，看不见就滚过去。nodeId 给空 = 不在放了 */
+function canvasTimelineMarkPlaying(nodeId) {
+  const box = document.getElementById("canvas-timeline");
+  if (!box) return;
+  let hit = null;
+  box.querySelectorAll("[data-ctl-shot]").forEach((el) => { const on = !!nodeId && el.dataset.ctlShot === String(nodeId); el.classList.toggle("is-playing", on); if (on) hit = el; });
+  if (hit) canvasTimelineReveal(box.querySelector(".ctl-strip"), hit);
+}
+
+/**
+ * 悬停一格，在它正上方放大看这一镜：整张首帧（不裁）、在成片里从几秒到几秒、台词、三样东西齐没齐。
+ * 格子太小，竖屏的首帧在格子里只有二十几像素宽，看不出画的是什么。停 300ms 才出：手扫过去不闪
+ */
+function canvasTimelinePeekSoon(box, btn, s, start) {
+  canvasTimelinePeekHide(box);
+  if (!s) return;
+  canvasState.timelinePeekTimer = window.setTimeout(() => {
+    canvasState.timelinePeekTimer = null;
+    if (!btn.isConnected || canvasState.playback) return;
+    const frame = s.frame && s.frame.ok ? s.frame : null, video = !frame && s.video && s.video.ok ? s.video : null;
+    const path = frame ? frame.path : video ? video.path : "";
+    const ratio = canvasAspectOf(path, canvasDramaRatio()), shape = canvasIsTall(ratio) ? "tall" : "wide";
+    const fit = `style="aspect-ratio:auto ${Math.round(ratio * 10000) / 10000}" data-shape="${shape}"`;
+    const media = frame ? `<img src="${esc(canvasFileUrl(frame.rel || frame.path, 640))}" alt="" draggable="false" ${fit}>`
+      : video ? `<video src="${esc(canvasFileUrl(video.rel || video.path))}#t=0.1" muted preload="metadata" ${fit}></video>`
+      : `<span class="ctl-peek-none">${esc(canvasT("这一镜还没画面"))}</span>`;
+    const parts = canvasTimelineParts(s).map((x) => `<span class="is-${x.state}">${esc(canvasT(x.key))}</span>`).join("");
+    const peek = document.createElement("div");
+    peek.className = "ctl-peek"; peek.setAttribute("role", "tooltip");
+    peek.innerHTML = `<div class="ctl-peek-media">${media}</div><div class="ctl-peek-meta"><b>${esc(s.id)}</b><span>${canvasTimelineClock(start)}–${canvasTimelineClock(start + s.seconds)} · ${esc(canvasT("{n} 秒", { n: canvasTimelineNum(s.seconds) }))}</span></div>${s.line ? `<p class="ctl-peek-line">${esc(s.line)}</p>` : ""}<div class="ctl-peek-parts">${parts}</div>`;
+    box.appendChild(peek);
+    // 摆在这一格正上方，左右不出时间线那一条；上下贴着面板顶
+    const br = box.getBoundingClientRect(), cr = btn.getBoundingClientRect(), panel = box.querySelector(".ctl-panel").getBoundingClientRect();
+    const w = peek.offsetWidth;
+    peek.style.left = Math.round(Math.max(0, Math.min(br.width - w, cr.left - br.left + cr.width / 2 - w / 2))) + "px";
+    peek.style.bottom = Math.round(br.bottom - panel.top + 6) + "px";
+    peek.classList.add("is-open");
+  }, 300);
+}
+function canvasTimelinePeekHide(box) {
+  if (canvasState.timelinePeekTimer) { clearTimeout(canvasState.timelinePeekTimer); canvasState.timelinePeekTimer = null; }
+  (box || document).querySelectorAll(".ctl-peek").forEach((el) => el.remove());
 }
 
 /**
@@ -191,6 +291,9 @@ function canvasPlaybackStart(fromNodeId) {
   box.innerHTML = `<div class="cpb-card"><div class="cpb-stage" data-cpb-stage></div><div class="cpb-bar"><span class="cpb-now" data-cpb-now></span><span class="cpb-note" data-cpb-note></span><span class="cpb-spacer"></span><button type="button" class="ui-btn ui-btn--ghost ui-btn--xs" data-cpb-nav="-1">上一个</button><button type="button" class="ui-btn ui-btn--ghost ui-btn--xs" data-cpb-nav="1">下一个</button><button type="button" class="ui-btn ui-btn--outline ui-btn--xs" data-cpb-close title="关闭（Esc）">关闭</button></div></div>`;
   // 挂在画布页里面：人切到别的页，这一层跟着整页一起被换掉
   page.appendChild(box);
+  // 放映框的比例跟着这部戏走：竖屏戏放在横的框里，片子只剩中间一条
+  box.style.setProperty("--cpb-ar", String(Math.round(canvasDramaRatio() * 10000) / 10000));
+  canvasTimelinePeekHide();
   const pb = { shots, index: -1, box, timers: [], media: [], token: 0, played: [], ended: false, watch: null };
   canvasState.playback = pb;
   box.querySelectorAll("[data-cpb-nav]").forEach((b) => b.addEventListener("click", () => canvasPlaybackShow(pb.index + Number(b.dataset.cpbNav))));
@@ -221,6 +324,7 @@ function canvasPlaybackStop() {
   canvasPlaybackHalt(pb);
   window.clearInterval(pb.watch);
   pb.box.remove();
+  canvasTimelineMarkPlaying(null);
 }
 
 /** 放第 index 镜。每一镜等它身上所有东西放完（视频、配音、静帧的时长）再走下一镜 */
@@ -236,6 +340,7 @@ function canvasPlaybackShow(index) {
     stage.innerHTML = '<div class="cpb-empty"><b>放完了</b><button type="button" class="ui-btn ui-btn--default ui-btn--xs" data-cpb-again>从头再放</button></div>';
     stage.querySelector("[data-cpb-again]").addEventListener("click", () => canvasPlaybackShow(0));
     now.textContent = canvasT("{n} 镜", { n: pb.shots.length }); note.textContent = "";
+    canvasTimelineMarkPlaying(null);
     return;
   }
   pb.ended = false;
@@ -243,6 +348,7 @@ function canvasPlaybackShow(index) {
   const videoOk = !!(s.video && s.video.ok), frameOk = !!(s.frame && s.frame.ok), audioOk = !!(s.audio && s.audio.ok);
   const mode = videoOk ? "video" : frameOk ? "frame" : "empty";
   pb.played.push({ id: s.id, nodeId: s.nodeId, mode, audio: audioOk });
+  canvasTimelineMarkPlaying(s.nodeId);
   now.textContent = `${pb.index + 1}/${pb.shots.length} · ${s.id}`;
   note.textContent = [mode === "frame" ? canvasT("没视频，先放首帧") : mode === "empty" ? canvasT("这一镜还没画面") : "", s.needsVoice && !audioOk ? canvasT("没配音") : ""].filter(Boolean).join(" · ");
   let waiting = 0;

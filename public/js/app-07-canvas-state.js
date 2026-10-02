@@ -54,6 +54,8 @@ let canvasState = {
   inspectorOpen: false, nodeGesture: null, multiMove: null, skipNodeClick: null, suppressInspectorUntil: 0,
   // remoteContentKey：服务器上那份画布的内容指纹。屏幕上这份跟它一样就不再往上写（见 canvasPersist）
   remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
+  // fitting：正在按内容给卡量高、给长高的卡让位。这期间的挪动不存盘（见 canvasFitFlush）
+  fitting: false,
   // 盘上那份画布读不出来时记下原因。有值就等于「这张画布现在不能写」，
   // 界面必须显示错误而不是一张白板——白板 + 自动保存正好把还有救的原件盖掉
   remoteBroken: "", remoteBrokenNotified: false, lostNotified: "",
@@ -172,7 +174,7 @@ function canvasResolvedFileName(value) {
 /**
  * 画布节点上那张图要的地址。w 传了就要缩略图。
  *
- * 节点里的预览框最高 204px（ui.css .canvas-node-preview），可短剧画布上摆的是
+ * 节点里的预览框最多几百像素高（ui.css .canvas-node-preview），可短剧画布上摆的是
  * 生成出来的成图——本机工作空间里真实躺着 3552×4736 的图，一张解码后 64 MB。
  * 一块摆满三十个镜头的画布就是几个 GB 的位图，浏览器直接放弃，画面上一片空白：
  * 用户那句「无限画布还有很大文件都没有办法正常显示」说的就是这个。

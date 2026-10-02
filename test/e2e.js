@@ -10357,7 +10357,7 @@ async function testCanvasMissingAssets() {
 /**
  * 无限画布上的图别拿原图当缩略图。
  *
- * 现场账：节点里的预览框最高 204px（ui.css .canvas-node-preview），可短剧画布上摆的是
+ * 现场账：节点里的预览框最多几百像素高（ui.css .canvas-node-preview），可短剧画布上摆的是
  * 生成出来的成图——本机工作空间里真实躺着 3552×4736 的图，一张解码后 64 MB。
  * 一块摆满三十个镜头的画布就是几个 GB 的位图，浏览器直接放弃，画面上一片空白。
  * 所以节点预览一律要 640 的缩略图，双击放大那个灯箱才给原图。
@@ -18273,6 +18273,9 @@ async function testDramaCast() {
     const fe = srcLib.src("canvas");
     const from = fe.indexOf("function canvasNodeHtml("), to = fe.indexOf("\nfunction canvasSelectedNode(");
     assert(from > 0 && to > from, "抠不出节点渲染代码（函数改名了？）");
+    // 预览框按图片真实比例摆的那几个纯函数，原样带上（不打桩：桩会把「框比例算错」这类问题藏起来）
+    const hFrom = fe.indexOf("const CANVAS_ASPECTS = new Map();"), hTo = fe.indexOf("\nfunction canvasWatchAspect(");
+    assert(hFrom > 0 && hTo > hFrom, "抠不出预览比例那几个函数（改名了？）");
     const sandbox = {
       esc: (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])),
       ic: (n) => `<i>${n}</i>`,
@@ -18285,7 +18288,7 @@ async function testDramaCast() {
       canvasKind: () => "", canvasPayload: () => ({}),
     };
     const keys = Object.keys(sandbox);
-    const ui = new Function(...keys, fe.slice(from, to) + "\nreturn canvasNodeHtml;")(...keys.map((k) => sandbox[k]));
+    const ui = new Function(...keys, fe.slice(hFrom, hTo) + "\n" + fe.slice(from, to) + "\nreturn canvasNodeHtml;")(...keys.map((k) => sandbox[k]));
 
     const blank = ui("character", { name: "阿岚", role: "主角", description: "红衣女孩" }, "c1");
     assert(/data-canvas-generate="image"/.test(blank) && /生成定妆照/.test(blank),

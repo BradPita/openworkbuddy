@@ -89,6 +89,8 @@ function canvasCenterSelected(page) {
 }
 
 function canvasAutoLayout(page) {
+  // 按量好的卡高排：图刚到、卡还没来得及长高的时候排，排完那张卡一长就压到下一张
+  if (canvasState.graph) canvasFitFlush();
   const graph = canvasState.graph, nodes = graph?.getElements?.() || [];
   if (!nodes.length) return canvasToast("画布里还没有节点。", "info");
   const D = typeof dagre !== "undefined" ? dagre : null;

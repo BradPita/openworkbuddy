@@ -50,7 +50,7 @@ if (!process.versions.electron) {
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, nativeImage } = require("electron");
 
 if (process.platform === "darwin" && app.dock && app.dock.hide) app.dock.hide();
 
@@ -73,10 +73,14 @@ const MIME = {
   ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml",
   ".ico": "image/x-icon", ".woff2": "font/woff2", ".json": "application/json; charset=utf-8",
 };
+// 第三十八节量比例用的几张图（竖 / 横 / 超长 / 超宽），开跑后才画得出来（nativeImage 要等 app ready）
+const TEST_IMGS = {};
 function serve() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
       const rel = decodeURIComponent(String(req.url || "/").split("?")[0]);
+      const pic = rel.startsWith("/api/files/view/") && TEST_IMGS[rel.split("/").pop()];
+      if (pic) { res.setHeader("Content-Type", "image/png"); return res.end(pic); }
       const file = VENDOR[rel] || path.join(PUB, path.normalize(rel).replace(/^([/\\.]+)/, ""));
       if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.statusCode = 404; return res.end("nope"); }
       const buf = fs.readFileSync(file);
@@ -2840,6 +2844,93 @@ app.whenReady().then(async () => {
   ok(规格.估价 && 规格.估价.duration === "6", "估价跟真跑那一枪同一个口径：时长是视频的计价单位", 规格.估价);
   ok(规格.没建剧 && !("duration" in 规格.没建剧) && !("aspect_ratio" in 规格.没建剧),
      "反向对照：没走过「新建短剧」的画布不猜 9:16 / 5 秒，照旧交给模型默认", 规格.没建剧);
+
+  console.log("\n— 三十八、画布上的图按原比例摆、卡片跟着内容长高：不压扁、不裁一截 —");
+  // 以前预览框是写死的高度 + cover：竖屏首帧只剩中间一截，超宽的场景图两头被切，卡片本身也固定高，
+  // 图一高「重生成定妆照」就被挤出卡外。现在框跟着图的比例走，卡跟着内容长高、把正下方的卡往下推
+  const 图尺寸 = { "tall.png": [180, 320], "wide.png": [320, 180], "ultratall.png": [100, 300], "ultrawide.png": [300, 100] };
+  for (const [n, [w, h]] of Object.entries(图尺寸)) TEST_IMGS[n] = nativeImage.createFromBitmap(Buffer.alloc(w * h * 4, 0x9a), { width: w, height: h }).toPNG();
+  const 图卡 = (id, f, x, y) => ({ id, kind: "image", payload: { title: f, path: "ws/" + f }, position: { x, y } });
+  const 比例 = await run(`
+    (async () => {
+      ${摆画布([图卡("ia", "tall.png", 40, 40), 图卡("ib", "wide.png", 420, 40), 图卡("ic", "ultratall.png", 800, 40), 图卡("id", "ultrawide.png", 1180, 40),
+        { id: "below", kind: "note", payload: { title: "竖图正下方" }, position: { x: 40, y: 380 }, size: { width: 300, height: 180 } },
+        { id: "atop", kind: "note", payload: { title: "本来就叠着" }, position: { x: 200, y: 200 }, size: { width: 200, height: 120 } },
+        { id: "ca", kind: "character", payload: { name: "阿岚", reference: "ws/tall.png", description: "二十出头的外卖员" }, position: { x: 420, y: 700 } },
+        { id: "cb", kind: "character", payload: { name: "老周", reference: "ws/wide.png", description: "五十多岁的保安" }, position: { x: 800, y: 700 } },
+        号镜头("t1", "S1-01", "电梯门开", 1000, { first_frame: "ws/tall.png", duration: 5 }), 号镜头("t2", "S1-02", "楼道", 1300, { first_frame: "ws/ultrawide.png", duration: 3 })])}
+      ${等(900)}
+      const 量图 = (im) => { const r = im.getBoundingClientRect(), nat = im.naturalWidth / im.naturalHeight;
+        return { 原: +nat.toFixed(3), 框: +(r.width / r.height).toFixed(3), 填法: getComputedStyle(im).objectFit, 载入: im.naturalWidth > 0 }; };
+      const 不变形 = (m) => m.载入 && (m.填法 === "contain" || m.填法 === "scale-down" || Math.abs(m.框 - m.原) / m.原 < 0.03);
+      const 量卡 = (id) => { const v = canvasState.graph.getCell(id).findView(canvasState.paper), card = v.el.querySelector(".canvas-node"), im = card.querySelector("img.canvas-node-preview");
+        const c = card.getBoundingClientRect(), r = im ? im.getBoundingClientRect() : null;
+        return { 图: im ? 量图(im) : null, 图在卡里: !r || (r.bottom <= c.bottom + 0.5 && r.right <= c.right + 0.5 && r.top >= c.top - 0.5),
+          溢出: card.scrollHeight - card.clientHeight, 高: canvasState.graph.getCell(id).size().height, 并排: !!card.querySelector(".canvas-media-row.is-side") }; };
+      const 卡 = Object.fromEntries(["ia", "ib", "ic", "id", "ca", "cb", "t1", "t2"].map((id) => [id, 量卡(id)]));
+      const 位 = (id) => { const n = canvasState.graph.getCell(id); return { y: n.position().y, 底: n.position().y + n.size().height }; };
+      const 推 = { 竖图: 位("ia"), 下方: 位("below"), 叠着: 位("atop") };
+      // 时间线：格子里每帧整张；悬停那张大图也按原比例
+      canvasRenderTimeline(); ${等(400)}
+      const box = document.getElementById("canvas-timeline");
+      const 格图 = [...box.querySelectorAll(".ctl-thumb img")].map((im) => ({ ...量图(im), 底图: getComputedStyle(im.parentElement).backgroundSize, 铺法: getComputedStyle(im.parentElement).backgroundRepeat }));
+      box.querySelector('[data-ctl-shot="t1"]').dispatchEvent(new PointerEvent("pointerenter")); ${等(700)}
+      const pk = box.querySelector(".ctl-peek"), pim = pk && pk.querySelector("img");
+      const 悬停 = { 有: !!pk, 图: pim ? 量图(pim) : null, 时段: pk ? pk.querySelector(".ctl-peek-meta").textContent : "" };
+      box.querySelector('[data-ctl-shot="t1"]').dispatchEvent(new PointerEvent("pointerleave"));
+      const 移开后 = !!box.querySelector(".ctl-peek");
+      // ←/→ 在格子间走：第一格按 → 选中第二格，画布那张卡跟着选上
+      const c1 = box.querySelector('[data-ctl-shot="t1"]'); c1.focus();
+      c1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); ${等(150)}
+      const 键走 = { 选中: [...canvasState.selectedIds], 亮格: [...document.querySelectorAll("#canvas-timeline .ctl-cell.is-selected")].map((c) => c.dataset.ctlShot) };
+      // 量卡片不算编辑：不往服务器写；下一次真改动时才把量好的尺寸一起带上
+      const 前高 = 卡.ia.高;
+      const 挤 = document.createElement("style"); 挤.id = "t38-squash";
+      挤.textContent = ".canvas-node-preview{height:110px!important;max-height:none!important;width:100%!important;aspect-ratio:auto!important;object-fit:cover!important}";
+      document.head.appendChild(挤);
+      ["ia", "ib", "ic", "id"].forEach((id) => canvasRefreshNode(canvasState.graph.getCell(id))); ${等(900)}
+      // 反向对照：换回「写死高度 + cover」那套，上面那把尺子得量得出压扁 / 裁掉
+      const 旧样式 = Object.fromEntries(["ia", "ic", "id"].map((id) => [id, 不变形(量卡(id).图)]));
+      const 挤后高 = canvasState.graph.getCell("ia").size().height;
+      // 人把正下方那张拖上来，贴着挤矮的卡（这一下是真改动，照常存盘）。卡一长回去就得把它推开——
+      // 推开是一次挪动，「量卡片带出来的挪动存不存盘」量的正是这一下。光改高不挪本来就不存；
+      // 推完跟服务器那份又一模一样的话，「内容没变就不写」那道关也会挡掉，同样量不出来
+      const 拖到 = 40 + 挤后高 + 10;
+      canvasState.graph.getCell("below").position(40, 拖到);
+      ${等(600)}
+      await canvasFlushRemoteWrite(); ${等(100)}
+      window.__puts = [];
+      挤.remove(); ["ia", "ib", "ic", "id"].forEach((id) => canvasRefreshNode(canvasState.graph.getCell(id))); ${等(900)}
+      const 回高 = canvasState.graph.getCell("ia").size().height, 量完写了 = window.__puts.length;
+      const 推后 = canvasState.graph.getCell("below").position().y;
+      const 又推开 = 推后 > 拖到 && 推后 >= 40 + 回高 + 15;
+      canvasAddNode("note", { title: "真改一下" }, { x: 1600, y: 1600 }); ${等(800)}
+      await canvasFlushRemoteWrite(); ${等(200)}
+      const 盘上 = ((window.__store.jia.main || {}).nodes || []).find((n) => n.id === "ia");
+      return { 卡, 推, 格图, 悬停, 移开后, 键走, 前高, 挤后高, 回高, 量完写了, 又推开, 旧样式, 盘上高: 盘上 && 盘上.size && 盘上.size.height,
+        不变形: Object.fromEntries(Object.entries(卡).map(([k, v]) => [k, !v.图 || 不变形(v.图)])), 格不变形: 格图.map(不变形), 悬停不变形: !!悬停.图 && 不变形(悬停.图) };
+    })()`);
+  const 卡 = 比例.卡 || {};
+  ok(["ia", "ib", "ic", "id"].every((k) => 卡[k] && 卡[k].图 && 卡[k].图.载入 && Math.abs(卡[k].图.框 - 卡[k].图.原) / 卡[k].图.原 < 0.03),
+     "★竖 / 横 / 超长 / 超宽四张图，预览框的宽高比跟原图一致★ 以前框是写死的，图按框裁", 卡);
+  ok(Object.values(比例.不变形 || {}).every(Boolean), "★人物、场景、镜头卡上的图也一样，不压扁、不裁★", 比例.不变形);
+  ok(Object.values(卡).every((v) => v.图在卡里 && v.溢出 <= 1),
+     "★每张卡都装得下自己的内容★ 图和按钮都在卡里，底下没被截掉一截", Object.fromEntries(Object.entries(卡).map(([k, v]) => [k, [v.图在卡里, v.溢出]])));
+  ok(卡.ia && 卡.ia.高 > 330 && 卡.ib && 卡.ib.高 < 卡.ia.高, "卡跟着图长：竖图那张比默认高，横图那张矮一截，不留大空白", { 竖: 卡.ia && 卡.ia.高, 横: 卡.ib && 卡.ib.高 });
+  ok(卡.ca && 卡.ca.并排 && 卡.cb && !卡.cb.并排, "竖的定妆照和文字并排摆，横的照旧上图下字", { 竖: 卡.ca && 卡.ca.并排, 横: 卡.cb && 卡.cb.并排 });
+  const 推 = 比例.推 || {};
+  ok(推.下方 && 推.竖图 && 推.下方.y >= 推.竖图.底 + 15, "★竖图那张长高了，正下方那张被往下推开，不叠在一起★", 推);
+  ok(推.叠着 && 推.叠着.y === 200, "反向对照：本来就叠在它身上的那张不动——那是人自己摆的", 推.叠着);
+  ok((比例.格图 || []).length === 2 && 比例.格不变形.every(Boolean) && 比例.格图.every((g) => g.底图 === "contain" && /space/.test(g.铺法)),
+     "★时间线每格的首帧整张缩进去，排几帧都是整帧，不切半帧★", 比例.格图);
+  ok(比例.悬停 && 比例.悬停.有 && 比例.悬停不变形 && /0:00.0:05/.test(比例.悬停.时段) && !比例.移开后,
+     "悬停一格弹出大图，按原比例摆，写着这一镜在成片里的起止时间；移开就收", 比例.悬停);
+  ok(比例.键走 && 比例.键走.选中.includes("t2") && 比例.键走.亮格.join() === "t2", "时间线上按 → 走到下一镜，画布上那张卡跟着选中", 比例.键走);
+  ok(比例.量完写了 === 0 && 比例.又推开 && 比例.挤后高 < 比例.前高 && 比例.回高 === 比例.前高,
+     "★卡片按内容改高、顺手把下面的卡推开，都不算编辑，不往服务器写★ 不然两台机器开着同一张画布会互相改尺寸、来回写",
+     { 写了: 比例.量完写了, 推开: 比例.又推开, 前: 比例.前高, 挤后: 比例.挤后高, 回: 比例.回高 });
+  ok(比例.盘上高 === 比例.前高, "下一次真改动时，量好的尺寸跟着一起存上", { 盘上: 比例.盘上高, 屏幕: 比例.前高 });
+  ok(比例.旧样式 && !比例.旧样式.ia && !比例.旧样式.ic && !比例.旧样式.id, "反向对照：换回写死高度 + cover 的老样式，上面那把尺子量得出变形", 比例.旧样式);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
