@@ -200,6 +200,12 @@ npm run app # 桌面版；或 npm start → http://localhost:3800
  <img src="docs/images/case-canvas.jpg" width="960" alt="OpenWorkBuddy 无限画布：定妆照、场景图、分镜首帧排在同一张图上，紫色连线标着「生成」指向下一步真会去读的那几张">
 </p>
 
+**一句话做出来的 AI 短剧**：说一句「做一集《不烧心》竖屏短剧」，剧本、定妆、分镜、首帧、镜头视频、成片一路做到底，下面这集 75 秒就是这么出来的（点封面看成片）。
+
+<p align="center">
+ <a href="docs/videos/ai-short-drama-ep01.mp4"><img src="docs/images/ai-short-drama-poster.jpg" width="300" alt="AI 短剧《不烧心》EP01 竖屏成片封面，点开播放 75 秒成片"></a>
+</p>
+
 左侧点「无限画布」就能开始。空白处拖拽平移，`Shift`+拖拽框选，`Shift`/`⌘` 点节点加选减选，底部对话框里能 `@` 引用任意节点和素材。
 
 ## 放服务器给团队用

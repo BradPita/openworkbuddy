@@ -200,6 +200,12 @@ Script, characters, scenes, shots, reference images, video, voice and the edit t
  <img src="docs/images/case-canvas.jpg" width="960" alt="OpenWorkBuddy infinite canvas: character sheet, location plate and shot first-frames on one board, with purple wires labelled 「生成」 pointing at what the next generation actually reads">
 </p>
 
+**A whole AI short-drama episode from one sentence**: ask for "an episode of 《不烧心》 as a vertical short drama" and it goes script → character sheets → storyboard → first frames → shot videos → final cut. This 75-second episode was made that way (click the cover to watch).
+
+<p align="center">
+ <a href="docs/videos/ai-short-drama-ep01.mp4"><img src="docs/images/ai-short-drama-poster.jpg" width="300" alt="Cover of the AI short drama 《不烧心》 EP01, vertical cut — click to play the 75-second episode"></a>
+</p>
+
 Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, `Shift`/`⌘`+click to add or drop nodes from the selection, and `@` any node or asset from the chat box at the bottom.
 
 ## Put it on a server for your team
