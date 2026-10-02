@@ -1235,10 +1235,241 @@ async function gateChecks() {
   }
 }
 
+/**
+ * 【12】运行时：通义的几个地址、看图走哪扇门、按型号点名、万相异步出图。
+ * 全是假 fetch，一个真请求都不发；每条后面跟一个反向对照。
+ */
+async function runtimeChecks() {
+  console.log("\n【12】运行时：通义地址 / 看图协议 / 按型号点名 / 万相异步出图");
+  const tools = require(path.join(ROOT, "tools"));
+  const { lookAtImage, generateImage } = tools._internals;
+  const MEDIA = require(path.join(ROOT, "src/tools/media"));
+  const agent = require(path.join(ROOT, "agent"));
+
+  // ── 通义的地址：国际站、*.maas 专属地址、选了百炼类型的中转，都要换对接口层
+  const INTL = "https://dashscope-intl.aliyuncs.com/api/v1";
+  const MAAS = "https://ws-test.cn-beijing.maas.aliyuncs.com/api/v1";
+  eq(mm.baseForUse(INTL, "chat"), "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "国际站：对话换成兼容层");
+  eq(mm.baseForUse("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "media"), INTL, "国际站：画图换回原生层");
+  eq(mm.baseForUse(MAAS, "chat"), "https://ws-test.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "*.maas 专属地址：对话换成兼容层");
+  eq(mm.baseForUse("https://gw.example.test/api/v1", "chat", "dashscope"), "https://gw.example.test/compatible-mode/v1", "选了百炼类型的中转：按类型认");
+  eq(mm.baseForUse("https://gw.example.test/api/v1", "chat", "custom"), "https://gw.example.test/api/v1", "★对照★ 别的类型的同一个地址原样不动");
+  eq(mm.baseForUse("https://openrouter.ai/api/v1", "chat", "openrouter"), "https://openrouter.ai/api/v1", "★对照★ OpenRouter 原样不动");
+  eq(mm.guessKind(INTL), "dashscope", "国际站地址认成百炼");
+  eq(mm.guessKind(MAAS), "dashscope", "*.maas 地址认成百炼");
+  eq(mm.guessKind("https://maas.example.test/v1"), "custom", "★对照★ 路径里带 maas 的别家地址不认成百炼");
+  eq(mm.videoProtoOf({ base_url: MAAS }), "dashscope", "视频按地址认协议：*.maas 也是万相那一套");
+  ok(MEDIA.speaksDashscope({ base_url: "https://gw.example.test/v1", kind: "dashscope" }), "生图 / 配音：渠道类型是百炼就走通义原生");
+  ok(!MEDIA.speaksDashscope({ base_url: "https://gw.example.test/v1", kind: "custom" }), "★对照★ 别的类型不走");
+
+  // ── 全模态的型号先认看图，不是语音识别
+  const gem = mm.capOfModel({ id: "google/gemini-2.5-flash", architecture: { input_modalities: ["file", "image", "text", "audio", "video"], output_modalities: ["text"] } });
+  eq(gem.cap, "vision", "输入有图有音、输出只有字 → 看图");
+  eq(gem.sure, true, "……而且是确定的");
+  eq(mm.capOfModel({ id: "x-asr", architecture: { input_modalities: ["audio", "text"], output_modalities: ["text"] } }).cap, "asr", "★对照★ 只进音不进图 → 还是转写");
+
+  // ── 压平 / 解析：看图走对话那一层地址，带上接口格式和渠道 id
+  const c = {
+    providers: [
+      { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: "dash-key" },
+      { id: "or", name: "OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "or-key" },
+      { id: "gw-claude", name: "自建网关", kind: "custom", api: "anthropic", base_url: "https://gw.example.test", api_key: "gw-key" },
+    ],
+    media_models: [
+      { cap: "vision", name: "千问看图", provider: "dash", model: "qwen-vl-max", default: true },
+      { cap: "vision", name: "网关看图", provider: "gw-claude", model: "claude-sonnet-5" },
+      { cap: "vision", name: "OR看图", provider: "or", model: "openai/gpt-5-mini" },
+      { cap: "image", name: "千问画", provider: "dash", model: "qwen-image", default: true },
+    ],
+    media_migrated: 1,
+  };
+  c.media = mm.flatten(c.providers, c.media_models);
+  eq(c.media.vision.base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1", "看图默认那条压平成兼容层地址");
+  eq(c.media.image.base_url, DASH, "★对照★ 画图那条还是原生地址");
+  eq(c.media.vision.proto, "openai", "压平带上接口格式");
+  eq(c.media.vision.provider, "dash", "压平带上渠道 id（记账要用）");
+  const media = mm.resolve(c);
+  const row = (n) => media.list.find((m) => m.name === n);
+  eq(row("千问看图").base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1", "清单里的看图那条也是兼容层");
+  eq(row("千问画").base_url, DASH, "★对照★ 清单里的画图那条还是原生");
+  eq(row("OR看图").base_url, "https://openrouter.ai/api/v1", "★对照★ 别家的看图地址原样");
+  eq(row("网关看图").proto, "anthropic", "选了 Anthropic 格式的渠道，清单里记着");
+  eq(row("网关看图").channel, "自建网关", "清单里带渠道名（点名撞车时报给人看）");
+  eq(MEDIA.mediaProviderOf(media, "vision", "网关看图"), "gw-claude", "记账：点名用的那条记在它自己的渠道上");
+  eq(MEDIA.mediaProviderOf(media, "vision"), "dash", "★对照★ 不点名记在默认渠道上");
+
+  // ── 看图真正敲的门
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mm-eye-"));
+  const PNG_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  fs.writeFileSync(path.join(dir, "a.png"), Buffer.from(PNG_1x1, "base64"));
+  const resolveFile = (rel) => path.join(dir, rel);
+  const seen = [];
+  let reply = () => ({ status: 200, body: { choices: [{ message: { content: "看到了" }, finish_reason: "stop" }] } });
+  const realFetch = global.fetch;
+  global.fetch = async (url, init) => {
+    const h = (init || {}).headers || {};
+    seen.push({ url: String(url), method: (init || {}).method || "GET", h, body: (init || {}).body ? JSON.parse(init.body) : null });
+    const { status, body, bytes } = reply(String(url), init);
+    return {
+      ok: status >= 200 && status < 300, status,
+      json: async () => body, text: async () => JSON.stringify(body),
+      arrayBuffer: async () => (bytes || Buffer.from("x")).buffer,
+      headers: { get: () => null },
+    };
+  };
+  const look = (m, opts = {}) => lookAtImage({ media, ...opts }, { path: "a.png", question: "写了什么", ...(m ? { model: m } : {}) }, 30000, resolveFile);
+  try {
+    seen.length = 0;
+    let r = await look();
+    eq(r.isError, false, "百炼看图：看成了", r.content);
+    eq(seen[0].url, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "百炼看图打到兼容层（原生 /api/v1 没有这个接口）");
+
+    seen.length = 0;
+    reply = () => ({ status: 200, body: { content: [{ type: "text", text: "看到了" }], stop_reason: "end_turn" } });
+    r = await look("网关看图");
+    eq(r.isError, false, "Anthropic 格式的自建网关：点名看成了", r.content);
+    eq(seen[0].url, "https://gw.example.test/v1/messages", "……打的是 /v1/messages");
+    eq(seen[0].h["x-api-key"], "gw-key", "……Key 放在 x-api-key");
+    eq(seen[0].h.Authorization, undefined, "……不带 Bearer");
+
+    // 同一条渠道当默认（不点名）也一样
+    const c2 = { ...c, media_models: c.media_models.map((m) => ({ ...m, default: m.cap === "vision" ? m.name === "网关看图" : m.default })) };
+    c2.media = mm.flatten(c2.providers, c2.media_models);
+    seen.length = 0;
+    r = await lookAtImage({ media: mm.resolve(c2) }, { path: "a.png", question: "?" }, 30000, resolveFile);
+    eq(seen[0] && seen[0].url, "https://gw.example.test/v1/messages", "不点名、它是默认那条：照样打 /v1/messages");
+
+    // 主模型自己看：Gemini 官方走 OpenAI 兼容层，Ollama 走本机 /v1
+    reply = () => ({ status: 200, body: { choices: [{ message: { content: "看到了" }, finish_reason: "stop" }] } });
+    const none = { list: [] };
+    seen.length = 0;
+    r = await lookAtImage({ media: none, visionFallback: { base_url: "https://generativelanguage.googleapis.com/v1beta", api_key: "g-key", model: "gemini-2.5-flash", provider: "gemini" } },
+      { path: "a.png", question: "?" }, 30000, resolveFile);
+    eq(r.isError, false, "主模型是 Gemini 官方：看成了", r.content);
+    eq(seen[0].url, "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "……走 Gemini 的 OpenAI 兼容层");
+    eq(seen[0].h.Authorization, "Bearer g-key", "……Key 用 Bearer 带");
+    seen.length = 0;
+    r = await lookAtImage({ media: none, visionFallback: { base_url: "http://localhost:11434", api_key: "", model: "qwen2.5vl", provider: "ollama" } },
+      { path: "a.png", question: "?" }, 30000, resolveFile);
+    eq(seen[0] && seen[0].url, "http://localhost:11434/v1/chat/completions", "主模型是 Ollama：走本机的 /v1/chat/completions");
+    seen.length = 0;
+    r = await lookAtImage({ media: none, visionFallback: { base_url: "https://gemini-gw.example.test/v1beta", api_key: "k", model: "gemini-2.5-flash", provider: "gemini" } },
+      { path: "a.png", question: "?" }, 30000, resolveFile);
+    eq(r.isError, true, "主模型是别人搭的 Gemini 网关、又没单配看图：直说没有能看图的");
+    eq(seen.length, 0, "……一个请求都没发");
+    seen.length = 0;
+    r = await lookAtImage({ media, visionFallback: { base_url: "https://gemini-gw.example.test/v1beta", api_key: "k", model: "gemini-2.5-flash", provider: "gemini" } },
+      { path: "a.png", question: "?" }, 30000, resolveFile);
+    eq(seen[0] && seen[0].url, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "★对照★ 单配了看图就交给单配的那条");
+
+    // 主模型被拒在门外（404）：换单配的那条；上游忙（429）不换
+    const main = { base_url: "https://main.example.test/v1", api_key: "m", model: "main-model", provider: "openai", caps: ["vision"] };
+    reply = (url) => (url.startsWith("https://main.example.test") ? { status: 404, body: { error: "no such route" } } : { status: 200, body: { choices: [{ message: { content: "看到了" }, finish_reason: "stop" }] } });
+    seen.length = 0;
+    r = await lookAtImage({ media, visionFallback: main }, { path: "a.png", question: "?" }, 30000, resolveFile);
+    eq(r.isError, false, "主模型回 404：改用单配的看图模型", r.content);
+    ok(/HTTP 404/.test(r.content) && /qwen-vl-max/.test(r.content), "……答案末尾说了为什么换、换成谁", r.content);
+    reply = (url) => (url.startsWith("https://main.example.test") ? { status: 429, body: { error: "rate limited" } } : { status: 200, body: { choices: [{ message: { content: "看到了" }, finish_reason: "stop" }] } });
+    seen.length = 0;
+    r = await lookAtImage({ media, visionFallback: main }, { path: "a.png", question: "?" }, 30000, resolveFile);
+    eq(r.isError, true, "★对照★ 主模型回 429：不替人换渠道花另一份钱");
+    eq(seen.filter((x) => !x.url.startsWith("https://main.example.test")).length, 0, "★对照★ 单配的那条一个请求都没收到");
+
+    // 主模型那条：官方 Anthropic 不填地址也算配齐；用的是模型列表就不退回老配置
+    const ac = agent.activeChannel({ models: [{ name: "c", provider: "anthropic", model: "claude-sonnet-5", api_key: "k", base_url: "" }], active_model: "c" });
+    eq(ac.base_url, "https://api.anthropic.com", "官方 Anthropic 条目不填地址：看图用官方地址");
+    const stale = agent.activeChannel({ models: [{ name: "c", provider: "openai", model: "", api_key: "k" }], active_model: "c", openai: { base_url: "https://old.example.test/v1", model: "old-model" } });
+    eq(stale.model, undefined, "列表里那条没配齐：不退回 config.openai 那份老配置");
+    const legacy = agent.activeChannel({ provider: "openai", openai: { base_url: "https://old.example.test/v1", model: "old-model" } });
+    eq(legacy.model, "old-model", "★对照★ 压根没有模型列表的老配置照旧能用");
+  } finally {
+    global.fetch = realFetch;
+  }
+
+  // ── 按型号 id 点名：撞上好几条时不替人挑
+  {
+    const L = (name, provider, channel, model, def) => ({ cap: "image", name, provider, channel, model, default: !!def });
+    let m = { list: [L("A", "p1", "渠道一", "x-default", 1), L("B", "p2", "渠道二", "qwen-image"), L("C", "p3", "渠道三", "qwen-image")] };
+    let err = "";
+    try { mm.pick(m, "image", "qwen-image"); } catch (e) { err = e.message; }
+    ok(/B（渠道二）/.test(err) && /C（渠道三）/.test(err), "同一个型号在两个渠道上、都不是默认：报错列出「名称（渠道）」", err);
+    m = { list: [L("A", "p1", "渠道一", "qwen-image"), L("B", "p2", "渠道二", "qwen-image", 1)] };
+    eq(mm.pick(m, "image", "qwen-image").name, "B", "★对照★ 其中一条是默认：用默认那条");
+    m = { list: [L("A", "p1", "渠道一", "x", 1), L("B", "p2", "渠道二", "qwen-image"), L("B2", "p2", "渠道二", "qwen-image")] };
+    eq(mm.pick(m, "image", "qwen-image").name, "B", "★对照★ 同一个渠道上的两条：取第一条");
+    eq(mm.pick(m, "image", "B2").name, "B2", "★对照★ 按名称点名照旧精确");
+  }
+
+  // ── 万相老几代文生图：异步提交 + 轮询
+  ok(["wan2.2-t2i-flash", "wanx2.1-t2i-turbo", "wan2.5-t2i-preview", "wanx2.0-t2i-turbo", "wanx-v1"].every((x) => MEDIA.WAN_ASYNC_T2I.test(x)), "万相 2.5 及以前的文生图认成异步");
+  ok(!["wan2.6-t2i", "qwen-image", "wan2.2-t2v-plus", "wanx2.1-imageedit"].some((x) => MEDIA.WAN_ASYNC_T2I.test(x)), "★对照★ 2.6、千问、视频、图像编辑不认");
+  const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mm-wan-"));
+  const wc = {
+    providers: [{ id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: "dash-key" }],
+    media_models: [{ cap: "image", name: "万相", provider: "dash", model: "wan2.2-t2i-flash", default: true }],
+  };
+  wc.media = mm.flatten(wc.providers, wc.media_models);
+  const wmedia = mm.resolve(wc);
+  let polls = 0;
+  global.fetch = async (url, init) => {
+    const u = String(url);
+    seen.push({ url: u, method: (init || {}).method || "GET", h: (init || {}).headers || {}, body: (init || {}).body ? JSON.parse(init.body) : null });
+    let body = {};
+    if (u.endsWith("/services/aigc/text2image/image-synthesis")) body = { output: { task_id: "task-1", task_status: "PENDING" } };
+    else if (u.includes("/tasks/task-1")) body = { output: { task_status: polls++ ? "SUCCEEDED" : "RUNNING", results: [{ url: "https://img.example.test/1.png" }] } };
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body), arrayBuffer: async () => Buffer.from("png").buffer, headers: { get: () => null } };
+  };
+  try {
+    seen.length = 0;
+    const r = await generateImage(wmedia, { prompt: "一只猫", size: "1024x1024", filename: "wan.png" }, 1000, saveDir);
+    eq(r.isError, false, "万相 2.2 文生图：出图成功", r.content);
+    const submits = seen.filter((x) => x.method === "POST");
+    eq(submits.length, 1, "……只提交了一次");
+    eq(submits[0].url, DASH + "/services/aigc/text2image/image-synthesis", "……打的是异步文生图接口");
+    eq(submits[0].h["X-DashScope-Async"], "enable", "……带着异步头");
+    eq(submits[0].body.parameters.size, "1024*1024", "……尺寸换成「宽*高」");
+    ok(seen.some((x) => x.url === DASH + "/tasks/task-1"), "……按任务号轮询");
+    ok(fs.existsSync(path.join(saveDir, "wan.png")), "……图落了盘");
+
+    // 等不到结果：不重下单，带着任务号回去
+    seen.length = 0; polls = 0;
+    global.fetch = async (url, init) => {
+      const u = String(url);
+      seen.push({ url: u, method: (init || {}).method || "GET" });
+      const body = u.endsWith("/image-synthesis") ? { output: { task_id: "task-2" } } : { output: { task_status: "RUNNING" } };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    };
+    const cfg = wmedia.image;
+    const got = await MEDIA.wanAsyncImage(cfg, DASH, { "Content-Type": "application/json", Authorization: "Bearer dash-key" }, "一只猫", "", 60, null, 10);
+    eq(got.submitted, "task-2", "等超时：回执带任务号（外面看到就不自动补一枪）");
+    ok(/task-2/.test(got.err) && /别直接重跑/.test(got.err), "……话里说清别重跑", got.err);
+    eq(seen.filter((x) => x.method === "POST").length, 1, "……整个过程只下了一单");
+
+    // 上游明说失败：不扣钱，不带任务号
+    global.fetch = async (url) => {
+      const body = String(url).endsWith("/image-synthesis") ? { output: { task_id: "task-3" } } : { output: { task_status: "FAILED", message: "bad prompt" } };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    };
+    const failed = await MEDIA.wanAsyncImage(cfg, DASH, { Authorization: "Bearer dash-key" }, "一只猫", "", 5000, null, 10);
+    ok(/任务失败/.test(failed.err) && !failed.submitted, "★对照★ 上游回 FAILED：报失败、不带任务号", failed);
+
+    // 只做文生图的型号带了参考图：拦下，不悄悄丢图
+    fs.writeFileSync(path.join(saveDir, "ref.png"), Buffer.from(PNG_1x1, "base64"));
+    seen.length = 0;
+    const withRef = await generateImage(wmedia, { prompt: "照着画", reference_images: ["ref.png"] }, 1000, saveDir, (rel) => path.join(saveDir, rel));
+    eq(withRef.isError, true, "万相老几代带参考图：拦下");
+    eq(seen.length, 0, "……一个请求都没发");
+  } finally {
+    global.fetch = realFetch;
+    try { fs.rmSync(saveDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function done() {
-  asrChecks().then(videoParamChecks).then(catalogLoadChecks).then(gateChecks).then(rest, (e) => {
+  asrChecks().then(videoParamChecks).then(catalogLoadChecks).then(gateChecks).then(runtimeChecks).then(rest, (e) => {
     fail++;
-    console.log("  ✗ 转写 / 生视频参数 / 拉目录 / 派发闸那组炸了：" + ((e && e.stack) || e));
+    console.log("  ✗ 转写 / 生视频参数 / 拉目录 / 派发闸 / 运行时那组炸了：" + ((e && e.stack) || e));
     rest();
   });
 }

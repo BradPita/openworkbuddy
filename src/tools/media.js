@@ -269,6 +269,33 @@ function imageDataUri(got) {
 const eyeReady = (c) => !!(c && String(c.base_url || "").trim() && String(c.model || "").trim());
 
 /**
+ * 看图这一趟敲哪扇门、说哪门话。
+ *
+ * 渠道说的是哪种格式看 proto（渠道卡上的「接口格式」，压平时带下来的）；主模型那条没有 proto，
+ * provider 字段放的就是格式。以前只认 provider 叫不叫 anthropic：自建网关选了 Anthropic 格式的、
+ * 主模型是 Gemini / Ollama 原生的，统统拿 OpenAI 的路径去敲，回一个 404 就说「看不了」。
+ *
+ * Gemini 官方有一层 OpenAI 兼容接口（/v1beta/openai），走它；别人搭的 Gemini 网关有没有这一层
+ * 谁也说不准，返回 null，让调用方当这条看不了图，而不是闷头发一个多半 404 的请求。
+ * Ollama 原生地址底下同样挂着 OpenAI 兼容的 /v1。
+ */
+const GEMINI_OFFICIAL = /generativelanguage\.googleapis\.com/i;
+function eyeRoute(cfg) {
+  const c = cfg || {};
+  const proto = String(c.proto || c.provider || "").trim();
+  const base = String(c.base_url || "").trim().replace(/\/+$/, "");
+  const llm = require("../../llm");
+  if (proto === "anthropic") return { fmt: "anthropic", url: llm.anthropicBase(base).messagesUrl };
+  if (proto === "gemini") {
+    const root = llm._internals.geminiRoot(base);
+    return GEMINI_OFFICIAL.test(root) ? { fmt: "openai", url: `${root}/openai/chat/completions` } : null;
+  }
+  if (proto === "ollama") return { fmt: "openai", url: `${llm._internals.ollamaRoot(base)}/v1/chat/completions` };
+  // 通义的渠道只存一个地址：看图要的是兼容层（/compatible-mode/v1），原生的 /api/v1 没有这个接口
+  return { fmt: "openai", url: `${mediaModels.baseForUse(base, "chat", c.kind).replace(/\/+$/, "")}/chat/completions` };
+}
+
+/**
  * 主模型自己会不会看图。
  *
  * 先听配置里那张 caps 表——那是设置页上「能看图」那个勾，用户自己说的，比任何猜法都准；
@@ -295,7 +322,7 @@ function mainCanSee(main) {
  *   cfg 这次用谁；backup 主模型当场说看不了图时改投的那条；tell 要不要在答案末尾交代一句
  */
 function pickEye(v, main, named) {
-  const has = eyeReady(v), hasMain = eyeReady(main);
+  const has = eyeReady(v), hasMain = eyeReady(main) && !!eyeRoute(main);
   // look_at_image(model: "…") 点了名的一律照办：点名要哪个就是哪个
   if (named && has) return { cfg: v, backup: null, tell: "", fromMain: false };
   if (!hasMain) return { cfg: has ? v : {}, backup: null, tell: "", fromMain: false };
@@ -340,11 +367,14 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
 
   /** 拿某一条渠道去看一遍。两条渠道共用这一份，措辞和重试口径不会漂开 */
   async function look(cfg, tell, backup, fromMain) {
-    const base = String(cfg.base_url).trim().replace(/\/+$/, "");
-    const anthropic = cfg.provider === "anthropic";
-    // 地址算法跟主模型共用一份（llm.js 的 anthropicBase）。自己拼 `${base}/v1/messages` 的话，
+    // 地址算法跟主模型共用一份（llm.js 的 anthropicBase / geminiRoot / ollamaRoot）。自己拼 `${base}/v1/messages` 的话，
     // 用户照着设置页里其它渠道的样子把 base_url 填成 .../v1，就会拼出 /v1/v1/messages 吃 404
-    const url = anthropic ? require("../../llm").anthropicBase(base).messagesUrl : `${base}/chat/completions`;
+    const route = eyeRoute(cfg);
+    if (!route) {
+      return { content: `视觉渠道 ${cfg.model} 走的是 Gemini 原生格式的网关，看图这条路接不上。请用户去 设置 → 模型 → 视觉模型 换一条 OpenAI 兼容或 Anthropic 格式的渠道。这一步不用重试。`, isError: true };
+    }
+    const anthropic = route.fmt === "anthropic";
+    const url = route.url;
     const key = mediaKey(cfg);
     const headers = anthropic
       ? { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }
@@ -394,6 +424,9 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
           isError: true,
         };
       }
+      // 主模型这一趟被拒在门外（地址没这个接口、Key 不认、请求体不收）：后面有单配的看图渠道就改投它。
+      // 429 / 5xx 不换——那是上游这会儿忙，换一条渠道等于替人花另一份钱
+      if (eyeReady(backup) && [400, 401, 403, 404].includes(out.http)) return { refused: true, msg, http: out.http };
       if (out.http === 402 || /insufficient|credit|余额|欠费/i.test(msg)) {
         return { content: `视觉模型这条渠道没余额了（HTTP ${out.http}）：${msg}\n这不是问法的问题，重试多少次都一样。请用户去充值，或在 设置 → 模型 → 视觉模型 换一条渠道。别再调 look_at_image 了，也不许把没看到的内容当看过写进结论。`, isError: true };
       }
@@ -431,7 +464,10 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
     const first = await look(eye.cfg, eye.tell, eye.backup, eye.fromMain);
     if (!first.refused) return first;
     // 主模型当场说它看不了图（多半是 caps 那个勾勾错了）：单配的那条顶上，别让这张图白丢
-    return await look(eye.backup, `\n（主模型 ${eye.cfg.model} 回了一句看不了图，已改用单配的 ${eye.backup.model}；想省这一次空跑，去 设置 → 模型 把它的「能看图」取消勾选）`, null, false);
+    const why = first.http
+      ? `\n（主模型 ${eye.cfg.model} 看图这一趟回了 HTTP ${first.http}，已改用单配的 ${eye.backup.model}）`
+      : `\n（主模型 ${eye.cfg.model} 回了一句看不了图，已改用单配的 ${eye.backup.model}；想省这一次空跑，去 设置 → 模型 把它的「能看图」取消勾选）`;
+    return await look(eye.backup, why, null, false);
   } finally { signal.release(); }
 }
 
@@ -506,6 +542,55 @@ async function refImageUris(v, resolveFile) {
 const I2V_RE = /(^|[-_/.])(i2v|kf2v|s2v|image-?to-?video|img-?2-?video)([-_/.\d]|$)/i;
 const T2V_RE = /(^|[-_/.])(t2v|text-?to-?video)([-_/.\d]|$)/i;
 
+/**
+ * 万相的老几代文生图（wanx-v1、wanx2.x / wan2.0–2.5 的 *-t2i-*）只有异步任务接口：
+ * text2image/image-synthesis 带 X-DashScope-Async 提交，拿 task_id 去 /tasks 轮询。
+ * 拿 qwen-image 那条同步的 multimodal-generation 去发，上游直接回「模型不存在」——
+ * 精选目录里摆着这两个型号，选了却一张都出不来。2.6 起换了新接口，不在这一路。
+ */
+const WAN_ASYNC_T2I = /^wanx?(?:[01]|2\.[0-5])\b.*-t2i|^wanx-v1$/i;
+
+/**
+ * 万相异步文生图：提交一次，轮询到出结果。
+ * 提交只发一次（tries=1）：这是付费任务的下单口，退避重发等于重复下单。
+ * 拿到 task_id 之后不管出什么岔子（等超时、查询断网）都不再提交，带着任务号回去，
+ * 外面看到 submitted 就不会自动补一枪。上游明说 FAILED 的不扣钱，那种不带任务号，照常可以重来。
+ */
+async function wanAsyncImage(cfg, base, headers, prompt, size, deadlineMs, stop, pollMs = 3000) {
+  const auth = { Authorization: headers.Authorization };
+  const { r, j, stripped } = await within(stop, 60000, (signal) => postWantClean(
+    `${base}/services/aigc/text2image/image-synthesis`,
+    { ...headers, "X-DashScope-Async": "enable" }, signal,
+    (wm) => ({ model: cfg.model, input: { prompt }, parameters: { n: 1, ...(size ? { size } : {}), ...(wm ? { watermark: false } : {}) } }), "图像接口", 1));
+  const taskId = ((j || {}).output || {}).task_id;
+  if (!r.ok || !taskId) return { err: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}` };
+  const billed = `\n上游已经收下这一单（任务号 ${taskId}），多半照样出图、照样扣费。先到百炼控制台按任务号查，别直接重跑——重跑是再下一单。`;
+  const t0 = Date.now();
+  let lastErr = "";
+  while (Date.now() - t0 < deadlineMs) {
+    if (stop && stop.aborted) throw stoppedError("图片没有落盘。");
+    await sleepFor(pollMs, stop);
+    if (stop && stop.aborted) throw stoppedError("图片没有落盘。");
+    let s;
+    try {
+      s = await within(stop, 30000, (signal) => fetch(`${base}/tasks/${encodeURIComponent(taskId)}`, { headers: auth, signal }).then((x) => x.json()));
+    } catch (e) {
+      // 查询这一下断了不等于单子没了：接着查，到点再说
+      if (stop && stop.aborted) throw stoppedError("图片没有落盘。");
+      lastErr = e.message;
+      continue;
+    }
+    const out = (s || {}).output || {};
+    const st = out.task_status;
+    if (st === "SUCCEEDED") {
+      const url = ((out.results || []).find((x) => x && x.url) || {}).url;
+      return url ? { url, stripped } : { err: "图像任务完成但没有返回图片：" + JSON.stringify(out).slice(0, 300) + billed, submitted: String(taskId) };
+    }
+    if (st === "FAILED" || st === "CANCELED" || st === "UNKNOWN") return { err: `图像任务失败：${JSON.stringify(out).slice(0, 300)}` };
+  }
+  return { err: `图像任务等了 ${Math.round(deadlineMs / 1000)} 秒还没出结果${lastErr ? `（最后一次查询：${lastErr}）` : ""}。${billed}`, submitted: String(taskId) };
+}
+
 async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop) {
   let cfg;
   try { cfg = mediaModels.pick(media, "image", input.model); } catch (e) { return { content: e.message, isError: true }; }
@@ -530,7 +615,16 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
   const signal = anySignal(stop, AbortSignal.timeout(Math.max(timeoutMs || 0, 300000)));
   const fname = safeOutName(input.filename, ".png", "image");
   let imgUrl = null, b64 = null, watermarked = false;
-  if (/dashscope/i.test(base)) {
+  if (speaksDashscope(cfg) && WAN_ASYNC_T2I.test(String(cfg.model).trim())) {
+    // 这几代只做文生图，接口里没有参考图这一项。悄悄丢掉参考图出一张不相干的图，比报错更糟
+    if (refs.length) return { content: `${cfg.model} 只做文生图，不收参考图。要照着参考图出，换 qwen-image-edit 这类图生图型号（设置 → 模型 → 图像模型）；或者去掉 reference_images。`, isError: true };
+    // 尺寸写法是「宽*高」，模型常照 OpenAI 的习惯写 1024x1024，顺手换过来
+    const size = input.size ? String(input.size).trim().replace(/\s*[x×]\s*/i, "*") : "";
+    const got = await wanAsyncImage(cfg, base, headers, prompt, size, Math.max(timeoutMs || 0, 300000), stop);
+    if (got.err) return { content: got.err, isError: true, ...(got.submitted ? { submitted: got.submitted } : {}) };
+    imgUrl = got.url;
+    watermarked = got.stripped;
+  } else if (speaksDashscope(cfg)) {
     // DashScope 原生（qwen-image 系）：multimodal-generation，同步返回图片 URL
     // 生图慢又贵，上游一抖整轮就白跑：真实数据里 15 次调用失败 9 次，其中 8 次是
     // 上游 500 InternalServiceError，纯属临时故障。模型拿到失败通常不会重来，而是
@@ -871,9 +965,20 @@ async function htmlToImage(input, resolveFile, saveDir) {
 /** 没配语音合成时的那句话。按句配音（tts-batch.js）要一字不差地说同一句，所以提出来共用 */
 const TTS_UNSET = "语音合成未配置：请在 设置 → 模型 → 语音合成 填写接口地址 / API Key / 模型名后再用。";
 
+/**
+ * 这条渠道说不说通义原生那门话。只认 dashscope.aliyuncs.com 不够：国际站是 dashscope-intl，
+ * 百炼的专属地址挂在 *.maas.aliyuncs.com，中转到通义的网关地址里什么都看不出——
+ * 那种只能靠渠道卡上选的「渠道类型」。认错了就是拿 OpenAI 的路径去敲通义的门，回 404。
+ */
+function speaksDashscope(cfg) {
+  const c = cfg || {};
+  const b = String(c.base_url || "");
+  return c.kind === "dashscope" || /dashscope/i.test(b) || mediaModels.isDashscopeBase(b);
+}
+
 /** 这条渠道落盘的音频后缀：DashScope 回的是 wav 的下载地址，OpenAI 兼容那一路直接回 mp3 字节 */
 function ttsExtOf(cfg) {
-  return /dashscope/i.test(String((cfg || {}).base_url || "")) ? ".wav" : ".mp3";
+  return speaksDashscope(cfg) ? ".wav" : ".mp3";
 }
 
 /** 文字 → 语音（渠道协议：OpenAI 兼容 /audio/speech、DashScope 原生 qwen-tts） */
@@ -891,7 +996,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${mediaKey(cfg)}` };
   const signal = anySignal(stop, AbortSignal.timeout(Math.max(timeoutMs || 0, 300000)));
   let fname;
-  if (/dashscope/i.test(base)) {
+  if (speaksDashscope(cfg)) {
     // DashScope 原生（qwen-tts / qwen3-tts-flash 系）：multimodal-generation，返回音频 URL（wav）
     fname = safeOutName(input.filename, ttsExtOf(cfg), "speech");
     const r = await fetch(`${base}/services/aigc/multimodal-generation/generation`, {
@@ -973,8 +1078,8 @@ async function transcribeAudio(media, input, timeoutMs, resolveFile, saveDir, st
     };
   }
 
-  const base = mediaModels.baseForUse(String(cfg.base_url).trim(), "media").replace(/\/+$/, "");
-  if (/dashscope\.aliyuncs\.com/i.test(base)) {
+  const base = mediaModels.baseForUse(String(cfg.base_url).trim(), "media", cfg.kind).replace(/\/+$/, "");
+  if (speaksDashscope(cfg)) {
     return { content: "通义百炼的转写是异步任务接口，和这里用的 OpenAI 兼容 /audio/transcriptions 不是一套，现在还没接。换 OpenAI（gpt-4o-transcribe / whisper-1）或硅基流动（FunAudioLLM/SenseVoiceSmall）这类渠道。这一步不用重试。", isError: true };
   }
   // Key 在读文件之前先验：25MB 的音频读进内存再栽在 Key 上，白等一轮还白占一把内存
@@ -1077,7 +1182,7 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, hold, run)
   // 记在调用点的话，同一张图重跑十次会记十笔，而实际只付了一次钱
   if (!out.isError) {
     quota.record(cap, {
-      provider: mediaProviderOf(opts.media, cap), model,
+      provider: mediaProviderOf(opts.media, cap, input.model), model,
       units: unitsFor(cap, input, resolveFile, opts.media),
       meta: String(input.prompt || input.text || "").slice(0, 80), hold,
     });
@@ -1129,9 +1234,12 @@ function unitsFor(cap, input = {}, resolveFile, media) {
   return 1;
 }
 
-/** 这一路当前走的是哪家服务商——只为流水好看，取不到就空着，绝不因此中断调用 */
-function mediaProviderOf(media, cap) {
-  try { return String(mediaModels.pick(media, cap).provider || "").slice(0, 40); } catch { return ""; }
+/**
+ * 这一路这次走的是哪个渠道——只为流水好看，取不到就空着，绝不因此中断调用。
+ * want 要跟真正发请求时挑的那条一致：点名用了中转上的那条，账就该记在中转上，不是默认渠道上
+ */
+function mediaProviderOf(media, cap, want) {
+  try { return String(mediaModels.pick(media, cap, want).provider || "").slice(0, 40); } catch { return ""; }
 }
 /** 转写这一路真正用的型号。计价要拿它去查价，而调用方常常不写 model（走默认那个） */
 function asrModelOf(media, want) {
@@ -1141,8 +1249,8 @@ function asrModelOf(media, want) {
 module.exports = {
   bindWorkspace,
   OUT_EXT_ALIAS, safeOutName, anySignal, within, sleepFor, stoppedError, fetchRetry, mediaKey, downloadToWorkspace,
-  IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, lookAtImage, savedAt, postWantClean,
-  refImageUris, I2V_RE, T2V_RE, generateImage, generateVideo, htmlToImage, textToSpeech, AUDIO_EXT, ASR_MAX_BYTES,
-  srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf,
+  IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, eyeRoute, lookAtImage, savedAt, postWantClean,
+  refImageUris, I2V_RE, T2V_RE, WAN_ASYNC_T2I, wanAsyncImage, generateImage, generateVideo, htmlToImage, textToSpeech, AUDIO_EXT, ASR_MAX_BYTES,
+  srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf, speaksDashscope,
   TTS_UNSET, ttsExtOf
 };

@@ -196,7 +196,7 @@ async function ttsSegments(ctx, deps = {}) {
   // 音色：这一句自己的 > 整批的 > 设置里的默认。一个都没有就照实说，不挑一个顶上
   const baseVoice = String(input.voice || cfg.voice || "").trim();
   const segs = v.segs.map((s) => ({ text: s.text, voice: s.voice || baseVoice }));
-  if (/dashscope/i.test(String(cfg.base_url))) {
+  if (MEDIA.speaksDashscope(cfg)) {
     // 通义的接口音色是必填，不填回 400。一批六十句跑到那句才撞上，前面的钱就白花在一条注定拼不齐的音轨上
     const at = segs.findIndex((s) => !s.voice);
     if (at >= 0) {
@@ -361,7 +361,7 @@ async function ttsSegments(ctx, deps = {}) {
     if (paid > 0) {
       // record 的参数类型是 tsc 从默认值 {} 推出来的，推不出 hold / actor（媒体那几路都这么传），这里断言一下
       quota.record("tts", /** @type {any} */ ({
-        n: paid, units: Math.max(0.001, paidChars / 1000), provider: MEDIA.mediaProviderOf(ctx.media, "tts"),
+        n: paid, units: Math.max(0.001, paidChars / 1000), provider: MEDIA.mediaProviderOf(ctx.media, "tts", input.model),
         model: cfg.model, meta: `按句配音 ${N} 句`, hold,
       }));
     } else {

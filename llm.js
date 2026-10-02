@@ -14,6 +14,7 @@
  */
 
 const thinking = require("./thinking");
+const { baseForUse } = require("./media-models");
 
 // ---------- Anthropic (Claude) —— 官方 SDK 通道，@anthropic-ai/sdk 是正式依赖，跟着装机包一起走 ----------
 
@@ -1496,8 +1497,8 @@ function embedCandidates(config) {
   const push = (base_url, api_key, model, label) => {
     if (!base_url || !model) return;
     let b = String(base_url).trim().replace(/\/+$/, "");
-    // DashScope 原生 /api/v1 不认 /embeddings，OpenAI 兼容层在 /compatible-mode/v1
-    if (/dashscope\.aliyuncs\.com/i.test(b)) b = b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1");
+    // DashScope 原生 /api/v1 不认 /embeddings，OpenAI 兼容层在 /compatible-mode/v1（国际站、专属地址同理）
+    b = baseForUse(b, "chat");
     if (out.some((c) => c.base_url === b && c.model === model)) return;
     const batch = (EMBED_KNOWN.find((k) => k.match.test(b)) || {}).batch || EMBED_BATCH_DEFAULT;
     out.push({ base_url: b, api_key: api_key || "", model, label, batch });
@@ -1636,8 +1637,7 @@ function createEmbedder(config) {
  * 失败原样回上游的状态码和原文，不替人猜原因。
  */
 async function probeEmbedding({ base_url, api_key, model }) {
-  let b = String(base_url || "").trim().replace(/\/+$/, "");
-  if (/dashscope\.aliyuncs\.com/i.test(b)) b = b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1");
+  const b = baseForUse(String(base_url || "").trim().replace(/\/+$/, ""), "chat");
   const cfg = { base_url: b, api_key: api_key || "", model: String(model || "").trim() };
   let resp;
   try {

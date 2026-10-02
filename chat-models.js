@@ -160,7 +160,7 @@ function planTemplate(config, kind, modelId) {
   const prov = providers.find((p) => p.kind === t.kind && nb(p.base_url) === nb(t.base_url)) || null;
   const taken = new Set(models.map((m) => String(m.name || "")));
   const name = taken.has(t.name) ? `${t.name} ${model}` : t.name;
-  const row = { name, provider: protoOfKind(t.kind), base_url: baseForUse(t.base_url, "chat"), api_key: "", model };
+  const row = { name, provider: protoOfKind(t.kind), base_url: baseForUse(t.base_url, "chat", t.kind), api_key: "", model };
   return { t, prov, row };
 }
 
@@ -202,7 +202,7 @@ function planCustom(config, { base_url, model, api } = {}) {
   const taken = new Set(models.map((m) => String(m.name || "")));
   let name = taken.has(short) ? `${short} ${modelId}` : short;
   for (let i = 2; taken.has(name); i++) name = `${short} ${modelId} ${i}`;
-  const row = { name, provider: fmt, base_url: baseForUse(base, "chat"), api_key: "", model: modelId };
+  const row = { name, provider: fmt, base_url: baseForUse(base, "chat", kind), api_key: "", model: modelId };
   const bare = !url.pathname.replace(/\/+$/, "");
   const alt = bare && (fmt === "openai" || fmt === "openai-responses") ? base + "/v1" : "";
   return {
@@ -319,7 +319,7 @@ function normalize(config) {
     m.channel = prov.id;
     // 压平：地址、Key、协议照旧写在模型条目上，下游那十来处读扁平字段的代码完全无感。
     // 地址过一遍 baseForUse：通义那家的对话在兼容层、画图在原生层，渠道只存一个地址，用时换对的那个
-    m.base_url = baseForUse(prov.base_url, "chat");
+    m.base_url = baseForUse(prov.base_url, "chat", prov.kind);
     m.api_key = prov.api_key;
     m.provider = protoOfChannel(prov);
   }

@@ -265,8 +265,10 @@ function capOfModel(raw) {
   if (out.includes("image")) return { cap: "image", sure: true };
   if (out.includes("audio")) return { cap: "tts", sure: true };
   if (!inp || !inp.length) return guess;
-  if (inp.includes("audio")) return { cap: "asr", sure: true };
+  // 先认图再认音：gemini 这类全模态的输入是 [图, 音, 视频, 文字]，输出只有文字，它的正业是看图。
+  // 先认音的话它会被当成语音识别，看图那一组里就再也找不到它
   if (inp.includes("image")) return { cap: "vision", sure: true };
+  if (inp.includes("audio")) return { cap: "asr", sure: true };
   // 进出都只有文字：这条**确定**哪一路都不是。说死了才拦得住 gpt-5.x-codex 混进看图那一组
   return { cap: "", sure: true };
 }
@@ -287,10 +289,18 @@ function uniqueId(base, taken) {
  * 所以渠道只记一个地址，压平到模型条目时按用途换成对的那个。llm.js 算 embedding 时早就
  * 这么干了（见那边的 `/compatible-mode/v1` 改写），这里只是把同一条规矩挪到渠道这一层。
  * 别家一律原样返回——这不是通用改写，是通义一家的历史包袱。
+ *
+ * 认「是不是通义」不能只认 dashscope.aliyuncs.com：国际站是 dashscope-intl.aliyuncs.com，
+ * 百炼新开的专属地址挂在 *.maas.aliyuncs.com 下，中转到通义的网关地址里更是什么都看不出。
+ * 所以域名认一遍，渠道类型（kind）再认一遍，哪个对上都算。
  */
-function baseForUse(baseUrl, use) {
+const DASHSCOPE_HOST = /dashscope[\w-]*\.aliyuncs\.com|\.maas\.aliyuncs\.com/i;
+function isDashscopeBase(baseUrl) {
+  return DASHSCOPE_HOST.test(String(baseUrl || ""));
+}
+function baseForUse(baseUrl, use, kind) {
   const b = String(baseUrl || "").trim();
-  if (!/dashscope\.aliyuncs\.com/i.test(b)) return b;
+  if (!isDashscopeBase(b) && kind !== "dashscope") return b;
   return use === "chat"
     ? b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1")
     : b.replace(/\/compatible-mode\/v\d+$/i, "/api/v1");
@@ -313,7 +323,7 @@ function providerKeyOf(p) {
  */
 const KIND_HOSTS = [
   ["ark\\.|volces\\.com", "ark"],
-  ["dashscope", "dashscope"],
+  ["dashscope|\\.maas\\.aliyuncs\\.com", "dashscope"],
   ["openrouter", "openrouter"],
   ["siliconflow", "siliconflow"],
   ["bigmodel\\.cn", "zhipu"],
@@ -359,7 +369,7 @@ function videoProtoOf(cfg) {
   const kind = String(c.kind || "").trim().toLowerCase();
   if (VIDEO_PROTOS.includes(kind)) return kind;
   const b = String(c.base_url || "").toLowerCase();
-  if (/dashscope/.test(b)) return "dashscope";
+  if (/dashscope/.test(b) || isDashscopeBase(b)) return "dashscope";
   // `\/ark\b` 那半截不能省：自建网关常把上游挂在 /ark 这样的路径下（https://gw.mycorp.com/ark/api/v3），
   // 只认 ark. 域名的话这类地址会掉到「认不出」，而它以前是认得的
   if (/volces|\/ark\b|ark\./.test(b)) return "ark";
@@ -833,6 +843,9 @@ function upsertLegacy(config, cap, entry) {
   return true;
 }
 
+/** 这一路用渠道的哪个地址：看图是对话接口，其余三路是各家原生的媒体接口 */
+const useOf = (cap) => (cap === "vision" ? "chat" : "media");
+
 /** 把每一路的默认那条压平回老的 config.media[cap]，让 src/tools/media.js 那边完全无感 */
 function flatten(providers, models, prev) {
   const out = {};
@@ -841,9 +854,13 @@ function flatten(providers, models, prev) {
     const p = m ? providers.find((x) => x.id === m.provider) : null;
     // kind 跟着压平下来：视频那一路要靠它认协议（渠道卡上选的比按地址猜准），
     // 以前这里只留地址和 Key，走到 src/tools/media.js 就只剩一个地址可猜了，中转地址一律认不出
+    // 看图走的是对话接口（/chat/completions 或 /v1/messages），地址按对话那一路换；
+    // proto 是这条渠道说哪门话，看图要靠它决定发 OpenAI 格式还是 Anthropic 格式，
+    // 以前只认渠道 id 叫不叫 anthropic，自建网关选了 Anthropic 格式的照样发错门
     out[cap] = m && p
-      ? { base_url: baseForUse(p.base_url, "media"), api_key: p.api_key, model: m.model, kind: p.kind || "", protocol: m.protocol || "", ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
-      : { base_url: "", api_key: "", model: "", kind: "", protocol: "", ...(cap === "tts" ? { voice: "" } : {}) };
+      ? { base_url: baseForUse(p.base_url, useOf(cap), p.kind), api_key: p.api_key, model: m.model, kind: p.kind || "", protocol: m.protocol || "",
+        proto: protoOfChannel(p), provider: m.provider, ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
+      : { base_url: "", api_key: "", model: "", kind: "", protocol: "", proto: "", provider: "", ...(cap === "tts" ? { voice: "" } : {}) };
     // 老配置里**手填了地址、却没填模型名**的：上面那个迁移循环要求 base 和 model 都在，
     // 所以它迁不成条目，但也不该在保存时被抹掉——人下次打开 config.json 还指望地址还在。
     // 关键是最后那个条件：old 自己也必须没有模型名。带着模型名的那份绝不能留——
@@ -866,8 +883,8 @@ function resolve(config) {
     const p = providers.find((x) => x.id === m.provider) || {};
     return {
       id: m.id, cap: m.cap, name: m.name, model: m.model, voice: m.voice || "",
-      base_url: baseForUse(p.base_url || "", "media"), api_key: p.api_key || "", kind: p.kind || "", protocol: m.protocol || "",
-      provider: m.provider, default: !!m.default,
+      base_url: baseForUse(p.base_url || "", useOf(m.cap), p.kind), api_key: p.api_key || "", kind: p.kind || "", protocol: m.protocol || "",
+      proto: protoOfChannel(p), provider: m.provider, channel: p.name || m.provider || "", default: !!m.default,
     };
   });
   return { ...(config.media || {}), list };
@@ -879,14 +896,30 @@ class MediaPickError extends Error {}
 /**
  * 按能力挑一条配置。want 空就用默认那条；给了名字就按「名称 → 模型 id」两轮找。
  * 找不到直接抛，错误里带上全部可选项，agent 下一轮自己就能改对。
+ *
+ * 按模型 id 找时可能撞上好几条：同一个 qwen-image 在百炼和中转上各挂一条很常见。
+ * 有默认那条就用默认的；都不是默认、又分在不同渠道上，就不替人挑——
+ * 两边的钱和出图效果可能都不一样，挑错了是静默换渠道。报错把「名称（渠道）」列出来让它点名。
+ * 同一渠道上的几条同 id（只是名字不同）用哪条都一样，取第一条。
  */
 function pick(media, cap, want) {
   const list = ((media || {}).list || []).filter((m) => m.cap === cap);
   const w = String(want || "").trim();
   if (!w) return (media || {})[cap] || {};
   const low = w.toLowerCase();
-  const hit = list.find((m) => m.name.toLowerCase() === low) || list.find((m) => m.model.toLowerCase() === low);
-  if (hit) return hit;
+  const byName = list.find((m) => String(m.name || "").toLowerCase() === low);
+  if (byName) return byName;
+  const byModel = list.filter((m) => String(m.model || "").toLowerCase() === low);
+  if (byModel.length === 1) return byModel[0];
+  if (byModel.length > 1) {
+    const def = byModel.find((m) => m.default);
+    if (def) return def;
+    if (new Set(byModel.map((m) => m.provider)).size === 1) return byModel[0];
+    throw new MediaPickError(
+      `「${w}」在好几个渠道上都有：${byModel.map((m) => `${m.name}（${m.channel || m.provider}）`).join(" / ")}。` +
+      `用名称点名要哪一个。`
+    );
+  }
   const names = list.map((m) => (m.name === m.model ? m.name : `${m.name}（${m.model}）`));
   throw new MediaPickError(
     `没有叫「${w}」的${CAP_CN[cap] || cap}。` +
@@ -1131,7 +1164,7 @@ module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, API_FORMATS, isApiFormat, normApi, protoOfChannel, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   VIDEO_SPECS, videoSpecOf, videoPlan,
-  providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
+  providerKeyOf, uniqueId, normalizeProviders, baseForUse, isDashscopeBase, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError, upsertLegacy,
   RELAY_KINDS, BRAND_HINTS, KIND_HOSTS, brandOf, brandInCatalog, arkDated, judgeKind, mismatch, idShapeError, canHost, kindLabel, rehomeMismatched,
   clientCatalog,

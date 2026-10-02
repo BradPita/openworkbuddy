@@ -4482,7 +4482,7 @@ async function executeToolCore(name, input, opts = {}) {
         }
         if (!r.isError) {
           quota.record("asr", {
-            provider: mediaProviderOf(opts.media, "asr"), model: asrModelOf(opts.media, input.model),
+            provider: mediaProviderOf(opts.media, "asr", input.model), model: asrModelOf(opts.media, input.model),
             units: mins, meta: String(input.path || input.file || "").slice(0, 80), hold: g.hold,
           });
         } else {

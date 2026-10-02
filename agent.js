@@ -850,6 +850,13 @@ function worktreeLine() {
   } catch { return ""; }
 }
 
+/** 不填地址时对话那边默认打的根（llm.js 的 anthropicBase / geminiRoot / ollamaRoot），看图跟着用同一个 */
+const IMPLIED_BASE = {
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
+  ollama: "http://localhost:11434",
+};
+
 /**
  * 当前生效的模型渠道（base_url / api_key / model / provider / caps），给「拿主模型看图」用。
  *
@@ -862,7 +869,12 @@ function activeChannel(config, llmOverride) {
   // llmOverride 是 createLLM 给这个对话造的那个，provider 字段放的就是模型条目名（llm.js）
   const own = llmOverride && llmOverride.provider ? list.find((m) => m.name === llmOverride.provider) : null;
   const e = own || list.find((m) => m.name === config.active_model) || list[0];
-  if (e && e.base_url && e.model) return { base_url: e.base_url, api_key: e.api_key, model: e.model, provider: e.provider, caps: Array.isArray(e.caps) ? e.caps : null };
+  // 官方直连的 Anthropic / Gemini / Ollama 条目常常不填地址（对话那边各有默认根），看图这边也得补上同一个，
+  // 不然主模型明明能看图，却被当成「没配」，掉到下面那份老配置上
+  const base = e && (e.base_url || IMPLIED_BASE[e.provider] || "");
+  if (e && base && e.model) return { base_url: base, api_key: e.api_key, model: e.model, provider: e.provider, caps: Array.isArray(e.caps) ? e.caps : null };
+  // 用的是模型列表就只认列表：列表里那条用不了时退回 config.openai 那份老配置，等于拿一个用户早就不用的模型去看图
+  if (list.length) return {};
   const legacy = config.provider === "anthropic" ? config.anthropic : config.openai;
   return legacy && legacy.model ? { ...legacy, provider: config.provider } : {};
 }
