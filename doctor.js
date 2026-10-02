@@ -193,14 +193,18 @@ function verdictEngine(facts) {
  * 把安装脚本和 CI（`openworkbuddy doctor && npm start`）整个拦下来——为一个「你八成用不上」的工具
  * 挡住启动，是本末倒置。
  */
-function verdictTools(found) {
+function verdictTools(found, opts) {
   const all = found || [];
   const miss = all.filter((t) => !t.bin);
   if (!all.length) return item("外部工具", "ok", "没有要检查的外部工具");
   if (!miss.length) return item("外部工具", "ok", `${all.map((t) => t.name).join("、")} 都在`);
   const have = all.filter((t) => t.bin);
+  // Windows：注册表里的 PATH 没读成时，「缺」是按一份可能过时的 PATH 判的——照实写上，
+  // 不然用户刚装完、看到还是缺，只会以为装错了
+  const pathError = (opts && opts.pathError) || "";
   return item("外部工具", "warn",
-    `缺 ${miss.map((t) => `${t.name}（${t.use}）`).join("、")}` + (have.length ? `；${have.map((t) => t.name).join("、")} 在` : ""),
+    `缺 ${miss.map((t) => `${t.name}（${t.use}）`).join("、")}` + (have.length ? `；${have.map((t) => t.name).join("、")} 在` : "")
+      + (pathError ? `；注册表里的 PATH 没读全（${pathError}）` : ""),
     miss.map((t) => `${t.name} 用 ${t.install}`).join("；") + "。用不到对应功能就不用装。");
 }
 
@@ -334,10 +338,19 @@ function countModels(config) {
  */
 const EXTERNAL_TOOLS = [
   { name: "ffmpeg", use: "图文成片、录屏", install: { darwin: "brew install ffmpeg", win32: "winget install ffmpeg", other: "apt install ffmpeg" } },
-  { name: "pdftotext", use: "读 PDF 正文", install: { darwin: "brew install poppler", win32: "scoop install poppler", other: "apt install poppler-utils" } },
+  // Windows 上给 winget 的包：scoop / choco 得先装包管理器本身，winget 是 Windows 10/11 自带的。
+  // 包名在 microsoft/winget-pkgs 里核对过（manifests/o/oschwartz10612/Poppler）
+  { name: "pdftotext", use: "读 PDF 正文", install: { darwin: "brew install poppler", win32: "winget install oschwartz10612.Poppler", other: "apt install poppler-utils" } },
   { name: "pandoc", use: "Word 互转", install: { darwin: "brew install pandoc", win32: "winget install pandoc", other: "apt install pandoc" } },
   { name: "soffice", use: "Office 转 PDF", install: { darwin: "brew install --cask libreoffice", win32: "winget install LibreOffice", other: "apt install libreoffice" } },
+  // 只在 Windows 上查（only）。那边 python3 是应用商店的占位程序，一跑就退 9009「Python was not found」，
+  // 技能里写死的 python3 全部跑不起来，得先说清楚本机到底有没有一个真能用的 Python。
+  // 别的系统没有这个坑，不加这一条，体检结果跟以前一模一样
+  { name: "python", use: "跑技能里的 Python 脚本", only: "win32", install: { darwin: "brew install python", win32: "winget install Python.Python.3.12", other: "apt install python3" } },
 ];
+
+/** 这一条在这个平台上查不查 */
+const toolOn = (t, plat) => !t.only || t.only === plat;
 
 /**
  * 同一个包里装出来的其他命令名 → 该查哪一条的名字。
@@ -346,7 +359,7 @@ const EXTERNAL_TOOLS = [
  * 用 `ffprobe` 逐段量时长的。少了这张表，用户会看到「没装 ffprobe」然后去搜一个
  * 根本不存在的包。上面那张表只列每个包的代表命令，别名统一在这儿折回去。
  */
-const TOOL_ALIASES = { ffprobe: "ffmpeg", ffplay: "ffmpeg", libreoffice: "soffice", pdfinfo: "pdftotext", pdftoppm: "pdftotext" };
+const TOOL_ALIASES = { ffprobe: "ffmpeg", ffplay: "ffmpeg", libreoffice: "soffice", pdfinfo: "pdftotext", pdftoppm: "pdftotext", py: "python" };
 
 /**
  * 这个命令名是不是我们认识的外部工具；认识就连装法一起给回去。
@@ -356,10 +369,68 @@ const TOOL_ALIASES = { ffprobe: "ffmpeg", ffplay: "ffmpeg", libreoffice: "soffic
 function knownTool(name, platform) {
   const n = String(name || "").trim().toLowerCase();
   const primary = TOOL_ALIASES[n] || n;
-  const t = EXTERNAL_TOOLS.find((x) => x.name === primary);
-  if (!t) return null;
   const plat = platform || process.platform;
+  const t = EXTERNAL_TOOLS.find((x) => x.name === primary && toolOn(x, plat));
+  if (!t) return null;
   return { name: primary, use: t.use, install: t.install[plat] || t.install.other };
+}
+
+/**
+ * 跑一下就退的小命令，只要退出码。给 probePython 验「是不是商店占位程序」用。
+ * windowsHide：服务进程没有控制台，不加的话会闪一个黑窗口；5 秒还没完就算跑不起来。
+ * @returns {Promise<{code:number}>} 起不来（找不到、超时）一律 -1
+ */
+function runQuiet(bin, args) {
+  return new Promise((resolve) => {
+    try {
+      require("child_process").execFile(bin, args, { windowsHide: true, timeout: 5000 }, (err) => {
+        resolve({ code: !err ? 0 : typeof err.code === "number" ? err.code : -1 });
+      });
+    } catch { resolve({ code: -1 }); }
+  });
+}
+
+/**
+ * Windows 上找一个真能跑的 Python。先 python，再 py（python.org 装的启动器）。
+ *
+ * WindowsApps 里那个 python.exe 多半是应用商店的占位程序：带参数跑它只会打一句「Python was not found」、退 9009
+ * （不带参数会把商店弹出来，所以验的时候一定带 -c 1）。可从商店真装的 Python 也放在 WindowsApps 里，
+ * 不能一见这个目录就判死，得真跑一下。别的目录里的不验：那是安装器放的真身，多跑一个子进程没有意义。
+ *
+ * WindowsApps 常在用户 PATH 里、排在真 Python 前面，resolveBin 先撞上的就是占位程序。跑不起来时
+ * 跳过 WindowsApps 再找一遍：python3 垫片（tools.js 的 winPython3Shim）也是这么跳过去的，后面那个真的照样能用。
+ * @param {{resolveBin:(name:string)=>Promise<{bin?:string}>, searchDirs?:()=>string[], findIn?:(dirs:string[], name:string)=>string}} which
+ * @param {(bin:string, args:string[])=>Promise<{code:number}>} [run]
+ * @returns {Promise<string>} 找到的路径；都不行返回 ""
+ */
+async function probePython(which, run = runQuiet) {
+  const appsDir = /[\\/]WindowsApps([\\/]|$)/i;
+  for (const name of ["python", "py"]) {
+    let bin = "";
+    try { bin = (await which.resolveBin(name)).bin || ""; } catch {}
+    if (!bin) continue;
+    if (!appsDir.test(bin) || (await run(bin, ["-c", "1"])).code === 0) return bin;
+    let rest = "";
+    try {
+      if (typeof which.searchDirs === "function" && typeof which.findIn === "function") {
+        rest = which.findIn(which.searchDirs().filter((d) => !appsDir.test(d)), name) || "";
+      }
+    } catch {}
+    if (rest) return rest;
+  }
+  return "";
+}
+
+/**
+ * Windows：体检前先现读一次注册表里的 PATH（engines/which 的 refreshWinPath）。
+ * 用户照这里给的 winget 命令装完再跑一次体检，终端手里那份 PATH 还是装之前的——不读的话，
+ * 刚装好的东西永远显示「缺」。读不成就把原话带回去，由 verdictTools 如实写进报告。
+ * @returns {Promise<string>} 读不成时的原因；没读的平台、读成了都是 ""
+ */
+async function freshWinPath(which, platform) {
+  if ((platform || process.platform) !== "win32" || !which || typeof which.refreshWinPath !== "function") return "";
+  // log 置空：读不成的原话会写进体检报告那一行，再往 stderr 打一遍就成了同一句说两次
+  try { return (await which.refreshWinPath({ log: () => {} })).error || ""; } catch (e) { return String((e && e.message) || e); }
 }
 
 /**
@@ -369,12 +440,14 @@ function knownTool(name, platform) {
  * 用 shell 那套问出来的答案才跟用户在终端里看到的一致。这也是「我明明装了」类
  * 误报的唯一来源——体检自己先误报，就没人信剩下几条了。
  */
-async function probeTools(which, platform) {
+async function probeTools(which, platform, run) {
   const plat = platform || process.platform;
   const out = [];
   for (const t of EXTERNAL_TOOLS) {
+    if (!toolOn(t, plat)) continue;
     let bin = "";
-    try { bin = (await which.resolveBin(t.name)).bin || ""; } catch {}
+    if (t.name === "python") bin = await probePython(which, run);
+    else try { bin = (await which.resolveBin(t.name)).bin || ""; } catch {}
     out.push({ name: t.name, use: t.use, bin, install: t.install[plat] || t.install.other });
   }
   return out;
@@ -382,7 +455,8 @@ async function probeTools(which, platform) {
 
 /**
  * 跑一整轮体检。
- * @param {object} deps 把外部依赖显式传进来，测试好替：{ paths, config, engines, workspaceDir, bootCheck }
+ * @param {object} deps 把外部依赖显式传进来，测试好替：{ paths, config, engines, workspaceDir, bootCheck }，
+ *   外部工具那一项另有 which、platform（只给测试用：在 Mac 上验 Windows 那一支）
  */
 async function gather(deps) {
   const { paths, config, engines, workspaceDir, bootCheck } = deps;
@@ -426,7 +500,9 @@ async function gather(deps) {
 
   // 放在最后：它可能要问一次登录 shell（几百毫秒），前面那些是「能不能启动」的硬指标，
   // 不该被一个可选项拖着等
-  items.push(verdictTools(await probeTools(deps.which || require("./engines/which"))));
+  const which = deps.which || require("./engines/which");
+  const pathError = await freshWinPath(which, deps.platform);
+  items.push(verdictTools(await probeTools(which, deps.platform), { pathError }));
   // 它自己会去跑一次 `toolward --version`；探不到就是没装，不该让体检本身出错
   let tw = null;
   try { tw = require("./toolward").status(config || {}); } catch { tw = null; }
@@ -461,5 +537,5 @@ module.exports = {
   verdictNode, verdictDeps, verdictDataDir, verdictConfig, verdictModels,
   verdictPort, verdictWorkspace, verdictEngine, verdictTools, verdictToolward,
   worst, countModels, probeWritable, probePort, probeWho, probeTools, fetchText, gather, render, cols, LEVELS,
-  verdictConfigLint, EXTERNAL_TOOLS, TOOL_ALIASES, knownTool,
+  verdictConfigLint, EXTERNAL_TOOLS, TOOL_ALIASES, knownTool, probePython, freshWinPath,
 };

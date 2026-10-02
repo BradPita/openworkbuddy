@@ -2649,7 +2649,7 @@ function renderSweepPanel(p, task) {
         <span class="nm">${esc(t.name || "（散在根目录的文件）")}</span>
         <span class="sw-sz">${fmtSize(t.bytes)}</span><span class="cnt">${t.count} 个</span>
         ${t.name ? `<button type="button" class="op" data-act="only" title="只整理这个任务">${ic("eraser")}</button>` : ""}
-        ${t.name && canOpenOnHost() ? `<button type="button" class="op" data-act="open" title="在访达里打开">${ic("folder-open")}</button>` : ""}
+        ${t.name && canOpenOnHost() ? `<button type="button" class="op" data-act="open" title="在${fileMgrName()}里打开">${ic("folder-open")}</button>` : ""}
       </div>`).join("")}${u.tasks.length > top.length ? `<div class="sw-empty">还有 ${u.tasks.length - top.length} 个更小的任务没列出来。</div>` : ""}</div>`
       : `<div class="sw-empty">工作区还是空的。</div>`}`;
 
@@ -3183,7 +3183,7 @@ function copyHostFile(name, e, o) {
       if (!r.ok || !j || j.error) return toast(((j && j.error) || "复制不了这个文件"), "circle-x");
       if (j.kind === "path") return toast("这台机器放不下文件本身，已复制它的完整路径", "circle-check");
       // 文字类文件多说半句：粘进文字框里不出字，要的是内容就点旁边那颗
-      toast(isCopyableText(name) ? "已复制文件本身；要里面的文字点「复制全文」" : "已复制文件，去微信 / 邮件 / 访达里直接粘", "circle-check");
+      toast(isCopyableText(name) ? "已复制文件本身；要里面的文字点「复制全文」" : `已复制文件，去微信 / 邮件 / ${fileMgrName()}里直接粘`, "circle-check");
     }))
     .catch(() => toast("复制不了这个文件", "circle-x"));
 }
@@ -3375,7 +3375,7 @@ function renderFiles(files) {
   if (sc.scoped) {
     for (const dir of Object.keys(groups).sort((x, y) => (x === curDir ? -1 : y === curDir ? 1 : x.localeCompare(y, "zh")))) {
       const label = dir === curDir ? dir : dir.slice(curDir.length + 1);
-      html += dirHead(dir, label, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹", resCount(groups[dir]));
+      html += dirHead(dir, label, groups[dir].length, dir === curDir, `在${fileMgrName()}中打开这个文件夹`, resCount(groups[dir]));
       if (openDirs.has(dir)) html += groups[dir].sort(resFirst((a, b2) => a.name.localeCompare(b2.name, "zh"))).map(f => fileRow(f, true)).join("");
     }
     buckets.clear();
@@ -3387,13 +3387,13 @@ function renderFiles(files) {
     if (!open) continue;
     // 同一时间段内按"最近动过"排前，本对话的置顶——它一定在「今天」里，但列表长了也得一眼找到
     for (const dir of b.dirs.sort((x, y) => (x === curDir ? -1 : y === curDir ? 1 : dirTime(y) - dirTime(x)))) {
-      html += dirHead(dir, dir, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹", resCount(groups[dir]));
+      html += dirHead(dir, dir, groups[dir].length, dir === curDir, `在${fileMgrName()}中打开这个文件夹`, resCount(groups[dir]));
       if (openDirs.has(dir)) html += groups[dir].sort(resFirst((a, b2) => a.name.localeCompare(b2.name, "zh"))).map(f => fileRow(f, true)).join("");
     }
   }
 
   if (demoteRoot) {
-    html += dirHead(ROOT_KEY, "工作空间根目录（早期对话留下的）", rootFiles.length, false, "在 Finder 中打开工作空间根目录", resCount(rootFiles));
+    html += dirHead(ROOT_KEY, "工作空间根目录（早期对话留下的）", rootFiles.length, false, `在${fileMgrName()}中打开工作空间根目录`, resCount(rootFiles));
     if (openDirs.has(ROOT_KEY)) {
       // 逐字节相同的副本才给清理入口。这类是当年"找不到产物就 cp 一份到根目录"留下的，
       // 原件还在成果文件夹里躺着，所以清掉零信息损失；名字像但内容不同的一个都不碰

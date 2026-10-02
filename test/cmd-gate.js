@@ -10,6 +10,10 @@
  *   ④ 强推的几种写法：-uf、+refspec；设备直写不要求 > 前有空格
  *   ⑤ 「这类都允许」的规则：跳过全局开关（git -C），`node -e` / `python -c` 不给规则，按整词比
  *   ⑥ 判险那道闸跳过人已经批过的段，不花钱问一个答过的问题
+ *   ⑦ Windows（platform 传 "win32"）：Remove-Item / DEL / RD /S、.exe 和全路径、cmd /c 和 powershell -c 包着的
+ *      都按删除问；-EncodedCommand 一律问；dir / Get-ChildItem 这类只读的照跑。每条配 darwin 反向对照
+ *   ⑧ Windows 上绕删除保护的写法：del=x、^" 转义、PowerShell 单引号、start / Start-Process 套一层、
+ *      $fso.DeleteFolder、`. Remove-Item`；再加一刀不管引号的兜底（认下的误报也写在里面）
  *
  * 纯函数，不起进程、不出网。
  *   node test/cmd-gate.js
@@ -122,6 +126,158 @@ eq(cmdRisk.needsJudge({ verdict: ALLOW, sec: rsec(), text: "git reset --hard" })
 security.clearSessionAllow();
 eq(cmdRisk.needsJudge({ verdict: ALLOW, sec: rsec(), text: "git reset --hard" }), "git reset --hard", "反向对照：没批过照判");
 eq(cmdRisk.needsJudge({ verdict: ALLOW, sec: rsec({ cmd_allow: ["gi"] }), text: "git reset --hard" }), "git reset --hard", "反向对照：gi 不是 git 的整词");
+
+section("⑦ Windows：cmd / PowerShell 的删除也认得出");
+// run_shell 在 Windows 上走 cmd.exe，PowerShell 只会套在里面出现。本机不是 Windows，靠 platform 参数测；
+// 每条都拿 darwin 跑一遍当反向对照：这些写法只在 Windows 上认，别的系统一点不变
+const vw = (cmd, over, platform = "win32") => security.checkCommand(sec(over), cmd, platform);
+const isDel = (v) => v.action === "ask" && /删除保护/.test(v.rule);
+const winDeletes = [
+  "Remove-Item -Recurse -Force C:\\proj\\build", "ri build -Recurse", "DEL /Q build\\*.tmp", "RD /S /Q build",
+  "rd/s/q build", "del/f x", "ERASE x.tmp", "rm.exe -rf build", "Clear-RecycleBin -Force",
+  // 带 .exe / 全路径 / 被 cmd、powershell 包着
+  "C:\\Windows\\System32\\cmd.exe /c del x", "cmd /c \"rd /s /q build\"", "cmd /d /s /c \"echo hi & rd /s /q build\"",
+  "cmd /c\"del x\"", "%ComSpec% /c del x",
+  "powershell -NoProfile -Command \"Remove-Item -Recurse build\"", "pwsh.exe -c \"Get-ChildItem *.tmp | Remove-Item\"",
+  "pwsh -c \"gci x | % { ri $_ }\"", "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -c \"Remove-Item x\"",
+  "powershell /c \"Remove-Item x\"", "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"Remove-Item x\"",
+  "powershell -c \"if (Test-Path x) { Remove-Item x }\"",
+  // 转义符、前缀、条件、循环
+  "powershell -c \"R`emove-Item x\"", "r^d /s /q build", "@del x", "if exist build rd /s /q build",
+  "if /i \"%a%\"==\"y\" del x", "if %n% GEQ 3 del x", "if not errorlevel 1 del x", "call del x",
+  "for %i in (*.tmp) do @del %i", "forfiles /m *.tmp /c \"cmd /c del @path\"",
+  "$null = Remove-Item x", "Microsoft.PowerShell.Management\\Remove-Item x",
+  "powershell -c \"[IO.File]::Delete('x')\"", "powershell -c [IO.Directory]::Delete('x', $true)",
+  "iex \"Remove-Item x\"", "wsl rm -rf /mnt/c/x", "wsl -d Ubuntu -- rm -rf x",
+  // cmd 的 & 前面是反斜杠、单引号在 cmd 里不算引号：都得照样切段
+  "dir C:\\& rd /s /q x", "echo it's & rd /s /q x",
+];
+for (const c of winDeletes) {
+  ok(isDel(vw(c)), `Windows 删除保护认得出：${c}`, vw(c));
+  ok(!isDel(vw(c, {}, "darwin")), `反向对照 macOS 不按删除算：${c}`, vw(c, {}, "darwin"));
+}
+eq(vw("ri Array", {}, "darwin").action, "allow", "反向对照：ri 在 macOS 上是查 Ruby 文档，照跑");
+
+// -EncodedCommand 后面是 base64，看不见要跑什么：全自动、批过 powershell 都照样问，也不给「同类不再问」
+for (const c of ["powershell -enc ZQBjAGgAbwA=", "powershell -e ZQBj", "pwsh -EncodedCommand ZQBj",
+  "powershell.exe -NoP -NonI -W Hidden -Enc ZQBj", "PowerShell -EC ZQBj", "cmd /c powershell -ec ZQBj"]) {
+  const v = vw(c, { permission_mode: "full" });
+  ok(v.action === "ask" && /编码命令/.test(v.rule) && v.ruleKey === "", `编码命令全自动也问、不给同类放行：${c}`, v);
+  eq(vw(c, { permission_mode: "full" }, "darwin").action, "allow", `反向对照 macOS：${c} 照旧`);
+}
+const encAllowed = vw("powershell -enc ZQBj", { permission_mode: "full", cmd_allow: ["powershell"] });
+eq(encAllowed.action, "ask", "放行名单里有 powershell，编码命令照样问");
+const encNoGw = vw("powershell -enc ZQBj", { gateway: false });
+ok(isDel(encNoGw) && encNoGw.ruleKey === "", "总开关关着：编码命令按删除保护问，不给同类放行", encNoGw);
+eq(vw("powershell -enc ZQBj", { gateway: false }, "darwin").action, "allow", "反向对照 macOS：总开关关着照旧放行");
+
+// 只读的不能误拦，不然每条 dir 都弹审批
+for (const c of ["Get-ChildItem -Recurse C:\\proj", "gci", "dir /s build", "DIR", "dir /b /a-d", "Get-Content x.txt",
+  "type x.txt", "powershell -c \"Get-ChildItem build\"", "cmd /c dir build", "powershell -ExecutionPolicy Bypass -File build.ps1",
+  "powershell -WindowStyle Hidden -Command Get-Date", "pwsh -NoLogo -c \"Get-Process | Sort-Object CPU\"",
+  "Get-Item x | Select-Object Name", "where.exe node", "findstr /s foo *.js", "if exist x echo yes", "echo it's fine", "git status"]) {
+  eq(vw(c).action, "allow", `Windows 只读命令照跑：${c}`);
+}
+
+// 「这类都允许」的规则：Windows 上不分大小写、去掉 .exe 和全路径
+const winRules = [
+  ["Remove-Item -Recurse x", "remove-item"],
+  ["RD /S /Q x", "rd"],
+  ["rd/s/q x", "rd"],
+  ["GIT.EXE status", "git status"],
+  ["C:\\Python311\\python.exe -m pytest", "python -m pytest"],
+];
+for (const [c, want] of winRules) eq(security.ruleFor(c, "win32"), want, `Windows：${c} → 「${want}」`);
+eq(security.ruleFor("RD /S /Q x", "darwin"), "RD", "反向对照 macOS：大小写照原样");
+
+// 用户关掉的 Python 运行时，Windows 上的 py 启动器和全路径 python.exe 也算
+const noPy = { runtime_python: false };
+eq(vw("py -3 x.py", noPy).action, "deny", "Windows：关了 Python，py -3 也不跑");
+eq(vw("C:\\Python311\\python.exe x.py", noPy).action, "deny", "Windows：关了 Python，全路径 python.exe 也不跑");
+eq(vw("py -3 x.py", noPy, "darwin").action, "allow", "反向对照 macOS：py 不是 Python，照旧");
+
+section("⑧ Windows：绕过删除保护的几种写法");
+// 每条都是「拆的人和真跑的那个认得不一样」：cmd 的分隔符、^ 转义、PowerShell 的引号、start 套一层……
+// 认错一处 rd 就溜过去。darwin 照样拿来当反向对照
+const winBypasses = [
+  // cmd 里命令名碰到 = , ; 就断了；cmd 也没有 FOO=1 开头的写法，不能当赋值剥掉
+  "del=x", "rd=/s=/q=x", "rd=/s /q x", "del,x", "call del=x", "cmd /c rd=/s=/q x",
+  // ^ 在引号外转义下一个字：^" 是个字面的引号，不开引号，后面的 & 照样分段
+  "echo ^\" & rd /s /q x",
+  // PowerShell 的单引号里 " 就是个字，分号照样分段
+  "powershell -c echo '\"'; Remove-Item C:\\x", "pwsh -c echo '\"' ; ri x",
+  "powershell -c \"Write-Output \\\"$(Remove-Item x)\\\"\"", "powershell -c \"& {Remove-Item x}\"",
+  // start / Start-Process 套一层
+  "Start-Process cmd -ArgumentList '/c rd /s /q x'", "Start-Process -FilePath powershell -ArgumentList '-c','Remove-Item x -Recurse'",
+  "Start-Process -FilePath powershell -ArgumentList \"-c\", \"Remove-Item x\"", "saps cmd '/c rd /s /q x'",
+  "powershell -c \"Start-Process cmd -ArgumentList @('/c','rd /s /q x') -Wait\"",
+  // 文件系统对象、.NET 的删法
+  // cmd 在命令名前面不管的：@ , ; = 和写在前头的重定向
+  "@ rd /s /q x", ",rd /s /q x", "=rd /s /q x", ">nul rd /s /q x", "2>nul rd /s /q x", "<nul rd /s /q x", "1>&2 rd /s /q x",
+  // 内部命令名碰到 . : \ 也断；cmd 带全路径、%ComSpec%、开关贴着写
+  "del.x", "del:x", "rd\\x", "cmd.exe/c rd /s /q x", "C:\\Windows\\System32\\cmd.exe/c rd /s /q x", "%ComSpec%/c rd /s /q x",
+  "cmd,/c rd /s /q x", "cmd;/c rd /s /q x", "cmd /q/c rd /s /q x", "cmd /c/q rd x",
+  // ^ 续行、^ 夹在开关里；forfiles 的 /c 贴着引号；cmd 剥第一个和最后一个引号
+  "r^\nd /s /q x", "cmd /c^ rd /s /q x", "cmd ^/c rd /s /q x", "forfiles /p . /c\"cmd /c del @path\"",
+  "cmd /c \"echo a\" \"&\" rd /s /q x",
+  "$fso.DeleteFolder(\"C:\\x\")", "$fso.DeleteFile('x')", "[IO.Directory]::Delete('x')",
+  "powershell -c \"(New-Object -ComObject Scripting.FileSystemObject).DeleteFolder('C:\\x')\"", "gci *.tmp | % Delete",
+  // 点号调用、& 调用
+  ". Remove-Item x -Recurse", "& Remove-Item x", "& 'Remove-Item' x", "powershell -c \". Remove-Item x\"",
+  // wsl 里跑的是 Linux 命令，FOO=1 开头照旧剥
+  "wsl FOO=1 rm -rf x",
+];
+for (const c of winBypasses) {
+  ok(isDel(vw(c)), `Windows 删除保护认得出：${c}`, vw(c));
+  ok(!isDel(vw(c, {}, "darwin")), `反向对照 macOS 不按删除算：${c}`, vw(c, {}, "darwin"));
+}
+// 拆出来就是两段的：commandSegments 里得看得见 rd 那一段，不能只靠兜底
+const segsOf = (c) => security.commandSegments(c, "win32").map((s) => s.trim());
+ok(segsOf("echo ^\" & rd /s /q x").includes("rd /s /q x"), "^\" 不开引号：rd 那段单独拆出来", segsOf("echo ^\" & rd /s /q x"));
+ok(segsOf("powershell -c echo '\"'; Remove-Item C:\\x").some((s) => /^Remove-Item/.test(s)), "PowerShell 按自己的引号拆：Remove-Item 那段单独拆出来", segsOf("powershell -c echo '\"'; Remove-Item C:\\x"));
+ok(segsOf("start /b /wait rd /s /q x").includes("rd /s /q x"), "start 的开关跳过：里面的 rd 单独算一段", segsOf("start /b /wait rd /s /q x"));
+ok(segsOf("start \"\" cmd /c rd /s /q x").includes("rd /s /q x"), "start 的空标题跳过：cmd /c 里的 rd 单独算一段", segsOf("start \"\" cmd /c rd /s /q x"));
+
+// 放行名单只认 git 时，`rd=x git status` 不能被当成 git status 放过去：cmd 里它是 rd 删三个目录
+const gitOk = vw("rd=x git status", { cmd_allow: ["git"] });
+ok(isDel(gitOk), "放行了 git，rd=x git status 照样按删除问", gitOk);
+eq(security.listedCommand(sec({ cmd_allow: ["git"] }), "rd=x git status", "win32"), false, "放行名单比的时候也不剥：rd=x git status 不算批过的 git");
+eq(vw("FOO=1 git status", { cmd_allow: ["git"] }, "darwin").action, "allow", "反向对照 macOS：FOO=1 开头照旧剥，git 照放行");
+
+// start 本身会弹窗，批过「本会话 start 都允许」只管弹窗那一层，里面的 rd 照样问
+eq(security.ruleFor("start \"\" cmd /c rd /s /q x", "win32"), "start", "start 那一段记的规则是 start");
+security.addSessionAllow("start");
+for (const c of ["start \"\" cmd /c rd /s /q x", "start /b /wait rd /s /q x", "start \"t\" /min powershell -c Remove-Item x"]) {
+  ok(isDel(vw(c)), `批过 start，里面的删除照样问：${c}`, vw(c));
+}
+eq(vw("start https://example.com").action, "allow", "反向对照：批过 start，开网页不再问");
+security.clearSessionAllow();
+
+// 兜底那一刀：不管引号硬切。代价是把删除命令写在字符串里的也问——这是认下的误报，写在这儿当文档
+for (const c of ["echo \"a & rd /s /q x\"", "findstr \"a|del\" x.txt"]) {
+  ok(isDel(vw(c)), `认下的误报：引号里写着删除命令也问一句：${c}`, vw(c));
+  eq(vw(c, {}, "darwin").action, "allow", `反向对照 macOS：${c} 照旧`);
+}
+// 兜底只抬不压：全自动不管删除，批过 rd 的也不再问
+eq(vw("echo \"a & rd /s /q x\"", { permission_mode: "full" }).action, "allow", "兜底不碰全自动那档");
+security.addSessionAllow("rd");
+eq(vw("echo \"a & rd /s /q x\"").action, "allow", "兜底认本会话放行：批过 rd 就不再问");
+security.clearSessionAllow();
+
+// 日常命令不能因为这几刀开始弹审批
+for (const c of ["echo a=b", "set X=1", "set PATH=C:\\x;%PATH%", "git commit -m \"fix: a; b\"", "npm run build && npm test",
+  "dir /b", "python -c \"print(1); print(2)\"", "powershell -c \"Write-Output 'a | b'\"", "powershell -c \"Write-Output 'Remove-Item x'\"",
+  "pwsh -c \"Get-ChildItem | Where-Object { $_.Name -like '*.log' }\"", "Start-Process notepad", "Start-Process -Verb RunAs notepad",
+  "git branch --delete feat", "echo $x.deleted", "$list.deleteAll", ".\\build.ps1", "./x", "echo a & ver",
+  "x=1 rd /s /q x"]) { // 最后这条在 cmd 里跑的是叫「x=1」的程序，不是 rd
+  eq(vw(c).action, "allow", `Windows 日常命令照跑：${c}`);
+}
+
+// 段数到顶：前面垫一长串，后面那条套着的以前就不挖了，现在没拆完按看不全问
+const pad = Array(300).fill("true").join(";");
+const deep = vw(pad + "; bash -c 'rm -rf x'", {}, "darwin");
+ok(deep.action === "ask", "段数到顶没拆完：按看不全问，不悄悄放过", deep);
+eq(vw(pad, {}, "darwin").action, "allow", "反向对照：只是长、没套东西的照跑");
 
 console.log(`\n${fail ? "✗" : "✓"} 命令闸认命令：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
+/** 「系统授权」那张卡给不给看。三项（完全磁盘访问、辅助功能、Apple Events 自动化）全是 macOS 的隐私开关，
+ *  Windows/Linux 上服务端一律答「无法检测」，「去授权」点了也开不出任何东西——三行灰字配三个哑链接，不如不摆。
+ *  hostPlatform 是服务端报的 process.platform：权限授给的是跑服务的那台，以它为准；
+ *  还没拿到（刚画出来、或者读失败）就按眼前这台猜，桌面版两者本来就是同一台 */
+function sysPermsCardShown(hostPlatform, os = UI_OS) {
+  return hostPlatform ? hostPlatform === "darwin" : os === "mac";
+}
 function renderSecurityPane(pane, s) {
   const sec = s.security || {};
   const joinLines = (a) => esc((a || []).join("\n"));
@@ -10,7 +17,7 @@ function renderSecurityPane(pane, s) {
     </label>`;
   const listCol = (title, id, val, rows) => `
     <div style="flex:1;min-width:0"><div style="font-size: 13px;color:var(--owb-text-2);margin:6px 0 4px">${title}</div>
-    <textarea id="${id}" rows="${rows || 4}" style="width:100%;font-size: 13px;font-family:Consolas,monospace;resize:vertical">${val}</textarea></div>`;
+    <textarea id="${id}" rows="${rows || 4}" style="width:100%;font-size: 13px;font-family:var(--font-mono-sys);resize:vertical">${val}</textarea></div>`;
   // 这一整页动的都是**整台服务器**的安全策略：档位、黑白名单、运行时开关、审计。
   // 多人服务器上的普通成员一样都改不了，全画出来等于摆一屏点了就 403 的控件。
   // 但「现在是哪个档位」他必须知道——那决定 agent 动他的文件之前问不问他。
@@ -42,7 +49,7 @@ function renderSecurityPane(pane, s) {
     ${!po ? `
     <div class="card-item">
       <div class="t">${ic("shield")} 剩下这些归平台管理员</div>
-      <div class="d">安全开关、黑白名单、运行时、系统授权、审计日志影响所有人，只有平台管理员能改。<br>需批准的命令会在输入框上方弹审批条，由你决定。</div>
+      <div class="d">安全开关、黑白名单、运行时、${sysPermsCardShown() ? "系统授权、" : ""}审计日志影响所有人，只有平台管理员能改。<br>需批准的命令会在输入框上方弹审批条，由你决定。</div>
     </div>` : `
     <div class="card-item">
       <div class="t">${ic("shield")} 数据安全</div>
@@ -91,7 +98,7 @@ function renderSecurityPane(pane, s) {
       <div class="d">装技能、存连接器前，内置检查之外再用 <a class="link" href="https://github.com/CatCatUncle/toolward" target="_blank" rel="noopener">toolward</a> 扫一遍（注入、投毒、供应链、密钥外传）。</div>
       <div id="sec-tw" style="margin-top:10px;font-size: 13px">检测中…</div>
     </div>
-    <div class="card-item">
+    <div class="card-item" id="sec-sys-card"${sysPermsCardShown() ? "" : ' style="display:none"'}>
       <div class="t">${ic("monitor")} 系统授权（macOS）</div>
       <div id="sec-sys" style="font-size: 14px;color:var(--owb-text-3)">检测中…</div>
     </div>
@@ -153,7 +160,7 @@ function renderSecurityPane(pane, s) {
            怎么用它 <select id="sec-tw-mode" style="margin:0">${opt("auto", "它报「严重」就拦下来（推荐）")}${opt("advisory", "只提醒，从不拦人")}${opt("off", "不叫它")}</select>
          </div>
          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size: 14px">
-           指定路径 <input id="sec-tw-bin" style="flex:1;min-width:220px;margin:0;font-family:Consolas,monospace;font-size:12px" placeholder="留空 = 自己在 PATH 里找" value="${esc(d.bin_pref || "")}">
+           指定路径 <input id="sec-tw-bin" style="flex:1;min-width:220px;margin:0;font-family:var(--font-mono-sys);font-size:12px" placeholder="留空 = 自己在 PATH 里找" value="${esc(d.bin_pref || "")}">
          </div>
          <div style="color:var(--owb-text-3);margin-top:8px">被拦的技能，管理员仍可点「仍然安装」，会记日志。连接器只提醒不拦。</div>
          <div style="color:var(--owb-text-3);margin-top:6px">${esc(d.licence || "")}</div>`
@@ -236,10 +243,10 @@ function renderSecurityPane(pane, s) {
           <div style="font-size: 14px">${cur && cur.qr
             ? "拿手机扫这个码，扫完那台手机就能用你的账号了。"
             : "在手机上填下面这串码，填完那台手机就能用你的账号了。"}</div>
-          <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:28px;letter-spacing:.14em;font-weight:600;margin:8px 0">${esc(p.pretty)}</div>
+          <div style="font-family:var(--font-mono);font-size:28px;letter-spacing:.14em;font-weight:600;margin:8px 0">${esc(p.pretty)}</div>
           ${cur ? `<div style="font-size: 13px;color:var(--owb-text-2);line-height:1.7">
             手机要和这台电脑连<b>同一个 Wi-Fi</b>。${cur.qr ? "扫不了的话，" : ""}在手机浏览器里打开
-            <b style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(cur.host)}</b>，填上面这串码。
+            <b style="font-family:var(--font-mono)">${esc(cur.host)}</b>，填上面这串码。
             <span style="color:var(--owb-text-3)">仅限同一局域网，手机流量打不开。</span>
             ${addrs.length > 1 ? `<a href="#" class="link" id="dev-pair-addr">打不开？换一个地址（还有 ${addrs.length - 1} 个）</a>` : ""}
           </div>` : `<div style="font-size: 13px;color:var(--owb-text-2);line-height:1.7">
@@ -360,6 +367,11 @@ function renderSecurityPane(pane, s) {
     if (!el) return;
     const d = await fetch("/api/security/system").then(r => r.json()).catch(() => null);
     if (!d) { el.textContent = "读取失败"; return; }
+    // 先前按眼前这台猜的；服务端报回来跑服务的是哪台，以那台为准再定一次（网页版从别的系统打开时两边会不一样）
+    const card = pane.querySelector("#sec-sys-card");
+    const shown = sysPermsCardShown(d.platform);
+    if (card) card.style.display = shown ? "" : "none";
+    if (!shown) return;
     const txt = {
       granted: `<span style="color:var(--owb-ok-text)">${ic("circle-check")} 已授权</span>`,
       denied: '<span style="color:var(--owb-err-text)">未授权</span>',
@@ -373,9 +385,12 @@ function renderSecurityPane(pane, s) {
       row("辅助功能", "accessibility", d.accessibility) +
       row("自动化（Apple Events）", "automation", autoState || d.automation, ' <a href="#" class="link" id="sec-autochk">检测/授权</a>') +
       (d.desktop ? "" : '<div style="font-size: 13px;color:var(--owb-text-3);margin-top:6px">Web 模式：授权给启动服务的终端；「辅助功能」状态仅桌面版可查。</div>');
-    el.querySelectorAll("[data-pane]").forEach(a => a.onclick = (ev) => {
+    el.querySelectorAll("[data-pane]").forEach(a => a.onclick = async (ev) => {
       ev.preventDefault();
-      fetch("/api/security/system/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pane: a.dataset.pane }) });
+      // 服务端开不出那一页会回 ok:false。以前不看回话，点下去什么都不发生，人只会以为链接坏了、再点几遍
+      const r = await fetch("/api/security/system/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pane: a.dataset.pane }) })
+        .then(x => x.json()).catch(() => null);
+      if (!r || !r.ok) toast("系统设置这一页没打开，可到「隐私与安全性」里自己找", "circle-x");
     });
     const ac = el.querySelector("#sec-autochk");
     if (ac) ac.onclick = async (ev) => {
@@ -452,11 +467,11 @@ async function renderTwoFactorBox(box, opts) {
              style="border-radius:8px;background:#fff;padding:6px;image-rendering:pixelated;flex:none">` : ""}
         <div style="flex:1;min-width:200px">
           <div style="color:var(--owb-text-2)">用 Google Authenticator / 微软 Authenticator / 1Password 这类验证器 App ${d.qr ? "扫左边这张码" : "手动加一个账号"}。扫不上就手输下面这串密钥：</div>
-          <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;letter-spacing:.08em;word-break:break-all;margin:6px 0">${esc(d.secret)}
+          <div style="font-family:var(--font-mono);font-size:15px;letter-spacing:.08em;word-break:break-all;margin:6px 0">${esc(d.secret)}
             <a href="#" class="link" id="tfa-copy-secret">复制</a></div>
           <div style="margin-top:8px;color:var(--owb-text-2)">加好之后，把 App 上现在显示的 6 位数字填进来——<b>验过才算开通：</b></div>
           <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
-            <input id="tfa-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:ui-monospace,Menlo,monospace;letter-spacing:.12em">
+            <input id="tfa-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:var(--font-mono);letter-spacing:.12em">
             <button class="btn-brand" id="tfa-enable">确认开启</button>
             <a href="#" class="link" id="tfa-cancel2">算了</a>
           </div>
@@ -490,7 +505,7 @@ async function renderTwoFactorBox(box, opts) {
         <div style="font-weight:600;margin-bottom:4px"><span>${esc(title)}</span> · <span>下面这 ${codes.length} 条是恢复码，现在存好。</span></div>
         <div style="color:var(--owb-text-2);line-height:1.7"><span>手机丢了、验证器被误删了，就拿它们登进来，</span><b>一条只能用一次。</b>
           <b>这一屏关掉之后再也看不到</b><span>——请存进密码管理器或抄在纸上。</span></div>
-        <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;line-height:1.9;margin:10px 0;column-count:2;column-gap:20px">${
+        <div style="font-family:var(--font-mono);font-size:14px;line-height:1.9;margin:10px 0;column-count:2;column-gap:20px">${
           codes.map((c) => `<div>${esc(c)}</div>`).join("")}</div>
         <button class="btn-plain" id="tfa-copy-rc">${ic("copy")} 复制全部</button>
         <button class="btn-brand" id="tfa-rc-done">我存好了</button>
@@ -521,7 +536,7 @@ async function renderTwoFactorBox(box, opts) {
       sub.innerHTML = `
         <div style="color:var(--owb-text-2)"><b>重新生成会把原来那批全部作废。</b>先输一次验证器上的 6 位数字：</div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
-          <input id="tfa-rc-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:ui-monospace,Menlo,monospace;letter-spacing:.12em">
+          <input id="tfa-rc-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:var(--font-mono);letter-spacing:.12em">
           <button class="btn-brand" id="tfa-rc-go">重新生成</button>
           <a href="#" class="link" id="tfa-rc-cancel">算了</a>
         </div>
@@ -550,7 +565,7 @@ async function renderTwoFactorBox(box, opts) {
         <div style="color:var(--owb-text-2)">关掉之后，光靠密码就能登进来了。两样都要验一次：</div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
           <input type="password" id="tfa-off-pw" placeholder="当前密码" autocomplete="current-password" style="width:170px;margin:0">
-          <input id="tfa-off-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:ui-monospace,Menlo,monospace;letter-spacing:.12em">
+          <input id="tfa-off-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:var(--font-mono);letter-spacing:.12em">
           <button class="btn-plain" id="tfa-off-go">确认关闭</button>
           <a href="#" class="link" id="tfa-off-cancel">算了</a>
         </div>
@@ -844,7 +859,7 @@ function renderAboutPane(pane) {
       <div class="t">${ic("refresh-cw")} 版本与更新 <span id="ab-ver" style="font-weight:400;color:var(--owb-text-3);font-size:12px">读取中…</span></div>
       <div class="d" id="ab-up-how" style="margin-bottom:8px">正在看有没有新版…</div>
       <div id="ab-up-cmd" style="display:none;margin-bottom:8px">
-        <code id="ab-up-cmd-t" style="display:block;padding:8px 12px;border:1px solid var(--owb-border);border-radius:var(--radius-md);background:var(--owb-bg-hover);font-family:var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);font-size:12px;overflow-x:auto;white-space:pre"></code>
+        <code id="ab-up-cmd-t" style="display:block;padding:8px 12px;border:1px solid var(--owb-border);border-radius:var(--radius-md);background:var(--owb-bg-hover);font-family:var(--font-mono);font-size:12px;overflow-x:auto;white-space:pre"></code>
         <a href="#" class="link" id="ab-up-cmd-copy" style="display:inline-block;margin-top:4px;font-size:12px">${ic("copy")} 复制这条命令</a>
       </div>
       <button class="btn-plain" id="ab-up-btn">检查更新</button>

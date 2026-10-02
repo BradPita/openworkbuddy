@@ -28,9 +28,10 @@
  *   hidden?: boolean,
  *   impl?: Record<string, (args: any) => any>,
  *   ops?: ReturnType<typeof createOpTracker>,
- *   pixels?: ReturnType<typeof import("./thumb-sips").createSipsPixels> | null,
+ *   pixels?: ReturnType<typeof import("./thumb-sips").createSipsPixels> | ReturnType<typeof import("./browser-render").createRenderPixels> | null,
  * }} o
- *   pixels：缩图的活交给子进程（macOS 上是 thumb-sips.js，electron-main.js 注入）。
+ *   pixels：缩图的活交给界面线程以外的地方（macOS 上是 thumb-sips.js 的子进程，Windows 上是
+ *   browser-render.js 的隐藏网页窗口，electron-main.js 按平台注入）。
  *   没给、或者它说这张做不了（回 null），就走下面 nativeImage 的老路——结果一样，只是在主线程上做
  */
 function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch, onApproval, bootLog, hidden = false, impl, ops, pixels = null } = /** @type {any} */ ({})) {
@@ -77,6 +78,9 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
       return { canceled: !!r.canceled, filePath: r.filePath || "" };
     },
     "shell.showItemInFolder": async (a) => { electron.shell.showItemInFolder(String(a && a.path)); return true; },
+    // 用系统默认程序打开。原样交回 shell.openPath 的结果：成功是空串，失败是系统给的错误文字（不抛），
+    // 服务端按这个约定判断成没成、把那句话转给用户
+    "shell.openPath": async (a) => electron.shell.openPath(String(a && a.path)),
     "clipboard.writeBuffer": async (a) => {
       const buf = toBuf(a && a.data);
       if (!buf) throw new Error("剪贴板数据是空的（clipboard.writeBuffer）");

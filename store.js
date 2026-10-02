@@ -159,6 +159,83 @@ function isPlainText(text) {
 }
 
 /**
+ * Windows 上改名、建硬链接常被别的程序短暂占着：杀毒软件、搜索索引、同步盘看见新文件就去扫，
+ * 这几十毫秒里 rename 报 EPERM / EACCES / EBUSY。不重试，一次存盘就这么失败了。
+ * 所以只在 Windows 上重试：10→20→40… 毫秒地等，攒满约 1 秒为止，等用 Atomics.wait 真睡、不空转烧 CPU。
+ * 为什么是同步地等：后台版从挂 .bak 到改名那一段不许让出主线程（见 writeTextAtomicAsync），只能原地等。
+ * 别的平台上这几个错误码就是真没权限，重试也白搭，照旧直接抛。
+ */
+const BUSY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RETRY_BUDGET_MS = 1000;
+/**
+ * 上回攒满 1 秒还没成的目标，下回只给 100 毫秒：文件被长期占着（同步盘、别的程序开着不放）时，
+ * 每几秒一次的会话存盘不能每次都把主线程卡上一整秒。成了一次就划掉，恢复整份预算。
+ */
+const STUCK_BUDGET_MS = 100;
+/** @type {Set<string>} */
+const stuck = new Set();
+/** @type {Int32Array | null} */
+let sleepCell = null;
+/** @param {number} ms */
+function sleepSync(ms) {
+  try {
+    if (!sleepCell) sleepCell = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(sleepCell, 0, 0, ms);
+  } catch {} // 个别宿主不许主线程 Atomics.wait：那就不睡直接重试，次数照样有上限
+}
+/**
+ * 改名、建链接、睡、平台这几样，测试要能换成假的（本机不是 Windows，也造不出被占着的文件）。
+ * 改名和建链接每次现查 fs 上的：别的测试会临时换掉 fs.renameSync 记调用顺序，不能在这儿提前绑死。
+ * @typedef {object} RetryIo
+ * @property {string} platform
+ * @property {(from: string, to: string) => void} rename
+ * @property {(from: string, to: string) => void} link
+ * @property {(ms: number) => void} sleep
+ */
+/** @type {RetryIo} */
+const DEFAULT_IO = {
+  platform: process.platform,
+  rename: (a, b) => fs.renameSync(a, b),
+  link: (a, b) => fs.linkSync(a, b),
+  sleep: sleepSync,
+};
+/** @param {Partial<RetryIo> | undefined} io @returns {RetryIo} */
+function ioOf(io) {
+  return io ? { ...DEFAULT_IO, ...io } : DEFAULT_IO;
+}
+/**
+ * 跑 fn，Windows 上遇到「被占着」那三个错误码就等一会儿再试。最后还不成，把最后那个错误原样抛出去。
+ * @template T
+ * @param {string} key 按目标路径记「上回卡满了没有」
+ * @param {() => T} fn
+ * @param {RetryIo} io
+ * @returns {T}
+ */
+function retryBusy(key, fn, io) {
+  if (io.platform !== "win32") return fn();
+  const budget = stuck.has(key) ? STUCK_BUDGET_MS : RETRY_BUDGET_MS;
+  let waited = 0;
+  for (let delay = 10; ; delay *= 2) {
+    try {
+      const r = fn();
+      stuck.delete(key);
+      return r;
+    } catch (e) {
+      const code = /** @type {NodeJS.ErrnoException} */ (e).code;
+      if (!code || !BUSY_CODES.has(code)) throw e;
+      if (waited >= budget) {
+        if (stuck.size > 256) stuck.clear(); // 只是省点等待的记性，攒多了清掉也无妨
+        stuck.add(key);
+        throw e;
+      }
+      const d = Math.min(delay, budget - waited);
+      io.sleep(d);
+      waited += d;
+    }
+  }
+}
+
+/**
  * 上一版原样挂成 .bak，一个字节都不搬：硬链接到 .bak 旁边的临时名，再改名盖过去。
  * 随后正本被 rename 换成新 inode，旧 inode 只剩 .bak 这一个名字——效果跟拷一份一样，
  * 代价是两次元数据操作。直接 link 到 .bak 会因为它已存在报 EEXIST；先删后链，中间又有一瞬没有 .bak。
@@ -171,17 +248,19 @@ function isPlainText(text) {
  * 前提是正本只靠 rename 整份换掉、从不原地改写：原地改写会顺着链接把 .bak 一起改掉。
  * 会话文件满足这一条（全仓写会话都走 writeJsonAtomic）。
  * 链不上（exFAT、SMB、部分 Windows 卷不支持硬链接）退回整份拷贝，照样不解析。
+ * Windows 上 .bak 或正本正被杀毒软件扫着时链接、改名会短暂失败，按 retryBusy 等一等再试。
  * @param {string} file
  * @param {number} mode
+ * @param {RetryIo} [io]
  * @returns {boolean} true = 这一步办完了（包括「压根没有上一版」）；false = 交回老路
  */
-function linkBackup(file, mode) {
+function linkBackup(file, mode, io = DEFAULT_IO) {
   const bak = file + ".bak";
   const tmp = `${bak}.${process.pid}.tmp`;
   try {
     try { fs.unlinkSync(tmp); } catch {}
-    fs.linkSync(file, tmp);
-    fs.renameSync(tmp, bak);
+    retryBusy(tmp, () => io.link(file, tmp), io);
+    retryBusy(bak, () => io.rename(tmp, bak), io);
     tighten(bak, mode);
     return true;
   } catch (e) {
@@ -226,8 +305,10 @@ function copyBackup(file, mode, intact) {
  * @param {number}  [opt.mode]    文件权限，同 writeJsonAtomic
  * @param {(text: string) => boolean} [opt.intact]  上一版得过这一关才配留成 .bak
  * @param {boolean} [opt.trustPrev] 同 writeJsonAtomic：上一版不用再读再验，直接硬链接成 .bak
+ * @param {Partial<RetryIo>} [opt.io] 只给测试用：换掉平台、改名、建链接、睡，验 Windows 上的重试
  */
-function writeTextAtomic(file, text, { backup = true, mode = 0, intact = isPlainText, trustPrev = false } = {}) {
+function writeTextAtomic(file, text, { backup = true, mode = 0, intact = isPlainText, trustPrev = false, io = undefined } = {}) {
+  const ops = ioOf(io);
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -244,8 +325,8 @@ function writeTextAtomic(file, text, { backup = true, mode = 0, intact = isPlain
       fs.closeSync(fd);
     }
     tighten(tmp, mode); // open 的 mode 还要过一道 umask（022 会把 0640 削成 0600 以外的样子），chmod 不受它管
-    if (backup && !(trustPrev && linkBackup(file, mode))) copyBackup(file, mode, intact);
-    fs.renameSync(tmp, file);
+    if (backup && !(trustPrev && linkBackup(file, mode, ops))) copyBackup(file, mode, intact);
+    retryBusy(file, () => ops.rename(tmp, file), ops); // Windows 上正本被占着就等一等，见 retryBusy
     tighten(file, mode); // 兜底：rename 保的是 tmp 的位，这里再确认一次，顺带修好老装机
     // 改名本身记在目录里，目录也得落一次盘。Windows 打不开目录，失败就算了——改名已经成了
     try {
@@ -299,9 +380,11 @@ function dropAsyncTmps() {
  * @param {boolean | (() => boolean)} [opt.trustPrev]
  * @param {(() => boolean) | null} [opt.shouldCommit]
  * @param {(() => void) | null} [opt.onCommit]
+ * @param {Partial<RetryIo>} [opt.io] 同 writeTextAtomic，只给测试用
  * @returns {Promise<boolean>} 真改了名 = true；被 shouldCommit 拦下 = false
  */
-async function writeTextAtomicAsync(file, text, { backup = true, mode = 0, intact = isPlainText, trustPrev = false, shouldCommit = null, onCommit = null } = {}) {
+async function writeTextAtomicAsync(file, text, { backup = true, mode = 0, intact = isPlainText, trustPrev = false, shouldCommit = null, onCommit = null, io = undefined } = {}) {
+  const ops = ioOf(io);
   const dir = path.dirname(file);
   if (!asyncTmpHooked) { asyncTmpHooked = true; process.once("exit", dropAsyncTmps); }
   await fs.promises.mkdir(dir, { recursive: true });
@@ -321,11 +404,12 @@ async function writeTextAtomicAsync(file, text, { backup = true, mode = 0, intac
       asyncTmps.delete(tmp);
       return false;
     }
-    // ↓ 从这里到改名是一段同步代码，不让出主线程
+    // ↓ 从这里到改名是一段同步代码，不让出主线程。Windows 上的重试也是同步地等（retryBusy），
+    //   不能换成 await 睡：一让出去，别人就可能看到「.bak 换了、正本还没换」或者抢先写进来
     tighten(tmp, mode);
     const trust = typeof trustPrev === "function" ? trustPrev() : trustPrev;
-    if (backup && !(trust && linkBackup(file, mode))) copyBackup(file, mode, intact);
-    fs.renameSync(tmp, file);
+    if (backup && !(trust && linkBackup(file, mode, ops))) copyBackup(file, mode, intact);
+    retryBusy(file, () => ops.rename(tmp, file), ops);
     renamed = true;
     asyncTmps.delete(tmp);
     tighten(file, mode);

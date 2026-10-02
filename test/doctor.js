@@ -188,6 +188,19 @@ for (const [alias, primary] of Object.entries(doctor.TOOL_ALIASES)) {
   ok(!doctor.EXTERNAL_TOOLS.some((t) => t.name === alias), `反向对照：${alias} 自己不在清单上（在的话就该直接查它，别绕别名）`, alias);
 }
 
+// Windows 上给的装法：scoop / choco 得先装包管理器本身，照着敲第一句就撞墙。winget 是系统自带的
+eq(kt("pdftotext", "win32", "install"), "winget install oschwartz10612.Poppler", "★Windows 装 poppler 给 winget★ 包名照 winget-pkgs 里的写");
+eq(kt("pdftoppm", "win32", "install"), "winget install oschwartz10612.Poppler", "别名折过去也是同一句");
+ok(doctor.EXTERNAL_TOOLS.every((t) => !/\b(scoop|choco)\b/.test(t.install.win32 || "")),
+  "Windows 那一列里一个 scoop / choco 都没有", doctor.EXTERNAL_TOOLS.map((t) => t.install.win32));
+eq(kt("pdftotext", "darwin", "install"), "brew install poppler", "反向对照：Mac 上还是 brew，没被一起改掉");
+// Windows 上的 python：python3 是商店占位程序，体检得说清楚有没有一个真能用的
+eq(kt("python", "win32", "install"), "winget install Python.Python.3.12", "Windows 认得 python，给 winget 的装法");
+eq(kt("py", "win32", "name"), "python", "py（python.org 的启动器）折回 python");
+eq(doctor.knownTool("python", "darwin"), null, "反向对照：Mac 上不认 python——那边没这个坑，体检和报错提示都跟以前一样");
+eq(doctor.knownTool("py", "linux"), null, "反向对照：Linux 上 py 也不认");
+eq(doctor.knownTool("python3", "win32"), null, "反向对照：python3 不折回 python（占位程序那句提示归 run_shell 的报错翻译管）");
+
 // ── ⑥ 红线：体检报告里不许出现 Key ──────────────────────────────────────
 console.log("\n⑥ 体检报告不许带出 Key");
 const SECRET = "sk-这是一把不该出现在体检报告里的钥匙";
@@ -366,6 +379,128 @@ try {
     eq(await doctor.probeWho(deadPort, "127.0.0.1", 400), "other", "反向对照：没人应答 = other");
   } finally {
     for (const srv of open) srv.close();
+  }
+
+  // ── ⑫ Windows：Python 是真是假、注册表 PATH 读没读成 ──────────────────────
+  // 这台机器不是 Windows，所以平台、找命令、跑命令全换成假的：只验判断逻辑
+  console.log("\n⑫ Windows：查 Python、体检前现读注册表 PATH");
+  try {
+    const STUB = "C:\\Users\\小王\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe";
+    const PY = "C:\\Windows\\py.exe";
+    const REAL = "C:\\Program Files\\Python312\\python.exe";
+    const fakeWhich = (bins) => ({ resolveBin: async (n) => ({ bin: bins[n] || "" }) });
+    const fakeRun = (code) => { const calls = []; const run = async (bin, args) => { calls.push([bin, args]); return { code }; }; run.calls = calls; return run; };
+
+    // ① 占位程序：带 -c 1 跑一次退 9009，不能算数，接着找 py
+    let run = fakeRun(9009);
+    eq(await doctor.probePython(fakeWhich({ python: STUB, py: PY }), run), PY, "★商店占位程序跑不起来，不算数，改用 py★");
+    eq(JSON.stringify(run.calls), JSON.stringify([[STUB, ["-c", "1"]]]), "验的时候带了 -c 1（不带参数会把商店弹出来），只验 WindowsApps 里那个");
+    run = fakeRun(9009);
+    eq(await doctor.probePython(fakeWhich({ python: STUB }), run), "", "只有占位程序、没有 py：如实报没有");
+    // ② 商店真装的 Python 也在 WindowsApps 里：跑得起来就认
+    run = fakeRun(0);
+    eq(await doctor.probePython(fakeWhich({ python: STUB, py: PY }), run), STUB, "反向对照：WindowsApps 里跑得起来的是真 Python，照认");
+    // ③ 别处的 python 是安装器放的真身，不多起一个子进程
+    run = fakeRun(9009);
+    eq(await doctor.probePython(fakeWhich({ python: REAL }), run), REAL, "Program Files 里的 python 直接认");
+    eq(run.calls.length, 0, "反向对照：不在 WindowsApps 里就不跑 -c 1");
+    // ③b WindowsApps 排在真 Python 前面：engines/which 现在认得出别名（stat 报错、lstat 在），resolveBin 先撞上的是占位程序。
+    //     跑不起来就跳过 WindowsApps 再找一遍，后面那个真的照认，不能报「缺」
+    const W = require(path.join(ROOT, "engines", "which"));
+    const APPS = "C:\\Users\\小王\\AppData\\Local\\Microsoft\\WindowsApps";
+    const PYDIR = "C:\\Users\\小王\\AppData\\Local\\Programs\\Python\\Python312";
+    const kinds = { [APPS + "\\python.exe"]: "alias", [PYDIR + "\\python.exe"]: "file", ["C:\\Windows\\py.exe"]: "file" };
+    const st = (k) => ({ isFile: () => k === "file", isDirectory: () => false });
+    const wio = {
+      statSync: (p) => { if (kinds[p] === "file") return st("file"); throw Object.assign(new Error(kinds[p] ? "UNKNOWN: unknown error, stat" : "ENOENT"), { code: kinds[p] ? "UNKNOWN" : "ENOENT" }); },
+      lstatSync: (p) => { if (kinds[p]) return st(kinds[p]); throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); },
+      accessSync: () => {},
+    };
+    const dirsWhich = (dirs, extra = true) => ({
+      resolveBin: async (n) => ({ bin: W.findIn(dirs, n, "win32", wio) }),
+      ...(extra ? { searchDirs: () => dirs, findIn: (d, n) => W.findIn(d, n, "win32", wio) } : {}),
+    });
+    // findIn 现在把别名排到最后（后面有真文件就给真的），所以这里 resolveBin 照 PATH 顺序先给别名，专门验 probePython 自己那道跳过
+    const aliasFirst = (dirs) => ({
+      resolveBin: async (n) => ({ bin: W.findIn(dirs.filter((d) => d === APPS), n, "win32", wio) || W.findIn(dirs, n, "win32", wio) }),
+      searchDirs: () => dirs, findIn: (d, n) => W.findIn(d, n, "win32", wio),
+    });
+    eq(W.findIn([APPS, PYDIR], "python", "win32", wio), PYDIR + "\\python.exe", "（前提）WindowsApps 在前时，findIn 也先给后面那个真的");
+    run = fakeRun(9009);
+    eq(await doctor.probePython(dirsWhich([APPS, PYDIR]), run), PYDIR + "\\python.exe", "占位程序排在前面、后面有真 Python → 认后面那个，不跑 -c 1");
+    eq(run.calls.length, 0, "真文件不在 WindowsApps 里，不多起子进程");
+    run = fakeRun(9009);
+    eq(await doctor.probePython(aliasFirst([APPS, PYDIR]), run), PYDIR + "\\python.exe", "★resolveBin 先给了占位程序、后面有真 Python → 认后面那个，不报缺★");
+    eq(JSON.stringify(run.calls), JSON.stringify([[APPS + "\\python.exe", ["-c", "1"]]]), "只对占位程序跑了一次 -c 1，后面那个不跑");
+    run = fakeRun(0);
+    eq(await doctor.probePython(aliasFirst([APPS, PYDIR]), run), APPS + "\\python.exe", "反向对照：WindowsApps 里那个跑得起来（商店真装的）→ 就认它");
+    run = fakeRun(9009);
+    eq(await doctor.probePython(dirsWhich([APPS, "C:\\Windows"]), run), "C:\\Windows\\py.exe", "反向对照：后面没有真 python → 照旧退到 py");
+    run = fakeRun(9009);
+    eq(await doctor.probePython(dirsWhich([APPS]), run), "", "反向对照：只有占位程序 → 如实报没有");
+    run = fakeRun(9009);
+    eq(await doctor.probePython({ resolveBin: aliasFirst([APPS, PYDIR, "C:\\Windows"]).resolveBin }, run), "C:\\Windows\\py.exe", "反向对照：which 不给 searchDirs / findIn 时跟以前一样，直接退到 py");
+    const rowReal = (await doctor.probeTools(dirsWhich([APPS, PYDIR]), "win32", fakeRun(9009))).find((t) => t.name === "python");
+    ok(!!rowReal && rowReal.bin === PYDIR + "\\python.exe", "probeTools：体检里 python 那一行填的是后面那个真的", rowReal);
+
+    // ④ probeTools：python 只在 Windows 上查
+    const which4 = fakeWhich({ ffmpeg: "C:\\ff\\ffmpeg.exe", python: STUB });
+    const win = await doctor.probeTools(which4, "win32", fakeRun(9009));
+    const pyRow = win.find((t) => t.name === "python");
+    ok(!!pyRow && pyRow.bin === "", "Windows 上体检列出 python，占位程序被判成「缺」", win);
+    ok(pyRow && pyRow.install === "winget install Python.Python.3.12", "缺 python 时给的装法是 winget", pyRow);
+    const mac = await doctor.probeTools(which4, "darwin");
+    eq(mac.map((t) => t.name).join(","), "ffmpeg,pdftotext,pandoc,soffice", "反向对照：Mac 上体检的清单跟以前一模一样，不多查 python");
+    const v = doctor.verdictTools(win);
+    ok(/python（跑技能里的 Python 脚本）/.test(v.detail) && /winget install Python\.Python\.3\.12/.test(v.fix), "报告里写了缺 python、怎么装", v);
+
+    // ⑤ 注册表 PATH：只在 Windows 上现读，读不成照实写进报告
+    let refreshed = 0;
+    const whichR = (error) => ({ ...fakeWhich({}), refreshWinPath: async () => { refreshed++; return { dirs: [], error }; } });
+    eq(await doctor.freshWinPath(whichR("系统 PATH：3 秒没读完"), "win32"), "系统 PATH：3 秒没读完", "Windows 上体检前读一次注册表，读不成的原话带回来");
+    eq(refreshed, 1, "读了一次");
+    eq(await doctor.freshWinPath(whichR(""), "darwin"), "", "反向对照：Mac 上什么都不读");
+    eq(refreshed, 1, "反向对照：Mac 上 refreshWinPath 一次都没被调");
+    eq(await doctor.freshWinPath({ ...fakeWhich({}), refreshWinPath: async () => { throw new Error("炸了"); } }, "win32"), "炸了", "refreshWinPath 自己抛了也不让体检崩，原话带回来");
+    const vErr = doctor.verdictTools(win, { pathError: "用户 PATH：拒绝访问。" });
+    ok(/注册表里的 PATH 没读全（用户 PATH：拒绝访问。）/.test(vErr.detail), "★缺东西又没读全注册表时，报告里照实写上★", vErr.detail);
+    ok(!/注册表/.test(doctor.verdictTools(win).detail), "反向对照：读成了就不提", doctor.verdictTools(win).detail);
+    ok(!/注册表/.test(doctor.verdictTools([{ name: "ffmpeg", use: "x", bin: "C:\\ff.exe", install: "" }], { pathError: "x" }).detail),
+      "反向对照：什么都不缺时不提（那条报错不影响结论）");
+
+    // ⑥ gather 真把这几步串起来了：Windows 先读注册表、再查（含 python），读不成写进「外部工具」那一行
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-doctor-win-"));
+    try {
+      const freePort = await new Promise((r) => { const s = require("net").createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+      const order = [];
+      const gWhich = {
+        resolveBin: async (n) => { order.push("find:" + n); return { bin: n === "ffmpeg" ? "C:\\ff\\ffmpeg.exe" : "" }; },
+        refreshWinPath: async () => { order.push("refresh"); return { dirs: [], error: "系统 PATH：拒绝访问。" }; },
+      };
+      const gDeps = (platform) => ({
+        paths: { APP_DIR: ROOT, DATA_DIR: tmp, isPackaged: () => false, dataPath: (n) => path.join(tmp, n) },
+        config: { server: { port: freePort, host: "127.0.0.1" } },
+        engines: { BUILTIN: { label: "内置引擎" } },
+        workspaceDir: tmp,
+        bootCheck: { MIN_NODE: 18, findMissing: () => [], readDeps: () => ({}) },
+        which: gWhich, platform,
+      });
+      const oldPort = process.env.PORT; delete process.env.PORT;
+      let items;
+      try { items = await doctor.gather(gDeps("win32")); } finally { if (oldPort !== undefined) process.env.PORT = oldPort; }
+      const row = items.find((i) => i.name === "外部工具");
+      eq(order[0], "refresh", "Windows：先读注册表，再一个个查", order);
+      ok(order.includes("find:python") && order.includes("find:py"), "Windows：python、py 都查了", order);
+      ok(row && /注册表里的 PATH 没读全（系统 PATH：拒绝访问。）/.test(row.detail), "读不成的原话进了「外部工具」那一行", row);
+      order.length = 0;
+      delete process.env.PORT;
+      try { items = await doctor.gather(gDeps("darwin")); } finally { if (oldPort !== undefined) process.env.PORT = oldPort; }
+      const rowMac = items.find((i) => i.name === "外部工具");
+      ok(!order.includes("refresh") && !order.some((s) => /python|:py$/.test(s)), "反向对照：Mac 上不读注册表、不查 python", order);
+      ok(rowMac && !/注册表/.test(rowMac.detail), "反向对照：Mac 上的报告里没有注册表那句", rowMac);
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  } catch (e) {
+    ok(false, "⑫ 这一节自己崩了：" + ((e && e.stack) || e));
   }
 
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

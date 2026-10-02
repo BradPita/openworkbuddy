@@ -534,7 +534,7 @@
   .src-item .n { color: var(--owb-text-3); font-variant-numeric: tabular-nums; }
   .src-item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
   .code-wrap { margin: 8px 0; border-radius: var(--radius-md); overflow: hidden; border: 1px solid rgba(255,255,255,.06); }
-  .code-head { display: flex; justify-content: space-between; align-items: center; background: #23252e; color: #8b92a5; font-size: 12px; padding: 5px 12px; font-family: Consolas, ui-monospace, monospace; }
+  .code-head { display: flex; justify-content: space-between; align-items: center; background: #23252e; color: #8b92a5; font-size: 12px; padding: 5px 12px; font-family: var(--font-mono); }
   .code-head .code-copy { cursor: pointer; color: #8b92a5; user-select: none; }
   .code-head .code-copy:hover { color: #fff; }
   .code-wrap pre { margin: 0; border-radius: 0; }
@@ -574,7 +574,7 @@
   .step-card .dur:empty { display: none; }
   /* 行尾这一档：跑着的时候是转圈，跑完换成完成/失败药丸，两者都贴右边，位置不跳 */
   .step-card .head > .spinner, .step-card .head > .tag.ok, .step-card .head > .tag.err { margin-left: auto; }
-  .step-card pre { display: none; background: var(--owb-code-bg); color: var(--owb-code-text); padding: 12px; font-size: 13px; line-height: 1.5; max-height: 320px; overflow: auto; }
+  .step-card pre { display: none; background: var(--owb-code-bg); color: var(--owb-code-text); padding: 12px; font-family: var(--font-mono-sys); font-size: 13px; line-height: 1.5; max-height: 320px; overflow: auto; }
   .step-card.open pre { display: block; }
   /* 改文件那几步的 diff：加的绿、删的红、@@ 行灰。压在深色代码底上，所以用代码块自己那套色，
      不用浅底用的 *-text 令牌（深绿压在近黑上根本看不见） */
@@ -1252,9 +1252,9 @@
   .ap-row .ap-src { color: var(--owb-brand-text); font-weight: normal; }
   .ap-row .ap-left { margin-left: 8px; font-weight: normal; font-size: 12px; color: var(--owb-text-3); font-variant-numeric: tabular-nums; }
   .ap-row .ap-left.hot { color: var(--owb-err-text); }
-  .ap-row .ap-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 13px; color: var(--owb-text-2); }
+  .ap-row .ap-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono-sys); font-size: 13px; color: var(--owb-text-2); }
   /* 改文件的 diff 摆在审批条里：批的是这几行，不是文件名 */
-  .ap-row .ap-diff { margin: 6px 0 0; max-height: 160px; overflow: auto; font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-md); padding: 8px 10px; white-space: pre; }
+  .ap-row .ap-diff { margin: 6px 0 0; max-height: 160px; overflow: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-md); padding: 8px 10px; white-space: pre; }
   .ap-row .ap-btns { display: flex; gap: 6px; flex-wrap: wrap; }
   .ap-row button { border: none; border-radius: var(--radius-md); padding: 5px 12px; cursor: pointer; font-size: 13px; }
   /* 三个按钮的盒子尺寸必须一模一样，不然一行里高低差 1px，谁都说不出哪里别扭。
@@ -1591,7 +1591,7 @@
   #auth-forgot-hint code { display: inline-block; margin: 3px 0; padding: 2px 6px; border-radius: var(--radius-sm);
     background: var(--owb-bg); color: var(--owb-text); font-family: var(--mono); font-size: 12px; }
   /* 配对码是照着念、照着敲的：字要大、要等宽、字距要拉开，不然 5 和 S 一定会敲错 */
-  .auth-card input.pair-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  .auth-card input.pair-code { font-family: var(--font-mono);
     font-size: 22px; letter-spacing: .18em; text-align: center; text-transform: uppercase; padding: 10px 12px; }
   /* 密码框右边那只眼睛：输错了看一眼比重打一遍快，尤其是管理员发过来的随机初始密码 */
   .auth-pw { position: relative; }
@@ -1878,9 +1878,9 @@
   .ask-card.ask-approve { border-left-color: var(--owb-err-text); }
   .ask-card.ask-approve .ask-ic { color: var(--owb-err-text); }
   /* 命令原文：等宽字、可换行、可选中复制。绝不 ellipsis——被截掉的正好是最危险的那半截 */
-  .ask-cmd { font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 13px; line-height: 1.6; color: var(--owb-text); background: var(--owb-bg-side); border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 10px 12px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-all; user-select: text; max-height: 40vh; overflow: auto; }
+  .ask-cmd { font-family: var(--font-mono); font-size: 13px; line-height: 1.6; color: var(--owb-text); background: var(--owb-bg-side); border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 10px 12px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-all; user-select: text; max-height: 40vh; overflow: auto; }
   .ask-rule { font-size: 12px; color: var(--owb-text-3); margin-bottom: 12px; }
-  .ask-diff { font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-lg); padding: 8px 10px; margin: 0 0 8px; max-height: 40vh; overflow: auto; white-space: pre; }
+  .ask-diff { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-lg); padding: 8px 10px; margin: 0 0 8px; max-height: 40vh; overflow: auto; white-space: pre; }
   .ask-card.done .ask-diff { display: none; }
   /* 收起后留两行：13px × 1.6 × 2 = 3.2em 内容，再加上上下 padding 20 和上下边框 2。
      算成整行才行，差一点都会把第二行从字中间横切开。 */
@@ -1994,7 +1994,7 @@
   .tpl-card { cursor: pointer; }
   .tpl-card .dd { font-size: 13px; color: var(--owb-text-2); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   /* 提示词全文默认收起：一屏几十段全文密集恐。点卡片单张展开 */
-  .tpl-card pre { display: none; background: var(--owb-bg-side); border-radius: var(--radius-md); padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; color: var(--owb-text); }
+  .tpl-card pre { display: none; background: var(--owb-bg-side); border-radius: var(--radius-md); padding: 10px 12px; font-family: var(--font-mono-sys); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; color: var(--owb-text); }
   .tpl-card.open pre { display: block; animation: owbFade .18s var(--owb-ease); }
   .tpl-card .chev { display: inline-flex; align-items: center; color: var(--owb-text-3); transition: transform .18s var(--owb-ease); }
   .tpl-card.open .chev { transform: rotate(90deg); }
@@ -2093,7 +2093,7 @@
   /* 失败那一行的「下一步怎么办」和「上游原话」。字号压一档、颜色退一档：
      它们是给判据做注脚的，不该跟结论抢视线 */
   .at-runs .at-hint { margin-top: 3px; color: var(--owb-text-2); line-height: 1.5; }
-  .at-runs .at-raw { margin-top: 3px; color: var(--owb-text-3); font-size: 12px; font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
+  .at-runs .at-raw { margin-top: 3px; color: var(--owb-text-3); font-size: 12px; font-family: var(--font-mono); word-break: break-all; }
   /* 「看执行过程」：定时任务这一趟的完整回放入口。跟结果那一栏并排，因为用户看完一句结论的
      下一个念头就是「它到底干了什么」——那一栏答不上来时，答案得就在手边，不是翻到别处去找 */
   .at-runs .at-open { color: var(--owb-brand-text); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
@@ -2302,7 +2302,7 @@
   .lib-prev { border: 1px solid var(--owb-border); border-radius: var(--radius-xl); min-height: 420px; max-height: calc(100vh - 150px); padding: 18px 20px; overflow: auto; }
   .lib-page[data-mode="gallery"] .lib-prev { min-height: 300px; max-height: calc(100vh - 290px); }
   .lib-prev iframe { width: 100%; height: 70vh; border: none; border-radius: var(--radius-md); background: #fff; }
-  .lib-prev pre.raw { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.6; }
+  .lib-prev pre.raw { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono-sys); font-size: 13px; line-height: 1.6; }
   .lib-prev .ph { color: var(--owb-text-3); text-align: center; padding: 80px 20px; font-size: 14px; }
   /* 预览页顶上的「出自任务」：产出和它的来历始终连着 */
   .lib-from { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; padding: 6px 10px; background: var(--owb-bg-side); border-radius: var(--radius-md); font-size: 12px; color: var(--owb-text-3); }
@@ -2550,9 +2550,9 @@
   .eng-h { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 14px; }
   .eng-dot { color: var(--owb-brand-text); }
   .eng-n { color: var(--owb-text-2); font-size: 12.5px; line-height: 1.6; margin-top: 3px; }
-  .eng-c { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--owb-text-3); margin-top: 4px; }
+  .eng-c { font-family: var(--font-mono); font-size: 11.5px; color: var(--owb-text-3); margin-top: 4px; }
   .eng-i { font-size: 12px; color: var(--owb-text-2); margin-top: 5px; }
-  .eng-i code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--owb-bg-hover); padding: 1px 5px; border-radius: var(--radius-xs); }
+  .eng-i code { font-family: var(--font-mono); background: var(--owb-bg-hover); padding: 1px 5px; border-radius: var(--radius-xs); }
   .eng-b { border: 1px solid var(--owb-border); color: var(--owb-text-2); }
   .eng-b.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); }
   .eng-b.free { border-color: var(--owb-brand); color: var(--owb-brand-text); }
@@ -2571,9 +2571,9 @@
   .eng-r { margin-top: 8px; font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--owb-border); background: var(--owb-bg-hover); }
   .eng-r.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); background: color-mix(in srgb, var(--owb-ok) 6%, transparent); }
   .eng-r.bad { border-color: color-mix(in srgb, var(--owb-err) 34%, transparent); color: var(--owb-err-text); background: color-mix(in srgb, var(--owb-err) 6%, transparent); }
-  .eng-r code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .eng-r code { font-family: var(--font-mono); }
   .eng-x .eng-c { margin-top: 0; }
-  .eng-p { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--owb-text-3); word-break: break-all; }
+  .eng-p { font-family: var(--font-mono); font-size: 11.5px; color: var(--owb-text-3); word-break: break-all; }
 
   /* 链接 hover 给个反馈 */
   .link:hover { text-decoration: underline; }

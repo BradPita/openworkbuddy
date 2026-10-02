@@ -996,6 +996,22 @@ function reopenedMediaBlock(reopened) {
     `所以这一轮该用就正常调一次，用结果说话。不许翻历史里那句话当结论、不许在一个请求都没发的情况下告诉用户「这条渠道用不了」。真再撞一次，再如实说。`;
 }
 
+/**
+ * 提示词里 run_shell 那一行括号里的话：告诉模型这台机器上的 shell 是哪种、有哪些坑。
+ *
+ * Windows 上模型最常撞的两个，都是照 Mac/Linux 的习惯写出来的：
+ *  - `python3 xxx.py`——Windows 上 python3 是应用商店的占位程序，一跑就「Python was not found」退 9009。
+ *    python.org 装的叫 python，另带一个 py 启动器（py -3）
+ *  - 行尾 `\` 续行——cmd 不认，反斜杠被当成参数原样传下去，后半截变成一条找不到的命令
+ * 先在这里说清楚，比撞了墙再靠报错提示纠正少烧好几步。
+ * @param {string} [platform] 只给测试用
+ */
+function shellNote(platform = process.platform) {
+  return platform === "win32"
+    ? "Windows cmd，注意用 cmd 语法：del/copy/where、路径反斜杠；没有 python3，用 python 或 py -3；cmd 不认行尾 \\ 续行，写成一行或用 ^"
+    : "zsh/bash";
+}
+
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
   const makeLLM = llmFactory || ((cfg) => require("./llm").createLLM(cfg));
@@ -1027,7 +1043,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
 ## 工具能力
 - run_node：执行 Node.js 代码。已安装库：pptxgenjs(PPT)、docx(Word)、exceljs(Excel)，以及 Node 内置模块。
-- run_shell：执行 shell 命令（${process.platform === "win32" ? "Windows cmd，注意用 cmd 语法：del/copy/where、路径反斜杠" : "zsh/bash"}），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
+- run_shell：执行 shell 命令（${shellNote()}），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
 - read_file：读文件（大文件用 start_line/end_line 只读要看的那段）
 - read_document：读 Word/Excel/PPT/压缩包（.docx/.xlsx/.pptx/.zip）。这几种是打包格式，read_file 读出来是乱码。甲方发来的材料、自己刚产出的文档，都用它复核
 - write_file：**新建**文件。写长文档用 append:true 一节一节续写，别把前文重新吐一遍（既慢又容易越写越短）。写完会自动做语法/结构自检，报了问题就当场修
@@ -4471,4 +4487,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, wrote, writerOf, _dirOwners: dirOwners, _fileClaims: fileClaims, _writes: writes };
 }
 
-module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel };
+module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel, shellNote };

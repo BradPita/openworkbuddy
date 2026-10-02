@@ -13,7 +13,8 @@
  *   ② 旧文件写了 [[发文件: 名字]] 才附，标记从正文里剥干净；
  *   ③ 本轮一个新文件都没有（「把上次那个发我」）时，点到名字的旧文件照发；
  *   ④ [[不发文件]] 一个都不附，新文件也不附；
- *   ⑤ 同一张图的 svg+png 只发 png（原有规矩不能丢）。
+ *   ⑤ 同一张图的 svg+png 只发 png（原有规矩不能丢）；
+ *   ⑥ 收进来的附件名在 Windows 上换掉冒号、保留名、末尾的点（im-media 的 safeBaseName / saveInbound）。
  */
 const path = require("path");
 const os = require("os");
@@ -79,6 +80,36 @@ console.log("⑤ svg/png 双胞胎只发 png");
   const svg = f("架构图.svg"), png = f("架构图.png");
   const r = pickAttachments({ out: "图画好了", fresh: [svg, png], all: [svg, png] });
   eq(names(r), ["架构图.png"], "同主名只发 PNG");
+}
+
+console.log("⑥ 收进来的附件名在 Windows 上能落盘");
+{
+  // 手机上发来的「Q3:计划.docx」在 NTFS 上会写成 0 字节的 Q3 + 备用数据流，用户打不开。
+  // 本机不是 Windows，靠 platform 参数测；每条都配 darwin 的反向对照，确认别的系统一点不变。
+  const { safeBaseName, saveInbound } = require(path.join(__dirname, "..", "im-media"));
+  const cases = [
+    ["Q3:计划.docx", "Q3_计划.docx", "Q3:计划.docx"],
+    ["CON.txt", "_CON.txt", "CON.txt"],
+    ["报告?.pdf", "报告_.pdf", "报告?.pdf"],
+    ["草稿. ", "草稿", "草稿."],
+    ["a\\b:c.txt", "b_c.txt", "b:c.txt"],
+    ["正常名字.png", "正常名字.png", "正常名字.png"],
+  ];
+  for (const [raw, win, mac] of cases) {
+    eq(safeBaseName(raw, "win32"), win, `Windows：${JSON.stringify(raw)} → ${win}`);
+    eq(safeBaseName(raw, "darwin"), mac, `反向对照 macOS：${JSON.stringify(raw)} → ${mac}`);
+  }
+  // HOME 本身就是这一轮新建的临时目录，里面用固定的子目录就够了；收尾时跟着 HOME 一起删
+  const dir = path.join(HOME, "inbound");
+  fs.mkdirSync(dir, { recursive: true });
+  const buf = Buffer.from("纪要正文");
+  const a = saveInbound(dir, "会议:纪要.txt", buf, { platform: "win32" });
+  eq(a, "会议_纪要.txt", "Windows：存下来的名字换掉了冒号");
+  ok(fs.existsSync(path.join(dir, a)) && fs.readFileSync(path.join(dir, a), "utf8") === "纪要正文", "文件真的落在那个名字上，内容完整");
+  eq(saveInbound(dir, "", buf, { platform: "win32", fallback: "NUL" }), "_NUL", "Windows：备用名是保留名也换掉");
+  eq(saveInbound(dir, "会议:纪要.txt", buf, { platform: "darwin" }), "会议:纪要.txt", "反向对照 macOS：名字原样");
+  // 不传 platform 走本机：本机不是 Windows，行为和改之前一样
+  if (process.platform !== "win32") eq(safeBaseName("Q3:计划.docx"), "Q3:计划.docx", "不传 platform：非 Windows 照旧");
 }
 
 console.log(`\n${pass} 通过，${fail} 失败`);

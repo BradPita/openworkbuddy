@@ -1006,7 +1006,7 @@ async function renderLibPreview(prev, lib) {
   const dlUrl = url + (src === "lib" ? "?dl=1" : "");
   const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
     <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
-    ${canOpenOnHost() ? `<a class="link" href="#" id="lb-reveal" title="在访达 / 资源管理器里打开它所在的文件夹，并选中它">所在位置</a>
+    ${canOpenOnHost() ? `<a class="link" href="#" id="lb-reveal" title="在${fileMgrName()}里打开它所在的文件夹，并选中它">所在位置</a>
     <a class="link" href="#" id="lb-copy" title="把文件本身放进剪贴板，之后直接粘到微信 / 邮件里">复制文件</a>` : ""}
     ${isCopyableText(name) ? `<a class="link" href="#" id="lb-copytext" title="把里面的文字整份复制，贴进飞书 / Word 保留格式">复制全文</a>` : ""}
     <a class="link" href="${dlUrl}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
@@ -1034,7 +1034,7 @@ async function renderLibPreview(prev, lib) {
   // HTML 把服务端那句「文件不存在」当网页渲染成一片空白（fetch 没看 r.ok）、
   // 文本弹一句「预览失败：读取失败」。三种都没说清「文件已经不在了」。
   const gonePh = `<div class="ph">这个文件已不在工作目录里，可能被移动、删除或在别的目录。<br>${
-    from ? "可点「出自任务」回到对话，让助理再做一份。" : "可让助理再做一份，或去访达里找找。"
+    from ? "可点「出自任务」回到对话，让助理再做一份。" : `可让助理再做一份，或去${fileMgrName()}里找找。`
   }</div>`;
   const failPh = (why) => `<div class="ph">预览不了：${esc(why)}</div>`;
   // 只在出错时才问一句「是没了，还是读不出来」——顺利的那条路上一个多余的请求都不发
@@ -1693,7 +1693,7 @@ function renderHubSkillEditor() {
       <div class="row"><div style="flex:1 1 200px"><label>技能名</label><input id="skf-name" value="${esc(x.name || "")}" placeholder="如 feishu-doc"></div>
         <div style="flex:2 1 300px"><label>一句话描述（AI 据此判断什么任务该用它）</label><input id="skf-desc" value="${esc(x.description || "")}"></div></div>
       <div class="row"><div style="flex:1"><label>正文（Markdown：步骤、代码示例、注意事项）</label>
-        <textarea id="skf-content" rows="14" style="font-family:var(--mono,ui-monospace,monospace);font-size: 13px">${esc(x.content || "")}</textarea></div></div>
+        <textarea id="skf-content" rows="14" style="font-family:var(--font-mono);font-size: 13px">${esc(x.content || "")}</textarea></div></div>
       <div style="display:flex;gap:8px"><button class="btn-brand" id="skf-save">保存</button>
         <button id="skf-cancel" style="padding:6px 14px">取消</button></div>
     </div>`;

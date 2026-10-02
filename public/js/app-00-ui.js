@@ -60,11 +60,14 @@ const AVATAR_EMOJI = [
   "🐱", "🐶", "🦊", "🐼", "🐨", "🐯", "🦁", "🐵",
   "🐰", "🐸", "🦉", "🦄", "🐙", "🦋", "🐳", "🦖",
   "🌸", "🌵", "🍀", "🌙", "⭐", "🔥", "⚡", "🌈",
-  "🍎", "🍜", "🍰", "☕", "🍺", "🧋", "🍉", "🥑",
+  "🍎", "🍜", "🍰", "☕", "🍺", "🍵", "🍉", "🥑",
   "🎧", "🎮", "🎨", "🎸", "📚", "💡", "🔑", "🏆",
-  "🚀", "🛸", "⚓", "🧭", "💎", "🎯", "🧩", "🪄",
+  "🚀", "🛸", "⚓", "🧭", "💎", "🎯", "🧩", "✨",
 ];
 /* emoji-数据区 止 */
+// 这张表只放 Emoji 12.0 及更早就有的。Windows 10 自带的 Segoe UI Emoji 停在 12.x，
+// 更新的（原来这里的珍珠奶茶、魔法棒都是 13.0）在那边画成一个方框，候选格里就是两块空白。
+// 新加之前先查它是哪一版进的标准；test/win-ui.js 按码位盯着 13.0 以后的
 
 /** 一格候选头像。三种来源画法各不相同（内置猫标 / 图标 / 表情），但格子一律同一个尺寸。
  *  以前图标那格是行内 span，里面的 svg 用 62% 量自己——百分比撞上没有宽度的行内元素，
@@ -96,6 +99,31 @@ function imeKey(e) {
 if (!window.__imeEndWired) {
   window.__imeEndWired = true;
   document.addEventListener("compositionend", () => { window.__imeEndAt = performance.now(); }, true);
+}
+
+/* ---------- 这台机器是什么系统：界面上「访达」「⌘」这类词按它换 ----------
+   以前满仓库写死「在访达里打开」「Shift/⌘ 点节点」，到 Windows 上用户既找不到访达，键盘上也没有 ⌘。
+   放在最先加载的这一份里，后面哪个脚本用都拿得到，不用操心加载顺序（app-02 的 SC_MAC 是快捷键引擎自己的，
+   e2e 会把那段单独切出来跑，别去动它）。
+   认的是浏览器这一台：桌面版里它就是跑服务的那台；网页版由平台管理员从别的电脑打开时，
+   「在访达里打开」开的其实是服务端那台的窗口，前端拿不到那台的系统，只能按眼前这台说。 */
+/** 平台名 → "mac" / "win" / "linux"。navigator 的写法（MacIntel、Win32、macOS、Windows）和
+ *  node 的写法（darwin、win32）都认；认不出的一律按 linux 那套说（Ctrl、文件管理器） */
+function uiOsOf(platform) {
+  const p = String(platform || "");
+  if (/mac|darwin|iphone|ipad|ipod/i.test(p)) return "mac";   // darwin 里也有 win，得先判 mac
+  if (/win/i.test(p)) return "win";
+  return "linux";
+}
+const UI_OS = uiOsOf(typeof navigator === "undefined" ? ""
+  : (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform);
+/** 系统自带的文件管理器叫什么：拼「在__里打开」「去__里找找」用 */
+function fileMgrName(os = UI_OS) {
+  return os === "mac" ? "访达" : os === "win" ? "资源管理器" : "文件管理器";
+}
+/** 主修饰键怎么写：mac 是 ⌘，Windows/Linux 是 Ctrl。只管提示文字，真按键的判断各处自己认 metaKey/ctrlKey */
+function modKeyName(os = UI_OS) {
+  return os === "mac" ? "⌘" : "Ctrl";
 }
 
 /* 自建 tooltip 顶掉原生 title：原生那个要悬停一秒才出来，出来是一坨系统灰框，

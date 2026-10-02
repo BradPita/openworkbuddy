@@ -460,6 +460,25 @@ const fcOf = (s) => s.argv[s.argv.indexOf("-filter_complex") + 1];
   }
   ok(tc.timelinePlan(P1_TL(), P1_FACTS({ onDisk: new Set(["春季新品_9x16_cover4.jpg", ".work_3", "别的.ass"]) })).stem === "春季新品", "反向对照：不是这一趟会写的名字，不换名");
 
+  // 片名当目录名和文件名用：Windows 上 CON、NUL 这些保留名建不出来，末尾的点会被系统悄悄去掉，
+  // 写进去的和读回来的就对不上了。本机不是 Windows，靠 platform 参数测；每条配 macOS / Linux 的反向对照
+  const winCases = [
+    ["CON", "_CON", "CON"], ["aux.txt", "_aux.txt", "aux.txt"], ["nul", "_nul", "nul"], ["COM1", "_COM1", "COM1"],
+    ["片名.", "片名", "片名."], ["片名...", "片名", "片名..."], ["a\u0001b", "a_b", "a\u0001b"],
+    ["...", "成片", "..."], ["镜头 1*?<>|\"", "镜头_1", "镜头_1"], ["S1-01", "S1-01", "S1-01"],
+  ];
+  for (const [raw, win, mac] of winCases) {
+    eq(tc.safeName(raw, "成片", "win32"), win, `Windows：片名 ${JSON.stringify(raw)} → ${JSON.stringify(win)}`);
+    eq([tc.safeName(raw, "成片", "darwin"), tc.safeName(raw, "成片", "linux")], [mac, mac], `反向对照 macOS / Linux：${JSON.stringify(raw)} → ${JSON.stringify(mac)}（跟以前一样）`);
+  }
+  if (process.platform !== "win32") eq(tc.safeName("CON", "成片"), "CON", "不传 platform 走本机：本机不是 Windows，照旧");
+  const winCon = tc.timelinePlan({ ...P1_TL(), title: "CON" }, P1_FACTS({ platform: "win32" }));
+  eq(winCon.aspects.map((a) => a.file), ["成片/_CON/_CON_9x16.mp4", "成片/_CON/_CON_16x9.mp4"], "Windows：片名叫 CON，成片目录和文件名都补了 _");
+  const winDot = tc.timelinePlan({ ...P1_TL(), title: "片名." }, P1_FACTS({ platform: "win32" }));
+  ok(winDot.stem === "片名" && winDot.outDir === "成片/片名", "Windows：片名末尾的点去掉，目录名不会被系统改掉", { stem: winDot.stem, outDir: winDot.outDir });
+  const macCon = tc.timelinePlan({ ...P1_TL(), title: "CON" }, P1_FACTS());
+  eq(macCon.aspects[0].file, "成片/CON/CON_9x16.mp4", "反向对照 macOS：片名叫 CON 原样用");
+
   // 步骤顺序：先混音（最快失败）→ 每个画幅：卡片 → 画面 → 成片 → 封面
   eq(p.steps[0].key, "audio", "第一步是混音：配音文件坏了第一步就知道");
   const order = p.steps.slice(1).map((s) => s.aspect + ":" + s.stage);

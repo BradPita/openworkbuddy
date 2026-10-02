@@ -149,4 +149,245 @@ async function svgToPng(svg, scale = 2) {
   });
 }
 
-module.exports = { available, renderMermaid, svgToPng, svgSize };
+// ---------- 缩图三件活交给隐藏渲染窗口（Windows） ----------
+//
+// 缩略图、给模型看的图压小、宠物头像，原来是 nativeImage 在主进程里**同步**解码缩放编码，
+// 而主进程就是界面线程：一张 4032 的手机照片 40–61ms，6016² 的 145–181ms（2026-09-29 量的）。
+// macOS 上交给 sips 子进程（thumb-sips.js）；Windows 没有 sips，就交给一个隐藏的渲染窗口——
+// 它是另一个进程：读文件走 Chromium 自己的 IO 线程，解码在它的解码线程，缩放、编码都在那边，
+// 界面线程上只剩来回一趟消息。接口跟 createSipsPixels 一模一样，bridge-main.js 不用分辨是谁在做。
+//
+// 做不了（窗口建不起来、读不了文件、解不出图、超时）一律回 null：调用方退回 nativeImage 老路，
+// 结果跟以前一样，只是那一张还在界面线程上做。每次退回都记一笔日志（前几次逐条记，之后抽着记）。
+
+/**
+ * 在隐藏窗口里跑的那段（整段 toString 过去）。读图 → 按 EXIF 转正 → 裁 / 缩 → 编码，回 base64。
+ * 尺寸口径跟 nativeImage 老路一样：长边缩到目标、另一边按比例四舍五入；宠物头像中心裁方再缩到 320。
+ * @param {{url:string, mode:"thumb"|"vision"|"pet", w?:number, maxEdge?:number, quality?:number}} a
+ */
+async function pixelsPageJob(a) {
+  // 下面几样是网页里才有的（后端类型检查不带 DOM 库，直接写名字会报找不到）。
+  // 整段要 toString 到页面里跑，只能从页面自己的 globalThis 上拿，不能引外面的任何东西
+  const g = /** @type {any} */ (globalThis);
+  // 异常过 executeJavaScript 回来只剩一个空对象，看不出是哪一步：每一步自己把话说清楚再回
+  const why = (e) => String((e && (e.name && e.message ? e.name + ": " + e.message : e.message || e.name)) || e);
+  let blob, full;
+  try { blob = await (await fetch(a.url)).blob(); } catch (e) { return { err: "读不到这个文件：" + why(e) }; }
+  // 从 Blob 解：页面自己造的数据，不会把画布弄脏（直接拿 file:// 的 <img> 画，导出时会被当成跨域拦下）
+  try { full = await g.createImageBitmap(blob, { imageOrientation: "from-image" }); } catch (e) { return { err: "解不出这张图：" + why(e) }; }
+  try {
+    const W = full.width, H = full.height;
+    const fit = (edge) => (W >= H ? [edge, Math.max(1, Math.round((H * edge) / W))] : [Math.max(1, Math.round((W * edge) / H)), edge]);
+    let sx = 0, sy = 0, sw = W, sh = H, ow = W, oh = H;
+    if (a.mode === "thumb") {
+      if (Math.max(W, H) <= Number(a.w)) return { w: W, h: H, skip: true };
+      [ow, oh] = fit(Number(a.w));
+    } else if (a.mode === "vision") {
+      if (Math.max(W, H) > Number(a.maxEdge)) [ow, oh] = fit(Number(a.maxEdge));
+    } else {
+      // 裁的坐标是转正以后的：手机竖拍的照片也是按看到的样子取中间
+      const side = Math.min(W, H);
+      sx = Math.round((W - side) / 2); sy = Math.round((H - side) / 2); sw = sh = side; ow = oh = 320;
+    }
+    const bmp = await g.createImageBitmap(full, sx, sy, sw, sh, { resizeWidth: ow, resizeHeight: oh, resizeQuality: "high" });
+    const cv = new g.OffscreenCanvas(ow, oh);
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close();
+    const out = await cv.convertToBlob(a.mode === "vision" ? { type: "image/jpeg", quality: (Number(a.quality) || 82) / 100 } : { type: "image/png" });
+    const b64 = await new Promise((res, rej) => {
+      const r = new g.FileReader();
+      r.onload = () => { const s = String(r.result); res(s.slice(s.indexOf(",") + 1)); };
+      r.onerror = () => rej(r.error);
+      r.readAsDataURL(out);
+    });
+    return { w: W, h: H, ow, oh, b64 };
+  } catch (e) {
+    return { err: "缩放或编码出错：" + why(e) };
+  } finally {
+    full.close();
+  }
+}
+
+/**
+ * @param {{electron?: any, max?: number, timeoutMs?: number, staleMs?: number, idleMs?: number,
+ *   now?: () => number, log?: (s: string) => void}} [o]
+ *   electron / now 给测试换假的。staleMs：排队排了这么久才轮到的缩略图不做了（服务进程那头 10 秒就不等了）。
+ *   idleMs：闲了这么久就把窗口关掉——一个渲染进程常驻要占几十 MB；下一批图来了再建，
+ *   建一次界面线程上要花一百多毫秒（本机量的 127ms），所以不能一张一建，默认闲 5 分钟才关
+ */
+function createRenderPixels(o = {}) {
+  const electron = o.electron || require("electron");
+  const { pathToFileURL } = require("url");
+  const max = Math.max(1, Number(o.max) || 2);
+  const timeoutMs = Number(o.timeoutMs) || 8000;
+  const staleMs = Number(o.staleMs) || 9000;
+  const idleMs = Number(o.idleMs) || 5 * 60 * 1000;
+  const now = o.now || Date.now;
+  const log = typeof o.log === "function" ? o.log : () => {};
+  const counts = { runs: 0, ok: 0, fails: 0, fallbacks: 0, stale: 0, peak: 0, queuedPeak: 0, windows: 0 };
+  let active = 0;
+  /** @type {Array<() => void>} */
+  const waiting = [];
+  /** @type {Promise<any>|null} */
+  let winP = null;
+  let idleTimer = null;
+  let closed = false;
+
+  function acquire() {
+    clearTimeout(idleTimer);
+    if (active < max) { active++; counts.peak = Math.max(counts.peak, active); return Promise.resolve(); }
+    return new Promise((res) => {
+      waiting.push(() => { active++; counts.peak = Math.max(counts.peak, active); res(); });
+      counts.queuedPeak = Math.max(counts.queuedPeak, waiting.length);
+    });
+  }
+  function release() {
+    active--;
+    const next = waiting.shift();
+    if (next) return next();
+    if (active === 0 && winP) {
+      idleTimer = setTimeout(() => dropWindow(), idleMs);
+      if (idleTimer.unref) idleTimer.unref();
+    }
+  }
+
+  const errText = (e) => {
+    const m = e && typeof e === "object" ? e.message || (() => { try { return JSON.stringify(e); } catch { return ""; } })() : e;
+    return String(m || "（没有报错原文）").slice(0, 200);
+  };
+  /** 退回老路时留一笔：前 5 次逐条记，之后每 100 次记一条，坏图成堆时日志不刷屏 */
+  function trace(op, why) {
+    counts.fallbacks++;
+    const n = counts.fallbacks;
+    if (n <= 5 || n % 100 === 0) log(`▲ 缩图窗口没做成（${op}），这张退回界面线程上做：${why}（累计 ${n} 次）`);
+  }
+
+  function dropWindow() {
+    clearTimeout(idleTimer);
+    const p = winP;
+    winP = null;
+    if (p) p.then((w) => { try { if (!w.isDestroyed()) w.destroy(); } catch {} }, () => {});
+  }
+
+  /** 隐藏窗口：只建不亮（show:false + 离屏），沙箱、不给 node；装一张空白的 file:// 页 */
+  function page() {
+    if (winP) return winP;
+    const p = (async () => {
+      const w = new electron.BrowserWindow({
+        show: false, width: 64, height: 64, frame: false, skipTaskbar: true, focusable: false,
+        webPreferences: {
+          offscreen: true, sandbox: true, contextIsolation: true, nodeIntegration: false,
+          backgroundThrottling: false, spellcheck: false,
+          partition: "owb-pixels", // 不落盘的独立会话，碰不到应用自己的 cookie / localStorage
+        },
+      });
+      counts.windows++;
+      // 渲染进程崩了：这一个窗口作废，下一张图来了再建
+      w.webContents.on("render-process-gone", () => {
+        if (winP === p) winP = null;
+        try { w.destroy(); } catch {}
+      });
+      try {
+        const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "owb-px-page-"));
+        try {
+          const f = path.join(dir, "px.html");
+          await fs.promises.writeFile(f, "<!doctype html><meta charset=\"utf-8\"><title>px</title>");
+          await w.loadFile(f);
+        } finally {
+          fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
+        try { w.webContents.stopPainting(); } catch {} // 不画任何东西，离屏也别按帧刷
+        return w;
+      } catch (e) {
+        try { w.destroy(); } catch {}
+        throw e;
+      }
+    })();
+    winP = p;
+    p.catch(() => { if (winP === p) winP = null; });
+    return p;
+  }
+
+  /** 交给窗口做一张；做不成回 null（已经留过痕） */
+  async function run(op, abs, args) {
+    if (closed) return null;
+    counts.runs++;
+    let timer = null;
+    try {
+      const w = await Promise.race([
+        page(),
+        new Promise((_, rej) => { timer = setTimeout(() => rej(Object.assign(new Error(`隐藏窗口 ${timeoutMs}ms 没建好`), { hung: true })), timeoutMs); }),
+      ]);
+      clearTimeout(timer);
+      if (closed) return null;
+      const code = `(${pixelsPageJob.toString()})(${JSON.stringify({ ...args, url: pathToFileURL(abs).href })})`;
+      // 超时那一路先赢的话，这一趟后来才失败（窗口被关掉）也不能变成没人接的 rejection
+      const done = w.webContents.executeJavaScript(code, false);
+      done.catch(() => {});
+      const r = await Promise.race([
+        done,
+        new Promise((_, rej) => { timer = setTimeout(() => rej(Object.assign(new Error(`${timeoutMs}ms 没做完`), { hung: true })), timeoutMs); }),
+      ]);
+      if (r && r.err) throw new Error(String(r.err));
+      if (!r || !(r.w > 0 && r.h > 0)) throw new Error("窗口回的结果没有尺寸");
+      if (!r.skip && !(typeof r.b64 === "string" && r.b64.length)) throw new Error("窗口回的图是空的");
+      counts.ok++;
+      return { w: r.w, h: r.h, skip: !!r.skip, buf: r.skip ? null : Buffer.from(r.b64, "base64") };
+    } catch (e) {
+      counts.fails++;
+      // 卡住不回话的窗口不再用：关掉，下一张重建
+      if (e && /** @type {any} */ (e).hung) dropWindow();
+      trace(op, errText(e));
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function job(fn, { stale = false } = {}) {
+    const t0 = now();
+    await acquire();
+    try {
+      if (stale && now() - t0 > staleMs) { counts.stale++; return { value: null }; }
+      return await fn();
+    } catch (e) {
+      trace("排队", errText(e));
+      return null;
+    } finally {
+      release();
+    }
+  }
+
+  return {
+    counts,
+    get active() { return active; },
+    get queued() { return waiting.length; },
+    /** 缩略图：长边缩到 w、出 PNG；本来就不比 w 大回 {value:null}（发原图）。null = 这条路走不通 */
+    thumb: (abs, w) => job(async () => {
+      const r = await run("缩略图", abs, { mode: "thumb", w });
+      return r ? { value: r.buf } : null;
+    }, { stale: true }),
+    /** 给模型看的图压小：长边超过 maxEdge 才缩，出 JPEG，带（转正以后的）原图宽高 */
+    shrinkForVision: (abs, maxEdge, quality) => job(async () => {
+      const r = await run("压图", abs, { mode: "vision", maxEdge, quality });
+      return r && r.buf ? { value: { jpg: r.buf, width: r.w, height: r.h } } : null;
+    }),
+    /** 宠物头像：中心裁方、320、GIF 只取第一帧，说明文字跟老路子一字不差 */
+    petPhoto: (abs) => job(async () => {
+      const r = await run("宠物头像", abs, { mode: "pet" });
+      if (!r || !r.buf) return null;
+      let note = "";
+      if (r.w !== r.h) note += `原图 ${r.w}×${r.h} 不是正方形，已按中心裁成方图；`;
+      if (/\.gif$/i.test(abs)) note += "GIF 只取了第一帧（宠物自己带呼吸/跳跃动效）；";
+      return { value: { png: r.buf, note } };
+    }),
+    /** 退出时把窗口收掉 */
+    close() {
+      closed = true;
+      dropWindow();
+    },
+  };
+}
+
+module.exports = { available, renderMermaid, svgToPng, svgSize, createRenderPixels, pixelsPageJob };

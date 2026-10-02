@@ -19,6 +19,7 @@ const security = require("../../security");
 const mediaModels = require("../../media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const genCache = require("../../gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
 const quota = require("../../quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
+const winname = require("../../lib/winname"); // Windows 不认的文件名（保留名、控制字符）
 
 // 工作目录根和「目录建好没」，都是 tools.js 那边的；没接上就直接报错，不猜一个默认目录往里写
 let wsRoot = null;
@@ -76,13 +77,16 @@ function stampOnce() {
   return stampDup ? `${t}_${stampDup + 1}` : String(t);
 }
 
-function safeOutName(name, ext, stem) {
+function safeOutName(name, ext, stem, platform = process.platform) {
   let n = String(name || "").trim().replace(/[\/\\:*?"<>|]/g, "_").slice(0, 80);
   if (!n) n = `${stem}_${stampOnce()}${ext}`;
   const ok = OUT_EXT_ALIAS[ext] || [ext];
   const low = n.toLowerCase();
   if (!ok.some((e) => low.endsWith(e))) n += ext;
-  return n;
+  // 上面只换掉了各家都不认的那几个字符。Windows 还认不了 nul.png、con.mp4 这种保留名和控制字符，
+  // 写下去要么报错要么写进设备里，钱却已经花了。这里的名字最后会原样写进回执（savedAt），
+  // 换成能用的不会让模型找不到文件，所以就地换掉，不打回去让它重来
+  return winname.safeSegment(n, platform);
 }
 
 /**
@@ -478,9 +482,11 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
  * 每个还白烧一轮 ls + 一轮 find。提示词里写"别 cp 到根目录"拦不住，因为模型不是想复制，
  * 是真找不到；把落点说准，它就没有复制的理由了。
  */
-function savedAt(saveDir, fname) {
-  const rel = path.relative(ws(), saveDir || ws());
-  return rel && !rel.startsWith("..") ? `${rel}/${fname}` : fname;
+function savedAt(saveDir, fname, P = path, root = ws()) {
+  // Windows 上 relative 给的是反斜杠，拼出来是 任务_X\子目录/图.png 这种两样分隔符混着的，
+  // 模型照抄进 Markdown、HTML 里就是一条坏链接。统一成 /，Windows 自己也认
+  const rel = P.relative(root, saveDir || root).split(P.sep).join("/");
+  return rel && !rel.startsWith("..") && !P.isAbsolute(rel) ? `${rel}/${fname}` : fname;
 }
 
 /**

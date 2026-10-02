@@ -28,6 +28,7 @@ const quota = require("../../quota");
 const security = require("../../security");
 const store = require("../../store");
 const MEDIA = require("./media");
+const winname = require("../../lib/winname");
 const MP = require("../../lib/media-probe");
 
 /** 一批最多几句。再多就该分集了，一次调用跑十几分钟，中途停下也不好接 */
@@ -59,9 +60,10 @@ function isBatch(input) {
 /**
  * 花钱之前把参数全部查一遍。这里拦下来的一分钱都没花，报错里也这么说，省得模型以为要去查账。
  * @param {any} input
+ * @param {string} [platform] 文件名按哪家系统的规矩整理（默认本机，测试里传 "win32"）
  * @returns {Checked | Rejected}
  */
-function validate(input) {
+function validate(input, platform = process.platform) {
   const inp = input || {};
   /** @param {string} content @returns {Rejected} */
   const fail = (content) => ({ ok: false, content });
@@ -100,7 +102,8 @@ function validate(input) {
   // 不认的后缀直接说，不悄悄改名：模型以为写出来的是 .m4a，拼片时去找就找不到了
   if (!FULL_EXT.includes(ext)) return fail(`整轨只能是 .wav 或 .mp3，给的是「${ext}」。换个后缀再调，字幕和时长清单会跟整轨同名。`);
   // 60 字封顶：分句文件名还要再接「_8位哈希.wav」，落盘那边的文件名上限是 80
-  const stem = name.trim().slice(0, 60).trim() || "旁白";
+  // Windows 上 nul.wav、con.srt 是设备名、控制字符写不进去：就地换成能用的。回执报的是换过的名字，模型照着找得到
+  const stem = winname.safeSegment(name.trim().slice(0, 60).trim(), platform) || "旁白";
   return { ok: true, segs, gapMs, stem, fullExt: ext };
 }
 

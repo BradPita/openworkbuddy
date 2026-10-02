@@ -163,10 +163,25 @@ function auditExport() {
 
 // ---------- 文件安全 ----------
 
-function expandPath(s) {
-  return path.resolve(String(s).replace(/^~(?=$|\/)/, os.homedir()).replace(/^<app>/, DATA_DIR));
+function expandPath(s, platform = process.platform) {
+  // Windows 上用户填的可能是 `~\.ssh`：反斜杠跟着的 ~ 也是家目录
+  const home = platform === "win32" ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/;
+  return path.resolve(String(s).replace(home, os.homedir()).replace(/^<app>/, DATA_DIR));
 }
-function underPrefix(p, prefix) {
+/**
+ * Windows 上比路径用的样子：不分大小写，`\` 和 `/` 一个意思（连着几个也算一个）。
+ * NTFS 默认不分大小写——用户在设置里填 `d:\work`、模型写 `D:\Work\a.md`，指的是同一个地方；
+ * 原样比字符串，后者就成了「工作区外面」，要么白弹审批，要么直接报越界。黑名单同理：`~\.SSH` 就是 `~/.ssh`。
+ */
+function foldWin(s) {
+  return String(s).toLowerCase().replace(/[\\/]+/g, "/");
+}
+function underPrefix(p, prefix, platform = process.platform) {
+  if (platform === "win32") {
+    const a = foldWin(p);
+    const b = foldWin(prefix).replace(/\/$/, ""); // `C:\` 这种根目录自带结尾分隔符
+    return a === b || a.startsWith(b + "/");
+  }
   return p === prefix || p.startsWith(prefix + path.sep);
 }
 
@@ -206,24 +221,26 @@ function realOf(p) {
  * 实际读写的却是黑名单里的东西（clone 来的仓库里就可能带着）。所以黑名单、工作区、白名单
  * 都按真实位置再判一遍；工作区自己也取真实位置，不然 /tmp、/var 这种本身是链接的目录全被误拦。
  */
-function resolvePathWithPolicy(sec, rel, workspaceDir, base) {
+function resolvePathWithPolicy(sec, rel, workspaceDir, base, platform = process.platform) {
   // base：本次任务的成果子目录（默认工作空间按对话分文件夹）；越界判定仍以整个 workspace 为界
   const p = path.resolve(base || workspaceDir, String(rel || ".").replace(/\\/g, "/"));
   const real = realOf(p);
   if (!real) return { path: p, allowed: false, reason: "路径里的符号链接追不到真实位置（绕成了圈，或者没权限读）" };
+  // platform 只管「怎么比」（Windows 不分大小写），测试里传 win32 在别的系统上验这条
+  const under = (a, b) => underPrefix(a, b, platform);
   if (sec.gateway) {
     for (const b of sec.file_blacklist || []) {
-      const bp = expandPath(b);
-      if (underPrefix(p, bp) || underPrefix(real, bp) || underPrefix(real, realOf(bp) || bp)) {
+      const bp = expandPath(b, platform);
+      if (under(p, bp) || under(real, bp) || under(real, realOf(bp) || bp)) {
         return { path: p, allowed: false, reason: `路径在文件黑名单内（${b}）` };
       }
     }
   }
-  const inWs = underPrefix(p, workspaceDir);
-  if (inWs && underPrefix(real, realOf(workspaceDir) || workspaceDir)) return { path: p, allowed: true };
+  const inWs = under(p, workspaceDir);
+  if (inWs && under(real, realOf(workspaceDir) || workspaceDir)) return { path: p, allowed: true };
   for (const w of sec.file_whitelist || []) {
-    const wp = expandPath(w);
-    if (underPrefix(real, realOf(wp) || wp)) return { path: p, allowed: true, outside: true };
+    const wp = expandPath(w, platform);
+    if (under(real, realOf(wp) || wp)) return { path: p, allowed: true, outside: true };
   }
   if (inWs) return { path: p, allowed: false, reason: "路径经符号链接指到了工作区外面：workspace 外仅文件白名单目录可访问（设置 → 安全中心 → 文件安全）" };
   return { path: p, allowed: false, reason: "路径越界：workspace 外仅文件白名单目录可访问（设置 → 安全中心 → 文件安全）" };
@@ -252,6 +269,20 @@ const WRAP_ARGOPTS = {
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash"]);
 /** 会真的把文件弄没的命令 */
 const DELETE_CMDS = new Set(["rm", "rmdir", "srm", "unlink", "shred", "del", "erase", "rd"]);
+/**
+ * Windows 上另外几个删东西的：PowerShell 的 Remove-Item 和它的别名 ri（rm / del / rd / rmdir / erase
+ * 也是它的别名，上面那张表已经有了），清空回收站撤不回来也算。只在 Windows 上认——
+ * macOS 上 ri 是 Ruby 查文档的命令，算进来天天白弹审批。
+ */
+const WIN_DELETE_CMDS = new Set(["remove-item", "ri", "clear-recyclebin"]);
+/**
+ * PowerShell 里直接调 .NET / COM 删：[IO.File]::Delete(…)、[IO.Directory]::Delete(…)、$f.Delete()、
+ * 文件系统对象的 $fso.DeleteFolder(…) / DeleteFile(…)、VB 那套 FileSystem]::DeleteDirectory(…)。
+ * 不加引号时括号会被当成分段符拆掉，段尾只剩 `…::Delete`，所以段尾也算。`.deleted`、`--delete` 不算
+ */
+const NET_DELETE_RE = /(?:\]::|\.)delete(?:file|folder|directory)?\s*(?:\(|$)/i;
+/** `gci *.tmp | % Delete`：ForEach-Object 后面跟个方法名，就是对每一项调它，跟 .Delete() 一回事 */
+const PS_EACH_DELETE_RE = /^(?:%|foreach-object|foreach)\s+(?:-m[a-z]*\s+)?['"]?delete(?:file|folder|directory)?['"]?(?:\s|$)/i;
 /** 会在用户桌面上弹出东西的命令（macOS open、Linux xdg-open、Windows start/explorer），见 checkCommand 里那段 */
 const DESKTOP_OPEN_CMDS = new Set(["open", "xdg-open", "start", "explorer"]);
 
@@ -277,8 +308,14 @@ const SUB_DEPTH_MAX = 4;
  *   - **换行**：agent 写的是多行脚本，`echo hi\nrm -rf ~/x` 以前算一整段，开头是 echo，删除保护看都看不见；
  *   - **`$(...)` 和反引号**：`echo $(rm -rf ~/x)` 同理，得把括号里的东西挖出来单独算一段。
  * 引号里的分隔符不算分隔符（`grep "a|b"` 不该被拆开），但双引号里的 `$()` 照样会执行，所以照挖。
+ *
+ * Windows 上外面那层是 cmd：反斜杠是路径分隔符不是转义（`dir C:\& rd /s /q x` 是两条），
+ * 单引号也不算引号（`echo it's & rd /s /q x` 里的 rd 照跑）。cmd 只在引号外认 `^` 一个转义：
+ * `echo ^" & rd x` 里 ^ 吃掉的是那个引号，后面的 & 照样分段；双引号里 ^、反引号、$( 全是普通字。
+ * PowerShell 的拆法不一样，套在里面的脚本交给 psSplit。拆多了顶多多问一句，拆少了 rd 就溜过去了。
  */
-function splitSegments(command, out = [], depth = 0) {
+function splitSegments(command, out = [], depth = 0, platform = process.platform) {
+  const win = platform === "win32";
   const src = String(command || "");
   let cur = "";
   let quote = null;
@@ -294,28 +331,37 @@ function splitSegments(command, out = [], depth = 0) {
     let inner = "";
     for (; j < src.length && d > 0; j++) {
       const ch = src[j];
-      if (ch === "\\") { inner += ch + (src[j + 1] || ""); j++; continue; }
+      if (ch === "\\" && !win) { inner += ch + (src[j + 1] || ""); j++; continue; }
       if (ch === open && open !== close) d++;
       else if (ch === close) { d--; if (!d) break; }
       inner += ch;
     }
-    if (depth < SUB_DEPTH_MAX) splitSegments(inner, out, depth + 1);
+    if (depth < SUB_DEPTH_MAX) splitSegments(inner, out, depth + 1, platform);
     else if (inner.trim()) out.push(inner.trim());
     return j;
   };
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
-    if (c === "\\" && quote !== "'") { cur += c + (src[i + 1] || ""); i++; continue; }
+    if (c === "\\" && quote !== "'" && !win) { cur += c + (src[i + 1] || ""); i++; continue; }
     if (quote) {
       if (c === quote) { quote = null; cur += c; continue; }
+      // cmd 的双引号里没有转义也没有替换：以前把反引号当转义、把 $( 当替换去挖，
+      // `echo "a`" & rd x`、`echo "$(" & rd x` 的引号就配不上对，后面的 rd 被当成引号里的字
+      if (win) { cur += c; continue; }
       if (quote === '"' && c === "$" && src[i + 1] === "(") { i = grab(i + 2, "(", ")"); continue; }
       if (quote === '"' && c === "`") { i = grab(i + 1, "`", "`"); continue; }
       cur += c;
       continue;
     }
-    if (c === "'" || c === '"') { quote = c; cur += c; continue; }
-    if (c === "$" && src[i + 1] === "(") { i = grab(i + 2, "(", ")"); continue; }
-    if (c === "`") { i = grab(i + 1, "`", "`"); continue; }
+    if (c === '"' || (c === "'" && !win)) { quote = c; cur += c; continue; }
+    if (win) {
+      // ^ 连同它转义的那个字一起留着（readWord 认 `r^d` 还要用），被转义的 " & | 不开引号、不分段。
+      // 反引号、$( 在 cmd 里就是个字，不转义也不替换
+      if (c === "^") { cur += c + (src[i + 1] || ""); i++; continue; }
+    } else {
+      if (c === "$" && src[i + 1] === "(") { i = grab(i + 2, "(", ")"); continue; }
+      if (c === "`") { i = grab(i + 1, "`", "`"); continue; }
+    }
     // 子 shell 和进程替换：( rm -x )、diff <(rm -x)
     if (c === ";" || c === "\n" || c === "|" || c === "&" || c === "(" || c === ")") { push(); continue; }
     cur += c;
@@ -331,9 +377,12 @@ function stripEnvAssign(seg) {
 /**
  * 从开头读一个 shell 词，引号和反斜杠按 shell 的规矩去掉。
  * `\rm`、`'rm'`、`r''m` 在 shell 眼里都是 rm——拿原样去比名单，一对引号就把删除保护绕过去了。
+ *
+ * win 为真时按 Windows 的规矩读：反斜杠是路径分隔符，`C:\Windows\rd` 不能被吃成 `C:Windowsrd`；
+ * 转义换成 cmd 的 `^`（双引号外）和 PowerShell 的反引号——`r^d`、`R`emove-Item` 跑起来就是 rd、Remove-Item。
  * @returns {[string, string]} [去完引号的词, 后面剩下的]
  */
-function readWord(s) {
+function readWord(s, win = false) {
   const src = String(s || "").replace(/^\s+/, "");
   let out = "";
   let quote = null;
@@ -341,8 +390,10 @@ function readWord(s) {
   for (; i < src.length; i++) {
     const c = src[i];
     if (quote === "'") { if (c === "'") quote = null; else out += c; continue; }
-    // 引号外反斜杠吃掉下一个字符；双引号里只有 " \ $ ` 换行这几个才算转义
-    if (c === "\\" && (!quote || /["\\$`\n]/.test(src[i + 1] || ""))) {
+    if (win) {
+      if (c === "`" || (c === "^" && !quote)) { out += src[i + 1] || ""; i++; continue; }
+    } else if (c === "\\" && (!quote || /["\\$`\n]/.test(src[i + 1] || ""))) {
+      // 引号外反斜杠吃掉下一个字符；双引号里只有 " \ $ ` 换行这几个才算转义
       if (src[i + 1] !== "\n") out += src[i + 1] || "";
       i++;
       continue;
@@ -355,22 +406,94 @@ function readWord(s) {
   return [out, src.slice(i)];
 }
 /** 跳过包装词自己的参数：`nice -n 5`、`timeout 30`、`env -u X FOO=1`、`xargs -I {}`，剩下的才是它要跑的 */
-function skipWrapperArgs(tok, rest) {
+function skipWrapperArgs(tok, rest, win = false) {
   const takesValue = WRAP_ARGOPTS[tok];
   let duration = tok === "timeout"; // timeout 在命令前头还有个时长
   let s = rest;
   while (s.trim()) {
-    const [w, after] = readWord(s);
+    const [w, after] = readWord(s, win);
     if (w === "--") return after;
-    if (w.startsWith("-")) s = takesValue && takesValue.test(w) ? readWord(after)[1] : after;
+    if (w.startsWith("-")) s = takesValue && takesValue.test(w) ? readWord(after, win)[1] : after;
     else if (tok === "env" && /^[A-Za-z_]\w*=/.test(w)) s = after;
     else if (duration && /^\d/.test(w)) { s = after; duration = false; }
     else break;
   }
   return s;
 }
+/**
+ * cmd 里命令名碰到 / , ; = + [ ] 就断了：`rd/s/q x`、`del,x`、`del=x`、`rd=/s=/q=x` 跟 `rd /s /q x` 是一回事。
+ * 只认这几个和删除命令——`bin/rm` 这种得当路径看（PowerShell、Git Bash 里它就是个程序路径）。
+ */
+const CMD_SLASH_HEADS = new Set(["rd", "rmdir", "del", "erase", "start", "cmd", "call", "if", "powershell", "pwsh", ...DELETE_CMDS]);
+/**
+ * Windows 上一个命令名的「本名」：大小写不算（DEL、Remove-Item 都行），前面的 @（cmd 不回显）、
+ * 完整路径、模块限定名（Microsoft.PowerShell.Management\Remove-Item）、.exe/.cmd/.bat 后缀都去掉。
+ * @returns {[string, string]} [本名, 从名字里拆出来、要还给参数的那截（`rd/s/q` 的 ` /s/q`）]
+ */
+function winName(word) {
+  const t = String(word || "").replace(/^@+/, "").replace(/^%comspec%/i, "cmd");
+  // 内部命令名碰到 . : \ 也断：`del.x`、`del:x`、`rd\x` 都是 del / rd。
+  // 带路径的从每个 \ / 后面再试一次，`C:\Windows\System32\cmd.exe/c …` 是 cmd /c；
+  // 带路径时名字后面只认 / 开关，`tools\del\run.exe` 跑的是 run.exe，不是 del
+  const starts = [0, ...[...t.matchAll(/[\\/]/g)].map((x) => x.index + 1)];
+  for (const st of starts) {
+    const m = /^([a-z][a-z0-9-]*)(?:\.(?:exe|com))?([/,=;+[\].:\\][\s\S]*)?$/i.exec(t.slice(st));
+    if (!m || !CMD_SLASH_HEADS.has(m[1].toLowerCase())) continue;
+    if (st > 0 && m[2] && m[2][0] !== "/") continue;
+    return [m[1].toLowerCase(), m[2] ? " " + m[2] : ""];
+  }
+  return [t.replace(/^.*[\\/]/, "").toLowerCase().replace(/\.(?:exe|com|cmd|bat)$/, ""), ""];
+}
+/**
+ * 跳过 cmd 的 if 条件，剩下的是条件成立时要跑的命令：
+ * `if exist x rd /s /q x`、`if /i not "%a%"=="b" del x`、`if %n% GEQ 3 del x`、`if errorlevel 1 del x`。
+ * 认不出来就原样交回去，下一轮把条件里的词当命令看——宁可多认，不能把 rd 漏掉。
+ */
+function skipCmdIf(rest) {
+  let s = rest;
+  let [w, after] = readWord(s, true);
+  if (w.toLowerCase() === "/i") { s = after; [w, after] = readWord(s, true); }
+  if (w.toLowerCase() === "not") { s = after; [w, after] = readWord(s, true); }
+  if (/^(?:exist|errorlevel|defined|cmdextversion)$/i.test(w)) return readWord(after, true)[1];
+  if (w.includes("==")) return w.endsWith("==") ? readWord(after, true)[1] : after; // "a"=="b" 或 "a"== "b"
+  const [op, after2] = readWord(after, true);
+  if (op === "==" || /^(?:equ|neq|lss|leq|gtr|geq)$/i.test(op)) return readWord(after2, true)[1];
+  if (op.startsWith("==")) return after2; // a ==b
+  return s;
+}
+/**
+ * cmd 在命令名前面不管的东西：@（不回显）、, ; = 和空白（当分隔符吞掉）、写在前头的重定向
+ * （`>nul rd /s /q x`、`2>nul del x`、`1>&2 …`）。剥掉才看得见后面那个 rd
+ */
+const CMD_LEAD_RE = /^(?:[@,;=\s]+|\d?[<>]{1,2}(?:&\d|\s*(?:"[^"]*"|[^\s"<>&|]+)))+/;
+/** PowerShell 赋值：`$null = Remove-Item x`、`${r} = rm x`——等号右边那条照样会跑 */
+const PS_ASSIGN_RE = /^\$\{?[\w:]+\}?\s*[-+*/%]?=(?!=)\s*/;
+/**
+ * Windows 版的 bareCommand：多认 cmd 的 if / call / @，命令名按 winName 归一。
+ * 不剥 `FOO=1` 开头：cmd 没有这种写法，`rd=x git status` 在 cmd 里是 rd 删 x、git、status 三个目录，
+ * 剥了就成了 git status、还能被放行名单放过去。wsl、bash -c 里那种 Linux 命令在 winNested 里剥
+ */
+function winBareCommand(seg) {
+  let s = String(seg || "").trim().replace(CMD_LEAD_RE, "");
+  for (let i = 0; i < 8; i++) {
+    // PowerShell 的点号调用、& 调用后面跟个空格，跑的就是后面那条：`. Remove-Item x`。`.\build.ps1` 不动
+    s = s.replace(PS_ASSIGN_RE, "").replace(/^[.&]\s+/, "").replace(CMD_LEAD_RE, "");
+    const [word, after] = readWord(s, true);
+    const [tok, extra] = winName(word);
+    const rest = extra + after;
+    if (tok === "if") { s = skipCmdIf(rest).trim(); continue; }
+    if (tok === "call") { s = rest.trim(); continue; }
+    if (!WRAPPERS.has(tok)) break;
+    if (tok === "command" && /^\s*-[a-zA-Z]*[vV]/.test(rest)) break;
+    s = skipWrapperArgs(tok, rest, true).trim();
+  }
+  const [word, after] = readWord(s, true);
+  const [tok, extra] = winName(word);
+  return tok + extra + after;
+}
 /** 剥到真正在跑的那条命令：包装词连同它的参数去掉、引号去掉、`/bin/rm` 还原成 `rm` */
-function bareCommand(seg) {
+function bareCommand(seg, platform = process.platform) {
+  if (platform === "win32") return winBareCommand(seg);
   let s = stripEnvAssign(seg).trim();
   for (let i = 0; i < 8; i++) {
     const [tok, rest] = readWord(s);
@@ -386,7 +509,7 @@ function bareCommand(seg) {
 /**
  * 一段命令里面套着的、同样会被执行的那串：`bash -c '…'`、`eval '…'`、`find … -exec … \;`。
  * 删除保护和名单只认每段开头那个词，不挖出来单独算，`bash -c 'rm -rf x'` 的头就只是个 bash。
- * 没有就返回空串。
+ * 没有就返回空串。Windows 上的几种（cmd /c、powershell -c、start …）见 winNested。
  */
 function nestedCommand(bare) {
   const [tok, rest] = readWord(bare);
@@ -414,26 +537,315 @@ function nestedCommand(bare) {
   return "";
 }
 
-/** 拆段，再把每段里套着的命令也挖出来各算一段（挖出来的里面还套着，接着挖） */
-function commandSegments(command) {
-  const segs = splitSegments(command);
-  for (let k = 0; k < segs.length && segs.length < 64; k++) {
-    const inner = nestedCommand(bareCommand(segs[k]));
-    if (inner) splitSegments(inner, segs);
+/**
+ * `cmd /c …` 里 cmd 真正要跑的那串。/c 前面的 /d /s /q /e:on 这些开关跳过；
+ * 第一个词不是开关就是没带 /c——那是开个交互式 cmd，后面没有要跑的。
+ */
+function cmdInner(rest) {
+  let s = String(rest || "");
+  for (let i = 0; i < 16; i++) {
+    // 开关之间可以不空格、可以拿 , ; = 隔：`cmd /q/c …`、`cmd,/c …`
+    const m = /^[\s,;=]*(\/[^\s/,;=]*)/.exec(s);
+    if (!m) return "";
+    if (/^\/[ck]/i.test(m[1])) {
+      const inner = (m[1].slice(2) + s.slice(m[0].length)).trim(); // `/c"rd x"` 这种粘在一起的也算
+      // cmd 会剥掉第一个引号和整行最后一个引号再跑（不一定在末尾），但剥不剥跟 /s 和引号个数有关，猜不准。
+      // 几种都交回去：多看一种只是可能多问一句，少看一种 rd 就溜过去了。/c 后面再跟的开关也去掉看一遍
+      const last = inner.lastIndexOf('"');
+      const unq = inner.startsWith('"') && last > 0 ? inner.slice(1, last) + inner.slice(last + 1) : inner;
+      const noSw = inner.replace(/^(?:\/\S*\s*)+/, "");
+      return [...new Set([inner, unq, noSw].filter(Boolean))].join("\n");
+    }
+    s = s.slice(m[0].length);
+  }
+  return "";
+}
+/** 这些 PowerShell 开关要吃掉下一个词当值（-ExecutionPolicy Bypass、-WindowStyle Hidden …），按前缀认 */
+const PS_VALUE_OPT_RE = /^(?:ex|ep|w|v|psc|inp|if|o|conf|se|cu)/;
+/**
+ * 读 powershell / pwsh 的命令行，找出它要跑的脚本。开关名不分大小写、能缩写（-c、-com、-nop），
+ * - 和 / 打头都行。-EncodedCommand（-e、-ec、-enc…）后面是 base64，看不见要跑什么，单独标出来；
+ * -File 跑的是脚本文件，里头看不见，跟 `bash build.sh` 一样不挖。
+ * 脚本原样交回去，不先去引号：去完再拆，`echo '"'; Remove-Item x` 的单引号没了，分号就被当成了引号里的字。
+ * @returns {{ script: string, encoded: boolean }}
+ */
+function psInvocation(rest) {
+  for (let s = String(rest || ""); s.trim(); ) {
+    const [w, after] = readWord(s, true);
+    const m = /^(?:--?|\/)([a-z?][\w?-]*)(:[\s\S]*)?$/i.exec(w);
+    if (!m) return { script: s.trim(), encoded: false }; // 第一个不是开关的词起，整串都是要跑的命令
+    const name = m[1].toLowerCase();
+    const glued = m[2] !== undefined; // -ExecutionPolicy:Bypass：值粘在后面，不再吃下一个词
+    if (name === "c" || name === "cwa" || (name.length >= 3 && ("command".startsWith(name) || "commandwithargs".startsWith(name)))) {
+      return { script: ((glued ? m[2].slice(1) + " " : "") + after).trim(), encoded: false };
+    }
+    if (/^e(?!x|p)/.test(name)) return { script: "", encoded: true };
+    if (name === "f" || (name.length >= 2 && "file".startsWith(name))) return { script: "", encoded: false };
+    s = !glued && PS_VALUE_OPT_RE.test(name) ? readWord(after, true)[1] : after;
+  }
+  return { script: "", encoded: false };
+}
+/**
+ * powershell.exe 拿到的是一个个参数，按 Windows 的老规矩去引号（只认双引号，\" 是字面的引号），
+ * 再用空格拼成一串当脚本。`-c "Remove-Item x"` 真跑的是去完引号的那串。
+ */
+function argvJoin(s) {
+  const src = String(s || "");
+  const words = [];
+  let cur = "";
+  let q = false;
+  let has = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === "\\" && src[i + 1] === '"') { cur += '"'; i++; continue; }
+    if (c === '"') { q = !q; has = true; continue; }
+    if (!q && /\s/.test(c)) { if (cur || has) words.push(cur); cur = ""; has = false; continue; }
+    cur += c;
+  }
+  if (cur || has) words.push(cur);
+  return words.join(" ");
+}
+/** 从 `$(` 后面找到配对的 `)`，找不到就到串尾 */
+function psClose(src, i) {
+  let d = 1;
+  for (let j = i; j < src.length; j++) {
+    if (src[j] === "`") { j++; continue; }
+    if (src[j] === "(") d++;
+    else if (src[j] === ")" && !--d) return j;
+  }
+  return src.length;
+}
+/**
+ * 按 PowerShell 自己的规矩拆脚本：单引号里什么都是字（'' 是一个单引号），双引号里反引号转义、
+ * `$(…)` 照样会执行，要挖出来；引号外反引号转义，`; | & 换行` 分段，脚本块的花括号也当分段（${变量名} 不动）。
+ * 拆两遍：一遍连圆括号也当分段（`if (Test-Path x) { … }`、`(Remove-Item x)`），一遍不拆圆括号、
+ * 留着整句给 Start-Process 读 `-ArgumentList @('/c','rd x')`。多出来的段顶多多看一眼。
+ */
+function psSplit(script, out = [], depth = 0) {
+  const src = String(script || "");
+  for (const parens of [false, true]) {
+    let cur = "";
+    let quote = null;
+    const push = () => {
+      const s = cur.trim();
+      if (s && !out.includes(s)) out.push(s);
+      cur = "";
+    };
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (quote === "'") { cur += c; if (c === "'") quote = null; continue; } // '' 是关了马上又开，效果一样
+      if (c === "`") { cur += c + (src[i + 1] || ""); i++; continue; }
+      if (quote === '"') {
+        if (c === "$" && src[i + 1] === "(") {
+          const j = psClose(src, i + 2);
+          if (depth < SUB_DEPTH_MAX) psSplit(src.slice(i + 2, j), out, depth + 1);
+          cur += src.slice(i, j + 1);
+          i = j;
+          continue;
+        }
+        cur += c;
+        if (c === '"') quote = null;
+        continue;
+      }
+      if (c === "'" || c === '"') { quote = c; cur += c; continue; }
+      if (c === "$" && src[i + 1] === "{") {
+        const j = src.indexOf("}", i);
+        if (j > 0) { cur += src.slice(i, j + 1); i = j; continue; }
+      }
+      if (";|&\n\r{}".includes(c) || (parens && (c === "(" || c === ")"))) { push(); continue; }
+      cur += c;
+    }
+    push();
+  }
+  return out;
+}
+/** 交给 PowerShell 跑的一串：原样拆一遍，按参数去完引号再拆一遍，两份都算 */
+function psScript(text) {
+  const t = String(text || "").trim();
+  if (!t) return [];
+  const out = psSplit(t);
+  const j = argvJoin(t);
+  if (j !== t) psSplit(j, out);
+  return out;
+}
+/** 读一个参数值，`'-c', 'x'` 这种逗号隔开的数组连着读完 */
+function readPsList(s) {
+  let [w, after] = readWord(s, true);
+  for (let i = 0; i < 32 && w.endsWith(",") && after.trim(); i++) {
+    const [w2, a2] = readWord(after, true);
+    w += w2;
+    after = a2;
+  }
+  return [w, after];
+}
+/**
+ * Start-Process（别名 saps、start）要起的那条：-FilePath（或第一个不带名字的参数）+ -ArgumentList
+ * （或第二个），参数名能缩写、值能是逗号数组和 @(…)。`Start-Process cmd -ArgumentList '/c rd /s /q x'`
+ * 跑的是 `cmd /c rd /s /q x`。参数值是变量的看不见，那种只能靠外面那层。
+ */
+function startProcessInner(rest) {
+  let file = "";
+  const args = [];
+  const pos = [];
+  for (let s = String(rest || ""); s.trim(); ) {
+    const [w, after] = readWord(s, true);
+    const m = /^-([a-z]+)(?::([\s\S]*))?$/i.exec(w);
+    if (!m) { const [v, a] = readPsList(s); pos.push(v); s = a; continue; }
+    const n = m[1].toLowerCase();
+    const isFile = /^(?:f|path|psp)/.test(n);
+    const isArgs = /^a/.test(n);
+    // 其余带值的：-Verb、-WorkingDirectory、-WindowStyle、-Credential、-RedirectStandard*、-Environment
+    if (!isFile && !isArgs && !/^(?:verb|wo|wi|cr|re|env)/.test(n)) { s = after; continue; }
+    let v = m[2];
+    let a = after;
+    if (v === undefined) [v, a] = readPsList(after);
+    if (isFile) file = v;
+    else if (isArgs) args.push(v);
+    s = a;
+  }
+  if (!file) file = pos.shift() || "";
+  if (!args.length && pos.length) args.push(pos.shift());
+  if (!file) return "";
+  const list = args.map((a) => a.replace(/^@\(|\)$/g, "").replace(/,/g, " ")).join(" ");
+  return `${/\s/.test(file) ? `"${file}"` : file} ${list}`.trim();
+}
+/**
+ * cmd 的 `start ["标题"] [开关] 命令`：第一个带引号的是窗口标题，/b /min /wait /high 这些开关跳过，
+ * /d 目录、/node 编号、/affinity 掩码各吃一个值。`start "" cmd /c rd /s /q x` 跑的是 cmd /c 那条
+ */
+function cmdStartInner(rest) {
+  let s = String(rest || "").trim();
+  if (s.startsWith('"')) s = readWord(s, true)[1];
+  for (let i = 0; i < 32; i++) {
+    const [w, after] = readWord(s, true);
+    if (!/^\/./.test(w)) break;
+    s = /^\/(?:d|node|affinity)$/i.test(w) ? readWord(after, true)[1] : after;
+  }
+  return s.trim();
+}
+/** forfiles 的 /c "cmd /c del @path"：每找到一个文件跑一遍 */
+function forfilesInner(rest) {
+  for (let s = String(rest || ""); s.trim(); ) {
+    const [w, after] = readWord(s, true);
+    if (/^[/-]c$/i.test(w)) return readWord(after, true)[0];
+    if (/^[/-]c./i.test(w)) return w.slice(2); // `/c"cmd /c del @path"`：引号贴着 /c
+    s = after;
+  }
+  return "";
+}
+/** `wsl [-d 发行版] [-u 用户] [--cd 目录] [--exec|--] 命令`：后面那条在 Linux 里跑 */
+function wslInner(rest) {
+  for (let s = String(rest || ""); s.trim(); ) {
+    const [w, after] = readWord(s, true);
+    if (w === "--" || w === "-e" || w === "--exec") return after.trim();
+    if (/^(?:-d|--distribution|-u|--user|--cd|--shell-type)$/.test(w)) { s = readWord(after, true)[1]; continue; }
+    if (w.startsWith("-") || w === "~") { s = after; continue; }
+    return s.trim();
+  }
+  return "";
+}
+/**
+ * Windows 上一段里套着的命令，拆好了交回去：cmd /c、powershell -c、iex、start / Start-Process、
+ * forfiles /c、wsl，还有 Git Bash 里的 bash -c、eval、find -exec。没有就是空数组。
+ * Linux 那几种按 Linux 的规矩拆，开头的 `FOO=1` 也在这儿剥。
+ */
+function winNested(bare) {
+  const [word, after] = readWord(bare, true);
+  const [tok, extra] = winName(word);
+  const rest = extra + after;
+  const cmdSegs = (s) => (s ? splitSegments(s, [], 0, "win32") : []);
+  const unixSegs = (s) => (s ? splitSegments(s, [], 0, "linux").map(stripEnvAssign) : []);
+  if (tok === "cmd" || tok === "%comspec%") return cmdSegs(cmdInner(rest));
+  if (tok === "powershell" || tok === "pwsh") return psScript(psInvocation(rest).script);
+  if (tok === "iex" || tok === "invoke-expression") return psScript(rest);
+  if (tok === "start-process" || tok === "saps") return cmdSegs(startProcessInner(rest));
+  // start 在 cmd 里是 start 命令，在 PowerShell 里是 Start-Process 的别名，两种读法都算
+  if (tok === "start") return [...cmdSegs(cmdStartInner(rest)), ...cmdSegs(startProcessInner(rest))];
+  if (tok === "forfiles") return cmdSegs(forfilesInner(rest));
+  if (tok === "wsl") return unixSegs(wslInner(rest));
+  return unixSegs(nestedCommand(bare));
+}
+/** Windows 上这一段是不是在删东西：rd / del / Remove-Item 这些，[IO.File]::Delete(…)，`| % Delete` */
+function winDeleteSeg(seg) {
+  const bare = winBareCommand(seg);
+  const tok = bare.split(/\s+/)[0] || "";
+  return DELETE_CMDS.has(tok) || WIN_DELETE_CMDS.has(tok) || NET_DELETE_RE.test(seg) || PS_EACH_DELETE_RE.test(bare);
+}
+/**
+ * Windows 兜底：不管引号，整条命令按 ; & | 换行硬切，每块再照常拆一遍，看有没有在删东西的。
+ * cmd 的 ^、PowerShell 的 '' 和反引号，引号到底配没配上对，拆的人跟真跑的那个只要认得不一样，
+ * rd 就能藏进「引号里」。这条只会把「直接跑」抬成「问一句」。代价是 `echo "a & rd /s /q x"`
+ * 这种把删除命令写在字符串里的也会问——认了，比漏掉强。
+ */
+function winLooseDelete(sec, command) {
+  // 再看几种读法：^ 全去掉（`r^\nd` 续行、`cmd /c^ rd`）；引号也去掉（`"&" rd` 这种配对猜不准的）；
+  // 最后一种按 cmd 的眼光：; , = 只是空白（`cmd;/c rd x`），`1>&2` 是重定向不是 &
+  const raw = String(command || "");
+  const noCaret = raw.replace(/\^\r?\n/g, "").replace(/\^/g, "");
+  const noQuote = noCaret.replace(/"/g, " ");
+  const asCmd = noQuote.replace(/([<>])&(\d)/g, "$1$2").replace(/[;,=]/g, " ");
+  const pieces = [...new Set([raw, noCaret, noQuote].flatMap((x) => x.split(/[;&|\n\r]/)).concat(asCmd.split(/[&|\n\r]/)))];
+  for (const piece of pieces) {
+    if (!piece.trim()) continue;
+    for (const s of commandSegments(piece, "win32")) {
+      if (winDeleteSeg(s) && !listedCommand(sec, s, "win32")) return s;
+    }
+  }
+  return "";
+}
+
+/** 一条命令最多拆出这么多段；套得再深的看不全，按看不全处理（见 checkCommand） */
+const SEGS_MAX = 256;
+/**
+ * 拆段，再把每段里套着的命令也挖出来各算一段（挖出来的里面还套着，接着挖）。
+ * 段数到顶还有没挖的，就在返回的数组上标 truncated——以前到顶就悄悄不挖了，
+ * 前面垫 64 个 `true;`，后面的 `bash -c 'rm -rf x'` 只剩个 bash 头。
+ * @returns {string[] & { truncated?: boolean }}
+ */
+function commandSegments(command, platform = process.platform) {
+  const win = platform === "win32";
+  /** @type {string[] & { truncated?: boolean }} */
+  const segs = splitSegments(command, [], 0, platform);
+  for (let k = 0; k < segs.length; k++) {
+    const bare = bareCommand(segs[k], platform);
+    const inner = win ? winNested(bare) : splitSegments(nestedCommand(bare), [], 0, platform);
+    if (!inner.length) continue;
+    if (segs.length + inner.length > SEGS_MAX) { segs.truncated = true; break; }
+    segs.push(...inner);
   }
   return segs;
 }
 
+/** Windows 上家目录在命令行里的几种写法（都按 foldWin 折过：小写、正斜杠） */
+const HOME_VARS = ["%userprofile%", "$env:userprofile", "${env:userprofile}", "$home", "~", "%homepath%"];
 /** 一条黑名单路径在命令行里可能长什么样 */
-function pathNeedles(entry) {
+function pathNeedles(entry, platform = process.platform) {
   const raw = String(entry).trim();
   if (!raw) return [];
+  if (platform === "win32") return winPathNeedles(raw);
   const out = [raw.toLowerCase(), expandPath(raw).toLowerCase()];
   const tail = raw.replace(/^~|^<app>/, "");
   // `~/.ssh` 写成 `$HOME/.ssh` 也要认出来；但 `/config.json` 这种太泛的尾巴不认，免得天天弹审批
   const parts = tail.split("/").filter(Boolean);
   if (tail.startsWith("/") && (parts.length > 1 || (parts[0] || "").startsWith("."))) out.push(tail.toLowerCase());
   return out;
+}
+/**
+ * Windows 版：黑名单写的是 `~/.ssh`，命令行里却可能是 `type %USERPROFILE%\.ssh\id_rsa`、
+ * `Get-Content $env:USERPROFILE\.SSH\id_rsa`、`C:\Users\Me\.ssh`——大小写、正反斜杠、家目录变量都得认。
+ * 返回的都按 foldWin 折过，拿去跟同样折过的命令比。
+ */
+function winPathNeedles(raw) {
+  const exp = foldWin(expandPath(raw, "win32"));
+  const out = [foldWin(raw), exp];
+  const tail = foldWin(raw.replace(/^~|^<app>/, ""));
+  // 尾巴太泛的照样不认（同上）
+  const parts = tail.split("/").filter(Boolean);
+  if (tail.startsWith("/") && (parts.length > 1 || (parts[0] || "").startsWith("."))) out.push(tail);
+  // 落在家目录下的（`~/x`、`<app>/config.json` 都是），换成家目录变量的几种写法各来一份
+  const home = foldWin(os.homedir()).replace(/\/$/, "");
+  if (exp.startsWith(home + "/")) for (const v of HOME_VARS) out.push(v + exp.slice(home.length));
+  return [...new Set(out)];
 }
 
 /**
@@ -495,9 +907,9 @@ const CODE_OPTS = {
  * 太细又等于没记（带具体文件名的规则下次必然不命中）。取「命令 + 子命令」是这两者之间。
  * 推不出一条稳妥的就返回空串：只放这一次，下回照样问。
  */
-function ruleFor(text) {
-  const seg = splitSegments(String(text || ""))[0] || String(text || "");
-  const bare = bareCommand(seg).trim();
+function ruleFor(text, platform = process.platform) {
+  const seg = splitSegments(String(text || ""), [], 0, platform)[0] || String(text || "");
+  const bare = bareCommand(seg, platform).trim();
   const parts = bare.split(/\s+/).filter(Boolean);
   if (!parts.length) return "";
   const tool = parts[0];
@@ -581,10 +993,10 @@ function matchesPrefix(list, seg, env, bare) {
 }
 
 /** 这一段人已经点过头没有：永久放行名单（cmd_allow）或者本会话「这类都允许」。判险那道闸也靠它跳过批过的段 */
-function listedCommand(sec, seg) {
+function listedCommand(sec, seg, platform = process.platform) {
   const s = String(seg || "");
-  const env = stripEnvAssign(s);
-  const bare = bareCommand(s);
+  const env = platform === "win32" ? s : stripEnvAssign(s); // cmd 没有 `FOO=1 命令`，见 winBareCommand
+  const bare = bareCommand(s, platform);
   return matchesPrefix((sec || {}).cmd_allow, s, env, bare) || matchesPrefix([...sessionAllow], s, env, bare);
 }
 
@@ -610,50 +1022,69 @@ function checkWrite(sec, relPath) {
  * 不能因为用户放行了 `cat ` 就把 `cat ~/.ssh/id_rsa` 一起放过去。
  * 权限档位排在黑名单之后、名单之前：全自动也不放开黑名单，只看不动则一条都不放。
  */
-function checkCommand(sec, command) {
+function checkCommand(sec, command, platform = process.platform) {
+  const win = platform === "win32";
   // `bash -c '…'`、`find -exec …` 里套着的那条也各算一段，外面那层批过了不代替里面那条
-  const segs = commandSegments(command);
+  const segs = commandSegments(command, platform);
   const mode = permissionMode(sec);
-  const needles = sec.gateway ? (sec.file_blacklist || []).map((b) => ({ raw: String(b).trim(), needles: pathNeedles(b) })) : [];
+  const needles = sec.gateway ? (sec.file_blacklist || []).map((b) => ({ raw: String(b).trim(), needles: pathNeedles(b, platform) })) : [];
   for (const seg of segs) {
-    const low = seg.toLowerCase();
+    // Windows 上路径不分大小写、正反斜杠混着写，命令也得跟黑名单折成同一个样子再比
+    const low = win ? foldWin(seg) : seg.toLowerCase();
     for (const b of needles) {
       if (b.needles.some((n) => n && low.includes(n))) {
         // 有 shell 在手，文件黑名单本来是形同虚设的（read_file 拦得住，`cat` 拦不住）
         return { action: "ask", rule: `命令碰到了文件黑名单（${b.raw}）`, seg, ruleKey: "" };
       }
     }
-    const env = stripEnvAssign(seg);
-    const bare = bareCommand(seg);
+    // cmd 没有 `FOO=1 命令` 这种写法：`rd=x git status` 剥成 git status，放行名单里有 git 就把 rd 放过去了
+    const env = win ? seg : stripEnvAssign(seg);
+    const bare = bareCommand(seg, platform);
     const tok = bare.split(/\s+/)[0] || "";
+    // powershell -EncodedCommand 后面是一串 base64，要跑什么根本看不见，删没删东西更无从判断
+    const psEncoded = win && (tok === "powershell" || tok === "pwsh") && psInvocation(readWord(bare, true)[1]).encoded;
     if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不跑命令`, seg };
     if (sec.gateway) {
       // 高危表在放行名单之前查：cmd_allow 是给日常命令省事的，不该顺手把毁数据的形态一起放过去
       const danger = DANGER_PATTERNS.find((d) => d.re.test(seg) && !sessionAllow.has("danger:" + d.key));
       if (danger) return { action: "ask", rule: `高危命令：${danger.rule}`, seg, ruleKey: "danger:" + danger.key };
+      // 跟高危表一样排在名单前、全自动也问；不给「同类不再问」——批一次等于以后任何编码命令都放行
+      if (psEncoded) return { action: "ask", rule: "PowerShell 编码命令看不到内容，需审批", seg, ruleKey: "" };
     }
     if (matchesPrefix(sec.cmd_allow, seg, env, bare)) continue; // 永久放行名单
     if (matchesPrefix([...sessionAllow], seg, env, bare)) continue; // 本会话已经批过同类
-    // 运行时开关是用户明确关掉的东西，不受权限档位影响：全自动也不代表把关掉的运行时打开
-    if (!sec.runtime_python && /^(python3?|pip3?)$/.test(tok)) {
+    // 运行时开关是用户明确关掉的东西，不受权限档位影响：全自动也不代表把关掉的运行时打开。
+    // Windows 上还有个 py（Python 启动器），python.exe 这种 winName 已经去过后缀
+    if (!sec.runtime_python && (win ? /^(python3?|pip3?|py)$/ : /^(python3?|pip3?)$/).test(tok)) {
       return { action: "deny", rule: "内置运行时 Python 已停用", seg };
     }
     if (mode === "full") continue; // 全自动：名单之外的也不问了
-    if (mode === "ask") return { action: "ask", rule: `每步都问模式`, seg, ruleKey: ruleFor(seg) };
+    if (mode === "ask") return { action: "ask", rule: `每步都问模式`, seg, ruleKey: ruleFor(seg, platform) };
     const hitAsk = (sec.cmd_ask || []).find((p) => p && (seg.startsWith(p.trim()) || env.startsWith(p.trim()) || bare.startsWith(p.trim())));
-    if (hitAsk) return { action: "ask", rule: `命令询问名单「${hitAsk.trim()}」`, seg, ruleKey: ruleFor(seg) };
+    if (hitAsk) return { action: "ask", rule: `命令询问名单「${hitAsk.trim()}」`, seg, ruleKey: ruleFor(seg, platform) };
     // 弹到用户桌面的命令：open / xdg-open / start 会在用户眼前弹出窗口或浏览器标签。
     // 它不毁数据，所以四张名单一张都不管它——而它恰恰是最招人烦的那类：任务收尾「顺手」把
     // 推文、封面、HTML 各开一个，用户桌面被刷一排窗口。真踩过，而且长期记忆里明明写着「别开」，
     // 记忆超预算按相关度一挑就把这条规矩挑掉了。提示词和记忆都是建议，这儿才是闸：
     // 用户没点头就不开，他要真想看，批一次「本会话一直允许」就够了；永久放行写 cmd_allow
     if (DESKTOP_OPEN_CMDS.has(tok)) {
-      return { action: "ask", rule: "要在你桌面上打开文件或网页（用户没要求就别替他开，交付只报路径）", seg, ruleKey: ruleFor(seg) };
+      return { action: "ask", rule: "要在你桌面上打开文件或网页（用户没要求就别替他开，交付只报路径）", seg, ruleKey: ruleFor(seg, platform) };
     }
     if (sec.delete_protect) {
       const findDeletes = tok === "find" && /(\s-delete\b|-(?:exec|ok)(?:dir)?\s+(\S*\/)?(?:rm|rmdir|unlink|shred|srm)\b)/.test(bare);
-      if (DELETE_CMDS.has(tok) || findDeletes) return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg, ruleKey: ruleFor(seg) };
+      // Windows：Remove-Item / ri、[IO.File]::Delete(…)、`| % Delete`；编码命令看不见内容，总开关关着也按删除算
+      const winDeletes = win && (winDeleteSeg(seg) || psEncoded);
+      if (DELETE_CMDS.has(tok) || findDeletes || winDeletes) {
+        return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg, ruleKey: psEncoded ? "" : ruleFor(seg, platform) };
+      }
     }
+  }
+  // 下面两条只在「自动改文件」这档补：全自动本来就不管删除，每步都问、只看不动上面已经拦了
+  if (mode === "auto" && sec.delete_protect) {
+    // 套得太深、段数到顶没挖完的：没看见的那截里删没删东西判断不了
+    if (segs.truncated) return { action: "ask", rule: "命令太长，没拆完，需审批", seg: String(command || ""), ruleKey: "" };
+    const loose = win ? winLooseDelete(sec, command) : "";
+    if (loose) return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg: loose, ruleKey: ruleFor(loose, platform) };
   }
   return { action: "allow" };
 }
@@ -665,7 +1096,7 @@ function checkCommand(sec, command) {
  * 代码是从同一个 agent 嘴里出来的，不能只看 run_shell 那扇门。
  * 这里不做沙箱（做不到），只做一件事：**代码要开子进程、或者伸手去碰文件黑名单，就得你点头**。
  */
-function checkCode(sec, code) {
+function checkCode(sec, code, platform = process.platform) {
   const src = String(code || "");
   const mode = permissionMode(sec);
   if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不执行代码`, seg: "" };
@@ -674,11 +1105,12 @@ function checkCode(sec, code) {
     if (mode === "ask" && !sessionAllow.has("code:*")) return { action: "ask", rule: "每步都问模式", seg: src.slice(0, 80), ruleKey: "code:*" };
     return { action: "allow" };
   }
-  const low = src.toLowerCase();
+  // Windows 上代码里的路径常写成 "C:\\Users\\Me\\.ssh"，折完跟黑名单比（同 checkCommand）
+  const low = platform === "win32" ? foldWin(src) : src.toLowerCase();
   for (const b of sec.file_blacklist || []) {
     const raw = String(b).trim();
     // 黑名单排最前：这条在任何档位下都拦（全自动也不例外），它挡的是 ~/.ssh、config.json 这些
-    if (pathNeedles(b).some((n) => n && low.includes(n))) {
+    if (pathNeedles(b, platform).some((n) => n && low.includes(n))) {
       return { action: "ask", rule: `代码碰到了文件黑名单（${raw}）`, seg: raw, ruleKey: "" };
     }
   }
@@ -923,6 +1355,8 @@ module.exports = {
   listSessionAllow,
   clearSessionAllow,
   splitSegments, // 给测试用：命令拆段是整个命令闸的地基，得能单独验
+  underPrefix, // 给测试用：Windows 上工作区边界不分大小写、不分正反斜杠
+  pathNeedles, // 给测试用：黑名单在 Windows 命令行里的几种写法
   checkUrl,
   requestApproval,
   watchApprovals,

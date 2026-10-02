@@ -151,7 +151,7 @@ function canvasBindViewport(page) {
       boxDrag = null;
       // 按着 Shift 在空白处点一下（没拖动）：当成「取消选中」，不要把整张画布清空得莫名其妙
       canvasSetSelection(tiny ? new Set() : new Set(hit));
-      if (!tiny) canvasToast(hit.length ? `框选中 ${hit.length} 个节点。Shift/⌘ 点节点可加选减选，Delete 删除。` : "这个框里没有节点。", hit.length ? "square-dashed" : "info");
+      if (!tiny) canvasToast(hit.length ? `框选中 ${hit.length} 个节点。Shift/${modKeyName()} 点节点可加选减选，Delete 删除。` : "这个框里没有节点。", hit.length ? "square-dashed" : "info");
       return;
     }
     drag = null; world.classList.remove("dragging");

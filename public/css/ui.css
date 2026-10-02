@@ -60,7 +60,16 @@
   --warning: #a86400;                /* shadcn 没这一档，本项目「跳过了一些零件」这类提示要用。白底 4.75:1。
                                         原 #b26a00 只有 4.27，12–13px 的小字（.ch-warn、「纯服务端模式」那句）不够。
                                         它同时被 color-mix 当淡染底和边框用，暗这一档对那几处只有好处 */
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* 等宽字就这两份，别处一律 var() 过来，不再各写一串。
+     中文回退得写明：不写的话 Windows 上 Chromium 给等宽里的汉字挑的是新宋体，细、发虚、比旁边小一号，
+     代码块和工具输出里一句中文像换了个程序。PingFang SC（mac）、微软雅黑（Windows）排在西文等宽字后面——
+     它们自己也带拉丁字母，排到前面英文就不等宽了。Linux 上这几款都没有，照旧落到系统默认的等宽字 */
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", monospace;
+  /* 有几处一直用的是浏览器默认等宽字（工具输出、文件预览的纯文本、审批条的命令、名单框；有的前面垫了个 Consolas），
+     mac/Linux 上看到的就是默认那款。换成上面那份 mac 上会变成 SF Mono，样子就动了；
+     所以单留这份：只在 Consolas 后面补 Windows 的中文字体，这几款 mac/Linux 都没有，看着一点不变。
+     末尾必须是 monospace 而不是写死某款：mac/Linux 靠它落回默认那款 */
+  --font-mono-sys: Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace;
 
   /* 状态胶囊的淡染底：绿/红各自 12% 压在页面底上，配 --success-text / --danger-text 那两档文字色，
      浅色下 4.9:1 以上。之前每处各写一串 color-mix，同一个「成功」在三个页面深浅都不一样 */
@@ -113,6 +122,11 @@
  * 放在 :root 而不是 *：* 是给每个元素各赋一份值，会盖掉「父级说了不折行」的继承；
  * :root 只发一次，任何一条更具体的规则都压得住它。 */
 :root { overflow-wrap: anywhere; }
+
+/* 原生控件（下拉框弹出来那一列、日期选择器、滚动条、复选框）画成深还是浅，浏览器只看 color-scheme，不看我们的令牌。
+   不写的话深色主题里一点下拉，弹出来的是一整块白底；Windows 上原生控件多，最扎眼。浅色写明 light 跟不写是一个样子 */
+html { color-scheme: light; }
+html[data-theme="dark"] { color-scheme: dark; }
 
 html[data-theme="dark"] {
   --background: #1e1f24;
@@ -521,7 +535,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-broken > div { max-width: 520px; padding: 22px 24px; border: 1px solid color-mix(in srgb, var(--owb-err) 34%, var(--owb-border)); border-radius: var(--radius-lg); background: var(--owb-bg); text-align: left; }
 .canvas-broken h3 { margin: 0 0 8px; color: var(--owb-text); font-size: 15px; }
 .canvas-broken p { margin: 0 0 8px; font-size: 12px; line-height: 1.7; }
-.canvas-broken-why { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--owb-bg-hover); color: var(--owb-text-2); font-family: var(--owb-mono, ui-monospace, monospace); word-break: break-all; }
+.canvas-broken-why { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--owb-bg-hover); color: var(--owb-text-2); font-family: var(--font-mono); word-break: break-all; }
 .canvas-broken-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 10px; }
 .canvas-broken-tip { color: var(--owb-text-3); font-size: 11px; }
 /* 这个版本认不出的节点类型：看得见、拿不动。别让它长得像一张能写字的空笔记 */
@@ -1396,11 +1410,11 @@ html[data-theme="dark"] .ui-select {
 .sk-scan.is-block .sk-scan-head { color: var(--owb-err-text); }
 .sk-scan-row { padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--owb-border) 60%, transparent); }
 .sk-scan-row:first-of-type { border-top: 0; }
-.sk-scan-where { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; color: var(--owb-warn-text); }
+.sk-scan-where { font-family: var(--font-mono); font-size: 11px; color: var(--owb-warn-text); }
 .sk-scan-row.is-block .sk-scan-where { color: var(--owb-err-text); }
 .sk-scan-why { color: var(--owb-text); margin-top: 2px; }
 /* 片段要能横着滚：命中的往往是一长行命令，截断了就等于没给人看 */
-.sk-scan-ex { margin: 4px 0 0; padding: 5px 7px; border-radius: 6px; background: color-mix(in srgb, var(--owb-bg) 70%, transparent); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; white-space: pre; overflow-x: auto; }
+.sk-scan-ex { margin: 4px 0 0; padding: 5px 7px; border-radius: 6px; background: color-mix(in srgb, var(--owb-bg) 70%, transparent); font-family: var(--font-mono); font-size: 11px; white-space: pre; overflow-x: auto; }
 .sk-scan-more, .sk-scan-hosts { margin-top: 6px; font-size: 11px; opacity: .85; }
 .sk-scan-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .sk-scan-no { padding: 6px 14px; }

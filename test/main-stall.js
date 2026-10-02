@@ -22,6 +22,10 @@
  *   【6】网页截图（htmlshot）capturePage 之后的 toPNG 同步 258–272ms（2 倍屏 1242×1656），整页 1.28s：
  *        界面线程上只 toBitmap 拷一次（3ms），PNG 在线程里编。解回来逐像素一样；★反向对照★ 老路子 toPNG 调一次；
  *        线程起不来、不回话、图太大一律退回 toPNG，图照样出
+ *   【7】Windows 没有 sips，三件活交给常驻的隐藏网页窗口（browser-render.js createRenderPixels）：
+ *        主线程上一次 nativeImage 都不调（★反向对照★ 老路子每件一次），尺寸、格式、说明文字跟老路子一样，
+ *        中心裁方、EXIF 转正、同时最多两张（★反向对照★ 不设上限六张一起上）、排太久不做、
+ *        坏图 / 读不到 / 不回话退回老路子并留痕、窗口从不亮出来、闲了自己收
  */
 const fs = require("fs");
 const os = require("os");
@@ -533,6 +537,228 @@ function decodePng(buf) {
       I.dropEncoder();
       if (ePath) { if (eWas) require.cache[ePath] = eWas; else delete require.cache[ePath]; }
     }
+  }
+
+  console.log("\n【7】Windows：三件活交给隐藏网页窗口（假窗口里用 vm 跑真的页面代码，哪个系统都跑）");
+  {
+    const vm = require("vm");
+    const BR = require(path.join(ROOT, "browser-render.js"));
+    const until = async (fn, ms = 3000) => {
+      const t0 = Date.now();
+      while (!fn()) { if (Date.now() - t0 > ms) return false; await new Promise((r) => setTimeout(r, 5)); }
+      return true;
+    };
+    // 文件名 → 这张图（转正以后）的宽高。不在表里的当坏图，nope.jpg 当读不到
+    const SIZES = { "bands.png": [900, 300], "photo.jpg": [2400, 1800], "tall.jpg": [600, 1800], "small.png": [200, 100], "anim.gif": [500, 500], "图 #1 a%b.png": [640, 480] };
+    const seen = { firstOpts: [], crops: [] };
+    // 页面那边用到的几样：fetch / createImageBitmap / OffscreenCanvas / FileReader。都是假的，但入参口径照真的
+    const pageGlobals = () => ({
+      setTimeout,
+      fetch: async (url) => {
+        const name = decodeURIComponent(String(url).split("/").pop());
+        if (name === "nope.jpg") throw new TypeError("Failed to fetch");
+        return { blob: async () => ({ name }) };
+      },
+      createImageBitmap: async (src, ...rest) => {
+        if (src && src.name !== undefined) {
+          seen.firstOpts.push(rest[0]);
+          const s = SIZES[src.name];
+          if (!s) throw Object.assign(new Error("The source image could not be decoded."), { name: "InvalidStateError" });
+          return { width: s[0], height: s[1], close() {} };
+        }
+        const [sx, sy, sw, sh, o] = rest;
+        seen.crops.push([sx, sy, sw, sh, o.resizeWidth, o.resizeHeight]);
+        return { width: o.resizeWidth, height: o.resizeHeight, close() {} };
+      },
+      OffscreenCanvas: class {
+        constructor(w, h) { this.w = w; this.h = h; }
+        getContext() { return { drawImage() {} }; }
+        async convertToBlob(o) { return { text: `${o.type} ${this.w}x${this.h}` + (o.quality ? ` q${o.quality}` : "") }; }
+      },
+      FileReader: class {
+        readAsDataURL(b) { this.result = "data:x;base64," + Buffer.from(b.text).toString("base64"); setTimeout(() => this.onload(), 0); }
+      },
+    });
+    /** 假 electron：只有 BrowserWindow。hold = 页面活先压着、手动放；hang = 永远不回话 */
+    const mkElectron = ({ hold = false, hang = false } = {}) => {
+      const st = { wins: [], opts: [], shows: 0, destroyed: 0, held: [], jsRuns: 0 };
+      class BrowserWindow {
+        constructor(o) {
+          st.opts.push(o); st.wins.push(this);
+          this.dead = false;
+          const ee = new EventEmitter();
+          this.webContents = {
+            on: (...a) => ee.on(...a),
+            stopPainting() {},
+            executeJavaScript: (code) => {
+              st.jsRuns++;
+              if (hang) return new Promise(() => {});
+              const go = () => vm.runInNewContext(code, pageGlobals());
+              if (!hold) return Promise.resolve(go());
+              return new Promise((res) => st.held.push(() => res(go())));
+            },
+          };
+        }
+        async loadFile() {}
+        isDestroyed() { return this.dead; }
+        destroy() { if (!this.dead) { this.dead = true; st.destroyed++; } }
+        show() { st.shows++; }
+        showInactive() { st.shows++; }
+        focus() { st.shows++; }
+      }
+      return { st, electron: { BrowserWindow } };
+    };
+    const W = (n) => path.join(HOME, "win", n); // 不用真有这些文件：读文件那一步是假的
+    const dims = (v) => { const m = /(\d+)x(\d+)/.exec(String(v)); return m ? `${m[1]}x${m[2]}` : null; };
+
+    // 主线程这边的 nativeImage（老路子）：每调一次记一笔
+    const made = [];
+    const img = (w, h) => ({
+      isEmpty: () => !(w > 0 && h > 0),
+      getSize: () => ({ width: w, height: h }),
+      crop: (r) => img(r.width, r.height),
+      resize: (o) => img(o.width || Math.round((w * o.height) / h), o.height || Math.round((h * o.width) / w)),
+      toPNG: () => Buffer.from(`png ${w}x${h}`),
+      toJPEG: (q) => Buffer.from(`jpg ${w}x${h} q${q}`),
+    });
+    const MAIN_E = { nativeImage: { createFromPath: (p) => {
+      made.push(path.basename(p));
+      const s = SIZES[path.basename(p)];
+      return s ? img(s[0], s[1]) : img(0, 0);
+    } } };
+    let ePath = "";
+    try { ePath = require.resolve("electron"); } catch {}
+    const eWas = ePath ? require.cache[ePath] : undefined;
+    if (ePath) require.cache[ePath] = /** @type {any} */ ({ id: ePath, filename: ePath, loaded: true, exports: MAIN_E });
+    const logs = [];
+    try {
+      const run = async (pixels) => {
+        const shell = createShellBridge({ electron: MAIN_E, pixels });
+        const call = (op, args) => new Promise((res) => shell.handle({ t: "call", id: 1, op, args }, res));
+        made.length = 0;
+        const out = {
+          pet: await call("image.petPhoto", { abs: W("bands.png") }),
+          gif: await call("image.petPhoto", { abs: W("anim.gif") }),
+          vis: await call("image.shrinkForVision", { abs: W("photo.jpg"), maxEdge: 1568, quality: 82 }),
+          thumb: await call("image.thumb", { abs: W("photo.jpg"), w: 320 }),
+          tall: await call("image.thumb", { abs: W("tall.jpg"), w: 320 }),
+          small: await call("image.thumb", { abs: W("small.png"), w: 320 }),
+        };
+        out.made = made.slice();
+        return out;
+      };
+      const E1 = mkElectron();
+      const P1 = BR.createRenderPixels({ electron: E1.electron, log: (s) => logs.push(s) });
+      const now = await run(P1);
+      const old = await run(null);
+      const allOk = ["pet", "gif", "vis", "thumb", "tall", "small"].every((k) => now[k].ok);
+      ok(allOk && now.made.length === 0, "Windows 那条路：六件活主线程上一次 nativeImage 都没调", { made: now.made, logs });
+      ok(old.made.length === 6, "★反向对照★ 不给 pixels（老路子）：每件都在界面线程上 nativeImage 一次", old.made);
+      ok(dims(now.pet.value.png) === "320x320" && now.pet.value.note === old.pet.value.note && /900×300/.test(now.pet.value.note),
+        "宠物头像 320×320，说明文字跟老路子一字不差", { now: now.pet.value.note, old: old.pet.value.note });
+      ok(now.gif.value.note === old.gif.value.note && /GIF/.test(now.gif.value.note), "GIF 那句也一样", now.gif.value.note);
+      ok(JSON.stringify(seen.crops[0]) === JSON.stringify([300, 0, 300, 300, 320, 320]), "900×300 取中间那块 300×300 再缩到 320（中心裁方）", seen.crops[0]);
+      ok(String(now.pet.value.png).startsWith("image/png") && String(now.thumb.value).startsWith("image/png") && /^image\/jpeg .* q0\.82$/.test(String(now.vis.value.jpg)),
+        "格式跟老路子一样：头像、缩略图 PNG，压图 JPEG、质量 82", [String(now.pet.value.png), String(now.thumb.value), String(now.vis.value.jpg)]);
+      ok(dims(now.thumb.value) === dims(old.thumb.value) && dims(now.thumb.value) === "320x240" && dims(now.tall.value) === dims(old.tall.value),
+        "缩略图尺寸跟老路子一样（横图 320×240，竖图按高缩）", { now: [dims(now.thumb.value), dims(now.tall.value)], old: [dims(old.thumb.value), dims(old.tall.value)] });
+      ok(now.small.value === null && old.small.value === null, "本来就比 320 小的图：两条路都回 null（发原图）", [now.small.value, old.small.value]);
+      ok(dims(now.vis.value.jpg) === dims(old.vis.value.jpg) && now.vis.value.width === 2400 && now.vis.value.height === 1800 && old.vis.value.width === 2400,
+        "压图长边 1568、带回原图 2400×1800（跟老路子口径一样）", { now: [dims(now.vis.value.jpg), now.vis.value.width, now.vis.value.height], old: dims(old.vis.value.jpg) });
+      ok(seen.firstOpts.length > 0 && seen.firstOpts.every((o) => o && o.imageOrientation === "from-image"), "解图时按 EXIF 转正（手机竖拍的不会躺着）", seen.firstOpts);
+      const o1 = E1.st.opts[0] || {};
+      const wp = o1.webPreferences || {};
+      ok(E1.st.wins.length === 1 && o1.show === false && wp.offscreen === true && wp.sandbox === true && wp.nodeIntegration === false && wp.contextIsolation === true,
+        "只建了一个窗口、常驻复用；show:false + 离屏、沙箱、不给 node", { n: E1.st.wins.length, o1 });
+      ok(E1.st.shows === 0, "窗口一次都没亮出来", E1.st.shows);
+      const cjk = await P1.petPhoto(W("图 #1 a%b.png"));
+      ok(cjk && /640×480/.test(cjk.value.note), "文件名带中文、空格、#、% 也读得到（地址按 file:// 规矩转义）", cjk && cjk.value.note);
+
+      // 坏图 / 读不到：退回老路子，而且留痕
+      const shell = createShellBridge({ electron: MAIN_E, pixels: P1 });
+      const call = (op, args) => new Promise((res) => shell.handle({ t: "call", id: 1, op, args }, res));
+      made.length = 0; logs.length = 0;
+      const bad = await call("image.petPhoto", { abs: W("broken.png") });
+      ok(bad.ok && bad.value && bad.value.empty === true && made.length === 1, "解不出的图：退回老路子，照旧回 {empty:true}", { bad, made });
+      ok(logs.some((l) => /缩图窗口没做成（宠物头像）/.test(l) && /解不出这张图/.test(l)), "  └ 日志里留了一句：哪件活、为什么退回", logs);
+      made.length = 0; logs.length = 0;
+      const miss = await call("image.thumb", { abs: W("nope.jpg"), w: 320 });
+      ok(miss.ok && made.length === 1 && logs.some((l) => /缩略图/.test(l) && /读不到这个文件/.test(l)), "读不到的文件：退回老路子，日志里写明读不到", { made, logs });
+      ok(P1.counts.fallbacks === 2 && P1.counts.fails === 2, "退回几次就记几次", P1.counts);
+      P1.close();
+      await new Promise((r) => setTimeout(r, 0)); // 窗口是建好那一刻（Promise）之后收的
+      ok(E1.st.destroyed === 1, "close() 把窗口收掉", E1.st.destroyed);
+      made.length = 0;
+      const after = await P1.thumb(W("photo.jpg"), 320);
+      ok(after === null && E1.st.wins.length === 1, "收掉以后不再建窗口，回 null 让调用方走老路子", { after, wins: E1.st.wins.length });
+
+      // 同时最多两个
+      const E2 = mkElectron({ hold: true });
+      const P2 = BR.createRenderPixels({ electron: E2.electron });
+      const six = Array.from({ length: 6 }, () => P2.thumb(W("photo.jpg"), 320));
+      await until(() => E2.st.held.length >= 2);
+      await new Promise((r) => setTimeout(r, 20));
+      ok(E2.st.held.length === 2 && P2.active === 2 && P2.queued === 4, "六张一起来：同时只做两张，其余排队", { held: E2.st.held.length, active: P2.active, queued: P2.queued });
+      while ((await Promise.race([Promise.all(six).then(() => true), new Promise((r) => setTimeout(() => r(false), 10))])) === false) {
+        const f = E2.st.held.shift();
+        if (f) f();
+      }
+      const sixR = await Promise.all(six);
+      ok(sixR.every((r) => r && dims(r.value) === "320x240") && P2.counts.peak === 2, "六张都做完，最多同时两张", P2.counts);
+      P2.close();
+      const E3 = mkElectron({ hold: true });
+      const P3 = BR.createRenderPixels({ electron: E3.electron, max: 99 });
+      const six3 = Array.from({ length: 6 }, () => P3.thumb(W("photo.jpg"), 320));
+      await until(() => E3.st.held.length >= 6, 500);
+      ok(E3.st.held.length === 6, "★反向对照★ 不设上限：六张一起压上去", E3.st.held.length);
+      for (const f of E3.st.held.splice(0)) f();
+      await Promise.all(six3);
+      P3.close();
+
+      // 排太久的缩略图不做了（服务进程那头 10 秒就不等了）
+      let T = 0;
+      const E4 = mkElectron({ hold: true });
+      const P4 = BR.createRenderPixels({ electron: E4.electron, now: () => T });
+      const q = [P4.thumb(W("photo.jpg"), 320), P4.thumb(W("photo.jpg"), 320), P4.thumb(W("photo.jpg"), 320)];
+      await until(() => E4.st.held.length >= 2);
+      T += 9500;
+      for (const f of E4.st.held.splice(0)) f();
+      const qr = await Promise.all(q);
+      ok(E4.st.jsRuns === 2 && P4.counts.stale === 1 && qr[2] && qr[2].value === null, "第 3 张排了 9.5 秒才轮到：不做了，回「发原图」", { runs: E4.st.jsRuns, ...P4.counts });
+      P4.close();
+
+      // 窗口不回话：到点放弃、关掉这个窗口，下一张重建
+      const E5 = mkElectron({ hang: true });
+      const logs5 = [];
+      const P5 = BR.createRenderPixels({ electron: E5.electron, timeoutMs: 60, log: (s) => logs5.push(s) });
+      const hung = await P5.shrinkForVision(W("photo.jpg"), 1568, 82);
+      await new Promise((r) => setTimeout(r, 10));
+      ok(hung === null && E5.st.destroyed === 1 && logs5.some((l) => /压图/.test(l) && /没做完/.test(l)), "窗口不回话：到点回 null、关掉窗口、日志写明", { hung, destroyed: E5.st.destroyed, logs5 });
+      await P5.thumb(W("photo.jpg"), 320);
+      ok(E5.st.wins.length === 2, "  └ 下一张换一个新窗口，不在卡住的那个上接着等", E5.st.wins.length);
+      P5.close();
+
+      // 闲下来自己收窗口
+      const E6 = mkElectron();
+      const P6 = BR.createRenderPixels({ electron: E6.electron, idleMs: 40 });
+      await P6.thumb(W("photo.jpg"), 320);
+      ok(E6.st.destroyed === 0, "刚做完：窗口还在（一批图接着来不用重建）", E6.st.destroyed);
+      await until(() => E6.st.destroyed === 1, 500);
+      ok(E6.st.destroyed === 1, "闲了一阵：窗口自己收掉，不常驻占内存", E6.st.destroyed);
+      P6.close();
+    } finally {
+      if (ePath) { if (eWas) require.cache[ePath] = eWas; else delete require.cache[ePath]; }
+    }
+
+    // electron-main.js 按平台选谁来做
+    const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
+    const at = mainSrc.indexOf("function pixelsKind(");
+    const pixelsKind = new Function(mainSrc.slice(at, mainSrc.indexOf("\n}\n", at) + 2) + "\nreturn pixelsKind;")();
+    ok(pixelsKind("win32", {}) === "render" && pixelsKind("darwin", {}) === "sips", "Windows 交给隐藏窗口，mac 照旧交给 sips");
+    ok(pixelsKind("linux", {}) === null && pixelsKind("win32", { OWB_MAIN_PIXELS: "native" }) === null && pixelsKind("darwin", { OWB_MAIN_PIXELS: "native" }) === null,
+      "★反向对照★ Linux、OWB_MAIN_PIXELS=native：走回主线程 nativeImage");
+    ok(/pk === "render"\) return require\("\.\/browser-render"\)\.createRenderPixels\(/.test(mainSrc) && /pixelsKind\(process\.platform, process\.env\)/.test(mainSrc),
+      "主进程真按 pixelsKind 注入了隐藏窗口那一份");
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

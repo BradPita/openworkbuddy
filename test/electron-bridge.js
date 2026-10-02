@@ -288,7 +288,11 @@ function parentMain() {
         showOpenDialog: async (...a) => { rec("openDialog", { withWin: a.length === 2, opts: a[a.length - 1] }); return { canceled: false, filePaths: ["/picked/dir"] }; },
         showSaveDialog: async (...a) => { rec("saveDialog", { withWin: a.length === 2, opts: a[a.length - 1] }); return { canceled: false, filePath: "/picked/out.md", bookmark: "b" }; },
       },
-      shell: { showItemInFolder: (p) => rec("reveal", p) },
+      shell: {
+        showItemInFolder: (p) => rec("reveal", p),
+        // 照 Electron 的约定：成功回空串，失败回一句错误文字（不抛）。名字里带「坏」的当打不开
+        openPath: async (p) => { rec("openPath", p); return /坏/.test(p) ? "Failed to open path" : ""; },
+      },
       clipboard: { writeBuffer: (fmt, buf) => rec("clip", { fmt, isBuf: Buffer.isBuffer(buf), text: Buffer.isBuffer(buf) ? buf.toString("utf8") : null }) },
       session: {
         defaultSession: {
@@ -562,6 +566,11 @@ function parentMain() {
     m0 = mark();
     r = await K.v("raw", { op: "shell.showItemInFolder", args: { path: "/x/报告.md" } });
     ok(r.ok && since(m0, "reveal")[0] === "/x/报告.md", "shell.showItemInFolder：路径原样到", r);
+    r = await K.v("raw", { op: "shell.openPath", args: { path: "C:\\x\\报告 1.docx" } });
+    ok(r.ok && r.value === "" && since(m0, "openPath")[0] === "C:\\x\\报告 1.docx", "shell.openPath：路径原样到，打开了回空串", r);
+    r = await K.v("raw", { op: "shell.openPath", args: { path: "C:\\x\\坏.docx" } });
+    ok(r.ok && r.value === "Failed to open path" && since(m0, "openPath").length === 2,
+      "shell.openPath 打不开：原样回系统那句话（不抛、不吞），服务端拿它告诉用户", r);
     r = await K.v("raw", { op: "clipboard.writeBuffer", args: { format: "NSFilenamesPboardType", data: Buffer.from("<plist>文件</plist>") } });
     const clip = since(m0, "clip")[0];
     ok(r.ok && clip && clip.fmt === "NSFilenamesPboardType" && clip.isBuf && clip.text === "<plist>文件</plist>",

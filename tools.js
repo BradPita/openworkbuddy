@@ -24,6 +24,7 @@ const jev = require("./jev"); // 判断模型：上面那一问就是它答的
 const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 const depsGuard = require("./lib/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
+const winname = require("./lib/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
 const MEDIA = require("./src/tools/media");
@@ -174,11 +175,35 @@ function getDefaultWorkspaceDir() {
   return workspaceDir;
 }
 /** 改的是**默认**根（config.workspace_dir）。租户根不走这里，走 withWorkspace */
-function setWorkspaceDir(dir) {
+function setWorkspaceDir(dir, platform = process.platform) {
   if (!dir || !path.isAbsolute(dir)) throw new Error("工作空间必须是绝对路径，如 D:\\我的工作区");
   fs.mkdirSync(dir, { recursive: true }); // 无权限/非法路径会在这里抛错
-  workspaceDir = path.resolve(dir);
+  workspaceDir = winCanonCase(path.resolve(dir), platform);
   return workspaceDir;
+}
+/**
+ * Windows：用户手敲的 d:\work 和盘上的 D:\Work 是同一个目录，字符串却不一样。存盘上真实的大小写，
+ * 后面拿它跟模型给的绝对路径、跟 realpath 出来的路径比，才不会互相对不上。
+ * 只认「只差大小写」的那种：realpath 还会把 subst 盘、网络盘、目录链接展开成另一条路，
+ * 那是用户自己选的写法，换掉了设置页上显示的就不是用户填的那个了。别的系统原样返回
+ */
+function winCanonCase(p, platform = process.platform) {
+  if (platform !== "win32") return p;
+  try {
+    const real = fs.realpathSync.native(p);
+    return real.toLowerCase() === p.toLowerCase() ? real : p;
+  } catch { return p; }
+}
+/**
+ * p 是不是 root 本身或在它里面。Windows 的文件名不分大小写：工作区存的是 d:\work、模型写的是 D:\work\a.md，
+ * 照字面比就成了「路径越界」，用户在自己的工作区里写个文件都被拦。别的系统照字面比，一点不变
+ */
+function underRoot(p, root, platform = process.platform) {
+  let a = String(p), b = String(root);
+  if (platform !== "win32") return a === b || a.startsWith(b + path.sep);
+  a = a.toLowerCase(); b = b.toLowerCase();
+  // 整个盘当工作区（D:\）时 root 自己就带着结尾的反斜杠，再补一个就谁都不在里面了
+  return a === b || a.startsWith(b.endsWith("\\") ? b : b + "\\");
 }
 function tmpDir() {
   return path.join(ws(), ".tmp");
@@ -192,7 +217,7 @@ function ensureDirs() {
 /** 把用户/模型给的相对路径解析到 workspace 内，拒绝越界。反斜杠一律按分隔符处理（Windows 风格路径在 mac/linux 上同样生效）。 */
 function safePath(rel) {
   const p = path.resolve(ws(), String(rel || ".").replace(/\\/g, "/"));
-  if (p !== ws() && !p.startsWith(ws() + path.sep)) {
+  if (!underRoot(p, ws())) {
     throw new Error(`路径越界，只允许访问 workspace 内: ${rel}`);
   }
   return p;
@@ -209,7 +234,7 @@ function safePath(rel) {
 function safePathIn(root, rel) {
   const base = path.resolve(String(root || ""));
   const p = path.resolve(base, String(rel || ".").replace(/\\/g, "/"));
-  if (p !== base && !p.startsWith(base + path.sep)) {
+  if (!underRoot(p, base)) {
     throw new Error(`路径越界，只允许访问 workspace 内: ${rel}`);
   }
   return p;
@@ -1137,7 +1162,9 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
       // 就弹一个新的 Electron 应用实例（Dock 图标狂蹦）；加了就纯当 node 用
       // OPENWORKBUDDY_HOME：装机态下代码在只读的应用包里、数据在 ~/OpenWorkBuddy，
       // 子进程要用同一个数据根才不会各写各的
-      env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", ...depsGuardEnv(cwd, code, process.env.PATH) },
+      // PATH 跟 run_shell 同一份（shellPath）：脚本里 execSync("ffmpeg …") 也得找得到刚装的东西，
+      // 不然 Windows 上拿的还是应用启动那一刻的 PATH，run_shell 找得到、run_node 里找不到
+      env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", PATH: shellPath(), ...depsGuardEnv(cwd, code, shellPath()) },
       // 同 runShell：脚本里读 stdin 就当场读到结尾，别空等到超时
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -1175,9 +1202,12 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
 }
 
 // GUI 启动的 Electron 拿到的 PATH 不含 homebrew，补齐否则 lark-cli/git 等命令找不到。
-// Windows 上 GUI 进程的 PATH 本来就全，原样返回即可（分隔符也不同，别硬拼 unix 目录）。
-function shellPath() {
-  if (process.platform === "win32") return process.env.PATH || "";
+// Windows 上 PATH 是全的，但定格在应用启动那一刻：用户照提示 winget 装完 ffmpeg / pandoc，注册表变了、
+// 进程里没变，体检找得到、run_shell 照样报「不是内部或外部命令」。所以跟体检用同一份——
+// engines/which 合并好的（「重新检测本机」时现读的注册表 PATH + 启动时那份 + winget/scoop/LibreOffice 的常见位置）。
+// platform 只给测试用
+function shellPath(platform = process.platform) {
+  if (platform === "win32") return require("./engines/which").augmentedPath("win32");
   const extra = ["/opt/homebrew/bin", "/usr/local/bin", path.join(require("os").homedir(), ".local", "bin")];
   const cur = (process.env.PATH || "").split(path.delimiter);
   return cur.concat(extra.filter((p) => p && !cur.includes(p))).join(path.delimiter);
@@ -1190,10 +1220,106 @@ function shellPath() {
  * 护栏自己出错不许拦住命令：退回老样子跑。depsAppDir 测试里换成临时的假应用目录
  */
 let depsAppDir = __dirname;
-function depsGuardEnv(cwd, text, basePath) {
+function depsGuardEnv(cwd, text, basePath, platform = process.platform) {
+  const shimDir = dataPath("data", "pm-guard");
+  let env = {};
   try {
-    return depsGuard.prepare({ appDir: depsAppDir, wsDir: ws(), cwd: cwd || ws(), text: String(text || ""), shimDir: dataPath("data", "pm-guard"), path: basePath }).env;
+    env = depsGuard.prepare({ appDir: depsAppDir, wsDir: ws(), cwd: cwd || ws(), text: String(text || ""), shimDir, path: basePath }).env;
   } catch { return {}; }
+  // Windows 上 python3 转到真 Python 的那一个垫片（见 winPython3Shim），跟装依赖护栏共用一个目录。
+  // 真 Python 的全路径不在垫片里，在它给的 env（OWB_PYTHON3）里：垫片目录垫上 PATH 的地方就得一起带上
+  try {
+    const base = env.PATH || (basePath == null ? process.env.PATH || "" : basePath);
+    const py = winPython3Shim(shimDir, base, platform);
+    if (py.dir) env = { ...env, ...py.env, PATH: py.dir + ";" + base };
+  } catch {}
+  return env;
+}
+
+/**
+ * Windows 上 PATH 里挨个目录找 name.exe / .cmd / .bat，先找到的算（cmd 自己也是按 PATH 顺序找）。
+ * 用 lstat 不用 stat：WindowsApps 里那些「应用执行别名」是特殊的重解析点，stat 跟过去会报错，lstat 看得见它本身
+ */
+function winFindOnPath(name, dirs, skipStub = false) {
+  for (const d of dirs) {
+    for (const ext of [".exe", ".cmd", ".bat"]) {
+      const f = path.join(d, name + ext);
+      try { fs.lstatSync(f); } catch { continue; }
+      if (skipStub && winStoreStub(f)) continue;
+      return f;
+    }
+  }
+  return "";
+}
+/**
+ * WindowsApps 里的 python.exe / python3.exe 是不是应用商店的占位程序。
+ * 占位程序一跑就打「Python was not found」、退出码 9009；真从商店装过 Python（或装了官方的 Python 安装管理器），
+ * 同一个目录里会有一个 PythonSoftwareFoundation.* 的包目录，这时同名的别名才是真的
+ */
+function winStoreStub(file) {
+  if (!/[\\/]WindowsApps[\\/]/i.test(file)) return false;
+  try { return !fs.readdirSync(path.dirname(file)).some((n) => /^PythonSoftwareFoundation\./i.test(n)); } catch { return true; }
+}
+let py3ShimMemo = { key: "", dir: "", python: "" };
+/** 垫片转给真 Python 时，全路径走这个环境变量 */
+const PY3_ENV = "OWB_PYTHON3";
+/** 转给 PATH 上那个真 python 的垫片：一行纯 ASCII，路径在 OWB_PYTHON3 里 */
+const PY3_SHIM_VIA_ENV = `@"%${PY3_ENV}%" %*\r\n`;
+/** PATH 上只有 py 启动器时的垫片 */
+const PY3_SHIM_VIA_PY = "@py -3 %*\r\n";
+/**
+ * Windows 上让命令里的 python3 跑得起来。
+ *
+ * Windows 没有 python3 这个名字：python.org 装的只有 python.exe 和 py.exe，系统却在 WindowsApps 里
+ * 放了一个叫 python3.exe 的应用商店占位程序。随包技能里 python3 写死了一百多处，模型自己也习惯写 python3，
+ * 真 Python 明明装着，命令全挂在这一层。
+ *
+ * 所以 PATH 上没有真的 python3、但有真的 python 或 py（官方启动器）时，在垫片目录放一个 python3.cmd 转过去，
+ * 调用方把这个目录垫在 PATH 最前面。PATH 上有真的 python 就按全路径转给它
+ * （用户自己排在 PATH 上的那个说了算；写全路径是因为占位程序常排在它前面，只写 python 会又落到占位程序上），
+ * 没有就转给 py -3。真有 python3 了就把旧垫片删掉，别挡在它前面。
+ *
+ * 全路径不写进垫片，放在返回的 env 里（OWB_PYTHON3），垫片只认这个变量：cmd 读 .cmd 文件按系统代码页解，
+ * 中文 Windows 上是 GBK，C:\Users\张三\… 按 UTF-8 写进去，读出来就是乱码，python3 一条都跑不起来。
+ * 变量是按 Unicode 递给子进程的，不过代码页这一关。所以垫片内容只有两种，都是纯 ASCII。
+ *
+ * 同一份 PATH 只判一次，内容没变不重写；垫片被删了、上次找到的那个 python 不在了，才重判。别的系统什么都不做
+ * @param {string} dir 垫片目录
+ * @param {string} basePath 子进程原本的 PATH（; 分隔）
+ * @returns {{ dir: string, env: Record<string, string> }} dir：要垫在 PATH 前面的目录，不用垫是空串；
+ *   env：要一起并进子进程环境的变量（转给真 python 时带 OWB_PYTHON3）
+ */
+function winPython3Shim(dir, basePath, platform = process.platform) {
+  const res = (d, python) => ({ dir: d, env: d && python ? { [PY3_ENV]: python } : {} });
+  if (platform !== "win32" || !dir) return res("", "");
+  const key = dir + "\0" + basePath;
+  const file = path.join(dir, "python3.cmd");
+  const there = (f) => { try { fs.lstatSync(f); return true; } catch { return false; } };
+  const m = py3ShimMemo;
+  if (m.key === key && (!m.dir || there(file)) && (!m.python || there(m.python))) return res(m.dir, m.python);
+  const self = path.resolve(dir).toLowerCase();
+  const dirs = String(basePath || "").split(";").filter((d) => d && path.resolve(d).toLowerCase() !== self);
+  const py3 = winFindOnPath("python3", dirs);
+  let body = "", python = "";
+  if (!py3 || winStoreStub(py3)) {
+    python = winFindOnPath("python", dirs, true);
+    if (python) body = PY3_SHIM_VIA_ENV;
+    else if (winFindOnPath("py", dirs)) body = PY3_SHIM_VIA_PY;
+  }
+  let out = "";
+  if (body) {
+    let cur = "";
+    try { cur = fs.readFileSync(file, "utf8"); } catch {}
+    if (cur !== body) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, body);
+    }
+    out = dir;
+  } else {
+    try { fs.rmSync(file, { force: true }); } catch {}
+  }
+  py3ShimMemo = { key, dir: out, python: out ? python : "" };
+  return res(out, py3ShimMemo.python);
 }
 
 /**
@@ -1237,6 +1363,29 @@ const NOT_FOUND_RE = [
   /([\w.+-]+):\s*not found/i,                                // dash / sh
   /['"]?([\w.+-]+)['"]?\s*(?:is not recognized|不是内部或外部命令)/i, // Windows cmd
 ];
+/** 命令名是不是 Python 那几个（py / python / python3，带不带 .exe） */
+const PY_NAME_RE = /^py(?:thon3?)?(?:\.exe)?$/i;
+/**
+ * 这条命令里有没有哪一段是在跑 Python：按 & | ; 换行、括号切段（双引号里的不切），只看每段打头的程序名，
+ * 带路径、带引号的（"C:\Python312\python.exe" x.py）取文件名再比。
+ * `node build.py.js`、`git log -- a.py` 里的 .py 只是参数，不算
+ */
+function runsPython(command) {
+  const segs = [];
+  let cur = "", quoted = false;
+  for (const ch of String(command || "")) {
+    if (ch === '"') quoted = !quoted;
+    if (!quoted && "&|;\r\n()".includes(ch)) { segs.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  segs.push(cur);
+  return segs.some((seg) => {
+    const m = seg.trim().replace(/^@/, "").replace(/^call\s+/i, "").match(/^"([^"]*)"|^(\S+)/);
+    return !!m && PY_NAME_RE.test(String(m[1] != null ? m[1] : m[2]).split(/[\\/]/).pop() || "");
+  });
+}
+/** Windows 上没有能用的 Python 时递给模型的那句（winget 的包名在 winget-pkgs 里核对过） */
+const WIN_PYTHON_HINT = "本机没有能用的 Python。先把 python3 换成 py -3 再跑；py 也没有就装：winget install Python.Python.3.12，装好重开 OpenWorkBuddy。用不到 Python 就换个做法。";
 
 /**
  * 把 shell 那句 command not found 翻译成人话，附上装法。
@@ -1251,14 +1400,28 @@ const NOT_FOUND_RE = [
  * 给一句「本机没有 xxx」的废话，只会把真正的报错挤出视野。
  * @returns {string} 要追加的提示（可能是多行）；没有可说的就是空串
  */
-function missingBinHint(text, platform) {
+function missingBinHint(text, platform = process.platform, ctx = {}) {
   const { knownTool } = require("./doctor");
   const seen = new Set();
   const lines = [];
+  // Windows 上 python 单独说：doctor 那张表里没有它（Mac/Linux 系统自带），可 Windows 上它是最常撞的一个。
+  // 三种样子都是「没有能用的 Python」：cmd 说 'python' 不是内部或外部命令；应用商店的占位程序打
+  // 「Python was not found」；cmd 找不到命令的退出码是 9009（输出被吞掉时只剩这个）
+  const winPython = (bin) => {
+    if (platform !== "win32" || seen.has("python")) return false;
+    if (bin != null && !PY_NAME_RE.test(bin)) return false;
+    seen.add("python");
+    lines.push(WIN_PYTHON_HINT);
+    return true;
+  };
+  if (/Python was not found/i.test(String(text || ""))) winPython();
+  let named = false; // 输出里点没点名是哪个程序找不到
   for (const line of String(text || "").split("\n")) {
     for (const re of NOT_FOUND_RE) {
       const m = line.match(re);
       if (!m) continue;
+      named = true;
+      if (winPython(m[1])) break;
       const t = knownTool(m[1], platform);
       if (t && !seen.has(t.name)) {
         seen.add(t.name);
@@ -1267,6 +1430,9 @@ function missingBinHint(text, platform) {
       break; // 一行只认一个，认出来就别拿后面几条正则再刮一遍
     }
   }
+  // 只剩一个 9009：输出里没点名，才去看命令里是不是有一段在跑 Python。
+  // 点了名的就是那个程序缺（`python3 a.py && ffmpeg …` 报的是 'ffmpeg'），别再搭一句 Python 的
+  if (!named && ctx.code === 9009 && runsPython(ctx.command)) winPython();
   return lines.join("\n");
 }
 
@@ -1304,7 +1470,7 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
       else if (timedOut) result += timeoutNote(timeoutMs, "。开服务、watch 这种不会自己结束的，用 background:true");
       result += `exit code: ${code2}`;
       // 缺的是我们认识的外部工具时，把 shell 那句 command not found 翻译一遍再递出去
-      const hint = code2 !== 0 ? missingBinHint(o + "\n" + e) : "";
+      const hint = code2 !== 0 ? missingBinHint(o + "\n" + e, process.platform, { code: code2, command }) : "";
       if (hint) result += "\n" + hint;
       const done = { content: result, isError: stopped || timedOut || code2 !== 0 };
       // `(python3 -m http.server 8731 >/dev/null 2>&1 &)`、`nohup ... &`：外层 shell 退了，进程组里还有人（见 noteStray）
@@ -1529,16 +1695,21 @@ const DOC_CHARS = 50000; // 跟 read_file 同一个口径
  * 而 run_node 那个沙箱里压根没有任何 PDF 库，模型照着做必然撞墙，白烧两三轮。
  * 现在给的是真装得上的命令，各平台一条。`openworkbuddy doctor` 里也会把 pdftotext 列进体检项。
  */
-function pdfHowTo(name) {
+function pdfHowTo(name, platform = process.platform) {
   const q = `"${name}"`;
+  // Windows 给 winget：系统自带。scoop、choco 都得先装包管理器本身，模型照着敲第一句就撞墙。
+  // 这个包是解压即用的 zip，清单里标了 ArchiveBinariesDependOnPath：winget 不往 WinGet\Links 里放链接，
+  // 而是把 WinGet\Packages\oschwartz10612.Poppler_…\poppler-<版本>\Library\bin 加进注册表 PATH。
+  // run_shell 的 PATH 会现去那里找（engines/which 的 popplerBins），装完 where 一般就找得到；
+  // 还找不到就让它按文件名把全路径搜出来，别去猜版本号那一层目录
   const install =
-    process.platform === "darwin"
+    platform === "darwin"
       ? "`brew install poppler`"
-      : process.platform === "win32"
-        ? "`scoop install poppler` 或 `choco install poppler`"
+      : platform === "win32"
+        ? "`winget install oschwartz10612.Poppler`（装完 where 还找不到的话，跑 `dir /s /b \"%LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\pdftotext.exe\"` 找出全路径，用全路径跑）"
         : "`apt install poppler-utils`（或 `dnf install poppler-utils`）";
   return (
-    `PDF 取文字要靠 pdftotext：先 run_shell 跑 \`${process.platform === "win32" ? "where" : "which"} pdftotext\`，` +
+    `PDF 取文字要靠 pdftotext：先 run_shell 跑 \`${platform === "win32" ? "where" : "which"} pdftotext\`，` +
     `装了就 \`pdftotext -layout ${q} -\`；没装先装 ${install}。` +
     `装不上就直说装不上，别自己写代码解析——run_node 里没有任何 PDF 库。`
   );
@@ -2130,13 +2301,18 @@ function hookBgExit() {
   bgExitHooked = true;
   // 进程退出时把后台那几条一起收掉：不然一个 npm run dev 会在我们走了之后一直占着端口
   // Windows 上 c.kill() 只杀得到 cmd 那一层，npm run dev 起的 node 会活下来接着占端口；exit 里不能等异步，用同步的 taskkill
-  const reap = () => CT.bgKillAll((c) => {
-    try {
-      if (process.platform === "win32") require("child_process").spawnSync("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 3000 });
-      else process.kill(-c.pid, "SIGTERM");
-    } catch {}
-  });
+  const reap = () => CT.bgKillAll((c) => reapBgJob(c));
   process.on("exit", reap);
+}
+/**
+ * 退出时收一条后台命令（整棵进程树）。run / kill 测试里换成假的，看它在各家系统上调了什么
+ * @param {{ pid: number }} c
+ */
+function reapBgJob(c, platform = process.platform, run = require("child_process").spawnSync, kill = (pid, sig) => process.kill(pid, sig)) {
+  try {
+    if (platform === "win32") run("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 3000 });
+    else kill(-c.pid, "SIGTERM");
+  } catch {}
 }
 hookBgExit();
 
@@ -2436,6 +2612,36 @@ const ESM_ONLY_ERR_RE = /Cannot use import statement|Unexpected token 'export'|C
  * 只查便宜且确定的东西（语法、结构），不做风格评判。
  */
 /**
+ * 查 Shell 脚本语法用哪个程序。返回空串就是不查。
+ *
+ * Mac / Linux 照旧：.zsh 用 zsh，别的用 bash。
+ * Windows 上 PATH 里的 bash 多半不是我们要的那个：System32\bash.exe 是 WSL 的入口，
+ * 递给它的 C:\… 路径它打不开，只会回一句 No such file——以前这句被当成「脚本语法没过」报给模型，
+ * 模型就去改一个本来没毛病的脚本。WindowsApps 里的则是商店的占位程序。
+ * 所以只认 Git 自带的 bash；Git 默认只把 Git\cmd 放进 PATH，bash 在旁边的 Git\bin 里，顺着 git.exe 找过去。
+ * 都没有就不查。.zsh 在 Windows 上没有能查的，也不查
+ */
+function shCheckBin(ext, platform = process.platform, envPath) {
+  if (platform !== "win32") return ext === ".zsh" ? "zsh" : "bash";
+  if (ext === ".zsh") return "";
+  const dirs = String(envPath == null ? shellPath() : envPath).split(";").filter(Boolean);
+  const skip = /[\\/](System32|SysWOW64|Sysnative|WindowsApps)([\\/]|$)/i;
+  for (const d of dirs) {
+    if (skip.test(d) || !/[\\/]git([\\/]|$)/i.test(d)) continue;
+    const f = path.join(d, "bash.exe");
+    if (fs.existsSync(f)) return f;
+  }
+  for (const d of dirs) {
+    if (skip.test(d) || !fs.existsSync(path.join(d, "git.exe"))) continue;
+    const f = path.join(d, "..", "bin", "bash.exe"); // Git\cmd\git.exe → Git\bin\bash.exe
+    if (fs.existsSync(f)) return f;
+  }
+  return "";
+}
+/** Windows 上 bash 自己没跑起来的样子（路径打不开、程序起不来、WSL 的 /mnt/ 路径），不是脚本写错了 */
+const SH_ENV_NOISE = /No such file|cannot execute|\/mnt\//i;
+
+/**
  * 写完文件的自检。partial=true 表示这次是 append 续写，文件**按定义就还没写完**。
  *
  * 返回 `{ note, bad }`：note 是贴给模型看的话，只有 bad 才会变成 isError。
@@ -2450,8 +2656,9 @@ const ESM_ONLY_ERR_RE = /Cannot use import statement|Unexpected token 'export'|C
  *
  * 所以判据改成：**闭合标签比开始标签还多**（怎么往下写都圆不回来）才算错；
  * 「开着还没闭」在文档明显还没收尾时只提一句，不占 isError。
+ * @param {{ platform?: string, path?: string }} [sys] 按哪家系统、哪份 PATH 找检查器（默认本机；测试里传 win32 和假目录）
  */
-async function selfCheck(file, rel, partial = false) {
+async function selfCheck(file, rel, partial = false, sys = {}) {
   // note 照说，bad 才算失败
   const bad = (note) => ({ note, bad: true });
   const ok = (note = "") => ({ note, bad: false });
@@ -2520,8 +2727,12 @@ async function selfCheck(file, rel, partial = false) {
   }
   if ([".sh", ".bash", ".zsh"].includes(ext)) {
     try {
-      const r = await execCheck(ext === ".zsh" ? "zsh" : "bash", ["-n", file], { timeout: 10000 });
+      const bin = shCheckBin(ext, sys.platform, sys.path);
+      if (!bin) return ok();
+      const r = await execCheck(bin, ["-n", file], { timeout: 10000 });
       if (r.status !== 0 && r.stderr) {
+        // 这几句是 bash 自己没跑起来（WSL 那头打不开 Windows 路径之类），跟脚本写得对不对无关
+        if ((sys.platform || process.platform) === "win32" && SH_ENV_NOISE.test(r.stderr)) return ok();
         if (partial && looksUnfinished(r.stderr)) return ok();
         return bad(`\n注意：Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`);
       }
@@ -3674,6 +3885,8 @@ async function executeToolCore(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
   const sec = opts.security || { ...security.DEFAULTS };
+  // 文件名按哪家系统的规矩查（测试里传 "win32" 在 Mac 上验 Windows 的拦法）
+  const plat = opts.platform || process.platform;
   // 每个对话一个成果子目录（服务器只在默认工作空间下传入）：相对路径读写、脚本 cwd、
   // 生成/下载的产物都落到这里，多个对话不再把工作空间根目录搅成一锅
   let fileBase = ws();
@@ -3713,6 +3926,13 @@ async function executeToolCore(name, input, opts = {}) {
         console.warn(`[tools] ${name}: 路径多套了一层成果目录，已纠正 ${s0} → ${fixed || "."}`);
         rel = fixed || ".";
       }
+    }
+    // 要写的名字是模型起的：Windows 上 `纪要_10:30.md` 不报错，冒号后面那半截写进了备用数据流，
+    // 文件夹里只剩一个打不开的 0 字节文件，模型还以为写成了。当场拦下、说清楚，让它自己换名字——
+    // 悄悄改名不行，它汇报出去的路径就成了不存在的那个
+    if (mode === "write" || mode === "edit") {
+      const why = winname.badPath(String(rel), plat);
+      if (why) throw new Error(why);
     }
     const r = security.resolvePathWithPolicy(sec, rel, ws(), fileBase);
     if (!r.allowed) {
@@ -3870,7 +4090,7 @@ async function executeToolCore(name, input, opts = {}) {
     switch (name) {
       case "canvas_manage":
         // 带上本对话的成果文件夹：agent 写进节点的相对路径是从那儿算的，画布要的是从根算的
-        return canvasManage(input, { base: baseRel });
+        return canvasManage(input, { base: baseRel, platform: plat });
       case "run_node": {
         if (orgBlocksShell()) return shellBlocked("run_node");
         if (sec.runtime_node === false) {
@@ -3939,7 +4159,7 @@ async function executeToolCore(name, input, opts = {}) {
       }
       case "multi_edit": {
         const rel = String(input.path || "");
-        const p = resolveFile(rel);
+        const p = resolveFile(rel, "edit");
         const stale = CT.staleNote(opts.sessionId, p, rel);
         if (stale) return { content: stale, isError: true };
         let plan = planMulti(readSource(p, rel), rel, input.edits);
@@ -4055,7 +4275,7 @@ async function executeToolCore(name, input, opts = {}) {
       }
       case "edit_file": {
         const rel = String(input.path || "");
-        const p = resolveFile(rel);
+        const p = resolveFile(rel, "edit");
         const stale = CT.staleNote(opts.sessionId, p, rel);
         if (stale) return { content: stale, isError: true };
         // 先算出改完是什么样：匹配不上、不唯一这些错当场就能报，不用先把用户叫来批一个改不成的改动
@@ -4232,6 +4452,9 @@ async function executeToolCore(name, input, opts = {}) {
         if (!/^[a-z0-9][a-z0-9-_]{1,40}$/.test(name)) {
           return { content: "技能名不合法：请用小写字母/数字/连字符，如 market-research", isError: true };
         }
+        // 上面那条放得过 con、nul、com1：Windows 上这些是设备名，技能文件夹建不出来
+        const winBad = winname.badPath(name, plat);
+        if (winBad) return { content: winBad, isError: true };
         // 技能存在工作区外、全机共用，每趟任务都会重新读进提示词：一次注入就能一直留着。
         // 所以它得跟写文件一样过档位、跟装技能一样过扫描，覆盖已有的还得人点头
         const skills = require("./skills");
@@ -4938,4 +5161,4 @@ const diskConnectorHost = {
 };
 
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector };

@@ -74,8 +74,12 @@ const IC_STUB = UI00_SRC.slice(UI00_SRC.indexOf("function ic(name, cls)"), UI00_
 // 但「这一屏用没用到图标」会随着界面改动悄悄变化——去 emoji 那一轮就是一屏一屏地报 ic is not defined。
 // 所以统一在最前面垫一层：夹具自己注了就什么都不做（函数声明会提升，这里看到的就已经是 function），
 // 没注过才把真源码那一份挂到 window 上。挂 window 而不是声明顶层变量，免得跟夹具自己那份撞名。
+// 「这台是什么系统」那几个小函数（fileMgrName / modKeyName）也在这一段里，界面文字拼「在访达里打开」要用。
+// 夹具自己垫了个假 ic 的，第一块就整块跳过了，所以第二块单独看它们在不在
+const UI_OS_EXPORTS = "window.uiOsOf = uiOsOf; window.UI_OS = UI_OS; window.fileMgrName = fileMgrName; window.modKeyName = modKeyName;";
 const IC_BOOT = 'if (typeof ic === "undefined") { (function(){\n' + IC_STUB
-  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS; window.imeKey = imeKey;\n})(); }\n';
+  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS; window.imeKey = imeKey; ' + UI_OS_EXPORTS + '\n})(); }\n'
+  + 'if (typeof fileMgrName === "undefined") { (function(){\n' + IC_STUB + '\n;' + UI_OS_EXPORTS + '\n})(); }\n';
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 两条工作线"); // 附件段的下一段（以前是会话历史，中间插进了工作线）
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
@@ -3226,7 +3230,11 @@ const MULTIRUN_I18N_CASES = [
   // [界面上真出现的那句, 源码里必须有的固定部分]。用户自己起的名字、服务端原话用英文占位——「一个汉字不剩」查的是我们写的那部分
   ["正在载入这段对话…"], ["正在载入页面…"], ["20 秒没等到应用回话，这次没启动"],
   ["只看这个对话自己文件夹里的"], ["整个工作空间，含别的对话的产出"], ["这个对话还没产出文件，做出来就在这里"],
-  ["在 Finder 中打开这个文件夹"], ["60 秒没收到任何数据"], ["直播连接被关掉了"], ["双击复制这张图"],
+  // 文件管理器按这台机器的系统叫（mac 访达、Windows 资源管理器、Linux 文件管理器），源码里写死的只有后半句
+  ["在访达中打开这个文件夹", "中打开这个文件夹"], ["在资源管理器中打开这个文件夹", "中打开这个文件夹"], ["在文件管理器中打开这个文件夹", "中打开这个文件夹"],
+  ["在访达中打开工作空间根目录", "中打开工作空间根目录"], ["在资源管理器中打开工作空间根目录", "中打开工作空间根目录"],
+  ["在文件管理器中打开工作空间根目录", "中打开工作空间根目录"],
+  ["60 秒没收到任何数据"], ["直播连接被关掉了"], ["双击复制这张图"],
   ["停下这个任务"], ["正在停…"], ["没连上服务端，停止的指令没送出去"], ["这条任务已经不在跑了"], ["没停下来，服务端没说原因"], ["该会话没有正在运行的任务"],
   ["等了 20 秒没等到这段对话的记录", "秒没等到这段对话的记录"],
   ["这段对话的记录没取回来：HTTP 500", "这段对话的记录没取回来："],
@@ -5495,7 +5503,8 @@ const MOD1 = APP05.indexOf("function renderSearchPane(pane, s) {");
 const PER0 = APP05.indexOf("function renderPersonaPane(pane, s) {");
 const PER1 = APP05.indexOf("// ================= 桌面宠物 =================");
 const APP06 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
-const SEC0 = APP06.indexOf("function renderSecurityPane(pane, s) {");
+// 从「系统授权那张卡给不给看」那个小函数切起：renderSecurityPane 一画就要问它，不切进来当场 not defined
+const SEC0 = APP06.indexOf("/** 「系统授权」那张卡给不给看");
 const SEC1 = APP06.indexOf("// ================= 快捷键面板 =================");
 const PM0 = APP02.indexOf("let permModes = null;");
 const PM1 = APP02.indexOf('setupPicker("perm-btn", "perm-menu");');
@@ -5541,6 +5550,9 @@ const GATE_CHECKS = `
   window.askConfirm = async () => true;
 
   let owner = false, canSwitch = false, posts = [];
+  // 「系统授权」那张卡看的是服务端报的 platform；默认不报（老服务端就是这样），④.6 里换着报
+  // openReply 是「去授权」那一下服务端回什么，"down" = 请求本身发不出去
+  let sysPlat, openReply = { ok: true };
   // 渠道表在几组断言中间要换一批（验副标题和「第 N 个」），所以拎出来当变量
   // 模型表和多媒体表同理：验「同名渠道分得开」时要把行挂到重名的那两个渠道上
   let mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }];
@@ -5578,7 +5590,8 @@ const GATE_CHECKS = `
     if (url === "/api/provider-models") return provModelsDown ? Promise.reject(new Error("测试里把这一路掐断")) : j(provModels);
     if (url === "/api/security/modes") return j({ modes: { ask: { label: "每次问我", desc: "动手前都问" }, auto: { label: "自动执行", desc: "不问" } }, current: "ask", can_switch: canSwitch });
     if (url === "/api/security/approvals") return j({ session_allow: [] });
-    if (url === "/api/security/system") return j({ fulldisk: "unknown", accessibility: "unknown", automation: "unknown", desktop: false });
+    if (url === "/api/security/system") return j({ fulldisk: "unknown", accessibility: "unknown", automation: "unknown", desktop: false, ...(sysPlat ? { platform: sysPlat } : {}) });
+    if (url === "/api/security/system/open") return openReply === "down" ? Promise.reject(new Error("测试里把这一路掐断")) : j(openReply);
     if (url.startsWith("/api/security/audit")) return j([]);
     return j({ ok: true });
   };
@@ -5981,6 +5994,40 @@ const GATE_CHECKS = `
   ok("原因也记在 lastSaveError 里，别处的调用点读得到", lastSaveError.includes("平台管理员"), lastSaveError);
   window.fetch = realFetch;
 
+  // ④.6 「系统授权」那张卡：三项全是 macOS 的隐私开关。跑服务的是 Windows / Linux 时，
+  // 服务端一律答「无法检测」，「去授权」也开不出任何东西——三行灰字配三个哑链接，不如不摆
+  owner = true; canSwitch = true;
+  const sysCard = async (plat) => {
+    sysPlat = plat;
+    await renderSettings("security");
+    await new Promise((r) => setTimeout(r, 30)); // 卡里的状态是异步拉的，拉回来才按服务端那台定藏不藏
+    return mBody.querySelector("#settings-pane #sec-sys-card");
+  };
+  for (const plat of ["win32", "linux"]) {
+    const c = await sysCard(plat);
+    ok("服务端报 " + plat + "：「系统授权」整张卡不摆，也没有点了开不出东西的「去授权」",
+      !!c && getComputedStyle(c).display === "none" && c.querySelectorAll("[data-pane]").length === 0,
+      c ? c.outerHTML.slice(0, 160) : "卡片节点都没有");
+  }
+  const macCard = await sysCard("darwin");
+  ok("反向对照：服务端报 darwin，卡照摆，三个「去授权」都在",
+    !!macCard && getComputedStyle(macCard).display !== "none" && macCard.querySelectorAll("[data-pane]").length === 3,
+    macCard ? macCard.outerHTML.slice(0, 160) : "卡片节点都没有");
+  const goAuth = async (reply) => {
+    openReply = reply; window.toasts = []; posts = [];
+    await macCard.querySelector('[data-pane="fulldisk"]').onclick({ preventDefault() {} });
+    return window.toasts.slice();
+  };
+  let ts = await goAuth({ ok: false });
+  ok("「去授权」那页没打开（服务端回 ok:false）：弹一句说清楚，不再是点了没反应",
+    ts.length === 1 && ts[0].startsWith("[circle-x] 系统设置这一页没打开")
+    && posts.some((p) => p.url === "/api/security/system/open" && p.body.pane === "fulldisk"), JSON.stringify(ts));
+  ts = await goAuth("down");
+  ok("请求本身发不出去也一样说一声", ts.length === 1 && ts[0].includes("系统设置这一页没打开"), JSON.stringify(ts));
+  ts = await goAuth({ ok: true });
+  ok("反向对照：开成了就不吵", ts.length === 0, JSON.stringify(ts));
+  sysPlat = undefined; openReply = { ok: true };
+
   // ⑤ 输入框旁边那个 🛡️ 档位菜单——用户点的就是它
   const menu = document.getElementById("perm-menu");
   canSwitch = false;
@@ -5997,6 +6044,44 @@ const GATE_CHECKS = `
   posts = [];
   await menu.querySelector(".mi[data-perm=auto]").onclick();
   ok("反向对照：点了真发出去了", posts.some((p) => p.url === "/api/security/mode" && p.body.mode === "auto"), JSON.stringify(posts));
+  return names;
+})()
+`;
+
+// ---- 深色主题下的原生控件、等宽字里的中文（Windows 上最扎眼的两样） ----
+// test/win-ui.js 按源码推了一遍；这里在真 Chromium 里看计算样式，确认 var() 真接上、层叠没被别的规则盖掉
+const WINLOOK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
+  + "<select id='sel'><option>一</option></select><div class='code-head' id='ch'>js</div>"
+  + "<div class='step-card'><pre id='sp' style='display:block'>输出</pre></div>"
+  + "<div class='ap-row'><span class='ap-cmd' id='ac'>rm -rf 某目录</span></div><pre id='bare'>没挂类名</pre></body>";
+const WINLOOK_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const html = document.documentElement;
+  const cs = () => getComputedStyle(html).colorScheme;
+  html.dataset.theme = "dark";
+  ok("深色主题：html 的 color-scheme 是 dark（下拉框、滚动条、日期选择器跟着画成深色）", cs() === "dark", cs());
+  ok("下拉框自己也拿到 dark（color-scheme 会继承，没有哪条规则半路改回去）", getComputedStyle(document.getElementById("sel")).colorScheme === "dark",
+    getComputedStyle(document.getElementById("sel")).colorScheme);
+  html.dataset.theme = "light";
+  ok("浅色主题：light", cs() === "light", cs());
+
+  const ff = (id) => getComputedStyle(document.getElementById(id)).fontFamily;
+  ok("代码块标题栏：等宽字后面接着微软雅黑（Windows 上汉字不再落到新宋体）", /Microsoft YaHei UI/.test(ff("ch")) && /^ui-monospace/.test(ff("ch")), ff("ch"));
+  ok("工具输出、审批条的命令：Consolas 打头、补了微软雅黑、末尾还是 monospace（mac / Linux 照旧吃默认等宽字）",
+    ["sp", "ac"].every((id) => /^Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace$/.test(ff(id))), ff("sp") + " | " + ff("ac"));
+  ok("反向对照：没挂这些类名的 pre 还是浏览器默认的 monospace——上面那几条确实是规则给的", ff("bare") === "monospace", ff("bare"));
+
+  // 反向对照：把那两条 color-scheme 从样式表里删掉，深色主题就回到 normal（Windows 上一点下拉就是一整块白底）
+  for (const sh of document.styleSheets) {
+    for (let i = sh.cssRules.length - 1; i >= 0; i--) {
+      const r = sh.cssRules[i];
+      if (r.style && r.style.colorScheme && /^html(\\[data-theme="dark"\\])?$/.test(r.selectorText)) sh.deleteRule(i);
+    }
+  }
+  html.dataset.theme = "dark";
+  ok("反向对照：删掉那两条，深色主题下 color-scheme 回到 normal", cs() === "normal", cs());
   return names;
 })()
 `;
@@ -13193,10 +13278,13 @@ const CONTRAST_CHECKS = FLUSH_SRC + `
   }
 
   // ---- 反向对照：把这三条改回修之前的写法，三处必须当场跌破 4.5 ----
+  // 修之前 html 也没声明 color-scheme；现在暗色主题声明了 dark，浏览器自带的链接色会跟着换成浅蓝，
+  // 光把链接色改回 -webkit-link 还原不出当初那条深蓝字压深底——所以连 color-scheme 一起退回 normal
   const undo = document.createElement("style");
   undo.textContent = ".side-nav .item.active .tx .sub { opacity: .82; }"
     + " .side-nav .nav-head #proj-add { color: var(--owb-text-3); }"
     + " a:not([class]) { color: -webkit-link; }"
+    + " html, html[data-theme] { color-scheme: normal; }"
     + " :root { --warning: #b26a00; }";
   document.head.appendChild(undo); flush();
   for (const theme of ["light", "dark"]) {
@@ -15050,6 +15138,15 @@ app.whenReady().then(async () => {
       for (const n of namesGATE) console.log("  ✓ " + n);
       console.log(`✅ 前端：设置页按权限画（四页纯管理员的不画·模型只读·个性化只留宠物·安全只留档位·🛡️ 菜单不装成能点的）${namesGATE.length} 项通过`);
     } finally { if (!winGATE.isDestroyed()) winGATE.destroy(); }
+
+    const winLOOK = mkWin({ show: false, width: 800, height: 600, webPreferences: { offscreen: true } });
+    try {
+      await winLOOK.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(WINLOOK_HTML));
+      const namesLOOK = await winLOOK.webContents.executeJavaScript(WINLOOK_CHECKS, true)
+        .catch((e) => { throw new Error("[深色控件与等宽字] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesLOOK) console.log("  ✓ " + n);
+      console.log(`✅ 前端：深色主题下原生控件跟着变深·等宽字里的汉字有像样的字体可落 ${namesLOOK.length} 项通过`);
+    } finally { if (!winLOOK.isDestroyed()) winLOOK.destroy(); }
 
     const winAUTH = mkWin({ show: false, width: 900, height: 760, webPreferences: { offscreen: true } });
     try {

@@ -15,6 +15,8 @@
  *   【9】英文界面：倒计时、侧栏点的提示、系统通知的字都有译文
  *   【10】注意力的账只记点得开的会话：IM 的审批不挂到 IM 会话键上；删掉了的会话收尾不再回来
  *   【11】这轮新加的间距（审批倒计时、配方卡说明、计划卡）落在 4 的倍数上
+ *   【12】人不在（isAway）：窗口收起、失焦都算，通知和标题计数跟着它走
+ *   【13】Windows 主进程外观（test/win-main.js）：all.js 还没登记它时由这里代跑
  *
  * 行为（真 DOM 里点按钮、看正文挪没挪、直播和回放是不是同一个样子）在 test/frontend.js 的回合那一段；
  * 这里钉的是那边钉不到的：跨文件同一份文案有没有漂、接线有没有断、该在的调用点在不在。
@@ -484,6 +486,17 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
     ok(b1.left === 0 && b1.seen[0] === "web1" && /你不在的时候跑完了 2 个任务/.test(b1.toasts[0] || ""), "拿回焦点：清零、眼前这条算看过、说一句跑完了几个", JSON.stringify(b1));
     const b2 = back(false);
     ok(b2.left === 2 && !b2.toasts.length && !b2.seen.length, "还没焦点：不清、不说（反向对照）", JSON.stringify(b2));
+  });
+
+  // Windows 上的菜单、托盘、窗口底色那套（test/win-main.js）。test/all.js 的 SUITES 里还没登记它的时候，
+  // 由这里代跑，免得它写好了却没人跑；登记了就交给 all.js，这里不再跑第二遍
+  await section("【13】Windows 主进程外观：默认菜单、托盘图标、窗口底色跟主题（test/win-main.js）", () => {
+    const allSrc = read("test", "all.js");
+    if (/\["win-main"/.test(allSrc)) { console.log("  （test/all.js 已经登记了 win-main，由它去跑）"); return; }
+    const r = require("child_process").spawnSync(process.execPath, [path.join(__dirname, "win-main.js")], { encoding: "utf8", timeout: 120000 });
+    const tail = String(r.stdout || "").trim().split("\n").slice(-1)[0] || "";
+    const bad = String(r.stdout || "").split("\n").filter((l) => /^\s+✗/.test(l));
+    ok(r.status === 0 && /✓ Windows 主进程：\d+ 过 \/ 0 挂/.test(tail), "test/win-main.js 全绿：" + tail, { status: r.status, bad, err: String(r.stderr || "").slice(0, 300) });
   });
 
   finished = true;

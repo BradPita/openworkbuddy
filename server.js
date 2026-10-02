@@ -2915,6 +2915,9 @@ app.get("/api/engines", async (req, res) => {
   try {
     // ?force=1 = 用户点了「重新检测本机」（刚装完 CLI，必须当场看见）；平时吃缓存，别每开一次设置页就起一堆子进程
     const myAgent = prefs.agentCfg(config); // 「当前用的是哪个引擎」是按账号的，别把别人选的报给他
+    // Windows：进程里的 PATH 定格在启动那一刻，刚 winget 装的东西不在里面。点「重新检测」时现读一次注册表，
+    // 跟启动时那份合并（体检、run_shell 都用这一份）。读不成它自己会留日志，照旧按手里那份 PATH 检测；别的系统直接返回
+    if (req.query.force === "1") await require("./engines/which").refreshWinPath();
     const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
     res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
   } catch (e) {
@@ -4575,15 +4578,63 @@ app.post("/api/pick-folder", async (_req, res) => {
  * 一个叫 `a";id>pwn.txt;"b.txt` 的文件（macOS/Linux 上完全合法，上传接口也没拦过这些字符）
  * 就能把老写法 exec(`${opener} "${target}"`) 里的引号闭合掉，分号后面那段以服务端权限执行。
  * execFile 不起 shell，参数原样递给程序，这类解析从根上就没有了。
- * 回调吞掉错误是有意的：explorer 打开成功也常回非 0 退出码，而这个函数的调用方都不看结果。
+ * 回调吞掉错误是有意的：explorer 打开成功也常回非 0 退出码，看它的退出码只会误报。
+ *
+ * Windows 上本地文件不再首选 explorer：execFile 只给带空格的参数加引号，`报告,终稿.docx` 原样递过去，
+ * explorer 把逗号当开关分隔符，打开的是默认文件夹而不是这个文件，还一声不吭。桌面版交给主进程的
+ * shell.openPath（走系统的「打开」，没有命令行解析这一层），它回来的报错原样带给用户；
+ * 没有桌面主进程（命令行、Web 部署）才退回 explorer，并且自己加引号。网址照旧交给 explorer。
+ * macOS / Linux 跟以前一模一样。
+ *
+ * 不抛错：返回 { ok, error }，调用方决定要不要把 error 说给用户。
+ * @param {string} target
+ * @param {{platform?:string, bridge?:any, electron?:any, execFile?:Function}} [deps] 只给测试用
+ * @returns {Promise<{ok:boolean, error:string}>}
  */
-function openWithSystem(target) {
-  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-  // 不加 windowsHide：要的就是打开一个给人看的窗口，加了资源管理器那扇窗会被藏掉
-  require("child_process").execFile(opener, [String(target)], () => {});
+async function openWithSystem(target, deps = {}) {
+  const t = String(target);
+  try {
+    const platform = deps.platform || process.platform;
+    const execFile = deps.execFile || require("child_process").execFile;
+    if (platform !== "win32") {
+      execFile(platform === "darwin" ? "open" : "xdg-open", [t], () => {});
+      return { ok: true, error: "" };
+    }
+    const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(t);
+    if (!isUrl) {
+      // 约定：成功回空串，失败回系统给的那句话。只认非空字符串是失败，别把别的返回值当报错念给用户
+      const said = (err) => (typeof err === "string" && err ? { ok: false, error: `系统打开失败：${err}` } : { ok: true, error: "" });
+      const bridge = deps.bridge || require("./electron-bridge");
+      if (bridge.isRemote()) {
+        try {
+          // 打开大文件时主进程要等 Word / WPS 起来才回话，给足 15 秒，别把正常的慢当成失败
+          return said(await bridge.call("shell.openPath", { path: t }, { timeoutMs: 15000 }));
+        } catch (e) {
+          // 主进程没这个操作（版本对不上）、没了、连不上：它那边什么都没开，退回 explorer。
+          // 超时就不退了——主进程可能只是慢，过一会儿自己打开，再起一个 explorer 就是同一个文件开两遍
+          const code = e && e.code;
+          if (code !== "NO_OP" && code !== "NO_SHELL" && code !== "SHELL_GONE") return { ok: false, error: String((e && e.message) || e) };
+        }
+      } else if (bridge.mode() === "inproc") {
+        try {
+          const { shell } = deps.electron || require("electron");
+          if (shell && shell.openPath) return said(await shell.openPath(t));
+        } catch {}
+      }
+    }
+    // 不加 windowsHide：要的就是打开一个给人看的窗口，加了资源管理器那扇窗会被藏掉。
+    // 本地路径整个包一层引号、原样递（Windows 路径里不可能有 "），逗号就不会被拆开
+    if (isUrl) execFile("explorer", [t], () => {});
+    else execFile("explorer", [`"${t}"`], { windowsVerbatimArguments: true }, () => {});
+    return { ok: true, error: "" };
+  } catch (e) {
+    // 起进程同步就抛的那种（参数不合法之类）：以前是同步抛给路由，现在照样变成一句报错，别成了没人接的 rejection
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 }
-app.post("/api/open-workspace", (_req, res) => {
-  openWithSystem(getWorkspaceDir());
+app.post("/api/open-workspace", async (_req, res) => {
+  const r = await openWithSystem(getWorkspaceDir());
+  if (!r.ok) return res.status(500).json({ error: r.error });
   res.json({ ok: true });
 });
 
@@ -5933,7 +5984,10 @@ app.post("/api/files/reveal", async (req, res) => {
       const { shell } = require("electron");
       if (shell && shell.showItemInFolder) { shell.showItemInFolder(p); revealed = true; }
     } catch {}
-    if (!revealed) openWithSystem(path.dirname(p)); // 纯 node 模式：退而求其次，打开所在文件夹
+    if (!revealed) { // 纯 node 模式：退而求其次，打开所在文件夹
+      const r = await openWithSystem(path.dirname(p));
+      if (!r.ok) return res.status(500).json({ error: r.error });
+    }
     res.json({ ok: true, revealed });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -6587,13 +6641,14 @@ app.post("/api/preview/stop", (_req, res) => {
 // 目录不在白名单里但要放行——「打开所在文件夹」是这个接口最常用的用法。
 const OPEN_EXT_OK = /\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|markdown|json|ya?ml|log|rtf|html?|odt|ods|odp|pages|numbers|key|svg|png|jpe?g|gif|webp|bmp|tiff?|heic|mp4|mov|webm|m4v|mp3|wav|m4a|flac|aac|zip)$/i;
 // 用系统默认程序打开（Word/PPT/Excel 等交给本机 Office/WPS）
-app.post("/api/files/open/*", (req, res) => {
+app.post("/api/files/open/*", async (req, res) => {
   try {
     const p = rootedPath(req, relOf(req));
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     if (!fs.statSync(p).isDirectory() && !OPEN_EXT_OK.test(p))
       return res.status(400).json({ error: "这种类型不能交给系统程序打开，只放行文档、图片、音视频" });
-    openWithSystem(p);
+    const r = await openWithSystem(p); // 不会抛：失败是 { ok:false, error }，下面照实回给前端
+    if (!r.ok) return res.status(500).json({ error: r.error });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });

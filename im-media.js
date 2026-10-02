@@ -21,6 +21,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { safeSegment } = require("./lib/winname");
 
 const MAX_INBOUND_BYTES = 30 * 1024 * 1024; // 收进来的单个附件上限，超了只留一句说明
 const DEFAULT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
@@ -46,8 +47,13 @@ function sniffExt(buf) {
   return "";
 }
 
-/** 只留最后一段文件名，挡掉 ../ 和控制字符；太长的名字截断但保住扩展名 */
-function safeBaseName(name) {
+/**
+ * 只留最后一段文件名，挡掉 ../ 和控制字符；太长的名字截断但保住扩展名。
+ * Windows 上再过一道 safeSegment：手机上发来的「Q3:计划.docx」直接落盘，NTFS 会把冒号后面
+ * 当成备用数据流——目录里只剩个 0 字节的 Q3，附件内容找不着；CON.txt 这种保留名压根建不出来。
+ * 换成下划线，用户认得出是哪份。别的系统照原样。
+ */
+function safeBaseName(name, platform = process.platform) {
   let n = String(name || "").split(/[\\/]/).pop() || "";
   // eslint-disable-next-line no-control-regex
   n = n.replace(/[\x00-\x1f\x7f]/g, "").replace(/^\.+/, "").trim();
@@ -57,7 +63,8 @@ function safeBaseName(name) {
     const ext = dot > 0 && n.length - dot <= 12 ? n.slice(dot) : "";
     n = n.slice(0, 120 - ext.length) + ext;
   }
-  return n;
+  // 放在截断之后：截完末尾可能正好落在点或空格上，也得一起处理掉
+  return safeSegment(n, platform);
 }
 
 function stamp(now = Date.now()) {
@@ -74,15 +81,16 @@ function defaultName(channel, kind, ext, now) {
 /**
  * 落盘到工作目录：重名不覆盖（加时间戳），路径穿越挡掉，返回相对文件名。
  * 目录由调用方给（测试里就是临时目录），这个模块不认识 config。
+ * platform 只给测试用：本机不是 Windows 也要能验 Windows 上的文件名处理。
  */
-function saveInbound(dir, name, buf, { now = Date.now(), fallback = "" } = {}) {
+function saveInbound(dir, name, buf, { now = Date.now(), fallback = "", platform = process.platform } = {}) {
   if (!buf || !buf.length) throw new Error("内容是空的");
   if (buf.length > MAX_INBOUND_BYTES) {
     throw new Error(`文件 ${(buf.length / 1048576).toFixed(1)}MB，超过 ${MAX_INBOUND_BYTES / 1048576}MB 上限`);
   }
-  let base = safeBaseName(name);
+  let base = safeBaseName(name, platform);
   const ext = sniffExt(buf);
-  if (!base) base = safeBaseName(fallback) || defaultName("", "file", ext, now);
+  if (!base) base = safeBaseName(fallback, platform) || defaultName("", "file", ext, now);
   // 名字没扩展名、但认得出文件头 → 补上，不然用户下载下来双击打不开
   if (ext && !path.extname(base)) base += ext;
   fs.mkdirSync(dir, { recursive: true });

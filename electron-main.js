@@ -4,7 +4,7 @@
 /** Electron 桌面壳 — 启动内嵌服务并打开桌面窗口。运行：npm run app */
 
 const BOOT_T0 = Date.now(); // 启动分段计时：哪段慢一眼看清，别靠体感猜
-const { app, BrowserWindow, dialog, shell, globalShortcut, Menu, clipboard, Tray, nativeImage, screen, session, powerMonitor } = require("electron");
+const { app, BrowserWindow, dialog, shell, globalShortcut, Menu, clipboard, Tray, nativeImage, nativeTheme, screen, session, powerMonitor } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -222,6 +222,8 @@ let QUIT_STATE = "";
 let SHUTDOWN = null; // shutdown() 那一趟的 Promise：谁来要都给同一个，收尾只做一遍
 let tray = null;     // 托盘图标。得有人一直拿着引用，被垃圾回收掉的话图标会从状态栏上凭空消失
 let trayLang = "";   // 托盘菜单眼下是哪种语言（refreshTray）：没变就不重建
+// Windows 上窗口底色跟着主题走（为什么见 themeBg）：theme 是上次问到的设置页主题，wins 是主窗口 + 站内子窗口
+const SHELL_THEME = { theme: "", wins: new Set() };
 
 // 服务端跑在哪。2026-09-29 审计：几个对话一起跑时服务端在主进程里把事件循环卡到 p99 68ms、最长 330ms，
 // 窗口、菜单、托盘跟着一顿一顿（用户原话「开几个对话整个应用连带电脑都卡」）。所以默认挪进独立的
@@ -433,6 +435,148 @@ function saneWindowBounds(saved, areas, def) {
   return out;
 }
 
+/**
+ * Windows 上不要 Electron 自带的那套 File/Edit/View 英文菜单。
+ *   · autoHideMenuBar 只是把它藏起来：按一下 Alt 它就冒出来、焦点被它拿走，用户接着打的字全进了菜单；
+ *   · 那套菜单还带着 Ctrl+R / Ctrl+Shift+R 重新加载，输入框里没发出去的话按一下就没了；
+ *   · 复制 / 粘贴 / 剪切 / 全选 / 撤销 / 重做在 Windows 上是网页内核自己认的按键，不靠菜单加速键；
+ *     应用自己的快捷键（新建对话、F11 全屏这些）是页面里的 keydown，唤起窗口走 globalShortcut，都不受影响。
+ * 菜单里还有两样有人在用：缩放（Ctrl + = - 0）和开发态的开发者工具，由 attachShellKeys 接过来。
+ * mac 不动：那边的 ⌘C / ⌘V 就挂在 Edit 菜单上，拿掉了全部失灵。Linux 也照旧（不出 Linux 包，没法验）
+ */
+function dropDefaultMenu(menu, platform) {
+  if (platform !== "win32") return false;
+  menu.setApplicationMenu(null);
+  return true;
+}
+
+/**
+ * 默认菜单拿掉以后，Windows 上哪些按键要由主进程自己接（见 dropDefaultMenu）：
+ *   · 开发态 F12 / Ctrl+Shift+I 开关开发者工具；装机包里不给（用户误按出一块英文面板，只会以为坏了）；
+ *   · Ctrl + = / + / - / 0 缩放，跟原来菜单里那三项一样每次半档、Ctrl+0 回原样。
+ * 按着 Alt 的一律不管：Windows 上 AltGr 报出来就是 Ctrl+Alt，德语、法语键盘用它打 { } [ ] 这些字，
+ * 不能被当成缩放吃掉。Win 键（meta）组合是系统的，也不碰
+ */
+function shellKeyAction(input, platform, packaged) {
+  if (platform !== "win32" || !input || input.type !== "keyDown" || input.alt || input.meta) return null;
+  const key = String(input.key || ""), code = String(input.code || "");
+  if (!packaged) {
+    if (key === "F12" && !input.control && !input.shift) return "devtools";
+    if (input.control && input.shift && (code === "KeyI" || key.toLowerCase() === "i")) return "devtools";
+  }
+  if (!input.control) return null;
+  if (key === "=" || key === "+" || code === "Equal" || code === "NumpadAdd") return "zoomIn";
+  if (input.shift) return null; // Ctrl+Shift+- / Ctrl+Shift+0 留给页面（可能被用户绑成了别的快捷键）
+  if (key === "-" || code === "Minus" || code === "NumpadSubtract") return "zoomOut";
+  if (key === "0" || code === "Digit0" || code === "Numpad0") return "zoomReset";
+  return null;
+}
+
+/** 把 shellKeyAction 认出来的键接到一个 webContents 上；只在 Windows 上挂（别的平台菜单还在，按键照旧归它） */
+function attachShellKeys(wc, platform, packaged) {
+  if (platform !== "win32" || !wc) return false;
+  wc.on("before-input-event", (event, input) => {
+    const act = shellKeyAction(input, platform, packaged);
+    if (!act) return;
+    event.preventDefault();
+    try {
+      if (act === "devtools") wc.toggleDevTools();
+      else if (act === "zoomReset") wc.setZoomLevel(0);
+      else wc.setZoomLevel(wc.getZoomLevel() + (act === "zoomIn" ? 0.5 : -0.5));
+    } catch (e) {
+      bootLog("▲ 快捷键没生效（" + act + "）：" + String((e && e.message) || e));
+    }
+  });
+  return true;
+}
+
+/**
+ * 窗口底色。拖窗口边改大小时，新露出来的那一条网页还没画上，系统先拿窗口底色填——
+ * 写死白色的话，深色模式下每拖一下边上就闪一道白。颜色跟 public/css/ui.css 的 --background 一致。
+ * 主题以设置页里选的为准（owb-theme，见 uiTheme）；没选或选了「跟随系统」才看系统。
+ * 只改 Windows，别的平台还是原来的白底，一点不动
+ */
+function themeBg(theme, systemDark, platform) {
+  if (platform !== "win32") return "#ffffff";
+  const dark = theme === "dark" || (theme !== "light" && !!systemDark);
+  return dark ? "#1e1f24" : "#ffffff";
+}
+
+/**
+ * 把主题落到窗口上：每个还开着的窗口底色换掉。只在 Windows 上做，别的平台原样返回 null。
+ * nativeTheme.themeSource 故意不碰：它一改，所有渲染进程的 prefers-color-scheme 跟着翻，
+ * 隐藏的出图窗口（网页截图、网页转视频、页面检查、缩图）也在内，生成的图和视频就会随应用主题变
+ */
+function applyShellTheme(theme, nt, wins, platform) {
+  if (platform !== "win32" || !nt) return null;
+  const bg = themeBg(theme, nt.shouldUseDarkColors, platform);
+  for (const w of wins || []) {
+    try { if (w && !w.isDestroyed()) w.setBackgroundColor(bg); } catch {}
+  }
+  return bg;
+}
+
+/**
+ * 设置页的主题存在渲染进程的 localStorage 里（owb-theme），主进程读不到，照 uiLang 的办法张嘴问一句。
+ * 问不到（页面卡住、启动失败页、存储被禁）回 null，调用方就沿用上次那份
+ */
+async function uiTheme(wc) {
+  try {
+    const v = await wc.executeJavaScript('(function(){try{return localStorage.getItem("owb-theme")||""}catch(e){return ""}})()', false);
+    return v === "dark" || v === "light" || v === "system" ? v : "";
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 主题什么时候会变：用户在设置页点了一下（网页不告诉主进程，只能在点完、按完键之后问一句），
+ * 切回窗口时（可能在别的窗口改过），页面重新加载完，还有系统自己换了深浅（nativeTheme 'updated'）。
+ * 点击、按键停手 waitMs 再问：打字时不至于每个键都去问一遍。只在 Windows 上挂
+ */
+function watchShellTheme(w, nt, state, platform, waitMs = 200) {
+  if (platform !== "win32" || !w || !nt || !state) return null;
+  const wc = w.webContents;
+  const sync = async () => {
+    if (!wc || (wc.isDestroyed && wc.isDestroyed())) return state.theme;
+    const t = await uiTheme(wc);
+    if (t !== null) state.theme = t;
+    applyShellTheme(state.theme, nt, state.wins, platform);
+    return state.theme;
+  };
+  let timer = null;
+  const later = () => { clearTimeout(timer); timer = setTimeout(sync, waitMs); };
+  wc.on("did-finish-load", () => { sync(); });
+  w.on("focus", () => { sync(); });
+  wc.on("input-event", (_e, ev) => {
+    const t = ev && ev.type;
+    if (t === "mouseUp" || t === "keyUp" || t === "touchEnd" || t === "gestureTap") later();
+  });
+  nt.on("updated", () => { applyShellTheme(state.theme, nt, state.wins, platform); });
+  return sync;
+}
+
+/**
+ * 托盘图标用哪个文件。Windows 托盘按「小图标」的系统尺寸取图：100% 缩放 16 像素，125% 20，150% 24，200% 32……
+ * 只给 16 / 32 两份 PNG 的话，125%、150% 是拿 32 现缩的，糊。public/tray.ico 里每档都有一份现成的，
+ * 而且只有从 .ico 文件建的图，Electron 才会按系统尺寸挑那一帧。mac / Linux 照旧用 favicon.png
+ */
+function trayIconFile(dir, platform) {
+  return path.join(dir, "public", platform === "win32" ? "tray.ico" : "favicon.png");
+}
+
+/**
+ * 缩图三件活（缩略图、给模型看的压图、宠物头像）交给谁做，都不在界面线程上（为什么见 thumb-sips.js）：
+ *   mac → sips 子进程；Windows → 常驻的隐藏网页窗口（browser-render.js createRenderPixels）；
+ *   其余平台、或者 OWB_MAIN_PIXELS=native（浸泡测试的反向对照）→ null，走回主线程 nativeImage
+ */
+function pixelsKind(platform, env) {
+  if (env && env.OWB_MAIN_PIXELS === "native") return null;
+  if (platform === "darwin") return "sips";
+  if (platform === "win32") return "render";
+  return null;
+}
+
 async function waitForServer(url, tries = 200) {
   for (let i = 0; i < tries; i++) {
     try {
@@ -461,6 +605,8 @@ app.whenReady().then(async () => {
   } catch (e) {
     bootLog("▲ 上次的窗口位置没用上，按默认大小居中：" + String((e && e.message) || e));
   }
+  // Windows 上拿掉默认的英文菜单（为什么见 dropDefaultMenu）。得在建窗口之前：窗口一建就把应用菜单挂上了
+  try { dropDefaultMenu(Menu, process.platform); } catch (e) { bootLog("▲ 默认菜单没拿掉：" + String((e && e.message) || e)); }
   // 窗口先开（秒响应），服务端在同进程内随后启动，就绪即加载页面。
   // 顺序反过来的话，用户要盯着 Dock 图标空等服务端把路由全注册完。
   win = new BrowserWindow({
@@ -472,7 +618,8 @@ app.whenReady().then(async () => {
     minHeight: WIN_SIZE.minHeight,
     title: "OpenWorkBuddy",
     autoHideMenuBar: true,
-    backgroundColor: "#ffffff",
+    // Windows 上跟着主题（themeBg）；这会儿还问不着设置页，先按系统深浅，页面加载完再对一次
+    backgroundColor: themeBg(SHELL_THEME.theme, nativeTheme.shouldUseDarkColors, process.platform),
     show: false, // 页面渲染好了再亮相（ready-to-show），不给用户看白屏；下面有兜底定时防止永不出现
     webPreferences: {
       // 看得见的时候不降频；收起、最小化时 throttleWhenAway 再打开，拿回来关上（为什么见 win-away.js）
@@ -566,12 +713,18 @@ app.whenReady().then(async () => {
     if (sameOrigin(url)) {
       // 同一个 session，cookie 跟着走；父窗口关了它还能留着，所以不设 parent
       const child = new BrowserWindow({
-        width: 1000, height: 780, backgroundColor: "#ffffff",
+        width: 1000, height: 780, backgroundColor: themeBg(SHELL_THEME.theme, nativeTheme.shouldUseDarkColors, process.platform),
         webPreferences: { backgroundThrottling: false },
       });
       throttleWhenAway(child); // 子窗口收起来一样降频
       child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
       attachContextMenu(child.webContents);
+      // Windows：主题换了子窗口底色跟着换，缩放 / 开发者工具的按键跟主窗口一样（见 attachShellKeys）
+      if (process.platform === "win32") {
+        SHELL_THEME.wins.add(child);
+        child.on("closed", () => SHELL_THEME.wins.delete(child));
+        attachShellKeys(child.webContents, process.platform, app.isPackaged);
+      }
       child.loadURL(url);
       return { action: "deny" };
     }
@@ -582,6 +735,14 @@ app.whenReady().then(async () => {
   };
   win.webContents.setWindowOpenHandler(openHandler);
   attachContextMenu(win.webContents);
+  // Windows：窗口底色跟着设置页的主题走；默认菜单拿掉后缩放 / 开发者工具的按键由这边接
+  if (process.platform === "win32") {
+    const mainWin = win;
+    SHELL_THEME.wins.add(mainWin);
+    mainWin.on("closed", () => SHELL_THEME.wins.delete(mainWin));
+    watchShellTheme(win, nativeTheme, SHELL_THEME, process.platform);
+    attachShellKeys(win.webContents, process.platform, app.isPackaged);
+  }
   // 界面卡死 / 崩掉的兜底。同样挂在 require 服务端之前：启动失败页那一页也可能卡住
   attachCrashGuard(win);
 
@@ -1318,12 +1479,24 @@ function syncTrayLang() {
 function createTray() {
   if (tray || HIDDEN) return; // 测试宿主不往用户的菜单栏上放图标
   try {
-    // 图标用 public/ 那张（装机包里有，build/ 不进包）。给 1x 和 2x 两份，Retina 屏上不糊
-    const src = nativeImage.createFromPath(path.join(__dirname, "public", "favicon.png"));
-    const img = nativeImage.createEmpty();
-    img.addRepresentation({ scaleFactor: 1, buffer: src.resize({ width: 16, height: 16, quality: "best" }).toPNG() });
-    img.addRepresentation({ scaleFactor: 2, buffer: src.resize({ width: 32, height: 32, quality: "best" }).toPNG() });
-    tray = new Tray(img);
+    // Windows 用多尺寸的 tray.ico（为什么见 trayIconFile）。读不出来就退回下面那两份 PNG，日志里留一句
+    let ico = null;
+    if (process.platform === "win32") {
+      ico = nativeImage.createFromPath(trayIconFile(__dirname, process.platform));
+      if (ico.isEmpty()) {
+        bootLog("▲ 托盘的 .ico 读不出来，先用 PNG：" + trayIconFile(__dirname, process.platform));
+        ico = null;
+      }
+    }
+    if (ico) tray = new Tray(ico);
+    else {
+      // 图标用 public/ 那张（装机包里有，build/ 不进包）。给 1x 和 2x 两份，Retina 屏上不糊
+      const src = nativeImage.createFromPath(path.join(__dirname, "public", "favicon.png"));
+      const img = nativeImage.createEmpty();
+      img.addRepresentation({ scaleFactor: 1, buffer: src.resize({ width: 16, height: 16, quality: "best" }).toPNG() });
+      img.addRepresentation({ scaleFactor: 2, buffer: src.resize({ width: 32, height: 32, quality: "best" }).toPNG() });
+      tray = new Tray(img);
+    }
     refreshTray();
     // Windows / Linux 的习惯是单击托盘图标就把窗口叫出来、右键才出菜单；macOS 单击就是出菜单
     if (process.platform !== "darwin") tray.on("click", showMainWindow);
@@ -1391,9 +1564,13 @@ async function startServerProcess() {
     bootLog,
     hidden: HIDDEN,
     ops: MAIN_OPS,
-    // 缩图三件活挪出界面线程（为什么见 thumb-sips.js）。OWB_MAIN_PIXELS=native 走回主线程 nativeImage，浸泡测试做反向对照用
-    pixels: process.platform === "darwin" && process.env.OWB_MAIN_PIXELS !== "native"
-      ? require("./thumb-sips").createSipsPixels() : null,
+    // 缩图三件活挪出界面线程（为什么见 thumb-sips.js；谁来做见 pixelsKind）。OWB_MAIN_PIXELS=native 走回主线程 nativeImage，浸泡测试做反向对照用
+    pixels: (() => {
+      const pk = pixelsKind(process.platform, process.env);
+      if (pk === "sips") return require("./thumb-sips").createSipsPixels();
+      if (pk === "render") return require("./browser-render").createRenderPixels({ electron, log: bootLog });
+      return null;
+    })(),
   });
   // 网页截图的 PNG 编码同理（见 htmlshot.js pngOf）：反向对照时一起退回界面线程上的 toPNG
   if (process.env.OWB_MAIN_PIXELS === "native") require("./htmlshot")._internals.setEncoder({ native: true });

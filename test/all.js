@@ -168,6 +168,11 @@ const SUITES = [
   ["library-mkdir", "资料库「新建文件夹」：按钮点下去要真有反应（Electron 里 prompt 一调用就抛）", ELECTRON],
   ["win-away", "桌面窗口收起来就降频、停动画，拿回来就恢复；流式回报收着也照样到", ELECTRON],
   ["web-partition", "agent 打开的网页进内存分区、静音、8 帧：外站 SW 不再往应用 profile 里攒", ELECTRON],
+  ["win-ui", "Windows 界面：资源管理器/Ctrl 的叫法、系统授权卡只在 Mac 出、头像 emoji 不出方块、等宽字带中文、原生控件跟主题"],
+  ["win-main", "Windows 主进程：Alt 不冒英文菜单、托盘图标按缩放挑尺寸、窗口底色跟主题、图片解码不占界面线程"],
+  ["win-paths", "Windows 路径与写盘：文件名、工作区大小写、黑名单写法、改名被占着时重试"],
+  ["win-tools", "Windows 工具层：模型起的坏文件名退回去、python3 垫片、WSL 的 bash 不拿来查语法、后台命令连根收"],
+  ["win-env", "Windows 找得到装好的工具：winget/scoop 目录、重新检测重读注册表 PATH、体检认得出商店占位 Python、打开带逗号的路径"],
   ["busy-adopt", "服务端还在跑、这一页不知道的那趟：发「继续」接上它插进去，不甩 409 红字", ELECTRON],
   ["conn-pool", "同时跑 8 个对话：这一页只占一两条连接，点开别的对话、停止、预览照样秒回", ELECTRON],
   ["renderer-perf", "多开对话时界面线程不白干：出字不排帧、侧栏只补新行、渐隐攒到下一帧量、发送键状态没变不重写", ELECTRON],
@@ -207,8 +212,8 @@ const SUITES = [
 // 这几个套件自己起临时家（单独 `node test/xxx.js` 也不碰真目录）。挂着护栏时 all.js 故意不给它们
 // 临时家和 trace 账本，照单独跑的样子跑：哪天谁删了那一行，护栏当场拦下判红。
 // 给了的话整轮的临时家会替它兜住，漏洞只在单独跑时现身——写真账本的错还被吞掉，谁也看不见。
-// 名单是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是这八个。
-const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience"]);
+// 前八个是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是它们；后面三个 win-* 是写的时候就自己起临时家的。
+const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "win-paths", "win-tools", "win-env"]);
 const ISOLATION_ENV = ["OPENWORKBUDDY_HOME", "OPENWORKBUDDY_DATA_DIR", "OPENWORKBUDDY_TRACE_FILE"];
 {
   const typo = [...SELF_ISOLATED].filter((n) => !SUITES.some(([s]) => s === n));

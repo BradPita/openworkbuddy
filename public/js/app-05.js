@@ -2555,7 +2555,7 @@ function renderOpsPane(pane) {
         <input id="ops-q" placeholder="关键词（会话 id / 登录名 / 报错原文）" style="flex:1;min-width:180px">
         <button class="btn-plain" id="ops-refresh">刷新</button>
       </div>
-      <div id="ops-logs" style="max-height:420px;overflow:auto;font-family:var(--mono, ui-monospace, monospace);font-size:12px;line-height:1.7"></div>
+      <div id="ops-logs" style="max-height:420px;overflow:auto;font-family:var(--font-mono);font-size:12px;line-height:1.7"></div>
     </div>`;
 
   const num = (v, unit = "") => (v == null ? "—" : v + unit);
