@@ -282,6 +282,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 12** Local Codex / Claude Code can read files sent with a message: pasted text, images and documents now come with their full path, not just the file name
 - **Oct 10** Members, auditors and branch-org accounts can create multiple projects too: each gets its own folder inside their own working folder, and earlier outputs stay in the default project
 - **Oct 10** Drag from a canvas card's port onto another card to link them; cards that can't take the link turn red and say why. "+" adds a card that's already linked, and titles and prompts can be edited right on the card
 - **Oct 10** Channels can pick which API images, video and voice use, relays included; Test on Qwen image models no longer shows a false 400, and Model Studio image calls switch sync/async once when refused
