@@ -2032,6 +2032,9 @@
   .hub-empty .btn-plain { margin-left: 8px; }
   /* 模板编辑框：askText 那个 400px 的框装不下几百字的提示词 */
   .ask-box.tpl-ed { width: 600px; max-height: calc(100vh - 40px); overflow: auto; }
+  /* 自动化的添加 / 模版 / 编辑框：模版卡片两列摆得下，表单不至于太宽 */
+  .ask-box.at-dlg { width: 680px; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); overflow: auto; }
+  .at-dlg .at-dlg-tpls { margin-top: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
   .tpl-ed .tpl-f { display: block; margin-top: 12px; }
   .tpl-ed .tpl-f > span { display: block; margin-bottom: 4px; font-size: 12px; color: var(--owb-text-2); }
   .tpl-ed .tpl-f .ask-in { margin-top: 0; }

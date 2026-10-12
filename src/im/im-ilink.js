@@ -59,6 +59,13 @@ const DEFAULT_LONGPOLL_MS = 35000;
 const LONGPOLL_EXTRA_MS = 5000;
 const RECONNECT_MIN_MS = 3000;
 const RECONNECT_MAX_MS = 60000;
+// 连不上（fetch failed / 连接被重置 / 解析失败）多半是本机网络或代理抖一下，几秒就好：
+// 按服务端报错那套从 3 秒翻到 60 秒，抖完还要干等一分钟才收得到消息。这类从 1 秒起、最多 10 秒
+const NET_RETRY_MIN_MS = 1000;
+const NET_RETRY_MAX_MS = 10000;
+// 「对方正在输入」：微信那头几秒不续就自己消失，跑任务期间每 5 秒续一次；最长挂 10 分钟，防忘了收
+const TYPING_REFRESH_MS = 5000;
+const TYPING_MAX_MS = 10 * 60 * 1000;
 const SEND_LIMIT = 2000; // 微信文本比其他渠道严，按字符切
 
 /** X-WECHAT-UIN：随机 uint32 转字符串再 base64 */
@@ -188,10 +195,13 @@ async function pollQrStatus(qrcode, baseUrl) {
  * @param onMessage  async ({ userId, text, saved, failed }) => void  收到用户消息
  *                   saved/failed 是本条消息里的附件：已落盘的 / 没收下来的
  * @param onCursor   (buf) => void  游标变化（调用方负责持久化，重启不重放）
+ * @param onContext  (tokens) => void  谁最近发过话、凭据是哪个（{ userId: context_token }）。
+ *                   调用方落盘，重启后 getConfig().context_tokens 读回来——不然每次重启都得
+ *                   对方先说一句，定时任务才推得到他微信上
  * @param downloadMedia async ({ kind, name, media }) => 落盘后的文件名。由调用方实现——
  *                   只有它知道工作目录在哪；不传就退化成「收到但下不了」，但仍然会告诉用户
  */
-function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log = console, downloadMedia = null }) {
+function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, onContext = () => {}, log = console, downloadMedia = null }) {
   const cfg = () => getConfig() || {};
   const uin = randomUin();
 
@@ -204,6 +214,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
   let loopRunning = false;
 
   const contextTokens = new Map(); // userId -> 最近一条消息的 context_token（回消息必须带）
+  const typingTickets = new Map(); // userId -> { ct, ticket }：凭据换了就重新要
   const seen = new Map(); // 去重：key -> ts
 
   function markSeen(key) {
@@ -255,6 +266,68 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     if (r.ret !== undefined && r.ret !== 0) {
       throw new Error(`发送失败 ret=${r.ret} errcode=${r.errcode || ""} ${r.errmsg || ""}`);
     }
+  }
+
+  /**
+   * 主动推一条给所有发过话的人（定时任务跑完、notify_user）。返回推成功的人数；
+   * 一个都没有就抛错，原话交给调用方——没人发过话和全部发送失败是两回事，都得说清。
+   */
+  async function pushAll(text) {
+    const ids = [...contextTokens.keys()];
+    if (!ids.length) throw new Error("还没人给这个微信机器人发过话，发不了。先在微信里给它发一句");
+    let ok = 0;
+    let lastErr = null;
+    for (const uid of ids) {
+      try { await send(uid, text); ok++; } catch (e) { lastErr = e; }
+    }
+    if (!ok) throw lastErr;
+    return ok;
+  }
+
+  function loadContexts() {
+    contextTokens.clear();
+    const saved = cfg().context_tokens;
+    if (saved && typeof saved === "object") {
+      for (const [uid, ct] of Object.entries(saved)) if (uid && typeof ct === "string" && ct) contextTokens.set(uid, ct);
+    }
+  }
+
+  async function typingTicket(userId) {
+    const ct = contextTokens.get(userId);
+    if (!ct) return null;
+    const hit = typingTickets.get(userId);
+    if (hit && hit.ct === ct) return hit.ticket;
+    const r = await apiPost("ilink/bot/getconfig", { ilink_user_id: userId, context_token: ct, base_info: baseInfo() }, 10000);
+    if (!r.typing_ticket) return null;
+    typingTickets.set(userId, { ct, ticket: r.typing_ticket });
+    return r.typing_ticket;
+  }
+
+  async function sendTyping(userId, on) {
+    const ticket = await typingTicket(userId);
+    if (!ticket) return;
+    await apiPost("ilink/bot/sendtyping", { ilink_user_id: userId, typing_ticket: ticket, status: on ? 1 : 2, base_info: baseInfo() }, 10000);
+  }
+
+  /**
+   * 跑任务期间让对方看到「对方正在输入」，返回收起函数。只是个提示：
+   * 出错只记日志，不影响任务和回复；收起函数多调几次也没事。
+   */
+  function startTyping(userId) {
+    let done = false;
+    const fail = (e) => log.warn(`[微信iLink] 「正在输入」没发出去: ${e.message}`);
+    sendTyping(userId, true).catch(fail);
+    const timer = setInterval(() => { sendTyping(userId, true).catch(fail); }, TYPING_REFRESH_MS);
+    const cap = setTimeout(() => stopIt(), TYPING_MAX_MS);
+    if (timer.unref) { timer.unref(); cap.unref(); }
+    function stopIt() {
+      if (done) return Promise.resolve();
+      done = true;
+      clearInterval(timer);
+      clearTimeout(cap);
+      return sendTyping(userId, false).catch(fail);
+    }
+    return stopIt;
   }
 
   /** 回消息：必须有该用户的 context_token（来自他最近一条消息），否则微信不收 */
@@ -345,7 +418,10 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     const key = dedupKey(msg);
     if (isDuplicate(key)) return;
     markSeen(key);
-    if (msg.context_token) contextTokens.set(userId, msg.context_token);
+    if (msg.context_token && contextTokens.get(userId) !== msg.context_token) {
+      contextTokens.set(userId, msg.context_token);
+      try { onContext(Object.fromEntries(contextTokens)); } catch (e) { log.error(`[微信iLink] 记不下回话凭据: ${e.message}`); }
+    }
     const { text, media, notes } = describeItems(msg.item_list);
     const saved = [];
     const failed = notes.slice();
@@ -360,11 +436,16 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     }
     // 一条消息里三样都空才算「没内容」——附件没下成也要报给用户，不能静默吞掉
     if (!text && !saved.length && !failed.length) return;
-    await onMessage({ userId, text, saved, failed });
+    // 交出去就回来接着收，不等任务跑完：以前在这儿 await 整个任务，跑两分钟就两分钟不收消息，
+    // 中途发的「停」也要等任务自己跑完才看得到。先后顺序不受影响——同一个人的消息是按交出去的顺序排队的
+    Promise.resolve()
+      .then(() => onMessage({ userId, text, saved, failed }))
+      .catch((e) => log.error(`[微信iLink] 处理消息出错: ${e.message}`));
   }
 
   async function pollLoop() {
     let backoff = RECONNECT_MIN_MS;
+    let netBackoff = NET_RETRY_MIN_MS;
     while (!stopping) {
       const startedAt = Date.now();
       try {
@@ -392,6 +473,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
         state = "connected";
         lastError = "";
         backoff = RECONNECT_MIN_MS;
+        netBackoff = NET_RETRY_MIN_MS;
 
         if (r.get_updates_buf && r.get_updates_buf !== cursor) {
           cursor = r.get_updates_buf;
@@ -413,9 +495,11 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
         if (e.name === "TimeoutError" || e.name === "AbortError" || elapsed >= floor) continue;
         state = "failed";
         lastError = e.message;
-        log.error(`[微信iLink] 轮询出错（${elapsed}ms）: ${e.message}`);
-        await sleep(backoff);
-        backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
+        // fetch failed 自己什么都不说，真凶（ECONNRESET / ENOTFOUND / 证书）在 cause 里，带上才查得动
+        const code = e.cause && (e.cause.code || e.cause.message);
+        log.error(`[微信iLink] 轮询出错（${elapsed}ms）: ${e.message}${code ? `（${String(code).slice(0, 80)}）` : ""}`);
+        await sleep(netBackoff);
+        netBackoff = Math.min(netBackoff * 2, NET_RETRY_MAX_MS);
       }
     }
     loopRunning = false;
@@ -433,7 +517,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
 
     stopping = false;
     seen.clear();
-    contextTokens.clear();
+    loadContexts();
     cursor = c.get_updates_buf || "";
     state = "connecting";
     lastError = "";
@@ -454,6 +538,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     loopRunning = false;
     state = "off";
     contextTokens.clear();
+    typingTickets.clear();
     seen.clear();
   }
 
@@ -469,7 +554,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     };
   }
 
-  return { start, stop, send, sendFile, status, hasContext: (uid) => contextTokens.has(uid) };
+  return { start, stop, send, sendFile, pushAll, startTyping, status, hasContext: (uid) => contextTokens.has(uid) };
 }
 
 module.exports = {

@@ -38,10 +38,24 @@ function verifyUrlOf(text) {
   return m ? m[0].replace(/[.,;：。]+$/, "") : "";
 }
 
+/**
+ * lark-cli 起应用时先在终端里画一张二维码（▀▄█ 拼的），再打链接和「等待配置应用...」。
+ * 这些是给终端看的，原样塞进报错就成了一大片红块 —— 认报错之前先摘掉。
+ */
+function stripLarkNoise(raw) {
+  return String(raw || "")
+    .split(/\r?\n/)
+    .filter((l) => !/[\u2580-\u259f]/.test(l) && !/https?:\/\//.test(l) &&
+      !/打开以下链接|等待配置应用|open (this|the following) (url|link)|waiting for/i.test(l))
+    .join("\n")
+    .trim();
+}
+
 /** 建应用/授权失败时，把 lark-cli 那串英文报错翻成一句用户看得懂的中文 */
 function explainLarkError(raw) {
-  const s = String(raw || "").trim();
-  if (!s) return "lark-cli 没有返回内容";
+  if (!String(raw || "").trim()) return "lark-cli 没有返回内容";
+  const s = stripLarkNoise(raw);
+  if (!s) return "lark-cli 停了，没配好应用。再点一次";
   if (/OPENCLAW_HOME|HERMES_HOME|Agent workspace/i.test(s)) return "lark-cli 认为自己在 Agent 环境里，拒绝新建应用；重启 OpenWorkBuddy 再试一次";
   if (/config init|app.?id.*(missing|empty)|no apps/i.test(s)) return "lark-cli 还没绑定应用：先「扫码新建应用」，或自己跑 lark-cli config init";
   if (/app registration failed/i.test(s)) return "飞书那边没能把应用建出来（多半是你的账号没有创建应用的权限，需要企业管理员开）";
@@ -68,6 +82,17 @@ function usableSecret(v) {
 const SECRET_LOCKED_HINT =
   "lark-cli 把 App Secret 锁在系统钥匙串里，命令行读不出来（它只进不出）。最后一步得你自己来：去开放平台复制 App Secret，粘到下面的「粘一段过来自动识别」框里。";
 
+/**
+ * `config init --new` 结束后，算不算「应用配好了」。
+ * 扫码进去不光能新建，也能选一个已有应用 —— 选的要是原来那个，App ID 就不变。
+ * 所以 lark-cli 正常走完（退出码 0）且读得到 App ID 就算；没走完的话，得换出一个新 App ID 才算。
+ */
+function appReady(before, after, code) {
+  const id = (after && after.appId) || "";
+  if (!id) return false;
+  return code === 0 || !before || !before.appId || before.appId !== id;
+}
+
 /** 拼一条直达这个应用「凭证与基础信息」页的链接，省得用户自己在后台里翻 */
 function appConsoleUrl(appId, brand) {
   if (!/^cli_[A-Za-z0-9]+$/.test(String(appId || ""))) return "";
@@ -75,4 +100,4 @@ function appConsoleUrl(appId, brand) {
   return `https://${host}/app/${appId}/baseinfo`;
 }
 
-module.exports = { parseConfigShow, verifyUrlOf, explainLarkError, usableSecret, SECRET_LOCKED_HINT, appConsoleUrl };
+module.exports = { parseConfigShow, verifyUrlOf, stripLarkNoise, explainLarkError, appReady, usableSecret, SECRET_LOCKED_HINT, appConsoleUrl };

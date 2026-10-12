@@ -1065,6 +1065,10 @@ function testVerdictGate() {
   // error 口子也得有药方：同一个断网从异常上来和从正文上来，不能一次有诊断一次没有
   assert(/连不上上游/.test(explainRunError("fetch failed ECONNREFUSED")), "error 口子的断网没被认出来");
   assert(explainRunError("积分不足：管理员可以充值") === "积分不足：管理员可以充值", "认不出的错该原样返回，不该套壳");
+  // 2026-10-12 真实一条：先报了天气，后面顺嘴说某个子步骤 fetch failed。头一句是交付，不许扣「连不上上游」
+  assert(judgeRun({ result: "深圳今日晴间多云、25–32℃，午间偏热。`follow-builders` 取数返回 `fetch failed`，日报没生成。飞书消息未发出。" }).ok === true,
+    "正文头一句是交付、后面提到子步骤 fetch failed，被扣成了「连不上上游」");
+  assert(judgeRun({ result: "LLM 接口错误: fetch failed ECONNREFUSED" }).label.includes("连不上上游"), "反向对照：开口就是那句报错，照样认得出");
   // 反向断言：闸门自己得会红。把「甩后台」这类正文喂进去若还判成功，说明判据被改坏了
   assert(judgeRun({ result: "任务已提交，等结果出来再同步给你。" }).ok === false, "闸门失灵：明显的甩后台话术被判成了成功");
   console.log(`✅ 任务裁定闸门：${cases.length} 类运行判定全对（撞上限/上游报错/空跑/甩后台/半截 判红，真交付与合法短回复放行）· 重试按死因分档 · error 与正文两个口子同诊断`);
@@ -6619,7 +6623,7 @@ async function testScheduleRunTrace() {
     await sched.runOne(t, "手动");
     assert(seen[0] && typeof seen[0].emit === "function" && seen[0].sessionId,
       "★runTask 没拿到 emit/sessionId★ 那就是一个字的过程都不会被记下来——运行记录永远只有一句结果。实际：" + Object.keys(seen[0] || {}).join("/"));
-    assert(seen[0].history && seen[0].history[0].content === "写今天的日报", "任务正文没送进去，录下来的过程就对不上这条任务");
+    assert(seen[0].history && String(seen[0].history[0].content).startsWith("写今天的日报"), "任务正文没送进去，录下来的过程就对不上这条任务");
     const r1 = sched.runs(10)[0];
     assert.strictEqual(r1.session_id, "s_fake_1",
       "★运行记录上没挂 session_id★ 前端那条「看执行过程」就没有 id 可点，等于这一趟又白录了");
@@ -16289,6 +16293,17 @@ function testLarkCliParse() {
   assert(/重新点/.test(L.explainLarkError("context deadline exceeded")), "超时没告诉用户重试");
   assert(/没有返回内容/.test(L.explainLarkError("")), "空输入没兜底");
   // 认不出来的原样给（截断），但不能是空 —— 用户至少得看见点东西
+  // 起应用时 lark-cli 先在终端画一张 ▀▄█ 拼的二维码再打链接：这些原样进报错就是一大片红块
+  const qrOut = "█▀▀▀▀▀█ ▄▀▄ █▀▀▀▀▀█\n█ ███ █ ▀█▄ █ ███ █\n\n打开以下链接配置应用:\n\n  https://open.feishu.cn/page/cli?x=1\n\n等待配置应用...\n";
+  const qrMsg = L.explainLarkError(qrOut);
+  assert(!/[\u2580-\u259f]/.test(qrMsg) && !/https?:/.test(qrMsg) && /再点一次/.test(qrMsg), "终端二维码 / 链接漏进报错了：" + qrMsg);
+  assert(/权限/.test(L.explainLarkError(qrOut + "app registration failed")), "摘掉二维码后真报错得照样认得出");
+  // 扫码进去能新建，也能选已有应用：选回原来那个，App ID 不变，也得算配好（以前当失败，还把整段输出当报错）
+  assert(L.appReady({ appId: "cli_a" }, { appId: "cli_a" }, 0), "选回原来那个已有应用、lark-cli 正常走完，没算配好");
+  assert(L.appReady({ appId: "cli_a" }, { appId: "cli_b" }, 0) && L.appReady(null, { appId: "cli_b" }, 0), "新建出来的应用没算配好");
+  // 负向控制：没走完（被停掉 / 报错退出）且 App ID 没变，不能当成配好；读不到 App ID 更不算
+  assert(!L.appReady({ appId: "cli_a" }, { appId: "cli_a" }, 1) && !L.appReady({ appId: "cli_a" }, { appId: "cli_a" }, null), "没走完也当成配好了");
+  assert(!L.appReady(null, null, 0) && !L.appReady({ appId: "cli_a" }, {}, 0), "读不到 App ID 也当成配好了");
   const weird = L.explainLarkError("some brand new failure from upstream");
   assert(weird && weird.length > 0 && !/undefined/.test(weird), "认不出的错误被吞了：" + weird);
 

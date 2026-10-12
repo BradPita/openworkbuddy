@@ -843,7 +843,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
             try { await reply(`「${f.name}」没发出去（${chatWhy(e, 100)}），可在 OpenWorkBuddy 工作台下载。`); } catch {}
           }
         }
-        await pushBots(`【OpenWorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
+        await pushBots(`【OpenWorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`, { skip: [channel] });
       } catch (e) {
         const why = String(e.message || e).slice(0, 300);
         const said = chatWhy(e, 300); // 进聊天、上卡片的那份不带本机路径；日志里留原文
@@ -864,6 +864,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         if (runningTasks.get(sessionKey) === stopCtl) runningTasks.delete(sessionKey);
         if (sendCtl !== stopCtl && runningTasks.get(sessionKey) === sendCtl) runningTasks.delete(sessionKey);
         liveProgress.delete(sessionKey); // 任务收尾，进度条目摘掉，别让网页一直显示「执行中」
+        recallStatus().catch(() => {}); // 兜底：哪条路漏了收，状态（微信的「正在输入」）也别一直挂着
         if (card && card.ackMsgId) feishuAckClear(card.ackMsgId, card.ackId).catch(() => {}); // 表情收尾：任务完了就把「稍等」摘掉
       }
     });
@@ -1504,6 +1505,13 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       config.im.wechat_ilink.get_updates_buf = buf;
       saveConfig();
     },
+    // 谁发过话：落盘，重启后定时任务照样推得到他微信上
+    onContext: (tokens) => {
+      config.im = config.im || {};
+      config.im.wechat_ilink = config.im.wechat_ilink || {};
+      config.im.wechat_ilink.context_tokens = tokens;
+      saveConfig();
+    },
     // 用户发来的图片/文件/语音：下载解密后落进工作目录，agent 就能直接读它
     downloadMedia: async ({ kind, name, media }) => {
       const buf = await imMedia.downloadWechatCdn(media, { cdnBaseUrl: ilinkCfg().cdn_base_url });
@@ -1520,11 +1528,19 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         text: t,
         logExtra: { chat: userId },
         reply: (out) => ilink.send(userId, out),
+        // 微信没法撤回状态消息，就挂「对方正在输入」：收到就亮，出结果前收起，聊天里不多一条
+        status: { send: async () => ilink.startTyping(userId), recall: async (stopTyping) => stopTyping && stopTyping() },
         // 微信也能收成果文件了（走 CDN 上传），不用再打发用户去工作台下载
         sendFile: (rel) => ilink.sendFile(userId, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
         sendImage: (abs, name) => ilink.sendFile(userId, abs, name),
       });
     },
+  });
+
+  // 定时任务跑完、notify_user 都走 notify.pushBots：连上了、有人发过话就推到微信
+  notify.registerPusher("wechat_ilink", {
+    ready: () => { const st = ilink.status(); return st.configured && st.repliable > 0; },
+    push: (text) => ilink.pushAll(text),
   });
 
   async function startIlink(force = false) {
@@ -1683,8 +1699,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // ---------- 机器人推送（企业微信 + 钉钉，配了哪个推哪个） ----------
 
-  async function pushBots(text) {
-    const sent = await notify.pushBots(config, text);
+  async function pushBots(text, opt) {
+    const sent = await notify.pushBots(config, text, opt);
     for (const ch of sent) logIm(ch, "out", text);
   }
 

@@ -4141,7 +4141,7 @@ const IM_CHANNELS = [
     fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
     groupPolicy: true,
     test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
-    help: ["飞书开放平台建自建应用，加「机器人」能力", "开通权限 im:message、im:message:send_as_bot", "事件订阅选「长连接」，加 im.message.receive_v1；拉进群后 @ 它下任务", "要在文档评论里 @ 它：再加 drive.notice.comment_add_v1 事件和 docs:document.comment:read 权限", "发布版本，回来填 App ID / App Secret（可整页粘贴自动识别）", "或点「扫码新建应用」：本机有 lark-cli 时自动建好并填入 App ID"],
+    help: ["飞书开放平台建自建应用，加「机器人」能力", "开通权限 im:message、im:message:send_as_bot", "事件订阅选「长连接」，加 im.message.receive_v1；拉进群后 @ 它下任务", "要在文档评论里 @ 它：再加 drive.notice.comment_add_v1 事件和 docs:document.comment:read 权限", "发布版本，回来填 App ID / App Secret（可整页粘贴自动识别）", "或点「扫码新建或选已有应用」：本机有 lark-cli 时，扫完自动填入 App ID"],
     // 缺哪一半就写哪一半：以前只写「未连接」，用户看不出是没填、填错、还是没联网
     status: (st) => { const f = st.feishu || {}; const m = f.missing || [];
       if (m.length === 1) return ["warn", "还差 " + m[0]];
@@ -4216,11 +4216,11 @@ function renderImPane(pane, s) {
   // 用户问过两次「不能扫码连机器人吗」——单纯扫码不行（机器人=应用，平台只认 app_id/secret），
   // 但可以扫码把应用建出来，效果一样：一个字都不用手打。
   const newappHtml = (c) => (c.newapp ? `<div class="im-newapp" data-newapp="${c.key}">
-      <button class="btn-plain" data-act="newapp">${ic("smartphone")} 扫码新建应用</button>
-      <span class="d" style="font-size:12px;margin-left:8px">没有现成应用？让本机 lark-cli 替你建一个，建完 App ID 自动填上</span>
+      <button class="btn-plain" data-act="newapp">${ic("smartphone")} 扫码新建或选已有应用</button>
+      <span class="d" style="font-size:12px;margin-left:8px">让本机 lark-cli 出个码，扫完新建一个或选你已有的应用，App ID 自动填上</span>
       <div data-newapp-qr="${c.key}" style="display:none;margin:8px 0">
         <img alt="新建飞书应用的授权二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--owb-border)">
-        <div class="d" style="font-size:12px;margin-top:4px">用飞书扫这个码，或 <a class="link" target="_blank" rel="noopener" data-newapp-link="${c.key}">在浏览器里打开</a>，按提示建好应用即可</div>
+        <div class="d" style="font-size:12px;margin-top:4px">用飞书扫这个码，或 <a class="link" target="_blank" rel="noopener" data-newapp-link="${c.key}">在浏览器里打开</a>，新建或选一个已有应用即可</div>
       </div>
       <div class="im-r ok-msg" data-newapp-r="${c.key}"></div>
     </div>` : "");
@@ -4411,7 +4411,7 @@ function renderImPane(pane, s) {
         if (a) a.href = d.url || "#";
         box.style.display = "";
       }
-      newappSay(c, "用飞书扫码（或点上面的链接）建应用，建完这里会自动填好凭证。等你操作…");
+      newappSay(c, "用飞书扫码（或点上面的链接），新建或选一个应用，好了这里会自动填上。等你操作…");
       newappPolling = true;
       const t0 = Date.now();
       while (Date.now() - t0 < 15 * 60 * 1000) {
@@ -4422,7 +4422,7 @@ function renderImPane(pane, s) {
           const el = pane.querySelector("#" + inputId(c, "app_id"));
           if (el && st.app_id) el.value = st.app_id; // secret 留空：后端已经存好，空值不会覆盖
           if (box) box.style.display = "none";
-          newappSay(c, "应用建好了" + (st.app_id ? "（App ID " + st.app_id + "）" : "") + "，凭证已经填进来，长连接正在起", "ok");
+          newappSay(c, "应用配好了" + (st.app_id ? "（App ID " + st.app_id + "）" : "") + "，凭证已经填进来，长连接正在起", "ok");
           await refreshStatus(false);
           return;
         }
@@ -4432,7 +4432,7 @@ function renderImPane(pane, s) {
           const el = pane.querySelector("#" + inputId(c, "app_id"));
           if (el && st.app_id) el.value = st.app_id;
           if (box) box.style.display = "none";
-          newappSay(c, "应用建好了（App ID 已经替你填上）。" + (st.error || ""), "ok", st.console_url || "");
+          newappSay(c, "应用配好了（App ID 已经替你填上）。" + (st.error || ""), "ok", st.console_url || "");
           return;
         }
         if (st.state === "error") {

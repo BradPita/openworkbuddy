@@ -1369,6 +1369,9 @@ async function rejects(p) {
         ] }] });
       }
       if (u === "https://ilink2.test/ilink/bot/sendmessage") { fcalls.push({ kind: "ilink2" }); return json({ ret: 0 }); }
+      // 跑任务期间的「对方正在输入」：要票、亮/收，不是消息
+      if (u === "https://ilink2.test/ilink/bot/getconfig") return json({ ret: 0, typing_ticket: "tk" });
+      if (u === "https://ilink2.test/ilink/bot/sendtyping") { fcalls.push({ kind: "typing" }); return json({ ret: 0 }); }
       // QQ：换 token、取网关、回消息
       if (u === "https://bots.qq.com/app/getAppAccessToken") return json({ access_token: "qqtok", expires_in: 7200 });
       if (u === "https://api.sgroup.qq.com/gateway/bot") return json({ url: "wss://qq.test/ws" });

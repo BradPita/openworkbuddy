@@ -238,6 +238,8 @@ function cronMatches(cron, date) {
  *   - done 在这一趟收尾时调一次，成败都调，负责把会话落盘
  *   没插 recorder（CLI、测试）就跟以前一模一样：不录、不留 session_id、不影响执行本身。
  */
+const PUSH_NOTE = "\n\n（这是定时任务。你最后的回复会原样推给用户——连好的微信、企业微信/钉钉群机器人都会收到，不用自己再找工具去发。）";
+
 function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion, newsGate, doubtTimeoutMs, ownerProblem, orgOf }) {
   /**
    * 「跑绿之后再看一眼」。给的是一个函数，不是一份配置——scheduler 不认 config、不发请求，
@@ -559,7 +561,9 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
     };
     try {
       // 每次执行用全新会话，避免历史无限增长
-      const history = [{ role: "user", content: item.task }];
+      // 末尾那句交代「最后的回复会推出去」：不说的话「叫我起床」这类任务，agent 会满世界找发消息的工具
+      // （翻 lark-cli、翻连接器），找不到就回一句「发不出去」——而结果本来就会推到连好的微信 / 群机器人上
+      const history = [{ role: "user", content: item.task + PUSH_NOTE }];
       // stopped 是 runTask 自己报的「撞上限 / 模型挂死 / 手动停止」。以前这里把它解构掉了，
       // 于是一个跑满 25 步被强制收尾的任务，运行记录里照样是个 ✅——活没干完却显示干成了。
       // 替谁跑就报谁的名字：身份、账单、工作目录、命令行开关都跟着他走（见 server.js accountedRuntime）。

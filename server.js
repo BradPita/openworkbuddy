@@ -5295,10 +5295,10 @@ app.post("/api/feishu/app/create", async (_req, res) => {
   child.stdout.on("data", (c) => (out += c));
   child.stderr.on("data", (c) => (out += c));
   child.on("error", (e) => { if (larkNew) { larkNew.state = "error"; larkNew.error = larkCli.explainLarkError(e.message); } });
-  child.on("close", async () => {
+  child.on("close", async (code) => {
     if (!larkNew || larkNew.child !== child) return; // 已被新的一轮顶掉
     const cfg = await larkConfig();
-    const born = cfg && cfg.appId && (!before || cfg.appId !== before.appId);
+    const born = larkCli.appReady(before, cfg, code); // 选了原来那个已有应用也算，见 appReady
     if (born) {
       const r = adoptLarkCreds(cfg);
       larkNew.app_id = cfg.appId;

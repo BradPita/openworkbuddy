@@ -194,7 +194,7 @@ const DECIDE_TOOL = {
 const NOTIFY_TOOL = {
   name: "notify_user",
   description:
-    "把一条消息推到用户配置好的群机器人（企业微信 / 钉钉）。用户说「发到群里」「推给我」「跑完通知我」时用它。" +
+    "把一条消息推给用户：配好的群机器人（企业微信 / 钉钉），以及助理模式里连好的个人微信。用户说「发到群里」「推给我」「发我微信」「跑完通知我」「叫我起床」时用它。" +
     "纯文本，2000 字以内，太长就先自己缩成摘要——群消息不是交付物，链接和文件名要写全，别让人回头再找你要。",
   input_schema: {
     type: "object",
@@ -1201,7 +1201,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       p += `\n- feishu_doc_create：把 Markdown 内容创建成飞书云文档交付给用户（用户要求"发到飞书/建飞书文档"时用它，不要自己找凭证写脚本）`;
     }
     if (botWebhookOn()) {
-      p += `\n- notify_user：把一条消息推到用户的群机器人（企业微信/钉钉）。用户说"发到群里/推给我/跑完通知我"时用它，别在回复里写"请你手动转发"`;
+      p += `\n- notify_user：把一条消息推给用户（企业微信/钉钉群机器人、连好的个人微信）。用户说"发到群里/推给我/发我微信/跑完通知我"时用它，别在回复里写"请你手动转发"`;
     }
 
     if (skills.length) {
@@ -1413,10 +1413,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
 
   const READ_ONLY_TOOLS = ["read_file", "read_document", "list_files", "search_files", "find_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image", "brand_kit_read"];
 
-  /** 配没配群机器人。两个通道任一有地址就算配了——notify.pushBots 本来就是有哪个推哪个 */
+  /** 有没有推得出去的通道：群机器人地址，或连好了、有人发过话的个人微信——notify.pushBots 有哪个推哪个 */
   function botWebhookOn() {
-    const im = config.im || {};
-    return !!(im.wecom_bot_webhook || im.dingtalk_webhook);
+    return require("../core/obs/notify").anyPushReady(config);
   }
 
   function toolList(depth, mode) {
@@ -1661,9 +1660,9 @@ function modePrompt(mode) {
       // pushBots 单通道失败只写一行 console.warn 就咽了，返回的数组才是真凭据。
       // 不看它就会出现「工具说成功、群里什么都没有」——比报错更难查
       if (!sent.length) {
-        return { content: "一个通道都没推成（webhook 可能填错了或已失效）。去 设置 → 通知 里核对企业微信/钉钉的地址。", isError: true };
+        return { content: "一个通道都没推成（webhook 可能填错了或已失效，或微信那头发送失败）。去 设置 → 通知 核对企业微信/钉钉的地址，或在微信里给机器人发一句再试。", isError: true };
       }
-      return { content: `已推送到：${sent.map((s) => ({ wecom: "企业微信", dingtalk: "钉钉" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
+      return { content: `已推送到：${sent.map((s) => ({ wecom: "企业微信", dingtalk: "钉钉", wechat_ilink: "微信" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
     }
     if (tc.name === "decide") {
       const state = String(tc.input.state == null ? "" : tc.input.state);
@@ -4029,7 +4028,7 @@ const TOOL_VERB = {
   check_page: "体检", html_to_image: "截图", look_at_image: "看图", generate_image: "生图",
   generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记住",
   forget: "忘掉", library_list: "翻资料库", library_read: "读资料", library_import: "取素材", save_skill: "存技能", install_skill: "装技能",
-  add_connector: "加连接器", use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
+  add_connector: "加连接器", use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推给你",
   schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团", explore: "探索",
   find_files: "找文件", multi_edit: "改", shell_output: "看后台输出", shell_kill: "停后台", todo_write: "进度",

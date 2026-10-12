@@ -4531,6 +4531,10 @@ const NAV0 = APP01_NAV.indexOf('const PLATFORM_ONLY_VIEWS = ["autom", "eval", "t
 const NAV1 = APP01_NAV.indexOf("// 这个选择器只管「当前对话」用哪个模型");
 const AUT0 = APP03_AT.indexOf("async function renderAutomPage() {");
 const AUT1 = APP03_AT.indexOf("function renderAutomTplPicker(box) {");
+// 添加 / 模版 / 编辑都开在弹框里：开框、收框这两个函数用真的，表单和模版内容喂桩
+const ADL0 = APP03_AT.indexOf("function openAutomDialog(fill) {");
+const ADL1 = APP03_AT.indexOf("function renderAutomForm(box, tpl) {", ADL0);
+if (ADL0 < 0 || ADL1 <= ADL0) throw new Error("app-03.js 的 openAutomDialog 那段找不到了（改名/挪走？），自动化弹框测试没法定位真源码");
 const RUN0 = APP03_AT.indexOf("async function renderAutomRuns(page) {");
 const RUN1 = APP03_AT.indexOf("// ================= 资料库页（");
 // 起点是 libTaskOf 而不是 renderLibPage：libIcon / LIB_KINDS / libKindOk / libWhen / libMark
@@ -4573,7 +4577,7 @@ const DEAD_SRC = HOSTCAP_SRC + "\n" + srcBlock("function revealFile(") + "\n" + 
   + "\n" + ACT_SRC + "\n" + APP01_NAV.slice(PVK0, PVK1) + "\n"
   + APP01_NAV.slice(NAV0, NAV1) + "\n" + APP01_NAV.slice(PVF0, PVF1)
   + "\n" + APP01_NAV.slice(OVH0, OVH1)
-  + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(RUN0, RUN1)
+  + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(ADL0, ADL1) + "\n" + APP03_AT.slice(RUN0, RUN1)
   + "\n" + APP04_LIB.slice(LIB0, LIB1);
 const DEAD_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
   + "<div class='side-nav top'>"
@@ -4852,7 +4856,7 @@ const DEAD_CHECKS = `
     } });
   }
   // 这几页周边的零碎（表单、模版选择器、CSV/Markdown 渲染）不是这次要测的，喂桩
-  window.automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), showForm: false, editing: null };
+  window.automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null };
   // 资料库现在有三种视图和类型筛选，state 少一个字段就整页塌，所以桩要跟真的一样全
   window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all" };
   window.libOutCache = null;          // 产出索引：renderLibPage 拿到就往这儿存，预览页靠它反查「出自哪次任务」
@@ -4863,8 +4867,8 @@ const DEAD_CHECKS = `
   // 只跑一次那种没有 cron，页面走的是 whenToHuman；桩少这一个，自动化整页就塌在 ReferenceError 上
   window.whenToHuman = (t) => (t && t.at ? "今天 14:05（只跑一次）" : "每天 9:00");
   window.escInline = (s) => String(s == null ? "" : s);
-  window.renderAutomForm = () => {};
-  window.renderAutomTplPicker = () => {};
+  window.renderAutomForm = (box) => { box.innerHTML = '<div class="at-form">表单桩</div>'; };
+  window.renderAutomTplPicker = (box) => { box.innerHTML = '<div class="tpl-grid">模版桩</div>'; };
   window.renderMd = (t) => String(t);
   window.fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
   window.pageKind = "autom";
@@ -5021,6 +5025,27 @@ const DEAD_CHECKS = `
   await renderAutomPage();
   ok("反向对照：平台管理员看得到任务行", !!page.querySelector(".at-row"));
   ok("反向对照：「＋ 添加自动化」在", !!page.querySelector("#at-new"));
+  {
+    // 2026-10-12 用户：「从模版添加」「添加自动化」要弹个框选，别在列表上方原地撑高
+    const masks = () => document.querySelectorAll(".ask-mask .at-dlg");
+    const before = page.innerHTML;
+    page.querySelector("#at-new").click();
+    ok("★点「添加自动化」弹出一个框，表单在框里★", masks().length === 1 && !!masks()[0].querySelector(".at-form"), masks().length);
+    ok("★页面本身一个字没多（不再原地撑开）★", page.innerHTML === before && !page.querySelector(".at-form"));
+    page.querySelector("#at-tpl").click();
+    ok("★点「从模版添加」：旧框先收，只剩一个框，里面是模版★", masks().length === 1 && !!masks()[0].querySelector(".tpl-grid"), masks().length);
+    const esc = (o) => { const e = new window.KeyboardEvent("keydown", Object.assign({ key: "Escape", bubbles: true, cancelable: true }, o)); document.dispatchEvent(e); };
+    esc({ isComposing: true });
+    ok("输入法选字时按 Esc 不收框", masks().length === 1);
+    esc({});
+    ok("★Esc 收框★", masks().length === 0);
+    page.querySelector("#at-new").click();
+    document.querySelector(".ask-mask").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    ok("点框外不收（填一半不会手滑丢掉）", masks().length === 1);
+    closeAutomDialog(masks()[0]);
+    ok("closeAutomDialog（取消、保存后走它）收掉框", masks().length === 0 && window.automState.editing === null);
+    ok("自动化页上不再留原地展开的那块空位", !page.querySelector("#at-form-box"));
+  }
   window.automState.tab = "runs";
   await renderAutomPage();
   ok("反向对照：运行记录画得出表格", !!page.querySelector(".at-runs"));
@@ -5781,14 +5806,14 @@ const LIBWS_CHECKS = `
   window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all", mode: "list", group: "none" };
   window.libOutCache = null;
   window.libTaskShut = new Set();
-  window.automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), showForm: false, editing: null };
+  window.automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null };
   window.opened = [];
   window.openSession = (id) => window.opened.push(id);
   window.cronToHuman = () => "每天 9:00";
   window.whenToHuman = () => "每天 9:00";
   window.escInline = (s) => String(s == null ? "" : s);
-  window.renderAutomForm = () => {};
-  window.renderAutomTplPicker = () => {};
+  window.renderAutomForm = (box) => { box.innerHTML = '<div class="at-form">表单桩</div>'; };
+  window.renderAutomTplPicker = (box) => { box.innerHTML = '<div class="tpl-grid">模版桩</div>'; };
   window.renderMd = (t) => String(t);
   window.fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
   window.pageKind = "lib";
@@ -8104,7 +8129,7 @@ const IMPANE_CHECKS = `
   // 机器人在飞书就是一个「应用」，平台只认 app_id/app_secret，扫码换不来这两串；
   // 但可以扫码把应用建出来 —— 建完凭证由后端接管，用户一个字都不用手打。
   const na = fsC.querySelector('[data-newapp] [data-act="newapp"]');
-  ok("飞书卡上有「扫码新建应用」这颗按钮", !!na && na.textContent.includes("扫码新建应用"), na && na.outerHTML);
+  ok("飞书卡上有「扫码新建或选已有应用」这颗按钮（扫进去也能选已有应用）", !!na && na.textContent.includes("扫码新建或选已有应用"), na && na.outerHTML);
   ok("只有飞书有：QQ/企微应用这些没有这颗按钮（它们没有 lark-cli 这条路）",
     !qq.querySelector('[data-act="newapp"]') && !wca.querySelector('[data-act="newapp"]') && pane.querySelectorAll('[data-act="newapp"]').length === 1);
   const naBox = fsC.querySelector('[data-newapp-qr="feishu"]');
@@ -8123,7 +8148,7 @@ const IMPANE_CHECKS = `
   ok("建成后二维码收起、按钮解禁", disp(naBox) === "none" && !na.disabled);
   ok("App ID 自动填回输入框", fsC.querySelector("#im-feishu-app_id").value === "cli_newone", fsC.querySelector("#im-feishu-app_id").value);
   ok("Secret 一个字节都不回前端（留空，后端已存）", fsC.querySelector("#im-feishu-app_secret").value === "");
-  ok("建成的话写在卡上，不是只弹个 alert", /建好了/.test(fsC.querySelector('[data-newapp-r="feishu"]').textContent));
+  ok("建成的话写在卡上，不是只弹个 alert", /配好了/.test(fsC.querySelector('[data-newapp-r="feishu"]').textContent));
   // 应用建出来了，但 secret 被 lark-cli 锁在系统钥匙串里读不出来（macOS 默认就是这样）。
   // 这不是失败，是「还差最后一步」—— 不能标红吓唬人，也不能装作成功，得把 App ID 填上并指路。
   NEWAPP.status = { state: "need_secret", app_id: "cli_locked01",
@@ -8134,7 +8159,7 @@ const IMPANE_CHECKS = `
   for (let i = 0; i < 60 && disp(naBox) !== "none"; i++) await wait(100);
   const lockR = fsC.querySelector('[data-newapp-r="feishu"]');
   ok("secret 读不出来时，App ID 照样替你填上", fsC.querySelector("#im-feishu-app_id").value === "cli_locked01", fsC.querySelector("#im-feishu-app_id").value);
-  ok("说清是「建好了、还差 secret」，不是失败", /建好了/.test(lockR.textContent) && /钥匙串/.test(lockR.textContent) && !lockR.querySelector('use[href="#i-circle-x"]'), lockR.innerHTML.slice(0, 120));
+  ok("说清是「建好了、还差 secret」，不是失败", /配好了/.test(lockR.textContent) && /钥匙串/.test(lockR.textContent) && !lockR.querySelector('use[href="#i-circle-x"]'), lockR.innerHTML.slice(0, 120));
   ok("不标红：这是进度不是错误（走绿勾那一档，不是红叉）", getComputedStyle(lockR).color !== resolved("--owb-err-text") && !!lockR.querySelector('use[href="#i-circle-check"]'), getComputedStyle(lockR).color + " | " + lockR.innerHTML.slice(0, 80));
   const lockA = lockR.querySelector("a");
   ok("给一条直达凭证页的链接，省得用户自己在开放平台里翻",

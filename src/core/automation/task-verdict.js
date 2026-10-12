@@ -135,6 +135,12 @@ const UPSTREAM_FAILURES = [
   },
 ];
 
+/** 正文的头一句：到第一个中文句号 / 问叹号 / 换行为止。英文句点不算——版本号、域名里全是点 */
+function leadSentence(text) {
+  const m = /[。！？!?\n]/.exec(text);
+  return m ? text.slice(0, m.index + 1) : text;
+}
+
 /** 最后一次命中的位置；没命中返回 -1。用它比较「落点是交付还是等待」。 */
 function lastMatchIndex(pattern, text) {
   const g = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
@@ -192,10 +198,13 @@ function judgeRun({ result, error, stopped } = {}) {
     };
   }
 
-  // 只在「整条结果就是那句报错」时翻案：正文短 + 命中特征。
+  // 只在「整条结果就是那句报错」时翻案：正文短 + 头一句就命中特征。
+  // 只看头一句：2026-10-12 一条叫起床的任务先报了天气，后面顺嘴说某个子步骤 `fetch failed`、
+  // 飞书没发出去——整条被扣成「连不上上游」还开了查代理的药方。上游真挂时正文开口就是那句报错。
   if (text.length <= ERROR_ONLY_MAX_CHARS) {
+    const head = leadSentence(text);
     for (const p of UPSTREAM_FAILURES) {
-      if (p.test.test(text)) {
+      if (p.test.test(head)) {
         return { ok: false, reason: "upstream_error", label: p.label, hint: p.hint, retryable: p.retryable };
       }
     }

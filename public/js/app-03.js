@@ -1809,7 +1809,7 @@ const AUTOM_TEMPLATES = [
   { icon: "wrench", tt: "每小时网站巡检", cron: "0 * * * *", task: "用 fetch_url 检查以下网址是否能正常打开、响应是否异常（先在这里填上你的网址）：https://example.com 。异常时写清楚状态码和现象。" },
   { icon: "eraser", tt: "每周清理临时文件", cron: "0 10 * * 1", task: "列出工作目录里超过 7 天没动过的 .tmp/.log/中间产物文件，汇总成清单报告（只报告，不要直接删除）。" },
 ];
-const automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null, showForm: false, runTaskId: "" };
+const automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null, runTaskId: "" };
 function buildCronFrom(root) {
   const freq = root.querySelector("#sf-freq").value;
   const t = (root.querySelector("#sf-time").value || "09:00").split(":");
@@ -1904,7 +1904,6 @@ async function renderAutomPage() {
       <a class="link" id="bk-dis" href="#">批量暂停</a>
       <a class="link danger" id="bk-del" href="#">批量删除</a>
     </div>` : ""}
-    <div id="at-form-box"></div>
     ${on.length ? `<div class="at-group">启用中（${on.length}）</div>` + on.map(row).join("") : ""}
     ${off.length ? `<div class="at-group">已暂停（${off.length}）</div>` + off.map(row).join("") : ""}
     ${!match.length ? '<div class="hub-empty">还没有自动化任务。点右上角「添加自动化」或「从模版添加」建一个。</div>' : ""}`;
@@ -1912,9 +1911,8 @@ async function renderAutomPage() {
   const qEl = page.querySelector("#at-q");
   qEl.oninput = () => { st.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderAutomPage, 200); };
   page.querySelector("#at-bulk").onclick = () => { st.bulk = !st.bulk; st.sel.clear(); renderAutomPage(); };
-  page.querySelector("#at-new").onclick = () => { st.editing = null; st.showForm = true; renderAutomForm(page.querySelector("#at-form-box")); };
-  page.querySelector("#at-tpl").onclick = () => renderAutomTplPicker(page.querySelector("#at-form-box"));
-  if (st.showForm) renderAutomForm(page.querySelector("#at-form-box"));
+  page.querySelector("#at-new").onclick = () => { st.editing = null; openAutomDialog((b) => renderAutomForm(b)); };
+  page.querySelector("#at-tpl").onclick = () => openAutomDialog(renderAutomTplPicker);
   page.querySelectorAll("input[data-sel]").forEach(cb => cb.onchange = () => {
     cb.checked ? st.sel.add(cb.dataset.sel) : st.sel.delete(cb.dataset.sel);
     renderAutomPage();
@@ -1938,7 +1936,7 @@ async function renderAutomPage() {
     const id = a.closest(".at-row").dataset.id;
     const t = list.find(x => x.id === id);
     const act = a.dataset.act;
-    if (act === "edit") { st.editing = t; st.showForm = true; renderAutomForm(page.querySelector("#at-form-box")); window.scrollTo(0, 0); return; }
+    if (act === "edit") { st.editing = t; openAutomDialog((b) => renderAutomForm(b)); return; }
     if (act === "history") { st.runTaskId = id; st.tab = "runs"; return renderAutomPage(); }
     if (act === "del") { if (!(await askConfirm({ title: `删掉「${t.name}」？`, hint: "这个自动化任务和它的运行记录一起没。", ok: "删掉", danger: true }))) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
     else if (act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !t.enabled }) });
@@ -1957,23 +1955,61 @@ async function renderAutomPage() {
   });
 }
 function renderAutomTplPicker(box) {
-  automState.showForm = false;
-  box.innerHTML = `<div class="tpl-grid" style="margin:4px 0 14px">${AUTOM_TEMPLATES.map((t, i) => `
+  box.innerHTML = `<div class="ask-t">从模版添加</div>
+    <div class="ask-h">挑一个，下一步还能改名字、时间和要做的事</div>
+    <div class="tpl-grid at-dlg-tpls">${AUTOM_TEMPLATES.map((t, i) => `
     <div class="proj-card" data-i="${i}">
       <div class="tt">${ic(t.icon)} ${esc(t.tt)}</div>
       <div class="dd">${esc(whenToHuman(t))} · ${esc(t.task.slice(0, 46))}…</div>
       <div class="ops"><a class="link" href="#">用这个模版${ic("arrow-right")}</a></div>
-    </div>`).join("")}</div>`;
+    </div>`).join("")}</div>
+    <div class="ask-ops"><button type="button" class="btn-plain" id="sf-cancel">取消</button></div>`;
+  box.querySelector("#sf-cancel").onclick = () => closeAutomDialog(box);
   box.querySelectorAll(".proj-card").forEach(el => el.onclick = (e) => {
     e.preventDefault();
-    automState.editing = null; automState.showForm = true;
+    automState.editing = null;
     renderAutomForm(box, AUTOM_TEMPLATES[+el.dataset.i]);
   });
 }
+/**
+ * 添加 / 从模版添加 / 编辑，都在弹出来的框里做。以前是在列表上方原地撑开一块，
+ * 列表一长整页被往下顶，填到一半还得滚回去找；框收掉，列表原样不动。
+ * 点框外不收：表单填了一半，手一滑点到外面就全没了。收它走「取消」或 Esc。
+ */
+function openAutomDialog(fill) {
+  if (openAutomDialog._close) openAutomDialog._close();
+  const prev = document.activeElement;
+  const wrap = document.createElement("div");
+  wrap.className = "ask-mask";
+  wrap.innerHTML = '<div class="ask-box at-dlg" role="dialog" aria-modal="true"></div>';
+  const box = wrap.firstChild;
+  const onKey = (e) => {
+    if (e.key !== "Escape" || e.isComposing || e.keyCode === 229) return; // 输入法还在选字时的 Esc 是给输入法的
+    e.preventDefault(); e.stopPropagation(); close();
+  };
+  function close() {
+    if (openAutomDialog._close !== close) return;
+    openAutomDialog._close = null;
+    document.removeEventListener("keydown", onKey, true);
+    wrap.remove();
+    automState.editing = null;
+    try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+  }
+  document.addEventListener("keydown", onKey, true);
+  openAutomDialog._close = close;
+  box._close = close;
+  document.body.appendChild(wrap);
+  fill(box);
+  return box;
+}
+function closeAutomDialog(box) {
+  if (box && box._close) box._close();
+  else if (box) box.innerHTML = "";
+}
 function renderAutomForm(box, tpl) {
   const ed = automState.editing;
-  box.innerHTML = `<div style="border:1px solid var(--owb-border);border-radius:12px;padding:14px 16px;margin:4px 0 16px">
-    <div style="font-weight:600;margin-bottom:10px">${ed ? `编辑「${esc(ed.name)}」` : "添加自动化"}</div>
+  box.innerHTML = `<div class="at-form">
+    <div class="ask-t" style="margin-bottom:10px">${ed ? `编辑「${esc(ed.name)}」` : "添加自动化"}</div>
     <input id="sf-name" placeholder="任务名（如：每日晨报）" value="${esc((ed || tpl || {}).name || (tpl || {}).tt || "")}">
     <div class="form-row">
       <select id="sf-freq">
@@ -1997,9 +2033,9 @@ function renderAutomForm(box, tpl) {
     <input id="sf-cron" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
     <textarea id="sf-task" rows="2" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报">${esc((ed || tpl || {}).task || "")}</textarea>
     <label class="sf-catchup"><input id="sf-catchup" type="checkbox" ${(ed || tpl || {}).catch_up !== false ? "checked" : ""}>错过后补跑最近一次 <span>适合晨报、周报；时效任务可关闭</span></label>
-    <div style="display:flex;gap:8px;margin-top:8px">
+    <div class="ask-ops">
+      <button class="btn-plain" id="sf-cancel">取消</button>
       <button class="btn-brand" id="sf-add">${ed ? "保存修改" : "添加"}</button>
-      <button class="btn-plain" id="sf-cancel">收起</button>
     </div>
   </div>`;
   const freqEl = box.querySelector("#sf-freq");
@@ -2022,7 +2058,7 @@ function renderAutomForm(box, tpl) {
     box.querySelector("#sf-at").value = localMin(new Date(edAt).getTime());
     freqEl.onchange();
   }
-  box.querySelector("#sf-cancel").onclick = () => { automState.showForm = false; automState.editing = null; box.innerHTML = ""; };
+  box.querySelector("#sf-cancel").onclick = () => closeAutomDialog(box);
   box.querySelector("#sf-add").onclick = async () => {
     const name = box.querySelector("#sf-name").value.trim();
     const task = box.querySelector("#sf-task").value.trim();
@@ -2039,7 +2075,8 @@ function renderAutomForm(box, tpl) {
       : await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body });
     if (!resp.ok) return toast(((await resp.json()).error || "保存失败"), "circle-x");
     toast(ed ? "已保存" : "已添加", "circle-check");
-    automState.showForm = false; automState.editing = null;
+    closeAutomDialog(box);
+    automState.editing = null;
     renderAutomPage();
   };
 }

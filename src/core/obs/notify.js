@@ -36,8 +36,31 @@ async function pushDingtalk(imCfg, text) {
   return true;
 }
 
-/** 推送到所有已配置的机器人通道；单通道失败不影响其他通道，返回成功的通道名列表 */
-async function pushBots(config, text) {
+/**
+ * 能主动推送的长连接通道（扫码连的个人微信）。它们活在 IM 路由里，这里只留个插口：
+ * 定时任务、notify_user、自进化都只认 pushBots，插上以后一处不用改就都推得到。
+ * 以前只认企业微信和钉钉两个群机器人——助理模式连好了微信，定时任务照样一句都推不到。
+ */
+const extra = new Map(); // name -> { ready: () => boolean, push: async (text) => void }
+
+function registerPusher(name, pusher) {
+  if (pusher) extra.set(name, pusher);
+  else extra.delete(name);
+}
+
+/** 有没有哪条通道推得出去：群机器人地址填了，或者插上的通道说自己好了 */
+function anyPushReady(config) {
+  const im = (config || {}).im || {};
+  if (im.wecom_bot_webhook || im.dingtalk_webhook) return true;
+  for (const p of extra.values()) { try { if (p.ready()) return true; } catch {} }
+  return false;
+}
+
+/**
+ * 推送到所有已配置的通道；单通道失败不影响其他通道，返回成功的通道名列表。
+ * skip：不推的通道名。从微信里发来的任务，回复已经在微信里了，别再推一遍
+ */
+async function pushBots(config, text, { skip = [] } = {}) {
   const imCfg = (config || {}).im || {};
   const sent = [];
   for (const [name, fn] of [["wecom", pushWecom], ["dingtalk", pushDingtalk]]) {
@@ -47,7 +70,17 @@ async function pushBots(config, text) {
       console.warn(`[${name}] 推送失败:`, e.message);
     }
   }
+  for (const [name, p] of extra) {
+    if (skip.includes(name)) continue;
+    try {
+      if (!p.ready()) continue;
+      await p.push(text);
+      sent.push(name);
+    } catch (e) {
+      console.warn(`[${name}] 推送失败:`, e.message);
+    }
+  }
   return sent;
 }
 
-module.exports = { pushBots, pushWecom, pushDingtalk };
+module.exports = { pushBots, pushWecom, pushDingtalk, registerPusher, anyPushReady };
