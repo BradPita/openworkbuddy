@@ -36,6 +36,8 @@
  *      用户这一条带了图、半路停下的、真交了的，都不说
  *   ⑯ 型号：本机装了好几份 CLI 时用版本最新的那份，其余几份照实列；Claude Code 自己的型号表（配置目录 cache/model-catalog/）
  *      按这份 CLI 的版本拦：跑不了的不进下拉、单列并附升级命令，版本读不出不拦；试一下报真跑的型号（填别名时是它落到的全名）
+ *   ⑱ 随消息传的文件：给引擎的那句末尾附上完整路径（先找本次工作目录、再找工作区根，盘上有的才列，带目录的名字不认）。
+ *      以前只给名字，codex 用 rg --files 去搜，工作区在 git 仓库里、粘贴文本被 .gitignore 忽略时搜不到，回「只收到文件名」
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -2070,6 +2072,70 @@ process.stdin.on("data", () => {}).on("end", () => {
   }
 }
 
+async function partAttachedFiles() {
+  console.log("\n— ⑱ 随消息传的文件：给引擎的那句末尾附上完整路径，不让它拿着名字自己去搜 —");
+  const engines = require(mod("engines"));
+  const { createAgentRuntime } = require(mod("agent"));
+  const { McpManager } = require(mod("mcp"));
+  const { withWorkspace } = require(mod("tools"));
+  const llm = require(mod("llm")).createLLM({ models: [{ name: "桩", provider: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "mock", stream: false }] });
+  const calls = [];
+  const stub = {
+    id: "t-attach", label: "附件桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: true, models: [],
+    async detect() { return { id: "t-attach", installed: true, path: "", version: "0" }; },
+    async run(o) { calls.push(o.prompt); return { finalText: "读到了", sessionId: "s-1" }; },
+  };
+  engines.BACKENDS.push(stub);
+  const rt = createAgentRuntime({ config: { agent: { engine: "t-attach", max_steps: 3, engine_options: { "t-attach": { model: "m1" } } } }, llm, mcpManager: new McpManager(), experts: [] });
+  // 用户撞上的那种：工作区在 git 仓库里，仓库忽略了粘贴文本，rg --files 看不见它
+  const root = path.join(home, "attach-ws"), cell = path.join(root, "任务_1012_看一下");
+  fs.mkdirSync(cell, { recursive: true });
+  fs.writeFileSync(path.join(root, ".gitignore"), "粘贴文本_*.txt\n");
+  const paste = path.join(cell, "粘贴文本_1012_135633.txt"), shot = path.join(cell, "截图.png");
+  const atRoot = path.join(root, "报价.xlsx"); // 那格里已有同名文件时附件不搬，留在根上
+  fs.writeFileSync(paste, "一大段\n");
+  fs.writeFileSync(shot, "png");
+  fs.writeFileSync(atRoot, "x");
+  fs.writeFileSync(path.join(home, "外面.txt"), "x"); // 名字里带 ../ 就够得着它
+  const go = (history, engineSession) => withWorkspace(root, async () => {
+    calls.length = 0;
+    await rt.runTask({ history, emit: () => {}, engineSession, baseDir: "任务_1012_看一下" });
+    return calls[0] || "";
+  });
+  const first = "帮我看看这段\n【文本摘录 1：粘贴文本_1012_135633.txt】\n（已上传文件：粘贴文本_1012_135633.txt、报价.xlsx、早删了.txt）";
+  const later = "再看这张【图片 1：截图.png】";
+  try {
+    {
+      const p = await go([{ role: "user", content: first }]);
+      ok(p.startsWith(first), "用户的原话一字不动，路径接在后面", p);
+      ok(p.includes(`【文本摘录 1】${paste}`), "★粘贴文本给了完整路径★ 以前只有名字：codex 用 rg --files 搜，文件被 .gitignore 忽略就看不见，回「只收到文件名」", p);
+      ok(p.includes(`- ${atRoot}`), "那格里没有、留在工作区根上的也找得到", p);
+      ok(!p.includes(path.join(cell, "早删了.txt")) && !p.includes(path.join(root, "早删了.txt")), "盘上没有的不列", p);
+      ok(p.split(paste).length === 2, "锚点和「已上传文件」里各提一次的只列一回", p);
+      ok(/别用 rg --files、find 去搜/.test(p), "说清楚别去搜、为什么", p);
+    }
+    {
+      const q = "【文件 1：../外面.txt】【文件 2：/etc/hosts】看看";
+      const p = await go([{ role: "user", content: q }]);
+      ok(p === q, "★带目录的名字一概不认★ 锚点就是正文里的字，谁都打得出来，不能拿它指到工作区外面", p);
+    }
+    {
+      const p = await go([{ role: "user", content: first }, { role: "assistant", text: "读完了" }, { role: "user", content: later }], "s-1");
+      ok(p.startsWith(later) && p.includes(`【图片 1】${shot}`) && !p.includes(paste), "续跑只发新的那句，也只列那句带的文件（前面的 CLI 自己记着）", p);
+    }
+    {
+      const p = await go([{ role: "user", content: first }, { role: "assistant", text: "读完了" }, { role: "user", content: later }]);
+      ok(p.includes(`【文本摘录 1】${paste}`) && p.includes(`【图片 1】${shot}`), "头一次跑、历史摊平时，前面几句带的文件也列上", p);
+    }
+    {
+      const p = await go([{ role: "user", content: "你是？" }]);
+      ok(p === "你是？", "反向对照：没带文件的消息原样发，不多一个字", p);
+    }
+  } finally {
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -2089,6 +2155,7 @@ process.stdin.on("data", () => {}).on("end", () => {
     await partDeliveryNotes();
     await partModels();
     await partCodexVersion();
+    await partAttachedFiles();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

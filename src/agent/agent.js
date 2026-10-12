@@ -2647,7 +2647,7 @@ function modePrompt(mode) {
       const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang, engine: backend.id, claudeMode });
       await filesOut.ready; // 开跑前的基线必须先落定，否则引擎第一步写的文件会被当成「本来就有」
       const runWith = (resumeId) => backend.run({
-        prompt: enginePrompt(history, resumeId),
+        prompt: enginePrompt(history, resumeId, cwd),
         cwd,
         emit: wrapped,
         deadline,
@@ -2735,15 +2735,42 @@ function modePrompt(mode) {
    * 续跑时只发新的那句——CLI 自己记着上下文，把整段历史再贴一遍是白烧 token；
    * 头一次跑就把对话摊平成一份逐字稿，别让它以为用户只说了最后一句。
    */
-  function enginePrompt(history, engineSession) {
+  function enginePrompt(history, engineSession, cwd) {
     const list = Array.isArray(history) ? history : [];
     const lastUser = [...list].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
-    if (engineSession) return lastUser ? lastUser.content : "继续。";
+    if (engineSession) return lastUser ? lastUser.content + attachedFilesNote(lastUser.content, cwd) : "继续。";
     // assistant 的正文在 text 里（老会话里引擎写的是 content，开跑时已被 normalizeHistory 改过来）
     const said = (e) => (e.role === "assistant" ? (typeof e.text === "string" ? e.text : e.content) : e.content);
     const turns = list.filter((e) => e && (e.role === "user" || e.role === "assistant") && typeof said(e) === "string" && said(e).trim());
-    if (turns.length <= 1) return lastUser ? lastUser.content : "";
-    return turns.map((e) => (e.role === "user" ? "【用户】" : "【你之前的回复】") + "\n" + said(e)).join("\n\n");
+    if (turns.length <= 1) return lastUser ? lastUser.content + attachedFilesNote(lastUser.content, cwd) : "";
+    const flat = turns.map((e) => (e.role === "user" ? "【用户】" : "【你之前的回复】") + "\n" + said(e)).join("\n\n");
+    return flat + attachedFilesNote(turns.filter((e) => e.role === "user").map((e) => e.content).join("\n"), cwd);
+  }
+
+  /**
+   * 随消息传上来的文件在哪。锚点（【文本摘录 1：粘贴文本_1012_135633.txt】）和末尾那句「（已上传文件：…）」里只有名字，
+   * CLI 拿着名字只能自己去搜，而它搜文件用的 rg --files、find 都跳过 .gitignore 忽略的文件：
+   * 工作区在 git 仓库里、仓库又忽略了「粘贴文本_*.txt」时，文件就在工作目录里，它翻了一圈回「只收到文件名」。
+   * 所以把完整路径直接递过去。只认不带目录的名字；先找本次工作目录，再找工作区根
+   * （那格里已有同名文件时附件不搬，留在根上）；盘上没有的不列。
+   */
+  function attachedFilesNote(text, cwd) {
+    let root = ""; try { root = getWorkspaceDir(); } catch {}
+    const dirs = [...new Set([cwd, root].filter((d) => d && path.isAbsolute(d)))];
+    const seen = new Set(), lines = [];
+    const add = (name, label) => {
+      const n = String(name || "").trim();
+      if (!n || seen.has(n) || n !== path.basename(n)) return;
+      seen.add(n);
+      const abs = dirs.map((d) => path.join(d, n)).find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+      if (abs) lines.push(`- ${label ? `【${label}】` : ""}${abs}`);
+    };
+    const src = String(text || "");
+    for (const m of src.matchAll(/【(图片|视频|音频|文本摘录|文件)\s*(\d+)：([^】]+)】/gu)) add(m[3], `${m[1]} ${m[2]}`);
+    for (const m of src.matchAll(/（已上传文件：([^）]+)）/gu)) for (const n of m[1].split("、")) add(n, "");
+    if (!lines.length) return "";
+    return "\n\n（随消息传上来的文件在下面，按完整路径直接读。别用 rg --files、find 去搜：工作目录在 git 仓库里时，被 .gitignore 忽略的文件它们看不见）\n" +
+      lines.slice(0, 20).join("\n");
   }
 
   /**
