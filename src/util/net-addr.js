@@ -153,7 +153,8 @@ function classifyHost(host) {
 
 /**
  * 属主加白的一条：`host:port`，端口可以写 *（这台主机的所有端口）。IPv6 写成 [::1]:8080。
- * 带了 http:// 或路径的顺手去掉；主机写 * 的不收——那等于把整道闸关了，要关去关安全网关。
+ * 主机可以带 * 通配（* 能跨点）：192.168.1.*:*、*.local:8080、*:5432；IPv6 不认通配。
+ * 带了 http:// 或路径的顺手去掉。OpenWorkBuddy 自己的端口不走这里，写 *:* 也放不过去。
  * @param {string} raw @returns {{ host: string, port: number | "*" } | null}
  */
 function parseAllow(raw) {
@@ -161,8 +162,16 @@ function parseAllow(raw) {
   if (!s) return null;
   const m = /^\[([^\]]+)\]:(\d{1,5}|\*)$/.exec(s) || /^([^:[\]]+):(\d{1,5}|\*)$/.exec(s);
   if (!m) return null;
+  if (m[1].includes("*")) {
+    // 通配不过 URL 解析（* 会被转义），只收域名和 IPv4 里会出现的字符
+    const glob = m[1].replace(/\.+$/, "").replace(/\*{2,}/g, "*");
+    if (!/^[a-z0-9.*_-]+$/.test(glob)) return null;
+    const port = m[2] === "*" ? "*" : Number(m[2]);
+    if (port !== "*" && !(port >= 1 && port <= 65535)) return null;
+    return { host: glob, port };
+  }
   const host = normHost(m[1]);
-  if (!host || host === "*" || /[*\s]/.test(host)) return null;
+  if (!host || /\s/.test(host)) return null;
   if (m[1].includes(":") && !net.isIPv6(host.replace(/%.*$/, ""))) return null;
   const port = m[2] === "*" ? "*" : Number(m[2]);
   if (port !== "*" && !(port >= 1 && port <= 65535)) return null;
@@ -188,6 +197,9 @@ function cleanAllow(list) {
   return out;
 }
 
+/** 通配主机 → 正则；* 能跨点。parseAllow 只放进 [a-z0-9.*_-]，要转义的只有点 @param {string} glob */
+const globRe = (glob) => new RegExp("^" + glob.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
+
 /**
  * 这个目的地是不是被某条加白放行了。端口要对上；主机按名字比，或者按解析出来的 IP 比。
  * 写的是 localhost / 127.0.0.1 / ::1 这种本机地址的，连的又是本机：算同一台（开发服务器绑在哪个上各家不一样）。
@@ -198,6 +210,13 @@ function allowed(list, dest) {
   for (const raw of list || []) {
     const a = parseAllow(String(raw));
     if (!a || (a.port !== "*" && a.port !== dest.port)) continue;
+    if (a.host.includes("*")) {
+      const re = globRe(a.host);
+      // 只由数字、点、* 组成的按 IP 比：192.168.1.* 不该放过叫 192.168.1.x.example.com 的域名
+      const ipOnly = /^[0-9.*]+$/.test(a.host) && a.host !== "*";
+      if ((!ipOnly && re.test(dest.host)) || dest.ips.some((ip) => re.test(ip.toLowerCase()))) return true;
+      continue;
+    }
     if (a.host === dest.host || dest.ips.includes(a.host)) return true;
     const c = classifyHost(a.host);
     if (selfDest && c && SELF_KINDS.has(c.kind)) return true;

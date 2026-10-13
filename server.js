@@ -2107,6 +2107,8 @@ app.get("/api/settings", (req, res) => {
     sandbox_status: require("./src/agent/tools").sandboxStatus(),
     // 安全中心「命令能看到的环境变量」那张卡要照实说：像 Key 的名字现在写进清单给不给，看的是账号数
     env_keys_pass: !admin.multiUser(),
+    // 沙箱安全总开关只有一个账号时才认（security.sandboxOff），多个账号时设置页置灰并说明
+    solo: !admin.multiUser(),
     shortcuts: prefs.shortcutsCfg(config),
     // 执行追踪。私钥跟别的 Key 一个待遇：只有平台管理员看得见原文，其余人拿到八个星号。
     // stats 是**实打实的上报账本**（发出去多少、丢了多少、上一次为什么失败）——
@@ -2569,7 +2571,7 @@ app.post("/api/settings", (req, res) => {
     if (b.models || b.providers) chatModels.normalize(config);
     if (b.security) {
       const sec = security.getSecurity(config);
-      for (const k of ["gateway", "delete_protect", "cmd_risk_gate", "runtime_node", "runtime_python"]) {
+      for (const k of ["gateway", "delete_protect", "cmd_risk_gate", "runtime_node", "runtime_python", "sandbox_safety"]) {
         if (typeof b.security[k] === "boolean") sec[k] = b.security[k];
       }
       for (const k of ["batch_delete_threshold", "approval_timeout_s"]) {
@@ -2587,7 +2589,7 @@ app.post("/api/settings", (req, res) => {
       if (b.security.toolward_bin !== undefined) sec.toolward_bin = String(b.security.toolward_bin || "").trim().slice(0, 500);
       // 子进程额外放行的环境变量名。只收合法变量名、最多 50 条；像 Key 的照收，给不给由账号数在起子进程时判
       if (Array.isArray(b.security.env_passthrough)) sec.env_passthrough = childEnv.cleanNames(b.security.env_passthrough);
-      // 本机/内网放行清单：只收 host:端口（端口可写 *），写成网址的剥成 host:端口，主机写 * 的不收，最多 50 条
+      // 本机/内网放行清单：只收 host:端口（端口可写 *，主机可带 * 通配），写成网址的剥成 host:端口，最多 50 条
       if (Array.isArray(b.security.url_allow_local)) sec.url_allow_local = netAddr.cleanAllow(b.security.url_allow_local);
       // 系统沙箱档位：认不出的值一律当没填过（按部署走），不能因为一个错字就变成不套
       if (b.security.sandbox !== undefined) {
@@ -2595,7 +2597,7 @@ app.post("/api/settings", (req, res) => {
         sec.sandbox = ["default", "auto", "required", "off"].includes(m) ? m : "default";
       }
       if (b.security.sandbox_level !== undefined) sec.sandbox_level = b.security.sandbox_level === "basic" ? "basic" : "hardened";
-      if (b.security.sandbox !== undefined || b.security.sandbox_level !== undefined) require("./src/agent/tools").warmSandbox(sec);
+      if (b.security.sandbox !== undefined || b.security.sandbox_level !== undefined || b.security.sandbox_safety !== undefined) require("./src/agent/tools").warmSandbox(sec);
     }
     if (b.langfuse && typeof b.langfuse === "object") {
       const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });

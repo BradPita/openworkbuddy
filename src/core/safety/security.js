@@ -192,6 +192,9 @@ const DEFAULTS = {
   sandbox: "default",
   sandbox_level: "hardened", // hardened = 连沙箱外服务的 unix socket 只放 DNS 和下面这份；basic = 不管 socket
   sandbox_unix_allow: [], // 额外放行的 unix socket 绝对路径（docker、数据库之类）
+  // 沙箱安全总开关。关掉（false）= 文件不限在工作目录、本机/内网地址不拦、命令不套系统沙箱；
+  // 文件黑名单、OpenWorkBuddy 自己的端口、命令审批照旧。多人共用时不认关（见 sandboxOff）
+  sandbox_safety: true,
 };
 
 /** 给 config.security 补默认值（保留用户已改项），返回引用 */
@@ -293,6 +296,14 @@ function setMultiUser(fn) {
 function isMultiUser() {
   if (!multiUserFn) return false;
   try { return !!multiUserFn(); } catch { return true; } // 读坏按多人：判错了就是让成员自己批黑名单
+}
+/**
+ * 沙箱安全是不是关了。只有一个人用时才认：多人共用时关掉，等于让每个成员的 AI 都能读别人的工作目录、
+ * 打内网，这个口子不开——设置页那时会把开关置灰并说明。
+ * @param {any} sec
+ */
+function sandboxOff(sec) {
+  return !!sec && sec.sandbox_safety === false && !isMultiUser();
 }
 /**
  * 这个账号是不是平台管理员（默认组织的管理员）。同样由 server.js 注册进来，没注册 = 谁都不是。
@@ -534,6 +545,8 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base, platform = process.
     const wp = expandPath(w, platform);
     if (under(real, realOf(wp) || wp)) return { path: p, allowed: true, outside: true };
   }
+  // 沙箱安全关了：工作目录外也能读写（上面的黑名单照旧拦）
+  if (sandboxOff(sec)) return { path: p, allowed: true, outside: !inWs };
   if (inWs) return { path: p, allowed: false, reason: "路径经符号链接指到了工作区外面：workspace 外仅文件白名单目录可访问（设置 → 安全 →「沙箱安全 · 文件」）" };
   return { path: p, allowed: false, reason: "路径越界：workspace 外仅文件白名单目录可访问（设置 → 安全 →「沙箱安全 · 文件」）" };
 }
@@ -1773,6 +1786,7 @@ module.exports = {
   checkCode,
   setMultiUser,
   isMultiUser,
+  sandboxOff,
   setPlatformAdmin,
   isPlatformAdmin,
   ruleFor,

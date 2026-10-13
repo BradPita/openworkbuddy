@@ -122,9 +122,12 @@ const run = (name, input, s, extra = {}) => tools.withWorkspace(WS, () => tools.
 
     ok(JSON.stringify(A.cleanAllow([
       "localhost:5173", "http://127.0.0.1:8080/path?x=1", "[::1]:3000", "dev.lan:*", " LOCALHOST:5173 ",
-      "*:80", "*.lan:80", "nohost", "a:0", "a:70000", "", null, "::1:3000",
+      "nohost", "a:0", "a:70000", "", null, "::1:3000",
     ])) === JSON.stringify(["localhost:5173", "127.0.0.1:8080", "[::1]:3000", "dev.lan:*"]),
-    "加白清单：只收 host:端口，网址剥成 host:端口，大小写去重；主机写 *、没端口、端口越界、IPv6 不带括号的都不收", A.cleanAllow(["localhost:5173", "http://127.0.0.1:8080/path?x=1", "[::1]:3000", "dev.lan:*", "*:80", "::1:3000"]));
+    "加白清单：只收 host:端口，网址剥成 host:端口，大小写去重；没端口、端口越界、IPv6 不带括号的都不收", A.cleanAllow(["localhost:5173", "http://127.0.0.1:8080/path?x=1", "[::1]:3000", "dev.lan:*", "::1:3000"]));
+    ok(JSON.stringify(A.cleanAllow(["192.168.1.*:*", "*.LAN:80", "*:5432", "*:*", "192.168.**:22", "[fd00::*]:80", "a*b$:80", "*.lan:0", "*.lan"]))
+      === JSON.stringify(["192.168.1.*:*", "*.lan:80", "*:5432", "*:*", "192.168.*:22"]),
+    "★通配：主机可带 *（含单写 *），连写的 ** 压成一个；IPv6 通配、怪字符、端口不对的不收★", A.cleanAllow(["192.168.1.*:*", "*.LAN:80", "*:5432", "*:*", "192.168.**:22", "[fd00::*]:80", "a*b$:80"]));
     ok(A.cleanAllow(Array.from({ length: 80 }, (_, i) => `h${i}:1`)).length === 50, "  └ 最多 50 条");
 
     const dest = (host, port, ips) => ({ host, port, ips });
@@ -134,11 +137,19 @@ const run = (name, input, s, extra = {}) => tools.withWorkspace(WS, () => tools.
     ok(!A.allowed(["localhost:5173"], dest("192.168.1.5", 5173, ["192.168.1.5"])), "  └ 写的本机，内网别的机器同号端口不算");
     ok(A.allowed(["nas.lan:*"], dest("nas.lan", 9000, ["192.168.1.9"])) && A.allowed(["192.168.1.9:9000"], dest("nas.lan", 9000, ["192.168.1.9"])),
       "按名字或按解析出来的 IP 加白都认，端口写 * 管这台机器所有口");
+    ok(A.allowed(["192.168.1.*:*"], dest("nas.lan", 22, ["192.168.1.9"])) && A.allowed(["*.lan:9000"], dest("nas.lan", 9000, ["10.0.0.2"]))
+      && A.allowed(["*.lan:9000"], dest("a.b.lan", 9000, ["10.0.0.2"])) && A.allowed(["*:5432"], dest("db", 5432, ["10.1.2.3"])),
+      "★通配命中：网段写 *、域名写 *.lan（能跨点）、主机单写 *★");
+    ok(!A.allowed(["192.168.1.*:*"], dest("x", 22, ["192.168.2.9"])) && !A.allowed(["*.lan:9000"], dest("nas.lan", 9001, ["10.0.0.2"]))
+      && !A.allowed(["*.lan:9000"], dest("nas.lanx", 9000, ["10.0.0.2"])) && !A.allowed(["*:5432"], dest("db", 5433, ["10.1.2.3"])),
+      "  └ 反向对照：网段、端口、后缀对不上都不算");
+    ok(!A.allowed(["192.168.1.*:*"], dest("192.168.1.x.evil.test", 80, ["10.9.9.9"])), "  └ 只由数字和 * 组成的按 IP 比，不放过长得像的域名");
 
     const R = { allow: ["127.0.0.1:*"], own: [3800, 4000], local: true, selfIps: ["192.168.7.7"] };
     ok(A.judge(dest("127.0.0.1", 3800, ["127.0.0.1"]), R).own === true, "★自有端口：加了 127.0.0.1:* 也拦★");
     ok(A.judge(dest("localhost", 4000, ["::1"]), { ...R, local: false }).own === true, "★自有端口：安全网关关着也拦★");
     ok(A.judge(dest("me.lan", 3800, ["192.168.7.7"]), R).own === true, "  └ 绕到本机网卡地址上一样算自己");
+    ok(A.judge(dest("127.0.0.1", 3800, ["127.0.0.1"]), { ...R, allow: ["*:*"] }).own === true, "★自有端口：写了 *:* 也拦★");
     ok(A.judge(dest("127.0.0.1", 8080, ["127.0.0.1"]), R) === null, "  └ 反向对照：加了白的别的口放行");
     ok(A.judge(dest("10.0.0.5", 3800, ["10.0.0.5"]), { ...R, allow: ["10.0.0.5:3800"] }) === null, "  └ 反向对照：内网别的机器上的 3800 不是自己，加了白就放");
     ok(A.judge(dest("x.test", 80, ["8.8.8.8", "10.0.0.1"]), { ...R, allow: [] }).kind === "private", "解析出好几个 IP 的，有一个落在内网就拦");
@@ -224,6 +235,17 @@ const run = (name, input, s, extra = {}) => tools.withWorkspace(WS, () => tools.
     delete process.env.PORT;
     v = await G.checkUrl({ ...S, gateway: false }, "http://10.0.0.1/");
     ok(v.allowed, "安全网关关了：内网放行（只剩自有端口拦）");
+    v = await G.checkUrl({ ...S, sandbox_safety: false }, "http://10.0.0.1/");
+    ok(v.allowed, "★沙箱安全关了：本机/内网放行★");
+    v = await G.checkUrl({ ...S, sandbox_safety: false }, "http://127.0.0.1:3800/");
+    ok(!v.allowed && v.own, "  └ 自有端口照拦");
+    security.setMultiUser(() => true);
+    try {
+      v = await G.checkUrl({ ...S, sandbox_safety: false }, "http://10.0.0.1/");
+      ok(!v.allowed, "★多人共用时沙箱安全关不掉：内网照拦★", v.reason);
+    } finally { security.setMultiUser(null); }
+    v = await G.checkUrl({ ...S, url_allow_local: ["192.168.1.*:*"] }, "http://nas.lan:9000/");
+    ok(v.allowed, "通配加白在 checkUrl 里生效（nas.lan 解析到 192.168.1.9）", v);
     v = await G.checkUrl({ ...S, url_blacklist: ["pub.test"] }, "https://pub.test/");
     ok(!v.allowed && /黑名单/.test(v.reason) && v.reason.includes(G.WHERE), "域名黑白名单照旧，说清在哪儿改", v.reason);
     v = await G.checkUrl(S, "file:///etc/hosts");
@@ -387,10 +409,19 @@ const run = (name, input, s, extra = {}) => tools.withWorkspace(WS, () => tools.
     ok(card.length > 0 && card.length < 1200, "  └ 就在那张卡里", card.length);
     ok(G.WHERE === "设置 → 安全 → 沙箱安全 · 网络" && /\["security", "安全"/.test(read(path.join(ROOT, "public", "js", "app-05.js"))), "报错里指的路径跟界面上的名字对得上");
     const i18n = read(path.join(ROOT, "public", "js", "i18n.js"));
-    const zh = ["AI 默认不能访问本机和内网地址。要放行，每行写一个 host:端口（端口可写 *）。", "OpenWorkBuddy 自己的端口写了也不放。", "本机/内网放行"];
+    const zh = ["AI 默认不能访问本机和内网地址。要放行，每行写一个 host:端口，可用 *，比如 192.168.1.*:*、*.local:8080。", "OpenWorkBuddy 自己的端口写了也不放。", "本机/内网放行"];
     ok(zh.every((s) => ui.includes(s)), "界面文案都在卡片上", zh.filter((s) => !ui.includes(s)));
     ok(zh.every((s) => i18n.includes(JSON.stringify(s) + ":")), "每句都有英文", zh.filter((s) => !i18n.includes(JSON.stringify(s) + ":")));
     ok(/if \(!po\) \{|\$\{!po \? `/.test(ui) && ui.indexOf("sec-ulocal") > ui.indexOf("${!po ? `"), "整块在属主才看得到的那一半里");
+    // 沙箱安全总开关：设置页有、存得进、多个账号时不画开关只说明、改了重算沙箱状态
+    ok(/chk\("sec-sbxsafe", sec\.sandbox_safety !== false/.test(ui) && /sandbox_safety: pane\.querySelector\("#sec-sbxsafe"\)\.checked/.test(ui),
+      "★安全页有「沙箱安全」开关，保存时带上★");
+    ok(/s\.solo === false/.test(ui) && /solo: !admin\.multiUser\(\)/.test(server), "  └ 多个账号时换成一句说明（服务端给 solo）");
+    ok(/"runtime_python", "sandbox_safety"\]/.test(server) && /b\.security\.sandbox_safety !== undefined\) require\("\.\/src\/agent\/tools"\)\.warmSandbox/.test(server),
+      "  └ 服务端存得进，改了就重算沙箱状态");
+    const zh2 = ["沙箱安全", "关掉后，AI 能动工作目录外的文件、连本机和内网，命令不再隔离", "有多个账号，沙箱安全不能关。"];
+    ok(zh2.every((x) => i18n.includes(JSON.stringify(x) + ":") && ui.includes(x)), "  └ 文案在界面上、都有英文", zh2.filter((x) => !i18n.includes(JSON.stringify(x) + ":") || !ui.includes(x)));
+    ok(/security\.sandboxOff\(sec\) \? "off"/.test(tsrc), "  └ 关了命令不套系统沙箱");
 
     const WW = require(mod("web-window"));
     const rule = { ...G.renderRule({ gateway: true, url_allow_local: ["127.0.0.1:5173"] }), bg: [] };

@@ -69,6 +69,9 @@ function renderSecurityPane(pane, s) {
     <div class="card-item">
       <div class="t">${ic("shield")} 数据安全</div>
       ${chk("sec-gateway", sec.gateway !== false, "安全网关", "总开关：命令审批与文件/网络黑白名单的硬拦截由它启用，关闭后只记审计不拦截")}
+      ${s.solo === false
+        ? `<div class="d" style="margin:7px 0">有多个账号，沙箱安全不能关。</div>`
+        : chk("sec-sbxsafe", sec.sandbox_safety !== false, "沙箱安全", "关掉后，AI 能动工作目录外的文件、连本机和内网，命令不再隔离")}
       ${chk("sec-delprot", sec.delete_protect !== false, "删除保护", "AI 删文件前先问你")}
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size: 14px;margin:7px 0">
         批量删除审批阈值 <input id="sec-batch" type="number" min="1" style="width:70px;margin:0" value="${esc(String(sec.batch_delete_threshold ?? 50))}"> 个文件 ·
@@ -117,7 +120,7 @@ function renderSecurityPane(pane, s) {
         ${listCol("白名单（非空=只允许这些）", "sec-uwl", joinLines(sec.url_whitelist), 3)}
         ${listCol("黑名单（拦截）", "sec-ubl", joinLines(sec.url_blacklist), 3)}
       </div>
-      <div class="d" style="margin-top:8px">AI 默认不能访问本机和内网地址。要放行，每行写一个 host:端口（端口可写 *）。</div>
+      <div class="d" style="margin-top:8px">AI 默认不能访问本机和内网地址。要放行，每行写一个 host:端口，可用 *，比如 192.168.1.*:*、*.local:8080。</div>
       <div class="d">OpenWorkBuddy 自己的端口写了也不放。</div>
       ${listCol("本机/内网放行", "sec-ulocal", joinLines(sec.url_allow_local), 3)}
     </div>
@@ -166,6 +169,8 @@ function renderSecurityPane(pane, s) {
   pane.querySelector("#sec-save").onclick = () => saveSettings({
     security: {
       gateway: pane.querySelector("#sec-gateway").checked,
+      // 多个账号时这个开关不画，不带：存着的值原样留着
+      ...(pane.querySelector("#sec-sbxsafe") ? { sandbox_safety: pane.querySelector("#sec-sbxsafe").checked } : {}),
       delete_protect: pane.querySelector("#sec-delprot").checked,
       cmd_risk_gate: pane.querySelector("#sec-crisk").checked,
       batch_delete_threshold: +pane.querySelector("#sec-batch").value || 50,

@@ -374,5 +374,30 @@ section("⑩ 硬链接：跟黑名单文件同一份数据的，换个名字放�
   }
 }
 
+section("⑪ 沙箱安全总开关：关了文件不限工作区，黑名单照旧；多人共用时关不掉");
+{
+  const WS = path.join(HOME, "workspace");
+  fs.mkdirSync(WS, { recursive: true });
+  const out = path.join(HOME, "outside", "x.txt");
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, "x");
+  const r0 = security.resolvePathWithPolicy(sec(), out, WS);
+  ok(!r0.allowed && /越界/.test(r0.reason), "默认开着：工作区外不让碰", r0);
+  const r1 = security.resolvePathWithPolicy(sec({ sandbox_safety: false }), out, WS);
+  ok(r1.allowed && r1.outside === true, "★关掉：工作区外能读写，标上 outside★", r1);
+  const cfg = path.join(HOME, "config.json");
+  fs.writeFileSync(cfg, "{}");
+  const r2 = security.resolvePathWithPolicy(sec({ sandbox_safety: false }), cfg, WS);
+  ok(!r2.allowed && /黑名单/.test(r2.reason), "  └ 黑名单照旧拦", r2);
+  eq(security.sandboxOff(sec({ sandbox_safety: false })), true, "一个人用：认关");
+  eq(security.sandboxOff(sec()), false, "  └ 反向对照：没动过就是开着");
+  security.setMultiUser(() => true);
+  try {
+    const r3 = security.resolvePathWithPolicy(sec({ sandbox_safety: false }), out, WS);
+    ok(!r3.allowed, "★多人共用：关了也不认，工作区外照拦★", r3);
+    eq(security.sandboxOff(sec({ sandbox_safety: false })), false, "  └ sandboxOff 回 false");
+  } finally { security.setMultiUser(null); }
+}
+
 console.log(`\n${fail ? "✗" : "✓"} 命令闸认命令：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

@@ -33,6 +33,9 @@ const WHERE = "设置 → 安全 → 沙箱安全 · 网络";
 /** OWB 默认端口：命令行版跑任务时，桌面版多半正开在这个口上，本进程不知道也得拦 */
 const DEFAULT_PORT = 3800;
 
+/** 拦不拦本机/内网：安全网关关了、或沙箱安全关了都不拦（自己的端口另算，永远拦） @param {any} sec */
+const localGuard = (sec) => sec.gateway !== false && !security.sandboxOff(sec);
+
 /** @type {Map<number, string>} 端口 → 是什么 */
 const own = new Map();
 /** 本进程起的服务登记进来（server.js 绑上端口以后） @param {number} port @param {string} [what] */
@@ -109,7 +112,7 @@ async function checkUrl(sec, url, { bgPorts } = {}) {
   const rule = {
     allow: Array.isArray(sec.url_allow_local) ? sec.url_allow_local : [],
     own: ownPorts(),
-    local: sec.gateway !== false,
+    local: localGuard(sec),
     selfIps: selfIps(),
   };
   const dest = { host, port, ips: addrs.map((a) => a.address) };
@@ -233,7 +236,7 @@ function renderRule(sec) {
   return {
     allow: Array.isArray(sec.url_allow_local) ? sec.url_allow_local.slice(0, 50) : [],
     own: ownPorts(),
-    local: sec.gateway !== false,
+    local: localGuard(sec),
   };
 }
 

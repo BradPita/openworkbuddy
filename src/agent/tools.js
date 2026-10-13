@@ -1228,7 +1228,8 @@ function sandboxOpts(sec) {
  * @returns {Promise<{ wrap: WrapFn, sandboxed?: boolean, error?: undefined } | { error: string, wrap?: undefined, sandboxed?: undefined }>}
  */
 async function sandboxFor(sec) {
-  const mode = sandbox.effectiveMode(sec.sandbox, security.isMultiUser() && process.platform === "darwin");
+  // 沙箱安全总开关关了：命令也不套系统沙箱
+  const mode = security.sandboxOff(sec) ? "off" : sandbox.effectiveMode(sec.sandbox, security.isMultiUser() && process.platform === "darwin");
   /** @type {WrapFn} */
   const asIs = (bin, args) => ({ bin, args });
   const bare = { wrap: asIs };

@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **10-13** New "Sandbox safety" switch in Settings → Security: turn it off and the AI can touch files outside the workspace, reach local and private-network addresses, and commands skip the system sandbox. The file blacklist and OpenWorkBuddy's own ports stay blocked. Can't be turned off with several accounts
+- **10-13** "Allowed local/private addresses" accepts wildcards: 192.168.1.*:* for a whole subnet, *.local:8080 for a family of hostnames, *:5432 for one port on any machine. OpenWorkBuddy's own ports stay blocked
 - **Oct 12** Your personal WeChat (connected by QR scan) now gets scheduled-task results and reminders: finished tasks and "message me on WeChat" requests are pushed there and survive restarts (send the bot one message in WeChat first). It used to push only to WeCom / DingTalk group bots, so the AI found no way to send and said it couldn't. Tasks that came from WeChat are no longer pushed back a second time
 - **Oct 12** Snappier WeChat connection: messages keep arriving while a task runs, so "stop" works right away instead of after the task ends; WeChat shows "typing…" while it works; a brief network blip reconnects after 1 second (10 seconds at most) instead of waiting up to a minute
 - **Oct 12** On the Automations page, "+ Add automation", "Add from template" and Edit now open in a dialog instead of expanding the page; Esc or Cancel closes it, clicking outside does not. A task reply that merely mentions "fetch failed" is no longer judged as an upstream connection failure
