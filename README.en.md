@@ -282,6 +282,9 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 13** Sign up with an email: the part before @ becomes your username, and signing in with the email works too; failed sign-ups no longer count toward the limit
+- **Oct 13** New "Sandbox safety" switch in Settings → Security: turn it off and the AI can touch files outside the workspace and reach local and private addresses; locked on when several accounts share one install
+- **Oct 13** "Allowed local/private addresses" accepts wildcards: 192.168.1.*:* for a whole subnet, *.local:8080 for a family of hosts
 - **Oct 12** Your personal WeChat now gets scheduled-task results and reminders; messages keep arriving while a task runs, so "stop" works right away, and WeChat shows "typing…" while it works
 - **Oct 12** Local Codex / Claude Code can read files sent with a message: pasted text, images and documents now come with their full path, not just the file name
 - **Oct 10** Members, auditors and branch-org accounts can create multiple projects too: each gets its own folder inside their own working folder, and earlier outputs stay in the default project

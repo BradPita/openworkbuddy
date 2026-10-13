@@ -564,6 +564,7 @@
       "项目": "Projects",
       "新任务": "New task",
       "用户名": "Username",
+      "用户名或邮箱": "Username or email",
       "自动化": "Automation",
       "任务历史": "Task history",
       "把事情交给我": "Hand it over to me",

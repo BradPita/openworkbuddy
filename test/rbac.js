@@ -136,6 +136,32 @@ const raw = (name) => account._internals.loadUsers().users.find((u) => u.usernam
 
   // ================= 【2】谁自动成为超管 =================
   console.log("\n【2】开局：每个组织都得有主");
+  // 头一回装机，对方拿邮箱当用户名：以前每次都被退回，退回的也算进「注册太频繁」，第 6 下就被锁住。
+  // 现在填邮箱取 @ 前面那段；先拿一个不合格的名字连点 7 下，证明填错不算次数
+  for (let i = 0; i < 7; i++) {
+    const bad = await call("POST", "/api/auth/register", { body: { username: "x", password: "pw-laoban-123" } });
+    if (bad.status !== 400 || !/2-24/.test(bad.json.error)) { eq(bad.status + " " + bad.json.error, "400 用户名需 2-24 位…", `第 ${i + 1} 次填错`); break; }
+    if (i === 6) ok(true, "★填错连点 7 次：每次都说清哪儿不对，没有被锁成「注册太频繁」★");
+  }
+  { // 注册闸：建满 20 个歇 1 分钟，再撞上歇 3 分钟，安静一小时清零（假时钟）
+    let t = 1e9;
+    const g = account._internals.createRegGate({ now: () => t });
+    for (let i = 0; i < 19; i++) g.created("ip");
+    eq(g.retryAfter("ip"), 0, "建了 19 个：还能接着注册");
+    g.created("ip");
+    eq(g.retryAfter("ip"), 60, "★建满 20 个：头一回只歇 60 秒★");
+    t += 60 * 1000;
+    eq(g.retryAfter("ip"), 0, "60 秒到了就放行");
+    for (let i = 0; i < 20; i++) g.created("ip");
+    eq(g.retryAfter("ip"), 180, "★再建满 20 个：歇 3 分钟，不再往上加★");
+    t += 180 * 1000;
+    for (let i = 0; i < 20; i++) g.created("ip");
+    eq(g.retryAfter("ip"), 180, "第三回还是 3 分钟");
+    eq(g.retryAfter("别的地址"), 0, "别的地址不受连累");
+    t += 61 * 60 * 1000;
+    for (let i = 0; i < 20; i++) g.created("ip");
+    eq(g.retryAfter("ip"), 60, "安静一小时后再撞上：又从 1 分钟算起");
+  }
   let r = await call("POST", "/api/auth/register", { body: { username: "laoban", password: "pw-laoban-123" } });
   eq(r.status, 200, "第一个账号注册成功");
   eq(r.json.user.role, "owner", "★开服第一个人 = 平台超级管理员★");
@@ -311,6 +337,29 @@ const raw = (name) => account._internals.loadUsers().users.find((u) => u.usernam
   { const src = fs.readFileSync(path.join(__dirname, "..", "public", "js", "admin.js"), "utf8");
     ok(/const roleOpts = \(m\.can_assign/.test(src), "★前端确实照着服务端那份画，没有自己写死一份★");
     ok(!/\{ value: "admin", label: "管理员 —— 能改所有东西" \}/.test(src), "写死的那份已经删干净了"); }
+
+  // ================= 拿邮箱注册 =================
+  // 用户名里放不进 @：填了邮箱就取 @ 前面那段，登录时填邮箱也认。撞名、前面那段不合格都得说清
+  console.log("\n【邮箱】填邮箱注册");
+  { const eo = org.createOrg({ name: "邮箱注册组", plan: "team", seats: 20, actor: "laoban" });
+    const code = org.createInvite(eo.id, { role: "member", max_uses: 9, days: 7, actor: "laoban" }).code;
+    let e = await call("POST", "/api/auth/register", { body: { username: "mailuser@example.com", password: "pw-mail-2468", invite: code } });
+    eq(e.status, 200, "★填邮箱注册成功★");
+    eq(e.json.user && e.json.user.username, "mailuser", "用户名取的是 @ 前面那段");
+    e = await call("POST", "/api/auth/login", { body: { username: "mailuser@example.com", password: "pw-mail-2468" } });
+    eq(e.status, 200, "★登录时填整个邮箱也进得去★");
+    e = await call("POST", "/api/auth/login", { body: { username: "mailuser", password: "pw-mail-2468" } });
+    eq(e.status, 200, "只填用户名也进得去");
+    e = await call("POST", "/api/auth/register", { body: { username: "mailuser@example.org", password: "pw-mail-1357", invite: code } });
+    ok(e.status === 400 && /邮箱前面的「mailuser」已经有人用了/.test(e.json.error), "★前面那段撞名：说清撞上的是哪段★", e.json.error);
+    e = await call("POST", "/api/auth/register", { body: { username: "a+b@example.org", password: "pw-mail-1357", invite: code } });
+    ok(e.status === 400 && /「a\+b」当不了用户名/.test(e.json.error), "★前面那段当不了用户名：说清是哪段、要什么样的★", e.json.error);
+    e = await call("POST", "/api/auth/register", { body: { username: "x", password: "pw-mail-1357", invite: code } });
+    ok(e.status === 400 && /^用户名需 2-24 位/.test(e.json.error), "反向对照：没填邮箱的还是原来那句", e.json.error);
+  }
+  { const src = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
+    ok(/function authUserHint\(\)/.test(src) && /addEventListener\("input", authUserHint\)/.test(src), "注册页边填边提示会用哪段当用户名");
+    ok(/没连上服务，\$\{what\}没成功/.test(src) && /服务返回 \$\{resp\.status\}/.test(src), "★连不上、服务出状况：各说各的，不再只有一句「失败了」★"); }
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

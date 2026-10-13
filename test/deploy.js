@@ -203,7 +203,7 @@ for (const v of ["OPENWORKBUDDY_DATA", "OPENWORKBUDDY_BIND", "OPENWORKBUDDY_PORT
   ok(new RegExp("^" + v + "=", "m").test(ENVX), `env.example 里有 ${v}`);
 
 // 反代下的限流：挂了 caddy 之后所有请求都来自代理那一个 IP，
-// 注册闸（5 次/15 分钟）会变成「第 6 个同事注册不了」，登录闸会变成「有人错几次全公司进不去」。
+// 注册闸（建满 20 个号歇 1～3 分钟）会变成「第 21 个同事得等几分钟才能注册」，登录闸会变成「有人错几次全公司进不去」。
 // 但这个开关只能是显式打开的——没反代却打开，等于伪造一行头就换一个新 IP。
 ok(/OPENWORKBUDDY_TRUST_PROXY:\s*\$\{OPENWORKBUDDY_TRUST_PROXY:-0\}/.test(COMPOSE), "compose 透传 OPENWORKBUDDY_TRUST_PROXY 且默认 0（不信转发头）");
 ok(/^OPENWORKBUDDY_TRUST_PROXY=0$/m.test(ENVX), "env.example 里 OPENWORKBUDDY_TRUST_PROXY 默认 0");

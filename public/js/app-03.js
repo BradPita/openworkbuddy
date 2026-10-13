@@ -217,6 +217,7 @@ function applyAuthMode(setup) {
       : creditsOn ? "新账号默认为成员（1000 积分）" : "新账号默认为成员"
     : "登录后使用你自己的任务历史";
   document.getElementById("auth-go").textContent = pair ? "连接" : reg ? "注册并登录" : "登录";
+  authUserHint();
   // 首次建管理员那次不要邀请码：那会儿一个组织都还没有，没人能给他发码
   inv.style.display = reg && !setup ? "" : "none";
   // 自助注册开着的时候邀请码是可选的，得在框里说明白——不然人看见个空框就以为自己缺了什么东西
@@ -344,7 +345,10 @@ async function submitAuth() {
     if (first) document.getElementById("auth-code-hint").scrollIntoView?.({ block: "nearest" });
     return;
   }
-  errEl.textContent = d.error || "失败了，稍后再试";
+  // 每种失败都得说出是哪种：服务端给了原话就照着说；没给的分清是没连上、还是服务出了状况
+  const what = reg ? "注册" : "登录";
+  errEl.textContent = d.error || (!resp ? `没连上服务，${what}没成功` : `${what}没成功：服务返回 ${resp.status}`);
+  document.getElementById("auth-user-hint").style.display = "none"; // 红字已经说了，下面那行灰字别再说一遍
   // 「要邀请码才能注册」是后端在自助注册关着时的原话——那就把那个框摆出来给他填
   if (/邀请码/.test(String(d.error || "")) && authMode === "register") {
     document.getElementById("auth-invite").style.display = "";
@@ -387,6 +391,19 @@ document.getElementById("auth-pair-name").addEventListener("keydown", (e) => { i
 document.getElementById("auth-go").onclick = submitAuth;
 document.getElementById("auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
 document.getElementById("auth-invite").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+// 注册时填了邮箱：当场说清会拿 @ 前面哪段当用户名，那段当不了的话也当场说，不等点了注册才知道
+function authUserHint() {
+  const el = document.getElementById("auth-user-hint");
+  const v = document.getElementById("auth-user").value.trim();
+  const at = v.indexOf("@");
+  if (authMode !== "register" || at < 1) { el.style.display = "none"; return; }
+  const name = v.slice(0, at);
+  el.textContent = /^[\w\u4e00-\u9fa5.-]{2,24}$/.test(name)
+    ? `用户名会是「${name}」，登录时填邮箱也行`
+    : `「${name}」当不了用户名：要 2-24 位中英文、数字或 _.-`;
+  el.style.display = "";
+}
+document.getElementById("auth-user").addEventListener("input", authUserHint);
 document.getElementById("auth-user").addEventListener("keydown", (e) => { if (e.key === "Enter" && !imeKey(e)) document.getElementById("auth-pass").focus(); });
 // 看一眼密码。管理员重置出来的是一串随机字符，盲打十有八九要错一次
 document.getElementById("auth-eye").onclick = () => {

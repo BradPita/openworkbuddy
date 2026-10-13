@@ -3145,7 +3145,8 @@
     <h2 id="auth-title">登录</h2>
     <div class="sub" id="auth-sub">登录后使用你自己的任务历史</div>
     <div class="err" id="auth-err"></div>
-    <input id="auth-user" placeholder="用户名" autocomplete="username">
+    <input id="auth-user" placeholder="用户名或邮箱" autocomplete="username">
+    <div class="hint" id="auth-user-hint" style="display:none"></div>
     <div class="auth-pw">
       <input id="auth-pass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password">
       <button type="button" id="auth-eye" title="看一眼密码" aria-label="显示密码"><svg class="i" aria-hidden="true"><use href="#i-eye"></use></svg></button>

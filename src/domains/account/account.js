@@ -541,12 +541,27 @@ function seatsFull(st, orgId) {
 // 光说「找管理员」的话，分公司的管理员看到的是一句叫自己去找自己的话
 const seatTail = (orgId, dflt) => (orgId === org.DEFAULT_ORG ? dflt : "，这家的席位要找平台超管加");
 
+/** 填的是邮箱就取 @ 前面那段当用户名：注册和登录都走这一处，填邮箱注册的人填邮箱也登得上 */
+function nameFromInput(v) {
+  const s = String(v || "").trim();
+  const at = s.indexOf("@");
+  return at > 0 ? s.slice(0, at) : s;
+}
+
 function register(username, password, opts = {}) {
-  username = String(username || "").trim();
-  if (!/^[\w一-龥.-]{2,24}$/.test(username)) throw new Error("用户名需 2-24 位（中英文、数字、_.-）");
+  const typed = String(username || "").trim();
+  username = nameFromInput(typed);
+  if (!/^[\w一-龥.-]{2,24}$/.test(username)) {
+    if (typed !== username) throw new Error(`邮箱前面的「${username}」当不了用户名：要 2-24 位中英文、数字或 _.-，换一个用户名`);
+    throw new Error("用户名需 2-24 位（中英文、数字、_.-）");
+  }
   assertPassword(password, { username, org: opts.org || org.DEFAULT_ORG });
   const st = loadUsers();
-  assertNameUnused(st, username);
+  try { assertNameUnused(st, username); } catch (e) {
+    // 填的是邮箱：人看到的是自己整个邮箱，得说清撞上的是 @ 前面那段
+    if (typed !== username) throw new Error(`邮箱前面的「${username}」已经有人用了，换一个用户名`);
+    throw e;
+  }
   const salt = crypto.randomBytes(16).toString("hex");
   const first = st.users.length === 0;
   const orgId = first ? org.DEFAULT_ORG : opts.org || org.DEFAULT_ORG;
@@ -976,7 +991,38 @@ function auditDisabledLogin(u, ip) {
   disabledNoticeAt.set(u.username, t);
   org.audit({ org: org.orgIdOf(u), actor: u.username, action: "停用的账号尝试登录", target: u.username, detail: `来自 ${ip}，密码是对的` });
 }
-const REGS_PER_IP = 5; // 注册也得拦，不然一个脚本能把账本刷满
+const REGS_PER_IP = 20; // 注册也得拦，不然一个脚本能把账本刷满
+/**
+ * 注册闸：同一个地址连着建满 20 个号就歇一会儿。头一回歇 1 分钟，再撞上歇 3 分钟——
+ * 够让刷号脚本慢下来，又不至于把真来注册的人晾在门外一刻钟。只数建成的号。
+ * 安静一小时，「撞过几回」清零。
+ */
+const REG_LOCK_MS = [60 * 1000, 3 * 60 * 1000];
+const REG_QUIET_MS = 60 * 60 * 1000;
+function createRegGate({ now = () => Date.now() } = {}) {
+  const hits = new Map(); // ip → { n, locks, until, last }
+  return {
+    retryAfter(key) {
+      const v = hits.get(key);
+      if (!v) return 0;
+      const t = now();
+      if (t - v.last > REG_QUIET_MS && t >= v.until) { hits.delete(key); return 0; }
+      return v.until > t ? Math.max(1, Math.ceil((v.until - t) / 1000)) : 0;
+    },
+    created(key) {
+      const t = now();
+      let v = hits.get(key);
+      if (!v || (t - v.last > REG_QUIET_MS && t >= v.until)) v = { n: 0, locks: 0, until: 0, last: t };
+      v.n++; v.last = t;
+      if (v.n >= REGS_PER_IP) {
+        v.until = t + REG_LOCK_MS[Math.min(v.locks, REG_LOCK_MS.length - 1)];
+        v.locks++; v.n = 0;
+      }
+      hits.set(key, v);
+    },
+  };
+}
+const regGate = createRegGate();
 
 /** 私网/环回地址：判断「这一跳是不是我们自己那层反代」用的 */
 function isPrivateAddr(ip) {
@@ -2096,7 +2142,7 @@ function createRouter(opts) {
 
   router.post("/api/auth/register", (req, res) => {
     const ip = clientIp(req);
-    const wait = loginLimiter.retryAfter("reg|" + ip, REGS_PER_IP);
+    const wait = regGate.retryAfter(ip);
     if (wait) return res.status(429).json({ error: `注册太频繁了，${wait} 秒后再试` });
     try {
       const { username, password, invite } = req.body || {};
@@ -2117,8 +2163,10 @@ function createRouter(opts) {
           spec = { org: org.DEFAULT_ORG, role: "member", status: s.need_approval ? "pending" : "active" };
         }
       }
-      loginLimiter.fail("reg|" + ip);
       const user = register(username, password, spec);
+      // 只数建成的号：这道闸防的是脚本刷满账本。填错被退回的也数进去的话，
+      // 头一回装机的人把邮箱当用户名连点 5 下就被锁在门外，一个号都没建成
+      regGate.created(ip);
       if (inv) org.consumeInvite(inv.code, user.username);
       else if (!first) org.audit({ org: org.orgIdOf(user), actor: user.username, action: "自助注册", target: user.username, detail: user.status === "pending" ? "等待审核" : "已直接通过" });
       // 待审核的人也发 cookie：不发的话他登录后只能看到「用户名或密码不对」，
@@ -2132,7 +2180,7 @@ function createRouter(opts) {
 
   router.post("/api/auth/login", (req, res) => {
     const { username, password } = req.body || {};
-    const name = String(username || "").trim();
+    const name = nameFromInput(username);
     const ipKey = "ip|" + clientIp(req);
     const userKey = "user|" + name.toLowerCase();
     const wait = loginLimiter.retryAfter(userKey, FAILS_PER_USER) || loginLimiter.retryAfter(ipKey, FAILS_PER_IP);
@@ -2508,7 +2556,7 @@ module.exports = {
   genPassword,
   migrateLegacySettings,
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
-  _internals: { readStore, writeStoreAtomic, createLimiter, startEnroll, enableTOTP, consumeTwoFactor, regenRecovery, hashRecovery, makeRecoveryCodes, isHttps, clientIp, isPrivateAddr, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken,
+  _internals: { readStore, writeStoreAtomic, createLimiter, createRegGate, startEnroll, enableTOTP, consumeTwoFactor, regenRecovery, hashRecovery, makeRecoveryCodes, isHttps, clientIp, isPrivateAddr, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken,
     // 设备配对：配对码的一次性、过期、限速这几条都得能单独验
     newPairCode, dropPairCode, claimPair, pairStatus, pairOrigin, pairOrigins, lanCandidates, claimed, listDevices, revokeDevice, deviceId, deviceLabel, normalizePairCode, touchDevice, prunePairs, pairs, PAIR_LEN, PAIR_TTL_MS, PAIR_ALPHABET, MAX_DEVICES },
 };
