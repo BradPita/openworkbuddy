@@ -291,6 +291,39 @@ async function coreBlacklist() {
   r = await shell(`cat "${cfgPath}"`, { sandbox: "off" });
   ok(r.content.includes(SECRET), "★对照★ 关掉沙箱：读得到（证明上面那几条是沙箱拦的）");
   ok((T.sandboxStatus() || {}).ok === false && /已关闭/.test(T.sandboxStatus().reason), "关掉时设置页看到「已关闭」", T.sandboxStatus());
+  // 沙箱安全总开关关了：档位哪怕是「必须」也不套；多人共用时不认这个开关
+  r = await shell(`cat "${cfgPath}"`, { sandbox: "required", sandbox_safety: false });
+  ok(!r.isError && r.content.includes(SECRET), "★沙箱安全关了：档位是「必须」也不套★", r.content.slice(0, 200));
+  ok(T.sandboxStatus().mode === "off", "  └ 设置页看到「已关闭」", T.sandboxStatus());
+  sec.setMultiUser(() => true);
+  try {
+    r = await shell(`cat "${cfgPath}"`, { sandbox: "required", sandbox_safety: false });
+    ok(r.isError && !r.content.includes(SECRET), "★多人共用：关了也照套★", r.content.slice(0, 300));
+  } finally { sec.setMultiUser(null); }
+  r = await shell(`cat "${cfgPath}"`, { sandbox: "required" });
+  ok(r.isError && !r.content.includes(SECRET), "  └ 反向对照：开关没动，「必须」档照套", r.content.slice(0, 300));
+
+  // 文件工具：沙箱安全关了能读写工作区外，黑名单照拦
+  const outDir = path.join(OWN, "outside-ws");
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, "in.txt"), "OUTSIDE-READ-OK");
+  const fsec = { ...sec.DEFAULTS, permission_mode: "full" }; // 安全网关开着
+  const ft = (name, input, s) => T.executeTool(name, input, { security: { ...fsec, ...s } });
+  r = await ft("read_file", { path: path.join(outDir, "in.txt") }, {});
+  ok(r.isError && /越界/.test(r.content), "默认：read_file 读工作区外被拦", r.content.slice(0, 200));
+  r = await ft("write_file", { path: path.join(outDir, "w0.txt"), content: "x" }, {});
+  ok(r.isError && !fs.existsSync(path.join(outDir, "w0.txt")), "默认：write_file 写工作区外被拦，文件没落地", r.content.slice(0, 200));
+  r = await ft("read_file", { path: path.join(outDir, "in.txt") }, { sandbox_safety: false });
+  ok(!r.isError && r.content.includes("OUTSIDE-READ-OK"), "★沙箱安全关了：read_file 读得到工作区外★", r.content.slice(0, 200));
+  r = await ft("write_file", { path: path.join(outDir, "w1.txt"), content: "OUT-WRITE" }, { sandbox_safety: false });
+  ok(!r.isError && fs.readFileSync(path.join(outDir, "w1.txt"), "utf8") === "OUT-WRITE", "★沙箱安全关了：write_file 写得进工作区外★", r.content.slice(0, 200));
+  r = await ft("read_file", { path: cfgPath }, { sandbox_safety: false });
+  ok(r.isError && !r.content.includes(SECRET), "★沙箱安全关了：config.json 照样读不到★", r.content.slice(0, 200));
+  sec.setMultiUser(() => true);
+  try {
+    r = await ft("read_file", { path: path.join(outDir, "in.txt") }, { sandbox_safety: false });
+    ok(r.isError && !r.content.includes("OUTSIDE-READ-OK"), "★多人共用：关了也读不到工作区外★", r.content.slice(0, 200));
+  } finally { sec.setMultiUser(null); }
 
   // sandbox-exec 找不到：auto 照跑，required 不跑
   SB._setBin(path.join(OWN, "no-such-sandbox-exec"));

@@ -343,6 +343,25 @@ const run = (name, input, s, extra = {}) => tools.withWorkspace(WS, () => tools.
       r = await run("fetch_url", { url: `http://127.0.0.1:${S.port}/to-t`, render: "off" }, { url_allow_local: [`127.0.0.1:${S.port}`] });
       ok(r.isError && /跳转到的地址被拦下/.test(r.content) && T.seen.length === 0, "★加白的口 302 到没加白的口：拦下，那个口没被连★", r.content);
 
+      // 通配加白、沙箱安全总开关：走真的 fetch_url
+      const n0 = S.seen.length;
+      r = await run("fetch_url", { url: `http://127.0.0.1:${S.port}/w1`, render: "off" }, { url_allow_local: ["127.0.0.*:*"] });
+      ok(!r.isError && String(r.content).includes("MARK-/w1"), "★通配 127.0.0.*:* → fetch_url 拿得到★", String(r.content).slice(0, 120));
+      r = await run("fetch_url", { url: `http://127.0.0.1:${S.port}/w2`, render: "off" }, { url_allow_local: [`*:${S.port}`] });
+      ok(!r.isError && String(r.content).includes("MARK-/w2"), "通配 *:端口 → 拿得到", String(r.content).slice(0, 120));
+      r = await run("fetch_url", { url: `http://127.0.0.1:${S.port}/w3`, render: "off" }, { url_allow_local: ["192.168.*:*", `*:${S.port + 1}`] });
+      ok(r.isError && /本机地址/.test(r.content), "  └ 反向对照：网段、端口不对的通配不放", r.content);
+      ok(S.seen.length === n0 + 2, "  └ 只连了放行的那两次", S.seen.length - n0);
+      r = await run("fetch_url", { url: `http://127.0.0.1:${S.port}/off`, render: "off" }, { sandbox_safety: false });
+      ok(!r.isError && String(r.content).includes("MARK-/off"), "★沙箱安全关了：本机地址不加白也拿得到★", String(r.content).slice(0, 120));
+      r = await run("fetch_url", { url: "http://localhost:3800/api/settings", render: "off" }, { sandbox_safety: false, url_allow_local: ["*:*"] });
+      ok(r.isError && /自己的服务端口/.test(r.content), "★沙箱安全关了、写了 *:*：OWB 自己的 3800 照拦★", r.content);
+      security.setMultiUser(() => true);
+      try {
+        r = await run("fetch_url", { url: `http://127.0.0.1:${S.port}/multi`, render: "off" }, { sandbox_safety: false });
+        ok(r.isError && /本机地址/.test(r.content), "★多人共用：沙箱安全关了也照拦★", r.content);
+      } finally { security.setMultiUser(null); }
+
       G.registerOwnPort(T.port, "测试");
       r = await run("fetch_url", { url: `http://127.0.0.1:${T.port}/`, render: "off" }, { url_allow_local: ["127.0.0.1:*"], gateway: false });
       ok(r.isError && /自己的服务端口/.test(r.content) && T.seen.length === 0, "★登记过的自有端口：加白、关网关都不放★", r.content);

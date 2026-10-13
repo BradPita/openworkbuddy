@@ -6344,6 +6344,8 @@ const GATE_CHECKS = `
   // 「系统授权」那张卡看的是服务端报的 platform；默认不报（老服务端就是这样），④.6 里换着报
   // openReply 是「去授权」那一下服务端回什么，"down" = 请求本身发不出去
   let sysPlat, openReply = { ok: true };
+  // 服务端报不报「只有一个账号」：undefined = 老服务端不报
+  let solo;
   // 渠道表在几组断言中间要换一批（验副标题和「第 N 个」），所以拎出来当变量
   // 模型表和多媒体表同理：验「同名渠道分得开」时要把行挂到重名的那两个渠道上
   let mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }];
@@ -6368,6 +6370,7 @@ const GATE_CHECKS = `
       media_models: medias.map((x) => ({ ...x })),
       active_model: "主力", media: {}, model_follow_last: true, persona: "回复简洁", assistant: { name: "小猫", avatar: "🐱" },
       pet: {}, security: { cmd_allow: ["ls"], cmd_ask: ["rm"] },
+      ...(solo !== undefined ? { solo } : {}),
     });
     if (url === "/api/model-catalog") return j({
       kinds: [
@@ -6775,6 +6778,39 @@ const GATE_CHECKS = `
   ok("反向对照：平台管理员八张卡和保存钮都在",
     !!spo.querySelector("#sec-fbl") && !!spo.querySelector("#sec-cal") && !!spo.querySelector("#sec-node") && !!spo.querySelector("#audit-list") && !!spo.querySelector("#sec-save"));
   ok("反向对照：档位是一排真能点的单选钮", spo.querySelectorAll("input[name=permmode]").length === 2);
+
+  // ④.4 沙箱安全总开关：一个账号时能点、存得进；多个账号时不画开关，只说一句，保存也不带
+  const saveSec = async () => {
+    posts = [];
+    mBody.querySelector("#settings-pane #sec-save").onclick();
+    await new Promise((r) => setTimeout(r, 30));
+    const p = posts.find((x) => x.body && x.body.security);
+    return p ? p.body.security : null;
+  };
+  solo = true;
+  await renderSettings("security");
+  await new Promise((r) => setTimeout(r, 30));
+  let sbx = mBody.querySelector("#settings-pane #sec-sbxsafe");
+  ok("一个账号：「沙箱安全」开关在，默认勾着", !!sbx && sbx.checked === true);
+  ok("  └ 说清关掉会怎样", /工作目录外的文件/.test(sbx.closest("label, .chk, div").textContent || mBody.querySelector("#settings-pane").textContent));
+  sbx.checked = false;
+  let body = await saveSec();
+  ok("★取消勾选再保存：发出去 sandbox_safety:false★", !!body && body.sandbox_safety === false, JSON.stringify(body));
+  sbx.checked = true;
+  body = await saveSec();
+  ok("  └ 勾回去：发 true", !!body && body.sandbox_safety === true, JSON.stringify(body));
+  ok("放行框的说明写了怎么用 *", /192\.168\.1\.\*:\*/.test(mBody.querySelector("#settings-pane").textContent));
+  solo = undefined;
+  await renderSettings("security");
+  await new Promise((r) => setTimeout(r, 30));
+  ok("反向对照：老服务端不报 solo 时照样有开关", !!mBody.querySelector("#settings-pane #sec-sbxsafe"));
+  solo = false;
+  await renderSettings("security");
+  await new Promise((r) => setTimeout(r, 30));
+  ok("★多个账号：不画开关，说一句关不掉★", !mBody.querySelector("#settings-pane #sec-sbxsafe") && mBody.querySelector("#settings-pane").textContent.includes("有多个账号，沙箱安全不能关"));
+  body = await saveSec();
+  ok("  └ 保存时不带这个字段，存着的值原样留着", !!body && !("sandbox_safety" in body), JSON.stringify(body));
+  solo = undefined;
 
   // ④.5 存不下的时候，把后端说的原因转述出来
   const realFetch = window.fetch;
