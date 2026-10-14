@@ -1182,6 +1182,24 @@ document.addEventListener("selectionchange", () => {
 // shown：气泡里该显示的「人说的那句」。画布发起的任务，发给模型的 userText 前面拼着一大段操作说明，
 // 气泡、复制都用 shown；重新生成、反馈仍用完整的 userText，模型那边一个字不能少
 // into：长对话往前补画那几轮时挂进去的盒子（app-02 showOlderTurns）。不给就照旧接在对话末尾
+/**
+ * 「（已上传文件：a、b）」按顿号拆回文件名；名字自己带顿号的（「这是一个测、试文件.txt」）不许拆成两个。
+ * 连着几段拼起来认得出就按一个算，认不出时没扩展名的那段跟后一段拼回去。跟 agent.js 同名函数一个口径
+ */
+function splitUploadNames(list, known = () => false) {
+  const parts = String(list || "").split("、"), out = [];
+  const ext = (t) => /\.[A-Za-z0-9]{1,10}$/.test(t.trim());
+  for (let i = 0; i < parts.length;) {
+    let j = parts.length;
+    while (j > i + 1 && !known(parts.slice(i, j).join("、").trim())) j--;
+    if (j === i + 1 && !known(parts[i].trim())) while (j < parts.length && !ext(parts[j - 1])) j++;
+    const n = parts.slice(i, j).join("、").trim();
+    if (n) out.push(n);
+    i = j;
+  }
+  return out;
+}
+
 function createTurnUI(userText, turnMode, forSid, shown, into) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
   const turn = document.createElement("div");
@@ -1205,9 +1223,12 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     if (had) { if (label && !had.label) had.label = label; return; }
     attList.push({ name: n, label: label || "" });
   };
-  let bodyText = stripSceneTag(shown || userText)
+  const rawText = stripSceneTag(shown || userText);
+  // 锚点里的名字是整的（】收尾），拿来认清单里哪几段顿号其实是同一个文件名
+  const anchored = new Set([...rawText.matchAll(/【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/g)].map((m) => m[1].trim()));
+  let bodyText = rawText
     .replace(/（已上传文件：([^）]+)）/g, (_, names) => {
-      for (const n of String(names).split("、")) addAtt(n);
+      for (const n of splitUploadNames(names, (x) => anchored.has(x))) addAtt(n);
       return "";
     })
     // 独占一行的素材锚点才折：写在句子中间的（「把【图片 1：a.png】放左边」）是人自己在指东西，

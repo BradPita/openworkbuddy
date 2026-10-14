@@ -15807,6 +15807,11 @@ const BB0 = APP02X.indexOf("  // 气泡里不许出现给模型看的协议原�
 const BB1 = APP02X.indexOf('  turn.querySelector(".u-copy").onclick', BB0);
 if (BB0 < 0 || BB1 <= BB0) throw new Error("app-01.js 里气泡折叠那段找不到了（挪窝/改写了？），前端测试没法定位真源码");
 const BUBBLE_SRC = APP02X.slice(BB0, BB1);
+// 清单那句按顿号拆名字的函数在 createTurnUI 外面，切真源码注进去（名字自己带顿号的不许拆成两个）
+const SPLIT0 = APP02X.indexOf("function splitUploadNames(");
+const SPLIT1 = APP02X.indexOf("\n}\n", SPLIT0) + 3;
+if (SPLIT0 < 0 || SPLIT1 <= SPLIT0) throw new Error("app-01.js 里的 splitUploadNames 找不到了，前端测试没法定位真源码");
+const SPLIT_SRC = APP02X.slice(SPLIT0, SPLIT1);
 for (const k of ["bubble-quote", "bubble-attach", "bubble-pics", "BUBBLE_ATT_ICON"]) {
   if (!BUBBLE_SRC.includes(k)) throw new Error("切出来的那段里没有 " + k + "：气泡折叠这一半没被测到");
 }
@@ -15840,7 +15845,8 @@ const ICON_MAP = (() => {
 const BUBBLE_BOOT = "window.__BUBBLE_SRC = " + JSON.stringify(BUBBLE_SRC) + ";\n"
   + "window.__BUBBLE_ICONS = " + ICON_MAP + ";\n"
   + "window.__RESOLVE_SRC = " + JSON.stringify(ATTACH_RESOLVE_SRC) + ";\n"
-  + "window.__PIC_RE = " + PIC_RE_SRC + ";\n";
+  + "window.__PIC_RE = " + PIC_RE_SRC + ";\n"
+  + "window.__SPLIT_SRC = " + JSON.stringify(SPLIT_SRC) + ";\n";
 
 const BUBBLE_CHECKS = `
 (async () => {
@@ -15850,8 +15856,10 @@ const BUBBLE_CHECKS = `
   // hlTokens / stripSceneTag 各自有自己的一屏测试，这儿只要它们不改变这段代码的分支
   const hlTokens = (t) => esc(t);
   const stripSceneTag = (t) => t;
-  const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON",
-    "turnSid", "attachRel", "attachThumb", "previewFile", "BUBBLE_PIC_RE", "shown", window.__BUBBLE_SRC); // shown：画布那类入口的「人说的那句」，这一屏不传
+  const splitUploadNames = new Function(window.__SPLIT_SRC + "; return splitUploadNames;")();
+  const mkRender = (src) => new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON",
+    "turnSid", "attachRel", "attachThumb", "previewFile", "BUBBLE_PIC_RE", "shown", "splitUploadNames", src); // shown：画布那类入口的「人说的那句」，这一屏不传
+  let render = mkRender(window.__BUBBLE_SRC);
   // 「这份素材躺在哪儿」那三档用真源码，不用测试自己编一份：编一份的话，线上拼错了这儿照样绿
   const attachPaths = new Map(), sessionDirs = new Map(), sessionAttachDirs = new Map();
   const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
@@ -15870,7 +15878,7 @@ const BUBBLE_CHECKS = `
     turn.innerHTML = "<div class='u-msg'><div class='u-stack'><div class='bubble'></div></div></div>";
     stage.appendChild(turn);
     render(turn, text, stripSceneTag, ic, hlTokens, esc, window.__BUBBLE_ICONS,
-      sid === undefined ? "sid-0" : sid, RESOLVE.attachRel, RESOLVE.attachThumb, previewFile, window.__PIC_RE);
+      sid === undefined ? "sid-0" : sid, RESOLVE.attachRel, RESOLVE.attachThumb, previewFile, window.__PIC_RE, undefined, splitUploadNames);
     return turn;
   };
   const bubbleOf = (text, sid) => turnOf(text, sid).querySelector(".bubble");
@@ -16083,6 +16091,27 @@ const BUBBLE_CHECKS = `
     const pills = [...b.querySelectorAll(".bubble-attach .batt")];
     ok("老会话里那句「（已上传文件：…）」也折得动", pills.length === 1 && pills[0].textContent === "日志.txt", pills.map((p) => p.textContent).join("|"));
     ok("折完那句话读着还是通的", b.textContent.trim().startsWith("帮我看看这个"), JSON.stringify(b.textContent));
+  }
+
+  // 文件名自己带顿号：「这是一个测、试文件.txt」以前被清单那句拆成「这是一个测」「试文件.txt」两个假附件，加上锚点那个一共三条
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    const names = (t) => [...bubbleOf(t).querySelectorAll(".bubble-attach .batt")].map((p) => p.textContent);
+    const a = names("看看上传的名称是不是会切断\\n【文件 1：这是一个测、试文件.txt】\\n（已上传文件：这是一个测、试文件.txt）");
+    ok("★名字带顿号：只出一个附件，名字是整的★", JSON.stringify(a) === '["这是一个测、试文件.txt"]', JSON.stringify(a));
+    const b = names("（已上传文件：这是一个测、试文件.txt、b.csv）");
+    ok("★没有锚点的老会话：没扩展名那段跟后一段拼回去★", JSON.stringify(b) === '["这是一个测、试文件.txt","b.csv"]', JSON.stringify(b));
+    const c = names("【文件 1：甲、乙.pdf】\\n【文件 2：丙.xlsx】\\n（已上传文件：甲、乙.pdf、丙.xlsx）");
+    ok("带顿号的和普通的混着：两个，一个不多", JSON.stringify(c) === '["甲、乙.pdf","丙.xlsx"]', JSON.stringify(c));
+    const d = names("（已上传文件：a.txt、b.csv）");
+    ok("反向对照：普通的两个文件照样拆成两个", JSON.stringify(d) === '["a.txt","b.csv"]', JSON.stringify(d));
+    const cut = "splitUploadNames(names, (x) => anchored.has(x))";
+    ok("反向对照：切出来那段里找得到拆清单那句", window.__BUBBLE_SRC.includes(cut));
+    const keep = render;
+    render = mkRender(window.__BUBBLE_SRC.replace(cut, 'String(names).split("、")'));
+    let e;
+    try { e = names("看看上传的名称是不是会切断\\n【文件 1：这是一个测、试文件.txt】\\n（已上传文件：这是一个测、试文件.txt）"); } finally { render = keep; }
+    ok("★反向对照★ 退回直接按顿号拆：就是截图里那三条", JSON.stringify(e) === '["这是一个测","试文件.txt","这是一个测、试文件.txt"]', JSON.stringify(e));
   }
 
   // 反向对照：什么协议都没有的普通一句话，一个字都不许被改

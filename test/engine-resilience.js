@@ -2115,6 +2115,20 @@ async function partAttachedFiles() {
       ok(/别用 rg --files、find 去搜/.test(p), "说清楚别去搜、为什么", p);
     }
     {
+      // 文件名自己带顿号：清单那句按顿号拆，以前拆成两个盘上没有的名字，这份文件就一条路径都不给
+      const dun = path.join(cell, "这是一个测、试文件.txt"), half = path.join(cell, "试文件.txt");
+      fs.writeFileSync(dun, "x"); fs.writeFileSync(half, "x"); // 后半截恰好也有同名文件：不许拿它冒充
+      try {
+        const q = "看看（已上传文件：这是一个测、试文件.txt、截图.png）";
+        const p = await go([{ role: "user", content: q }]);
+        ok(p.includes(`- ${dun}`) && p.includes(`- ${shot}`), "★名字带顿号的照样给完整路径★", p);
+        ok(!p.includes(`- ${half}`), "★拆出来的后半截哪怕盘上真有，也不当成用户传的★", p);
+        const q2 = "看看（已上传文件：试文件.txt、截图.png）";
+        const p2 = await go([{ role: "user", content: q2 }]);
+        ok(p2.includes(`- ${half}`) && p2.includes(`- ${shot}`), "反向对照：真传了「试文件.txt」的照样认", p2);
+      } finally { fs.rmSync(dun, { force: true }); fs.rmSync(half, { force: true }); }
+    }
+    {
       const q = "【文件 1：../外面.txt】【文件 2：/etc/hosts】看看";
       const p = await go([{ role: "user", content: q }]);
       ok(p === q, "★带目录的名字一概不认★ 锚点就是正文里的字，谁都打得出来，不能拿它指到工作区外面", p);

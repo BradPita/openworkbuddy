@@ -2753,6 +2753,26 @@ function modePrompt(mode) {
    * 所以把完整路径直接递过去。只认不带目录的名字；先找本次工作目录，再找工作区根
    * （那格里已有同名文件时附件不搬，留在根上）；盘上没有的不列。
    */
+  /**
+   * 「（已上传文件：a、b）」按顿号拆回文件名。文件名自己也可能带顿号（「这是一个测、试文件.txt」），
+   * 直接 split 会拆出两个不存在的名字。所以：连着几段拼起来是个真文件就按一个算（越长越先认）；
+   * 单段本身就是真文件的照单独算；都认不出时，没有扩展名的那段跟后一段拼回去。
+   * @param {string} list @param {(name: string) => boolean} known
+   */
+  function splitUploadNames(list, known = () => false) {
+    const parts = String(list || "").split("、"), out = [];
+    const ext = (t) => /\.[A-Za-z0-9]{1,10}$/.test(t.trim());
+    for (let i = 0; i < parts.length;) {
+      let j = parts.length;
+      while (j > i + 1 && !known(parts.slice(i, j).join("、").trim())) j--;
+      if (j === i + 1 && !known(parts[i].trim())) while (j < parts.length && !ext(parts[j - 1])) j++;
+      const n = parts.slice(i, j).join("、").trim();
+      if (n) out.push(n);
+      i = j;
+    }
+    return out;
+  }
+
   function attachedFilesNote(text, cwd) {
     let root = ""; try { root = getWorkspaceDir(); } catch {}
     const dirs = [...new Set([cwd, root].filter((d) => d && path.isAbsolute(d)))];
@@ -2766,7 +2786,8 @@ function modePrompt(mode) {
     };
     const src = String(text || "");
     for (const m of src.matchAll(/【(图片|视频|音频|文本摘录|文件)\s*(\d+)：([^】]+)】/gu)) add(m[3], `${m[1]} ${m[2]}`);
-    for (const m of src.matchAll(/（已上传文件：([^）]+)）/gu)) for (const n of m[1].split("、")) add(n, "");
+    const onDisk = (n) => n === path.basename(n) && dirs.some((d) => { try { return fs.statSync(path.join(d, n)).isFile(); } catch { return false; } });
+    for (const m of src.matchAll(/（已上传文件：([^）]+)）/gu)) for (const n of splitUploadNames(m[1], onDisk)) add(n, "");
     if (!lines.length) return "";
     return "\n\n（随消息传上来的文件在下面，按完整路径直接读。别用 rg --files、find 去搜：工作目录在 git 仓库里时，被 .gitignore 忽略的文件它们看不见）\n" +
       lines.slice(0, 20).join("\n");
