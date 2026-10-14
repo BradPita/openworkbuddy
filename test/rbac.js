@@ -329,6 +329,14 @@ const raw = (name) => account._internals.loadUsers().users.find((u) => u.usernam
     ok(r.status !== 403, `反向对照：成员 ${m} ${u} 不被这道闸拦（填的是自己的 Key）`, { got: r.status });
   }
 
+  // 专家也一样：共享开关归平台管理员，成员自己建的那条接口不归这道闸
+  r = await call("POST", "/api/experts/share", { cookie: liC, body: { name: "x", shared: false } });
+  ok(r.status === 403 && r.json && r.json.platform_only, "★成员 POST /api/experts/share → 403★", { got: r.status });
+  for (const [m, u] of [["GET", "/api/experts"], ["POST", "/api/my-experts"], ["DELETE", "/api/my-experts/x"]]) {
+    r = await call(m, u, { cookie: liC, body: {} });
+    ok(r.status !== 403, `反向对照：成员 ${m} ${u} 不被这道闸拦（建的是自己的专家）`, { got: r.status });
+  }
+
   // 平台级的组织管理：管理员进不去，只有平台超管进得去
   const fen3C = await login("fen3", account.resetPasswordLocally("fen3").password);
   r = await call("GET", "/api/admin/orgs", { cookie: fen3C });

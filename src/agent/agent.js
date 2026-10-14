@@ -1145,7 +1145,7 @@ function shellNote(platform = process.platform) {
     : "zsh/bash";
 }
 
-function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
+function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory, expertsFor }) {
   // 上次没收完的视频（服务重启、进程被杀）开张后接着收，只排一次（engines/harvest.js）
   harvest.sweepSoon({ media: () => mediaModels.resolve(config) });
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
@@ -1154,9 +1154,17 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   // 关着的时候它返回的全是空壳对象，下面所有 tr.span()/tr.end() 都是空转——所以整份文件里
   // 一处 `if (tr)` 都不用写，也就不存在「漏判一处把别人正跑着的任务搞崩」这种事
   const tracer = tracing.getTracer(config);
-  /** 团里挂着的成员可能已被删掉，取用时按当前专家表过一遍 */
-  function teamMembers(team) {
-    return (team.members || []).map((n) => experts.find((e) => e.name === n)).filter(Boolean);
+  /**
+   * 这个人能委派的专家。多人服务器上成员只看得见平台管理员共享出来的 + 他自己建的（server.js 的 expertsFor）；
+   * 没接这个插座的（命令行、测试）就是整张表。每次现取：专家页增删改、共享开关都当场生效
+   */
+  function expertsOf(user) {
+    if (typeof expertsFor !== "function") return experts;
+    try { return expertsFor(user) || []; } catch { return []; }
+  }
+  /** 团里挂着的成员可能已被删掉，取用时按当前专家表过一遍。团是平台管理员编的，成员自己建的同名专家不顶替进去 */
+  function teamMembers(team, pool = experts) {
+    return (team.members || []).map((n) => pool.find((e) => e.name === n && !e.own)).filter(Boolean);
   }
   // 技能表走 skills.js 的签名缓存：一轮里这儿要被调 4 次以上，不再每次重读 52 个 skill.md。
   // 新建/删掉技能当场就认（save_skill 新建的立即可用），就地改写已有 skill.md 最多晚 1 秒
@@ -1167,7 +1175,9 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   async function baseSystemPrompt(user, hint, baseDir) {
     const skills = getSkills();
     // 用户可以给助理改名（设置 → 个性化）。名字得进提示词，不然用户喊"小秘"它一脸茫然
-    const myName = String((config.assistant || {}).name || "").trim() || "OpenWorkBuddy";
+    // 多人服务器上成员可以给自己那个助理另起名字、另加偏好（prefs.assistantFor），按发起这趟的人取
+    const mine = prefs.assistantFor(user, config);
+    const myName = mine.name;
     let p = `你是 ${myName}，一个 AI 办公智能体。用户用自然语言下达办公任务，你自主思考、拆解任务、规划步骤、调用工具执行，最终交付可验证的成果。用户叫你「${myName}」，被问到你是谁就用这个名字。
 
 ## 当前环境
@@ -1320,6 +1330,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     if (config.persona) {
       p += `\n\n## 用户的个性化偏好\n${config.persona}`;
     }
+    if (mine.persona) p += `\n\n## 这位用户自己的偏好\n${mine.persona}`;
     // 自进化规则排在记忆前面：记忆是"这个用户怎么想的"，规则是"你自己在哪儿摔过"。
     // 摔过的坑得先想起来，不然照着用户偏好又摔一次。两块都过预算上限，不会无限撑长。
     // 规则只在审过一条新规则时才变，算稳定段；长期记忆按本次任务线索（hint）挑条目，
@@ -1332,18 +1343,19 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     let p = await baseSystemPrompt(user, hint, baseDir);
     // 不写这句，模型只会把 explore 当成「慢一点的 read_file」，一次发一个，并发白给了
     p += `\n\n大范围翻代码/资料、或者要同时查几个互不相干的问题时，同一轮里发几个 explore 并发去查，你自己的上下文留给真正要改的地方。`;
-    if (experts.length) {
+    const pool = expertsOf(user);
+    if (pool.length) {
       p += `\n\n## 可委派的专家（delegate_to_expert）\n`;
-      p += experts
+      p += pool
         .map((e) => `- ${e.name}${e.alias ? `·${e.alias}` : ""}：${e.description}${(e.skills || []).length ? `（擅长技能：${e.skills.join("、")}）` : ""}`)
         .join("\n");
     }
-    const teams = expertTeams.filter((t) => teamMembers(t).length >= 2);
+    const teams = expertTeams.filter((t) => teamMembers(t, pool).length >= 2);
     if (teams.length) {
       p += `\n\n## 可委派的专家团（delegate_to_team，整队接力）\n`;
-      p += teams.map((t) => `- ${t.name}：${t.description || "（无说明）"}｜成员依次为 ${teamMembers(t).map((e) => e.name).join(" → ")}`).join("\n");
+      p += teams.map((t) => `- ${t.name}：${t.description || "（无说明）"}｜成员依次为 ${teamMembers(t, pool).map((e) => e.name).join(" → ")}`).join("\n");
     }
-    if (experts.length) {
+    if (pool.length) {
       p += `\n\n委派原则：
 - 简单任务自己直接做，别为了"显得专业"绕一圈委派，那只是白烧 token 和时间。
 - 需要单一环节的专业能力（只是查资料 / 只是做 PPT）→ delegate_to_expert。
@@ -1418,7 +1430,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return require("../core/obs/notify").anyPushReady(config);
   }
 
-  function toolList(depth, mode) {
+  function toolList(depth, mode, user) {
     if (mode === "ask" || mode === "plan") {
       const gui = hasRenderer();
       const readOnly = TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name) && (gui || !DESKTOP_ONLY_TOOLS.includes(t.name)));
@@ -1471,9 +1483,10 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     if (mailer.configured((config.im || {}).smtp)) tools.push(SEND_EMAIL_TOOL);
     if (jev.status(config).ready) tools.push(DECIDE_TOOL);
     if (depth === 0) tools.push(EXPLORE_TOOL); // 不用配专家就有；专家/探索子智能体自己拿不到，免得套娃
-    if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
+    const pool = depth === 0 ? expertsOf(user) : [];
+    if (depth === 0 && pool.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
-    if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
+    if (depth === 0 && expertTeams.some((t) => teamMembers(t, pool).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
     return tools;
   }
 
@@ -2041,9 +2054,10 @@ function modePrompt(mode) {
     }
     if (tc.name === "delegate_to_expert") {
       if (depth > 0) return { content: "专家不能再委派他人，请直接完成任务。", isError: true };
-      const expert = experts.find((e) => e.name === (tc.input.expert || "").trim());
+      const pool = expertsOf(user);
+      const expert = pool.find((e) => e.name === (tc.input.expert || "").trim());
       if (!expert) {
-        return { content: `专家不存在: ${tc.input.expert}。可用: ${experts.map((e) => e.name).join(", ")}`, isError: true };
+        return { content: `专家不存在: ${tc.input.expert}。可用: ${pool.map((e) => e.name).join(", ")}`, isError: true };
       }
       emit({ type: "expert_start", expert: expert.name, task: tc.input.task });
       const ext0 = (stats && stats.extendedMs) || 0; // 专家等表单、按配方放宽挪的时间，回来还给委派方
@@ -2072,11 +2086,12 @@ function modePrompt(mode) {
     }
     if (tc.name === "delegate_to_team") {
       if (depth > 0) return { content: "专家不能再委派他人，请直接完成任务。", isError: true };
-      const team = expertTeams.find((t) => t.name === (tc.input.team || "").trim());
+      const pool = expertsOf(user);
+      const team = expertTeams.find((t) => t.name === (tc.input.team || "").trim() && teamMembers(t, pool).length >= 2);
       if (!team) {
-        return { content: `专家团不存在: ${tc.input.team}。可用: ${expertTeams.map((t) => t.name).join(", ") || "（无）"}`, isError: true };
+        return { content: `专家团不存在: ${tc.input.team}。可用: ${expertTeams.filter((t) => teamMembers(t, pool).length >= 2).map((t) => t.name).join(", ") || "（无）"}`, isError: true };
       }
-      const members = teamMembers(team);
+      const members = teamMembers(team, pool);
       if (members.length < 2) return { content: `专家团「${team.name}」的成员已不足 2 人，请改用 delegate_to_expert。`, isError: true };
 
       emit({ type: "team_start", team: team.name, members: members.map((m) => m.name), task: tc.input.task });
@@ -2145,7 +2160,7 @@ function modePrompt(mode) {
   function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit, llmOverride, onSubmitted }) {
     return {
       onProgress: emit ? progressSink(emit, { id: callId, name, depth }) : undefined, // 长工具（渲染 / 配音 / 合成）往回报进度；只直播不存盘
-      knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
+      knownTools: toolList(depth, "craft", user).map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
       media: mediaModels.resolve(config), // 带上全表，generate_image 这些才能按名字点名用哪个模型
@@ -2877,6 +2892,7 @@ function modePrompt(mode) {
     // "项目里写的规范它不认"——不是 CLI 记性差，是我们压根没把记忆递过去。
     // 顺序同内置：个性化偏好 → 自进化规则（自己摔过的坑）→ 长期记忆 → 项目指令。
     if (config.persona) parts.push(`\n## 用户的个性化偏好\n${config.persona}`);
+    { const mine = prefs.assistantFor(user, config); if (mine.persona) parts.push(`\n## 这位用户自己的偏好\n${mine.persona}`); }
     try { const ev = evolve.promptBlock(); if (ev) parts.push(ev.trim()); } catch {} // 规则目录读不了不该让任务起不来
     // 记忆召回线索：用户这次要的事（currentAsk，跟内置引擎同一个口径）的前 500 字，记忆超预算时按它挑最相关的
     const hint = currentAsk(extra.history || []).slice(0, 500);
@@ -3110,7 +3126,7 @@ function modePrompt(mode) {
     // 画布任务（s_canvas_ 会话）不摆生图 / 生视频 / 配音：那边先交清单、用户点「开跑」才生成。
     // 摆着就是让模型先调一次、吃一条「请先报价」再改道；硬调了也照样拦（tools.js executeToolCore）
     const quoteFirst = canvasStore.canvasSessionOf(sessionId);
-    const tools = toolList(depth, mode).filter((t) => !(quoteFirst && canvasStore.CANVAS_QUOTE_FIRST.includes(t.name)));
+    const tools = toolList(depth, mode, user).filter((t) => !(quoteFirst && canvasStore.CANVAS_QUOTE_FIRST.includes(t.name)));
     // 这一轮真摆给模型的工具名。只读档（ask/plan）清单外的一律不执行（见 runOne）：以前全靠「不摆写工具」，
     // 模型硬编一个 write_file 照样写成功；探索子智能体跑的就是 ask 档，不拦它的只读是一句空话
     const readOnlyMode = mode === "ask" || mode === "plan";

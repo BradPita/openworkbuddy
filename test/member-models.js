@@ -17,8 +17,12 @@
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { mod } = require("./lib/mod");
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-member-"));
+process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
+fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 const { entry } = require("./lib/entry");
 const mm = require(mod("member-models"));
 
@@ -123,6 +127,58 @@ ok(/function paintMyModels\(/.test(F5) && /\/api\/my-models/.test(F5), "成员�
 ok(/ch-share-cb/.test(F5) && /\/api\/models\/share/.test(F5), "渠道卡上有「成员能用」的勾");
 ok(/mf-byok/.test(F5) && /\/api\/models\/member-byok/.test(F5), "平台管理员有总开关");
 ok(/function modelShown\(/.test(F2), "界面上显示名字时去掉 my: 前缀");
+
+console.log("\n【8】每个人自己的助理（名字、头像、偏好）");
+const prefs = require(mod("prefs"));
+const gcfg = { assistant: { name: "公司助理", avatar: "@cat" }, persona: "统一用简体中文" };
+let a = prefs.assistantFor("xiaoli", gcfg);
+ok(a.name === "公司助理" && a.avatar === "@cat" && a.persona === "" && !a.own, "没填过：跟全局那份走", a);
+prefs.write("xiaoli", { assistant: { name: "小秘", avatar: "🐼", persona: "结论放最前面" } });
+a = prefs.assistantFor("xiaoli", gcfg);
+ok(a.name === "小秘" && a.avatar === "🐼" && a.persona === "结论放最前面" && a.own, "★填了：用他自己的★", a);
+eq(prefs.assistantFor("xiaowang", gcfg).name, "公司助理", "★别人不受影响★");
+eq(prefs.assistantFor("", gcfg).name, "公司助理", "认不出是谁（命令行、老 IM 入站）：全局那份");
+prefs.write("xiaoli", { assistant: { name: "  " } });
+eq(prefs.assistantFor("xiaoli", gcfg).name, "公司助理", "名字清空：退回全局的，不会变成没名字");
+eq(prefs.assistantFor("xiaoli", {}).name, "OpenWorkBuddy", "全局也没名字：默认名");
+const AG = fs.readFileSync(mod("agent"), "utf8");
+ok(/const mine = prefs\.assistantFor\(user, config\);\s*const myName = mine\.name;/.test(AG), "★系统提示词里的名字按发起这趟的人取★");
+ok(/if \(config\.persona\)[\s\S]{0,120}if \(mine\.persona\) p \+= /.test(AG), "★他自己的偏好排在组织偏好后面，不替换★");
+eq((AG.match(/这位用户自己的偏好/g) || []).length, 2, "内置引擎、本机引擎两条路都带上");
+const SV = fs.readFileSync(entry("server"), "utf8");
+const ma = SV.slice(SV.indexOf('app.get("/api/my-assistant"'), SV.indexOf('app.post("/api/my-assistant"') + 1200);
+ok(/if \(!ownPrefs\(req\)\) return res\.status\(400\)/.test(ma) && /prefs\.write\(req\.user, \{ assistant: next \}\)/.test(ma), "存在他自己的偏好里；平台管理员不走这条（他改的就是全局）");
+ok(/normalizeAvatar\(/.test(ma) && /slice\(0, 4000\)/.test(ma) && /slice\(0, 24\)/.test(ma), "头像过同一道检查，名字、偏好有长度上限");
+ok(!require(mod("admin")).PLATFORM_WRITE.some((x) => "/api/my-assistant".startsWith(x)), "成员进得来这条接口");
+ok(/app\.get\("\/api\/assistant"[\s\S]{0,200}prefs\.assistantFor\(/.test(SV), "界面上画头像那条接口也按人给");
+ok(/function paintMyAssistant\(/.test(F5) && /paintMyAssistant\(pane\.querySelector\("#my-assistant"\)\)/.test(F5), "成员的个性化页有「我的助理」");
+
+console.log("\n【9】专家：成员自己建 + 平台管理员逐个共享");
+const efBody = SV.slice(SV.indexOf("function expertsFor("), SV.indexOf('app.get("/api/experts"'));
+// 把 server.js 里那段原样拿出来跑：modelWho / ownExperts 换成桩
+const makeFor = new Function("experts", "modelWho", "ownExperts", efBody + "; return expertsFor;");
+const pool = [{ name: "写手" }, { name: "律师", share_members: false }, { name: "分析师" }];
+const ef = makeFor(pool, (u) => (u === "boss" ? { owner: true } : { owner: false, prefs: { my_experts: u === "xiaoli" ? [{ name: "分析师" }, { name: "私教" }] : [] } }), (p) => (p.my_experts || []).map((e) => ({ ...e })));
+eq(ef("boss").map((e) => e.name).join(","), "写手,律师,分析师", "平台管理员：全表");
+eq(ef("xiaowang").map((e) => e.name).join(","), "写手,分析师", "★成员看不到「不给成员用」的那位★");
+const li = ef("xiaoli");
+eq(li.map((e) => e.name).join(","), "分析师,私教,写手", "★自己建的 + 共享的；重名以自己的为准★");
+ok(li.filter((e) => e.own).length === 2, "自己建的带 own 标记", li);
+ok(!ef("xiaowang").some((e) => e.name === "私教"), "★别人建的专家在他那儿不存在★");
+const myE = SV.slice(SV.indexOf('app.post("/api/my-experts"'), SV.indexOf('app.post("/api/experts", '));
+ok(/if \(!ownPrefs\(req\)\) return res\.status\(400\)/.test(myE) && /prefs\.write\(req\.user, \{ my_experts:/.test(myE), "存在他自己的偏好里");
+ok(/跟共享的专家撞了/.test(myE) && /MAX_OWN_EXPERTS/.test(myE), "不许跟共享的重名，有数量上限");
+const shareE = SV.slice(SV.indexOf('app.post("/api/experts/share"'), SV.indexOf('app.post("/api/my-experts"'));
+ok(/if \(!isPlatformOwner\(req\)\) return res\.status\(403\)/.test(shareE), "★共享开关只有平台管理员能拨★");
+ok(ADM.PLATFORM_WRITE.some((x) => "/api/experts/share".startsWith(x)), "闸表也挡着（双保险）");
+ok(!ADM.PLATFORM_WRITE.some((x) => "/api/my-experts".startsWith(x)), "成员进得来 /api/my-experts");
+ok(/if \(experts\[idx\]\.share_members === false\) entry\.share_members = false/.test(SV), "管理员改专家内容不会把「不给成员用」冲掉");
+ok(/createAgentRuntime\(\{[^}]*expertsFor[^}]*\}\)/.test(SV), "运行时拿到 expertsFor");
+ok(/function expertsOf\(user\)/.test(AG) && /toolList\(depth, mode, user\)/.test(AG) && /toolList\(depth, "craft", user\)/.test(AG), "★委派工具表按发起这趟的人取★");
+ok(/pool\.find\(\(e\) => e\.name === n && !e\.own\)/.test(AG), "团里的成员不会被他自己的同名专家顶替");
+const F4 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-04.js"), "utf8");
+ok(/\/api\/my-experts/.test(F4) && /\/api\/experts\/share/.test(F4), "前端：成员存到自己那份，管理员有共享开关");
+fs.rmSync(TMP, { recursive: true, force: true });
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);

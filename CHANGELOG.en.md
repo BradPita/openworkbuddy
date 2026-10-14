@@ -9,6 +9,10 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 14** Members on a shared server get their own setup: the platform admin picks, per provider, which models members can use; members can add their own API keys, which only they can see and use, billed to them rather than the org's credits (the admin can turn this off for the whole server)
+- **Oct 14** Members can create their own experts that only they can delegate to; the platform admin can hide any of theirs from members one by one, and expert teams only list the experts a member can actually use
+- **Oct 14** Everyone can set their own assistant name, avatar and "My preferences": sent with every task after the org-wide preferences, without affecting anyone else
+- **Oct 14** WeChat QR pairing, disconnecting and the "Test" button on IM channels are now platform-admin only
 - **Oct 14** Attachments whose names contain the Chinese enumeration comma (、) are no longer split in two: a file like "这是一个测、试文件.txt" used to show up under the message as two files that don't exist, and local Codex / Claude Code never got its full path
 - **Oct 13** You can sign up with an email: the part before @ becomes your username, and signing in with the email works too. If that part is taken or not allowed, the page says so right away. Failed sign-ups no longer count toward the limit; one address can create 20 accounts before a 1-minute pause, then 3 minutes (it used to lock for 15 minutes after 5).
 - **Oct 13** New "Sandbox safety" switch in Settings → Security: turn it off and the AI can touch files outside the workspace, reach local and private-network addresses, and commands skip the system sandbox. The file blacklist and OpenWorkBuddy's own ports stay blocked. Can't be turned off with several accounts

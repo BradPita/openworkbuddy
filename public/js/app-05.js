@@ -3522,11 +3522,7 @@ function renderPersonaPane(pane, s) {
   // 桌面宠物是跑在他自己电脑上的那只，纯个人。所以成员进来这一页只剩宠物 + 一句说明。
   const po = !!s.platform_owner;
   pane.innerHTML = `
-    ${!po ? `
-    <div class="card-item">
-      <div class="t">助理的名字和个性化偏好</div>
-      <div class="d">身份和偏好全服务器共用，由平台管理员设置。你个人的要求在对话里说，或写进「记忆」。</div>
-    </div>` : `
+    ${!po ? `<div id="my-assistant"></div>` : `
     <div class="card-item">
       <div class="t">助理的名字和头像</div>
       <div class="d" style="margin-bottom:10px">名字会同步到界面标题、侧栏和系统提示词。</div>
@@ -3542,7 +3538,7 @@ function renderPersonaPane(pane, s) {
     ${petCardHtml(s.pet || {})}
     ${!po ? "" : `<button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`}`;
   bindPetCard(pane, s.pet || {});
-  if (!po) return; // 名字/偏好那两张卡没画，下面的 querySelector 会拿到 null
+  if (!po) return paintMyAssistant(pane.querySelector("#my-assistant")); // 全局那两张卡没画，下面的 querySelector 会拿到 null
   const ed = bindAvatarEditor(pane, "as", a.avatar, () => pane.querySelector("#as-name").value.trim() || "OpenWorkBuddy", ASSISTANT_MARK);
   pane.querySelector("#as-save").onclick = async () => {
     const msg = pane.querySelector("#as-msg");
@@ -3552,6 +3548,39 @@ function renderPersonaPane(pane, s) {
     applyAssistantIdentity();
   };
   pane.querySelector("#ps-save").onclick = () => saveSettings({ persona: pane.querySelector("#ps-text").value }, pane.querySelector("#ps-msg"));
+}
+/**
+ * 成员自己的助理：名字、头像、偏好只影响他自己的对话（POST /api/my-assistant）。
+ * 留空跟全局那份走；偏好加在平台管理员定的那份后面，不是替换。
+ */
+async function paintMyAssistant(box) {
+  if (!box) return;
+  const d = await fetch("/api/my-assistant").then((r) => r.json()).catch(() => ({}));
+  if (!d.applies) { box.innerHTML = ""; return; }
+  const def = d.default_name || "OpenWorkBuddy";
+  box.innerHTML = `
+    <div class="card-item">
+      <div class="t">我的助理</div>
+      <div class="d" style="margin-bottom:10px">只改你自己看到的，别人不受影响。名字留空就叫「${esc(def)}」。</div>
+      ${avatarEditorHtml("ma", d.avatar || d.default_avatar, d.name || def)}
+      <input id="ma-name" maxlength="24" placeholder="${esc(def)}" value="${esc(d.name)}" style="margin-top:10px">
+      <div class="f">我的偏好</div>
+      <div class="d" style="margin-bottom:8px">每次任务都会带上，排在组织统一的偏好后面。</div>
+      <textarea id="ma-persona" rows="6" maxlength="4000" placeholder="例如：结论放最前面；表格用万元做单位…">${esc(d.persona)}</textarea>
+      <div style="margin-top:8px"><button class="btn-brand" id="ma-save">保存</button><span class="ok-msg" id="ma-msg"></span></div>
+    </div>`;
+  const ed = bindAvatarEditor(box, "ma", d.avatar || d.default_avatar, () => box.querySelector("#ma-name").value.trim() || def, d.default_avatar || ASSISTANT_MARK);
+  box.querySelector("#ma-save").onclick = async () => {
+    const msg = box.querySelector("#ma-msg");
+    const av = ed.value();
+    const r = await fetch("/api/my-assistant", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: box.querySelector("#ma-name").value, avatar: av === d.default_avatar ? "" : av, persona: box.querySelector("#ma-persona").value }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.textContent = j.error || "没存上"; return; }
+    msg.textContent = "✓ 已保存";
+    assistant = await fetch("/api/assistant").then((x) => x.json()).catch(() => assistant);
+    applyAssistantIdentity();
+  };
 }
 // ================= 桌面宠物 =================
 function petCardHtml(p) {

@@ -1668,7 +1668,36 @@ app.use(createPromptTplsRouter({
 app.use(createGeoRouter({ getConfig: () => config }));
 
 // 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
-app.get("/api/assistant", (_req, res) => res.json(config.assistant));
+// 多人服务器上成员给自己的助理另起过名字、换过头像的，看到的是他自己那份（prefs.assistantFor）
+app.get("/api/assistant", (req, res) => {
+  if (!ownPrefs(req)) return res.json(config.assistant);
+  const a = prefs.assistantFor(req.user && req.user.username, config);
+  res.json({ ...config.assistant, name: a.name, avatar: a.avatar || config.assistant.avatar });
+});
+/**
+ * 成员自己的助理：名字、头像、偏好，只影响他自己的对话（存 data/prefs/<账号>.json 的 assistant）。
+ * 留空 = 跟全局那份走。偏好是加在全局偏好后面的，平台管理员定的那份照样带着。
+ * 平台管理员和个人桌面版改的就是全局那份，走 POST /api/settings，这条不收。
+ */
+app.get("/api/my-assistant", (req, res) => {
+  if (!ownPrefs(req)) return res.json({ applies: false });
+  const mine = (prefs.read(req.user).assistant) || {};
+  res.json({ applies: true, name: mine.name || "", avatar: mine.avatar || "", persona: mine.persona || "",
+    default_name: config.assistant.name, default_avatar: config.assistant.avatar });
+});
+app.post("/api/my-assistant", (req, res) => {
+  if (!ownPrefs(req)) return res.status(400).json({ error: "平台管理员改的是全局那份，在上面的卡里改" });
+  const b = req.body || {};
+  const old = (prefs.read(req.user).assistant) || {};
+  const next = { ...old };
+  if (b.name !== undefined) next.name = String(b.name || "").trim().slice(0, 24);
+  try { if (b.avatar !== undefined) next.avatar = b.avatar ? (account._internals.normalizeAvatar(b.avatar) || "") : ""; }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  if (b.persona !== undefined) next.persona = String(b.persona || "").slice(0, 4000);
+  prefs.write(req.user, { assistant: next });
+  const a = prefs.assistantFor(req.user.username, config);
+  res.json({ ok: true, name: a.name, avatar: a.avatar || config.assistant.avatar });
+});
 
 // ---------- 应用内设置（模型 + IM），保存到 config.json 并热生效 ----------
 /**
@@ -6186,28 +6215,97 @@ function publicExpert(e) {
     builtin: !!e.builtin,
   };
 }
-app.get("/api/experts", (_req, res) => res.json(experts.map(publicExpert)));
-app.post("/api/experts", (req, res) => {
-  const b = req.body || {};
+/** 表单交上来的一位专家 → 存盘的那一条。不合格的抛人话 */
+function expertEntry(b) {
   const n = String(b.name || "").trim();
-  if (!n || !String(b.system || "").trim()) return res.status(400).json({ error: "专家名称与角色设定（提示词）不能为空" });
-  if (n === "delegate_to_expert" || n.length > 20) return res.status(400).json({ error: "专家名称不合法（≤20 字）" });
+  if (!n || !String(b.system || "").trim()) throw new Error("专家名称与角色设定（提示词）不能为空");
+  if (n === "delegate_to_expert" || n.length > 20) throw new Error("专家名称不合法（≤20 字）");
   const arr = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 12) : []);
-  const idx = experts.findIndex((e) => e.name === (b.original_name || n));
-  // 改名时要保证新名字没被别人占着
-  if (experts.some((e, i) => e.name === n && i !== idx)) return res.status(400).json({ error: "同名专家已存在" });
-  const entry = {
+  return {
     name: n,
     alias: String(b.alias || "").trim().slice(0, 12),
     avatar: cardAvatar(b.avatar, "user"),
     category: String(b.category || "未分类").trim().slice(0, 12) || "未分类",
     tags: arr(b.tags),
-    description: String(b.description || "").trim(),
+    description: String(b.description || "").trim().slice(0, 2000),
     skills: arr(b.skills),
-    system: String(b.system).trim(),
+    system: String(b.system).trim().slice(0, 20000),
   };
+}
+const MAX_OWN_EXPERTS = 30;
+/** 成员自己建的专家（存在他自己的偏好 my_experts 里），规整过的 */
+function ownExperts(prefsData) {
+  const raw = prefsData && Array.isArray(prefsData.my_experts) ? prefsData.my_experts : [];
+  const out = [];
+  for (const r of raw) { try { const e = expertEntry(r || {}); if (!out.some((x) => x.name === e.name)) out.push(e); } catch {} }
+  return out.slice(0, MAX_OWN_EXPERTS);
+}
+/**
+ * 这个人跑任务时能委派的专家。平台管理员、个人桌面版、认不出是谁的：全表（跟以前一样）。
+ * 成员：平台管理员没设「不给成员用」的 + 他自己建的；重名的以他自己那位为准。
+ */
+function expertsFor(user) {
+  const who = modelWho(user);
+  if (who.owner) return experts;
+  const own = ownExperts(who.prefs).map((e) => ({ ...e, own: true }));
+  return own.concat(experts.filter((e) => e.share_members !== false && !own.some((o) => o.name === e.name)));
+}
+app.get("/api/experts", (req, res) => {
+  if (!ownPrefs(req)) return res.json(experts.map((e) => ({ ...publicExpert(e), shared: e.share_members !== false })));
+  res.json(expertsFor(req.user).map((e) => ({ ...publicExpert(e), own: !!e.own })));
+});
+/** 平台管理员：这位专家给不给成员用 */
+app.post("/api/experts/share", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "共享设置归平台管理员", platform_only: true });
+  const b = req.body || {};
+  const e = experts.find((x) => x.name === String(b.name || ""));
+  if (!e) return res.status(404).json({ error: "专家不存在" });
+  if (b.shared === false) e.share_members = false;
+  else delete e.share_members;
+  saveExperts();
+  res.json({ ok: true, name: e.name, shared: e.share_members !== false });
+});
+/**
+ * 成员自己建专家：只有他自己看得见、委派得到，别人（包括平台管理员）的任务里没有他。
+ * 存在 data/prefs/<账号>.json 的 my_experts。平台管理员和个人桌面版直接在 /api/experts 建。
+ */
+app.post("/api/my-experts", (req, res) => {
+  if (!ownPrefs(req)) return res.status(400).json({ error: "平台管理员直接在专家页建" });
+  try {
+    const b = req.body || {};
+    const entry = expertEntry(b);
+    const list = ownExperts(prefs.read(req.user));
+    const idx = list.findIndex((e) => e.name === (b.original_name || entry.name));
+    if (list.some((e, i) => e.name === entry.name && i !== idx)) throw new Error("同名专家已存在");
+    if (experts.some((e) => e.name === entry.name && e.share_members !== false)) throw new Error("这个名字跟共享的专家撞了，换一个");
+    if (idx >= 0) list.splice(idx, 1, entry);
+    else if (list.length >= MAX_OWN_EXPERTS) throw new Error(`自己的专家最多 ${MAX_OWN_EXPERTS} 位`);
+    else list.push(entry);
+    prefs.write(req.user, { my_experts: list });
+    res.json({ ok: true, expert: { ...publicExpert(entry), own: true } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.delete("/api/my-experts/:name", (req, res) => {
+  if (!ownPrefs(req)) return res.status(400).json({ error: "平台管理员直接在专家页删" });
+  const list = ownExperts(prefs.read(req.user));
+  const next = list.filter((e) => e.name !== req.params.name);
+  if (next.length === list.length) return res.status(404).json({ error: "专家不存在" });
+  prefs.write(req.user, { my_experts: next });
+  res.json({ ok: true });
+});
+app.post("/api/experts", (req, res) => {
+  const b = req.body || {};
+  let entry;
+  try { entry = expertEntry(b); } catch (e) { return res.status(400).json({ error: e.message }); }
+  const n = entry.name;
+  const idx = experts.findIndex((e) => e.name === (b.original_name || n));
+  // 改名时要保证新名字没被别人占着
+  if (experts.some((e, i) => e.name === n && i !== idx)) return res.status(400).json({ error: "同名专家已存在" });
   if (idx >= 0) {
     entry.builtin = !!experts[idx].builtin; // 内置标记只由 experts.json 决定，接口改不动
+    if (experts[idx].share_members === false) entry.share_members = false; // 共享开关只走 /api/experts/share，改内容不动它
     experts.splice(idx, 1, entry);
     // 改了名字的话，团队成员名单要跟着改，否则团里挂着一个不存在的人
     if (b.original_name && b.original_name !== n) {
@@ -6227,16 +6325,16 @@ app.delete("/api/experts/:name", (req, res) => {
 });
 
 // 专家团 = 智能体团队：把若干专家编成一队，一次委派整队按顺序接力完成
-app.get("/api/expert-teams", (_req, res) =>
-  res.json(
-    expertTeams.map((t) => ({
-      name: t.name,
-      avatar: t.avatar || "users",
-      description: t.description || "",
-      members: (t.members || []).filter((m) => experts.some((e) => e.name === m)),
-    }))
-  )
-);
+app.get("/api/expert-teams", (req, res) => {
+  const pool = expertsFor(req.user); // 成员看到的团里只列他能用的那几位，凑不齐两位的团在他那儿不出现
+  const list = expertTeams.map((t) => ({
+    name: t.name,
+    avatar: t.avatar || "users",
+    description: t.description || "",
+    members: (t.members || []).filter((m) => pool.some((e) => e.name === m && !e.own)),
+  }));
+  res.json(ownPrefs(req) ? list.filter((t) => t.members.length >= 2) : list);
+});
 app.post("/api/expert-teams", (req, res) => {
   const b = req.body || {};
   const n = String(b.name || "").trim();
@@ -9116,7 +9214,7 @@ async function main() {
   require("./src/agent/tools").setConnectorHost({ prepare: connectorPrepare, commit: connectorCommit, status: connectorStatus });
   const badPlugins = pluginsMgr.loadPlugins().filter((p) => !p.ok);
   for (const p of badPlugins) console.warn(`[插件] ${p.name} 装不上: ${p.error}`);
-  runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
+  runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams, expertsFor });
 
   /**
    * 把一次定时执行录成一段真会话。

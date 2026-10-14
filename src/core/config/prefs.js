@@ -250,8 +250,29 @@ function modelCfg(config) {
   };
 }
 
+/**
+ * 这个人自己的助理：名字、头像、偏好（多人服务器上成员在「个性化」里填的那份，存在 prefs.assistant）。
+ * 名字和头像没填就跟全局那份走；偏好是**加在**全局偏好后面的，组织统一的要求照样在。
+ * 平台管理员和个人桌面版不走这份：他们改的就是全局那份（POST /api/my-assistant 不收他们的）。
+ * @param {string} user 登录名；空 = 认不出是谁，回全局那份
+ * @param {any} config
+ * @returns {{ name: string, avatar: string, persona: string, own: boolean }}
+ */
+function assistantFor(user, config) {
+  const g = (config && config.assistant) || {};
+  let mine = {};
+  if (user) { try { mine = read(user).assistant || {}; } catch {} }
+  const name = String(mine.name || "").trim();
+  return {
+    name: name || String(g.name || "").trim() || "OpenWorkBuddy",
+    avatar: mine.avatar || g.avatar || "",
+    persona: String(mine.persona || "").trim(),
+    own: !!(name || mine.avatar || String(mine.persona || "").trim()),
+  };
+}
+
 module.exports = {
   withPrefs, current, keyOf, fileOf, read, write, isPersonalPatch, split,
-  agentCfg, agentView, petCfg, shortcutsCfg, modelCfg, PERSONAL_ENGINE_OPTS,
+  agentCfg, agentView, petCfg, shortcutsCfg, modelCfg, assistantFor, PERSONAL_ENGINE_OPTS,
   _internals: { merge, cache },
 };

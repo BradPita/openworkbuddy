@@ -1458,6 +1458,10 @@ const hubMatch = (q, ...fields) => !q || fields.filter(Boolean).join(" ").toLowe
 function renderHubExperts(box) {
   const { _experts: experts, _teams: teams, _skills: skills } = hubState;
   const po = amPlatformOwner();
+  // 多人服务器上：成员也能建自己的专家（只有他自己用得着）；平台管理员逐个决定哪位给成员用
+  const multi = !!(settingsCache && !settingsCache.solo);
+  const mineOf = (e) => (po ? !e.builtin : !!e.own);
+  const canEdit = (e) => po || !!e.own;
   const cats = ["全部", ...new Set(experts.map(e => e.category || "未分类"))];
   const scenes = hubState.mine || hubState.q ? "" : `
     <div class="hub-sec-title">精选场景 <span class="sub">点一下带着写好的提示词开新任务</span></div>
@@ -1510,18 +1514,18 @@ function renderHubExperts(box) {
   } else {
     const list = experts.filter(e =>
       (hubState.cat === "全部" || (e.category || "未分类") === hubState.cat) &&
-      (!hubState.mine || !e.builtin) &&
+      (!hubState.mine || mineOf(e)) &&
       hubMatch(hubState.q, e.name, e.alias, e.description, (e.tags || []).join(" ")));
     grid.innerHTML =
-      (po ? `<div class="ex-card add" id="ex-add">${ic("plus")}创建专家<span class="add-sub">创建属于你的专家，分享专业知识</span></div>` : "") +
+      `<div class="ex-card add" id="ex-add">${ic("plus")}创建专家<span class="add-sub">${po ? "创建属于你的专家，分享专业知识" : "只有你自己能用"}</span></div>` +
       list.map((e, i) => `
         <div class="ex-card" data-ei="${i}">
-          ${e.builtin ? '<span class="flag">官方</span>' : ""}
+          ${e.own ? '<span class="flag">我的</span>' : e.builtin ? '<span class="flag">官方</span>' : ""}
           <div class="hd"><div class="av">${ava(e.avatar, "user")}</div>
             <div class="nm"><span>${esc(e.name)}</span>${e.alias ? `<span class="al">${esc(e.alias)}</span>` : ""}</div></div>
           <div class="ds">${esc(e.description || "（无说明）")}</div>
-          <div class="tg">${(e.tags || []).map(t => `<i>${esc(t)}</i>`).join("")}${(e.skills || []).map(s => `<i>${ic("wrench")} ${esc(s)}</i>`).join("")}</div>
-          <div class="ops"><button class="primary e-use">立即召唤</button>${po ? `<button class="e-edit">修改</button><button class="e-del">删除</button>` : ""}</div>
+          <div class="tg">${po && multi && e.shared === false ? `<i>${ic("eye")} 成员看不到</i>` : ""}${(e.tags || []).map(t => `<i>${esc(t)}</i>`).join("")}${(e.skills || []).map(s => `<i>${ic("wrench")} ${esc(s)}</i>`).join("")}</div>
+          <div class="ops"><button class="primary e-use">立即召唤</button>${canEdit(e) ? `<button class="e-edit">修改</button><button class="e-del">删除</button>` : ""}${po && multi ? `<button class="e-share">${e.shared === false ? "给成员用" : "不给成员用"}</button>` : ""}</div>
         </div>`).join("") +
       (list.length ? "" : `<div class="hub-empty">${
         hubState.mine ? "还没有创建任何专家" :
@@ -1532,7 +1536,15 @@ function renderHubExperts(box) {
     grid.querySelectorAll(".ex-card[data-ei]").forEach(card => {
       const e = list[+card.dataset.ei];
       card.querySelector(".e-use").onclick = () => { startTaskUsing("expert", e.name); toast(`专家「${e.name}」已就位，说说要做什么`); };
-      if (!po) return;
+      const share = card.querySelector(".e-share");
+      if (share) share.onclick = async () => {
+        const resp = await fetch("/api/experts/share", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: e.name, shared: e.shared === false }) });
+        const d = await resp.json().catch(() => ({}));
+        if (!resp.ok) return toast((d.error || "没存上"), "circle-x");
+        toast(d.shared ? `成员能用「${e.name}」了` : `成员看不到「${e.name}」了`);
+        renderHubPage();
+      };
+      if (!canEdit(e)) return;
       card.querySelector(".e-edit").onclick = () => { hubState.editing = { type: "expert", data: e }; renderHubEditor(); };
       card.querySelector(".e-del").onclick = async () => {
         if (!(await askConfirm({
@@ -1540,7 +1552,7 @@ function renderHubExperts(box) {
           hint: e.builtin ? "内置专家，删了还能从 experts.json 里恢复。" : "这是你自己建的，删了找不回来。",
           ok: "删掉", danger: true,
         }))) return;
-        const resp = await fetch("/api/experts/" + encodeURIComponent(e.name), { method: "DELETE" });
+        const resp = await fetch((po ? "/api/experts/" : "/api/my-experts/") + encodeURIComponent(e.name), { method: "DELETE" });
         if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast((d.error || "删除失败"), "circle-x"); }
         renderHubPage();
       };
@@ -1639,7 +1651,7 @@ function renderHubEditor() {
         system: box.querySelector("#ef-sys").value.trim(),
         original_name: x.name || undefined,
       };
-      const resp = await fetch("/api/experts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const resp = await fetch(amPlatformOwner() ? "/api/experts" : "/api/my-experts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await resp.json().catch(() => ({}));
       if (!resp.ok) return toast((d.error || "保存失败"), "circle-x");
       hubState.editing = null;

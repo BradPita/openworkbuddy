@@ -282,6 +282,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 14** Members on a shared server get their own setup: per-provider model sharing, their own API keys, their own experts, and their own assistant name and preferences
 - **Oct 14** Attachments with the Chinese enumeration comma (、) in their names are no longer split into two files that don't exist
 - **Oct 13** Sign up with an email: the part before @ becomes your username, and signing in with the email works too; failed sign-ups no longer count toward the limit
 - **Oct 13** New "Sandbox safety" switch in Settings → Security: turn it off and the AI can touch files outside the workspace and reach local and private addresses; locked on when several accounts share one install
