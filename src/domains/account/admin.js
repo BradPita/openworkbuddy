@@ -99,10 +99,15 @@ const PLATFORM_WRITE = [
   // 单机桌面版走的是 platformGuard 第一行的 soloDesktop 直通，一行行为都没变。
   // 复制到剪贴板同理：写的是**服务器那台机器**的剪贴板，而且得先读到文件本身。
   "/api/files/open", "/api/files/reveal", "/api/files/copy",
+  // IM 通道是整台服务器一个机器人：扫码换绑、断开改的是全公司那条线，「测一下」拿的是服务器那份凭据。
+  // 这几条不在 /api/ 下面，以前两张表都没管到，任何登录的人都能把微信助理扫到自己手机上或者直接断掉
+  "/im/wechat/", "/im/qq/test", "/im/feishu/test", "/im/smtp/test",
 ];
 const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",
   "/api/evolve", "/api/eval", "/api/feishu",
+  // 查扫码状态是 GET，可扫成功那一下就把新凭据写进全局配置
+  "/im/wechat/",
 ];
 // 两张表里为什么都没有 /api/library：资料库现在一人一份（server.js 的 libraryRootOf）。
 // 以前它是整台机器共用的一个目录，于是这儿只能按「谁的东西」拦：写拦住，读拦不住——

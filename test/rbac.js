@@ -304,6 +304,19 @@ const raw = (name) => account._internals.loadUsers().users.find((u) => u.usernam
   r = await call("POST", "/api/admin/owner", { cookie: liC, body: { username: "xiaoli" } });
   eq(r.status, 403, "★成员更不可能把超管转给自己★");
 
+  // IM 通道整台服务器一个机器人：成员扫码换绑、断开、拿服务器凭据「测一下」都不行（这几条不在 /api/ 下，以前两张表都没管到）
+  for (const [m, u] of [["POST", "/im/wechat/disconnect"], ["POST", "/im/wechat/qrcode"], ["GET", "/im/wechat/qrcode-status?qrcode=x"],
+    ["POST", "/im/wechat/test"], ["POST", "/im/qq/test"], ["POST", "/im/feishu/test"], ["POST", "/im/smtp/test"], ["POST", "/IM/WeChat/disconnect"]]) {
+    r = await call(m, u, { cookie: liC, body: {} });
+    ok(r.status === 403 && r.json && r.json.platform_only, `★成员 ${m} ${u} → 403★`, { got: r.status });
+  }
+  r = await call("POST", "/im/wechat/disconnect", { cookie: bossC, body: {} });
+  ok(r.status !== 403, "反向对照：平台超管断得了微信", { got: r.status });
+  for (const [m, u] of [["GET", "/im/status"], ["GET", "/im/log"], ["POST", "/im/local"]]) {
+    r = await call(m, u, { cookie: liC, body: {} });
+    ok(r.status !== 403, `反向对照：成员 ${m} ${u} 不被这道闸拦（看连接状态、用自己的助理页）`, { got: r.status });
+  }
+
   // 平台级的组织管理：管理员进不去，只有平台超管进得去
   const fen3C = await login("fen3", account.resetPasswordLocally("fen3").password);
   r = await call("GET", "/api/admin/orgs", { cookie: fen3C });
