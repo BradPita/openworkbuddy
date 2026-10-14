@@ -1089,8 +1089,8 @@ function chargeRun(user, info) {
   const parts = splitByChannel(info);
   if (!parts) return chargeOne(user, info);
   // 积分是「所有模型一个价」的字数折算，按整趟算一次（拆开算会多出几次「不足 1 按 1」）；
-  // 钱按每段的型号各算各的，流水里一段一行。本机订阅跑的那几段只记不扣（见 chargeOne），不算进积分
-  const paid = parts.filter((p) => !p.local);
+  // 钱按每段的型号各算各的，流水里一段一行。本机订阅跑的、成员自己 Key 跑的那几段只记不扣（见 chargeOne），不算进积分
+  const paid = parts.filter((p) => !p.local && !String(p.provider || "").startsWith("my:"));
   const add = (k) => paid.reduce((t, p) => t + p[k], 0);
   const whole = fixLegacyCache(paid.length === parts.length ? info : { prompt: add("prompt"), cached: add("cached"), completion: add("completion") });
   let spent = 0;
@@ -1124,7 +1124,9 @@ function chargeOne(user, info, credits) {
   info = fixLegacyCache(info);
   // 本机订阅跑的（Claude Code / Codex，usage.local）：token 是真的，钱是用户自己的订阅出的。
   // 不扣本项目的积分，也不按 API 价算钱（0 元、查得着价，不是「不知道」）；流水照记，用量照样看得见
-  const local = !!info.local;
+  // 成员用自己填的 Key（运行期名字带 my: 前缀，见 member-models.js）：钱是他自己的，跟本机订阅同一个记法
+  const ownKey = String(info.provider || "").startsWith("my:");
+  const local = !!info.local || ownKey;
   const st = loadUsers();
   const u = st.users.find((x) => x.username === user.username);
   // 「这个组织开没开用量限额」要按**账本里**的那条记录判，不能按调用方手上那个对象判：
@@ -1178,6 +1180,7 @@ function chargeOne(user, info, credits) {
     model: info.model || "",
     provider: info.provider || "",
     ...(local ? { local: true } : {}),
+    ...(ownKey ? { own_key: true } : {}),
     prompt: info.prompt || 0,
     // 其中命中缓存的部分。llm.js 已经把三家不同的字段名统一读了出来，可这一格以前没记，
     // 于是「有没有在反复全价重买同一段上下文」这个问题一出任务就再也查不到了。

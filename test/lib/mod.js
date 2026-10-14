@@ -53,6 +53,7 @@ const TABLE = Object.freeze({
   callout: "src/util/callout.js",
   cdp: "src/platform/render/cdp.js",
   "chat-models": "src/core/model/chat-models.js",
+  "member-models": "src/core/model/member-models.js",
   checkpoints: "src/agent/checkpoints.js",
   "child-env": "src/platform/child-env.js",
   "cli-approve": "src/cli/cli-approve.js",

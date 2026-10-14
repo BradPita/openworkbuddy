@@ -512,6 +512,22 @@ async function login(username, password) {
   spent135 = account.chargeRun({ username: "xiaoyuan" },
     { prompt: 30000, completion: 2000, calls: 3, model: "m1", provider: "p1", source: "web", sessionId: "s135-api" });
   eq(spent135, 32, "反向对照：同样的量走 API 照扣 32（判据真在生效）");
+  // 成员用自己填的 Key（运行期名字 my:xxx，见 member-models.js）：钱是他自己的，跟本机订阅同一个记法
+  me = account.listMembers(org2).find((m) => m.username === "xiaoyuan");
+  const beforeOwn = me.credits;
+  spent135 = account.chargeRun({ username: "xiaoyuan" },
+    { prompt: 30000, completion: 2000, calls: 3, model: "gpt-4o", provider: "my:我的GPT", source: "web", sessionId: "s135-own" });
+  eq(spent135, 0, "★成员用自己的 Key：一分组织积分不扣★");
+  const ownRow = rowsOf("s135-own")[0];
+  ok(ownRow && ownRow.own_key === true && ownRow.credits === 0 && ownRow.cost === 0 && ownRow.prompt === 30000,
+    "流水照记、标着自己的 Key、0 元（不进组织预算）", ownRow);
+  spent135 = account.chargeRun({ username: "xiaoyuan" }, {
+    prompt: 32000, completion: 2000, calls: 4, model: "m1", provider: "p1", source: "web", sessionId: "s135-ownmix",
+    usageBy: [{ provider: "my:我的GPT", model: "gpt-4o", usage: { prompt: 30000, completion: 2000, calls: 3 } }],
+  });
+  eq(spent135, 2, "★一趟里混着自己的 Key 和组织渠道：只按组织那 2000 字扣★");
+  me = account.listMembers(org2).find((m) => m.username === "xiaoyuan");
+  eq(me.credits, beforeOwn - 2, "加油包只少这 2", { got: me.credits, before: beforeOwn });
   {
     const st2 = account._internals.loadUsers();
     st2.users.find((x) => x.username === "xiaoyuan").credits = 980;

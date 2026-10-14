@@ -1323,6 +1323,8 @@ function paintModels(pane, s) {
   // 但这一页对他不是没用——他得知道有哪些模型可选、默认是哪个。所以照画，只是不摆那几颗
   // 他一点就 403 的按钮。他自己换模型走输入框右下角那个选择器，存的是他一个人的偏好。
   const po = !!s.platform_owner;
+  // 成员自己填 Key 的那几条（own）单独一张卡，不混进管理员那几家渠道的卡里
+  if (!po && s.models.some((m) => m.own)) s = { ...s, models: s.models.filter((m) => !m.own) };
   const kinds = (mediaCatalog || {}).kinds || [];
   const kindLabel = (k) => (kinds.find((x) => x.kind === k) || {}).label || k || "自定义";
   const loose = s.models.filter((m) => !m.channel);
@@ -1398,6 +1400,14 @@ function paintModels(pane, s) {
       ? "先在「渠道与 Key」填好 Key，再到「按能力配置」挂模型。一个 Key 六路共用。"
       : "服务器当前的模型路由。对话模型可在输入框临时切换，其余由平台管理员维护。"}</div>
 
+    ${!po && s.member_byok ? `<div id="my-models"></div>` : ""}
+    ${po && !s.solo ? `<div class="card-item" style="margin-top:14px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="mf-byok" style="margin:0" ${s.member_byok ? "checked" : ""}>
+        <span class="t" style="margin:0">成员可以填自己的 Key</span></label>
+      <div class="d">填了只有他自己能用，花他自己的钱，不扣组织额度。哪些渠道给成员用，在下面渠道卡里勾。</div>
+    </div>` : ""}
+
     <div class="hub-sec-title" style="margin:20px 0 8px">${ic("sliders-horizontal")}按能力配置 <span class="sub">每路可挂多个模型，平时走「主用」，对话里点名可临时换</span></div>
     <div id="chat-overview">${chatOverview(s, po, kindLabel)}</div>
     <div id="media-pane"></div>
@@ -1452,6 +1462,90 @@ function paintModels(pane, s) {
     <span class="ok-msg" id="models-msg"></span>`;
   renderMediaPane(pane.querySelector("#media-pane"), s);
   bindModels(pane, s, po);
+  bindMemberModels(pane, s);
+}
+
+/**
+ * 多人服务器上「成员用哪些模型」那几颗开关：
+ * 管理员这边是「成员能不能自己填 Key」和每个渠道「成员能用」；成员那边是「我自己的模型」那张卡。
+ */
+function bindMemberModels(pane, s) {
+  const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    .then(async (r) => ({ ok: r.ok, j: await r.json().catch(() => ({})) }));
+  const byok = pane.querySelector("#mf-byok");
+  if (byok) byok.onchange = async () => {
+    const { ok, j } = await post("/api/models/member-byok", { allowed: byok.checked });
+    if (!ok) { byok.checked = !byok.checked; return toast(j.error || "没存上", "circle-x"); }
+    s.member_byok = j.allowed;
+    toast(j.allowed ? "✓ 成员可以填自己的 Key 了" : "✓ 已关闭，成员填过的先停用，不删");
+  };
+  pane.querySelectorAll(".ch-share-cb").forEach((cb) => (cb.onchange = async () => {
+    const { ok, j } = await post("/api/models/share", { channel: cb.dataset.chan, shared: cb.checked });
+    if (!ok) { cb.checked = !cb.checked; return toast(j.error || "没存上", "circle-x"); }
+    const p = (s.providers || []).find((x) => x.id === cb.dataset.chan);
+    if (p) p.share_members = j.shared;
+    toast(j.shared ? "✓ 成员能用这个渠道了" : "✓ 成员看不到这个渠道了");
+  }));
+  const box = pane.querySelector("#my-models");
+  if (box) paintMyModels(box);
+}
+
+/** 成员那张「我自己的模型」卡：列出来、加一条、删一条。Key 只回 has_key，存的时候星号 = 没改 */
+async function paintMyModels(box) {
+  const d = await fetch("/api/my-models").then((r) => r.json()).catch(() => ({ items: [] }));
+  const items = d.items || [];
+  box.innerHTML = `<div class="card-item" style="margin-top:14px">
+    <div class="t">${ic("key-round")}我自己的模型</div>
+    <div class="d" style="margin-bottom:8px">用你自己的 Key，只有你能看见和使用，费用走你的账号。</div>
+    ${items.map((m, i) => `<div class="mrow" style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <span style="flex:1;min-width:0"><b>${esc(m.label)}</b> <span class="sub">${esc(m.model)}${m.has_key ? "" : " · 还没填 Key"}</span></span>
+      <button type="button" class="btn-plain my-del" data-i="${i}">删除</button></div>`).join("")
+      || `<div class="d" style="padding:4px 0">还没有。加一个，它会出现在输入框右下角的模型菜单里。</div>`}
+    <div id="my-form" style="display:none;margin-top:8px">
+      <div class="form-row">
+        <input id="my-label" maxlength="40" placeholder="起个名字（如：我的 DeepSeek）">
+        <select id="my-proto">
+          <option value="openai">OpenAI 兼容接口</option>
+          <option value="anthropic">Anthropic 接口</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <input id="my-base" placeholder="接口地址（如 https://api.deepseek.com/v1）">
+        <input id="my-model" placeholder="模型名（如 deepseek-chat）">
+      </div>
+      <input id="my-key" type="password" autocomplete="off" placeholder="API Key">
+      <div style="margin-top:8px"><button type="button" class="btn-brand" id="my-save">测一下并保存</button>
+        <button type="button" class="btn-plain" id="my-cancel">取消</button><span class="ok-msg" id="my-msg"></span></div>
+    </div>
+    <button type="button" class="btn-plain" id="my-new" style="margin-top:6px">${ic("plus")}加一个</button>
+  </div>`;
+  const form = box.querySelector("#my-form");
+  const keep = () => items.map((m) => ({ label: m.label, provider: m.provider, base_url: m.base_url, model: m.model, api_key: m.api_key }));
+  const save = async (list, test) => {
+    const r = await fetch("/api/my-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: list, test }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || "没存上");
+    await refreshSettingsCache();
+    paintMyModels(box);
+  };
+  box.querySelector("#my-new").onclick = () => { form.style.display = ""; box.querySelector("#my-new").style.display = "none"; };
+  box.querySelector("#my-cancel").onclick = () => paintMyModels(box);
+  box.querySelector("#my-save").onclick = async (e) => {
+    const v = (id) => box.querySelector(id).value.trim();
+    const row = { label: v("#my-label"), provider: v("#my-proto"), base_url: v("#my-base"), model: v("#my-model"), api_key: v("#my-key") };
+    const msg = box.querySelector("#my-msg");
+    e.target.disabled = true;
+    msg.textContent = "正在测…";
+    try { await save([...keep(), row], row.label); toast("✓ 已加上，去输入框右下角选它"); }
+    catch (err) { msg.textContent = err.message; e.target.disabled = false; }
+  };
+  box.querySelectorAll(".my-del").forEach((b) => (b.onclick = async () => {
+    const m = items[+b.dataset.i];
+    if (!(await askConfirm({ title: `删掉「${m.label}」？`, hint: "Key 跟着删，要用得重新填。", ok: "删掉", danger: true }))) return;
+    const list = keep();
+    list.splice(+b.dataset.i, 1);
+    try { await save(list, ""); toast("✓ 已删除"); } catch (err) { toast(err.message, "circle-x"); }
+  }));
 }
 
 /**
@@ -1694,7 +1788,9 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
           <button type="button" class="btn-plain ck-test" data-chan="${esc(p.id)}">测一下</button>
           ${kindKeyLink(p.kind, p.base_url)}
         </div>
-        ${chanTestNote(p)}`}
+        ${chanTestNote(p)}
+        ${s.solo ? "" : `<label class="ch-note" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" class="ch-share-cb" data-chan="${esc(p.id)}" style="margin:0" ${p.share_members !== false ? "checked" : ""}>成员能用这个渠道的对话模型</label>`}`}
         ${mine.length ? mine.map((m) => modelRow(m, s, po)).join("")
           : `<div class="ch-note">这个渠道下面还没有对话模型。${po ? "加一个，它就会出现在输入框右下角那个选择器里。" : ""}</div>`}
         ${!po ? "" : `

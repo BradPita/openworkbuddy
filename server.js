@@ -69,7 +69,8 @@ const cfgLint = require("./src/core/config/config-lint"); // 手改配置写错�
 const projectMemo = require("./src/core/memory/project-memo"); // 工作目录往上到 git 根的 AGENTS.md / CLAUDE.md，命令行也用这一份
 const mediaModels = require("./src/core/model/media-models");
 const mediaHealth = require("./src/core/model/media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
-const chatModels = require("./src/core/model/chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
+const chatModels = require("./src/core/model/chat-models");
+const memberModels = require("./src/core/model/member-models"); // 成员能用哪些对话模型：管理员共享的 + 自己填 Key 的 // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const systemOne = require("./src/core/judge/systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
 const taskVerdict = require("./src/core/automation/task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
 const pushGate = require("./src/core/automation/push-gate"); // 推之前那一问：跟上一次真推出去的那条比，有没有新东西
@@ -308,8 +309,19 @@ const llm = {
 };
 /** 按对话覆盖模型：会话里选过就用会话的，没选跟全局默认。
  *  选过的模型已被从列表删掉 → 明确报错，绝不悄悄换成别的模型跑 */
-function llmForSession(sess) {
+function llmForSession(sess, fallbackUser) {
   const name = sess && sess.model;
+  // 多人服务器上的成员：只认「管理员共享给他的 + 他自己填 Key 的」那几条（member-models.js）。
+  // 管理员和个人桌面版不走这段，跟以前一个字节不差
+  const who = modelWho((sess && sess.user) || fallbackUser);
+  if (!who.owner) {
+    const row = name ? memberModels.find(config, who, name) : memberModels.defaultFor(config, who);
+    if (row) return !row.own && row.name === config.active_model ? llm : createLLM({ ...config, models: [row], active_model: row.name });
+    const why = name
+      ? `「${String(name).replace(/^my:/, "")}」不在你能用的模型里了。点输入框右下角的模型按钮重新选一个。`
+      : "你还没有能用的对话模型：平台管理员没有共享给你，可以在「设置 → 模型」里加一把自己的 Key。";
+    return { provider: name || "", model: name || "", chat: () => Promise.reject(new Error(why)) };
+  }
   if (!name) return llm;
   if (Array.isArray(config.models) && config.models.some((m) => m.name === name)) {
     return createLLM({ ...config, active_model: name });
@@ -319,6 +331,22 @@ function llmForSession(sess) {
     model: name,
     chat: () => Promise.reject(new Error(`该对话指定的模型「${name}」已不在模型列表里。点输入框右下角的模型按钮重新选一个，或选「跟随全局默认」。`)),
   };
+}
+/**
+ * 某个人在「用哪些模型」这件事上的身份：平台管理员 / 个人桌面版 / 认不出是谁（命令行、IM、定时任务）
+ * 都算 owner，看全表；其余的是成员，带上他的偏好（里面有他自己填的模型）。
+ * @param {any} user 登录名或账号对象
+ */
+function modelWho(user) {
+  const name = typeof user === "string" ? user : (user && user.username) || "";
+  if (!name || admin.isSoloDesktop()) return { owner: true };
+  let u = null;
+  try { u = account._internals.loadUsers().users.find((x) => x.username === name) || null; } catch {}
+  if (!u && user && typeof user === "object") u = user;
+  if (u && admin.ownsGlobalWorkspace(u)) return { owner: true };
+  let p = {};
+  try { p = prefs.read(name); } catch {}
+  return { owner: false, prefs: p };
 }
 /**
  * 价目闸：头上设了预算的人，这一趟的对话模型查不到价就不开跑（见 budget.unpriced）。
@@ -1997,13 +2025,17 @@ app.get("/api/settings", (req, res) => {
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手。
     // 管理员也一样掩：八颗星是「原样传回来 = 没改」的约定暗号（POST 那边认这个正则），
     // 界面真正显示的是 key_hint 那一小截
-    models: (config.models || []).map((m) => ({
+    // 成员只看得到共享给他的那几家，外加他自己填 Key 的（own: true，Key 同样不回原文）
+    models: memberModels.listFor(config, isPlatformOwner(req) ? { owner: true } : modelWho(req.user)).map((m) => ({
       ...m,
       api_key: m.api_key ? "********" : "",
       key_hint: isPlatformOwner(req) ? keyHint(m.api_key) : "",
       has_key: !!m.api_key,
     })),
-    active_model: config.active_model,
+    // 成员的「全局默认」：管理员那个没共享给他时，是他能用的第一个（跟 llmForSession 一个算法）
+    active_model: isPlatformOwner(req) ? config.active_model : ((memberModels.defaultFor(config, modelWho(req.user)) || {}).name || ""),
+    // 成员能不能自己填 Key；平台管理员在模型页那张「成员的模型」卡片上开关
+    member_byok: memberModels.byokAllowed(config),
     model_health: healthSummary(),
     // 界面靠它决定「服务器级的那些输入框画不画」：画了却一存就 403，比不画更气人
     platform_owner: isPlatformOwner(req),
@@ -2092,8 +2124,10 @@ app.get("/api/settings", (req, res) => {
     embedding: embeddingView(req),
     // 渠道表：一把 Key 一行，图/视频/语音/视觉都引用它。普通成员看得见有哪些渠道，但看不到 Key——
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手
-    providers: (config.providers || []).map((p) => ({
+    // 没共享给成员的渠道，成员连名字都不列（对话模型那边同样滤掉了，见 member-models.js）
+    providers: (config.providers || []).filter((p) => isPlatformOwner(req) || p.share_members !== false).map((p) => ({
       id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, api: p.api || "",
+      share_members: p.share_members !== false,
       image_api: p.image_api || "", video_api: p.video_api || "", tts_api: p.tts_api || "",
       api_key: p.api_key ? "********" : "",
       key_hint: isPlatformOwner(req) ? keyHint(p.api_key) : "",
@@ -2529,6 +2563,8 @@ app.post("/api/settings", (req, res) => {
           // 中转站「放行任意型号」只能在中转站页由平台超级管理员开关（admin.js 那条路由会记审计）。
           // 这里只从旧值抄过来、不认表单里的：设置页的保存权限比那个开关宽，不能变成一条绕过去的路
           ...(prev.relay_any_model === true ? { relay_any_model: true } : {}),
+          // 「给不给成员用」只走 POST /api/models/share，整表回存时抄旧值，表单漏带也不会悄悄共享出去
+          ...(prev.share_members === false ? { share_members: false } : {}),
         };
       });
       auditKeyChanges(req, old, config.providers);
@@ -7679,7 +7715,7 @@ app.post("/api/chat", async (req, res) => {
   }
   // 价目闸放在归属检查之后：这条会话点了哪个模型，得先确认会话是你的才轮得到看
   {
-    const why = unpricedChat(user, llmForSession(getSession(sessionId)));
+    const why = unpricedChat(user, llmForSession(getSession(sessionId), user));
     if (why) return res.status(402).json({ error: why });
   }
 
@@ -7713,7 +7749,7 @@ app.post("/api/chat", async (req, res) => {
   // 续跑 id 按引擎分开记（claude 的 id 喂给 codex 只会当场炸）。跟工作线无关——
   // 引擎是用户在设置里挑一次、两条线共用的那个。
   const laneEngine = engines.currentId(config, { user: user && user.username });
-  const sessLLM = llmForSession(sess); // 本对话生效的模型（含专家子代理、标题、记账）
+  const sessLLM = llmForSession(sess, user); // 本对话生效的模型（含专家子代理、标题、记账）；带上这个人，成员只在他能用的里挑
   if (regen) {
     // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
     const lastUser = sess.history.map((h) => h.role).lastIndexOf("user");
@@ -8609,8 +8645,8 @@ app.post("/api/session/:id/model", (req, res) => {
     if (ownPrefs(req)) prefs.write(req.user, { last_picked_model: "" });
     else if (config.last_picked_model) { config.last_picked_model = ""; saveConfig(); }
   } else {
-    if (!Array.isArray(config.models) || !config.models.some((m) => m.name === name)) {
-      return res.status(400).json({ error: `模型「${name}」不在模型列表里` });
+    if (!memberModels.find(config, modelWho(req.user), String(name))) {
+      return res.status(400).json({ error: `模型「${String(name).replace(/^my:/, "")}」不在你能用的模型里` });
     }
     s.model = String(name);
     // 记住这次手动选择：开了「新对话沿用上次选的模型」时，下个新对话默认就用它。
@@ -8641,14 +8677,80 @@ app.post("/api/session/:id/rewind", (req, res) => {
   res.json(r);
 });
 
+/**
+ * 成员自己填 Key 的对话模型（member-models.js）。只有他看得见、只有他用得着，花的是他自己的钱。
+ * 整表读、整表存：Key 只回八颗星，原样存回来的按「没改」处理。
+ * 平台管理员和个人桌面版用不着这条路：他们直接在渠道里加。
+ */
+app.get("/api/my-models", (req, res) => {
+  if (!ownPrefs(req)) return res.json({ applies: false, allowed: false, items: [] });
+  res.json({ applies: true, allowed: memberModels.byokAllowed(config), items: memberModels.publicOwn(prefs.read(req.user)) });
+});
+app.post("/api/my-models", async (req, res) => {
+  if (!ownPrefs(req)) return res.status(400).json({ error: "平台管理员直接在渠道里加模型" });
+  if (!memberModels.byokAllowed(config)) return res.status(403).json({ error: "平台管理员关掉了「成员自带 Key」" });
+  try {
+    const b = req.body || {};
+    const items = memberModels.mergeIncoming(prefs.read(req.user), b.items);
+    for (const it of items) {
+      if (systemOne.isDecisionModel(it.model)) throw new Error(`「${it.model}」是判断模型（Jev），不能当对话模型用`);
+      // 这个地址是服务器替他去连的：本机、内网一律不让填，跟 AI 联网工具同一道闸（含管理员的放行清单）
+      if (it.base_url) {
+        const v = await netGuard.checkUrl(security.getSecurity(config), it.base_url);
+        if (!v.allowed) throw new Error(`「${it.label}」的接口地址用不了：${v.reason}`);
+      }
+    }
+    // 只验这次点名要验的那一条（新加或改过的），别每存一次把他所有 Key 都打一遍
+    const test = String(b.test || "").trim();
+    if (test) {
+      const it = items.find((x) => x.label === test);
+      if (it) {
+        const bad = await probeModel({ name: memberModels.PREFIX + it.label, provider: it.provider, base_url: it.base_url, api_key: it.api_key, model: it.model });
+        if (bad) return res.json({ ok: false, error: bad });
+      }
+    }
+    prefs.write(req.user, { my_models: items });
+    // 删掉的那条要是正被「上次选的 / 助理页」点着，一并清掉，免得下一句话撞上「不在你能用的模型里」
+    const p = prefs.read(req.user);
+    const still = (n) => !n || !String(n).startsWith(memberModels.PREFIX) || items.some((x) => memberModels.PREFIX + x.label === n);
+    const fix = {};
+    if (!still(p.last_picked_model)) fix.last_picked_model = "";
+    if (!still(p.assist_model)) fix.assist_model = "";
+    if (Object.keys(fix).length) prefs.write(req.user, fix);
+    res.json({ ok: true, items: memberModels.publicOwn(prefs.read(req.user)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/** 平台管理员：某个渠道的对话模型给不给成员用 */
+app.post("/api/models/share", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "共享设置归平台管理员", platform_only: true });
+  const b = req.body || {};
+  const p = (config.providers || []).find((x) => x && x.id === String(b.channel || ""));
+  if (!p) return res.status(400).json({ error: "没有这个渠道" });
+  if (b.shared === false) p.share_members = false;
+  else delete p.share_members;
+  saveConfig();
+  res.json({ ok: true, channel: p.id, shared: p.share_members !== false });
+});
+/** 平台管理员：成员能不能自己填 Key。关掉之后成员已经填的留着不删，只是用不了，再打开就回来 */
+app.post("/api/models/member-byok", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  if ((req.body || {}).allowed === false) config.member_byok = false;
+  else delete config.member_byok;
+  saveConfig();
+  res.json({ ok: true, allowed: memberModels.byokAllowed(config) });
+});
+
 // 助理模式没有会话 id（消息走 IM 的 local 通道），模型选择只能挂在配置上：选完就存，
 // 刷新页面、离开助理页再回来都还是它。不存的话标签会自己弹回全局默认，
 // 而下面真正跑任务用的又是标签上那个——那就成了另一种「标签说一套、实际跑一套」
 app.post("/api/assist/model", (req, res) => {
   const name = (req.body || {}).model;
   const val = name === null || name === undefined || name === "" ? "" : String(name);
-  if (val && !(Array.isArray(config.models) && config.models.some((m) => m.name === val))) {
-    return res.status(400).json({ error: `模型「${val}」不在模型列表里` });
+  if (val && !memberModels.find(config, modelWho(req.user), val)) {
+    return res.status(400).json({ error: `模型「${val.replace(/^my:/, "")}」不在你能用的模型里` });
   }
   // 「我在助理页用哪个模型」是个人的事。以前一律写 config，结果是多人服务器上谁都能
   // 改掉所有人的助理模型——而且这条路径压根没被服务器级的闸盖住
@@ -8928,7 +9030,10 @@ function accountedRuntime(baseRuntime, source) {
       const { modelName, user: caller, ...rest } = args || {};
       // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）
       const want = modelName || (source === "im" ? assistModelOf(owner) : "");
-      const runLLM = want ? llmForSession({ model: want }) : llm;
+      // 助理页是成员自己在用：他用不着的模型不许跑，没点名就用他自己的默认（见 llmForSession）。
+      // 定时任务的负责人是成员时同理：管理员没共享的模型不替他跑
+      const runAs = caller || (owner ? owner.username : "");
+      const runLLM = want || runAs ? llmForSession({ model: want, user: runAs }) : llm;
       // 价目闸：跟钱闸一样记在负责人头上，没价目的型号一个 cron 能刷出多少都扣不到预算
       if (owner) {
         const why = unpricedChat(owner, runLLM);

@@ -133,7 +133,7 @@ app.post("/api/drama/storyboard/draft", async (req, res) => {
     }
   }
 
-  const runLLM = body.model ? llmForSession({ model: body.model.trim() }) : llm;
+  const runLLM = body.model || user ? llmForSession({ model: String(body.model || "").trim(), user: user && user.username }) : llm;
   // 价目闸（见 server.js unpricedChat）：设了预算的人，没价目的型号不调
   const unpricedWhy = user && typeof unpricedChat === "function" ? unpricedChat(user, runLLM) : "";
   if (unpricedWhy) return res.status(402).json({ error: unpricedWhy });

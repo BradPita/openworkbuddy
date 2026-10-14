@@ -317,6 +317,18 @@ const raw = (name) => account._internals.loadUsers().users.find((u) => u.usernam
     ok(r.status !== 403, `反向对照：成员 ${m} ${u} 不被这道闸拦（看连接状态、用自己的助理页）`, { got: r.status });
   }
 
+  // 模型共享开关归平台管理员；成员填自己的 Key 那条接口不归这道闸（他改的只是自己的偏好文件）
+  for (const u of ["/api/models/share", "/api/models/member-byok", "/API/Models/Share"]) {
+    r = await call("POST", u, { cookie: liC, body: { channel: "x", shared: true, allowed: true } });
+    ok(r.status === 403 && r.json && r.json.platform_only, `★成员 POST ${u} → 403★`, { got: r.status });
+  }
+  r = await call("POST", "/api/models/share", { cookie: bossC, body: {} });
+  ok(r.status !== 403, "反向对照：平台超管过得去这道闸", { got: r.status });
+  for (const [m, u] of [["GET", "/api/my-models"], ["POST", "/api/my-models"]]) {
+    r = await call(m, u, { cookie: liC, body: { my_models: [] } });
+    ok(r.status !== 403, `反向对照：成员 ${m} ${u} 不被这道闸拦（填的是自己的 Key）`, { got: r.status });
+  }
+
   // 平台级的组织管理：管理员进不去，只有平台超管进得去
   const fen3C = await login("fen3", account.resetPasswordLocally("fen3").password);
   r = await call("GET", "/api/admin/orgs", { cookie: fen3C });

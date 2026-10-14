@@ -102,6 +102,8 @@ const PLATFORM_WRITE = [
   // IM 通道是整台服务器一个机器人：扫码换绑、断开改的是全公司那条线，「测一下」拿的是服务器那份凭据。
   // 这几条不在 /api/ 下面，以前两张表都没管到，任何登录的人都能把微信助理扫到自己手机上或者直接断掉
   "/im/wechat/", "/im/qq/test", "/im/feishu/test", "/im/smtp/test",
+  // 哪些渠道共享给成员、成员能不能自己填 Key（成员自己那几条走 /api/my-models，不在这张表里）
+  "/api/models/",
 ];
 const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",

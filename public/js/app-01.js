@@ -6437,7 +6437,7 @@ function updateModelLabel() {
   const ov = currentSessModel();
   const text = eng ? (eng.model || eng.label) : (ov || settingsCache.active_model);
   const btn = document.getElementById("model-btn");
-  document.getElementById("model-label").textContent = text;
+  document.getElementById("model-label").textContent = modelShown(text);
   // 本机 CLI 在跑的时候，光看模型名跟 API 模型长得一模一样——用户分不清这次花不花钱。
   // 换成显示器图标 + 一句「谁在跑、花不花钱」的悬停说明，扫一眼就知道自己在哪条路上
   if (btn) {
@@ -6450,7 +6450,7 @@ function updateModelLabel() {
   renderModelMenu();
   // 助理页顶栏那个选择器（页面开着才有）跟输入框这个显示同一个值，别让两处对不上
   const al = document.getElementById("im-model-label");
-  if (al) { al.textContent = ov || settingsCache.active_model; renderModelMenu(document.getElementById("im-model-menu")); }
+  if (al) { al.textContent = modelShown(ov || settingsCache.active_model); renderModelMenu(document.getElementById("im-model-menu")); }
 }
 async function setSessionModel(name) { // name: 模型名；null = 跟随全局默认
   // 本机引擎在跑的时候，这里选什么都到不了 CLI。让它落库再显示成「已切换」，

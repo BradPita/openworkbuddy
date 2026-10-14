@@ -10,6 +10,12 @@ function modelReady(m) {
   return m.has_key !== undefined ? !!m.has_key : !!String(m.api_key || "").trim();
 }
 
+/** 成员自己填 Key 的模型在后端叫 my:<名字>，给人看时去掉前缀 */
+function modelShown(name) {
+  const s = String(name || "");
+  return s.startsWith("my:") ? s.slice(3) : s;
+}
+
 // menu 不传就是输入框右下角那个；助理页顶栏那个把自己的容器传进来，两处共用同一份菜单
 function renderModelMenu(menu = modelMenu) {
   if (!settingsCache || !menu) return;
@@ -40,12 +46,12 @@ function renderModelMenu(menu = modelMenu) {
   const usable = settingsCache.models.filter(modelReady);
   const waiting = settingsCache.models.length - usable.length;
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
-      <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${hbDef ? " · " + hbDef : ""}</span></span>${ov ? "" : `<span style="color:var(--owb-ok-text)">${ic("check")}</span>`}</div>`
+      <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(modelShown(settingsCache.active_model))}${hbDef ? " · " + hbDef : ""}</span></span>${ov ? "" : `<span style="color:var(--owb-ok-text)">${ic("check")}</span>`}</div>`
     + usable.map(m => {
       const on = m.name === ov;
       const hb = healthBadge(m.name);
       return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
-      <span>${ic("sparkles")}${esc(m.name)} <span class="sub">${esc(m.model)}${hb ? " · " + hb : ""}</span></span>
+      <span>${ic(m.own ? "key-round" : "sparkles")}${esc(modelShown(m.name))} <span class="sub">${esc(m.model)}${m.own ? " · 自己的 Key" : ""}${hb ? " · " + hb : ""}</span></span>
       ${on ? `<span style="color:var(--owb-ok-text)">${ic("check")}</span>` : ""}</div>`;
     }).join("")
     + (!usable.length ? `<div class="mi-note">${ic("triangle-alert")}一个填了 Key 的模型都还没有，先去下面加一个</div>`
