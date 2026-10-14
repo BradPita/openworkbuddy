@@ -135,8 +135,51 @@ function turnOutputs(outputFiles, changedNames) {
   return pool.concat(statOutputs([...changedNames].filter((n) => !have.has(n))));
 }
 
-function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = () => {}, priceOpts = null, renderSvg: renderSvgOpt = null }) {
+/**
+ * 消息日志 + 进度：全服务器一份。成员自己绑的那几条通道（见 im-accounts.js）各起一个实例，
+ * 但写进同一本日志、同一张进度表——助理页只认这一本，按 owner 字段分谁看得见
+ */
+function createShared() {
+  const IM_LOG_FILE = dataPath("data", "im-log.json");
+  const imLog = (() => {
+    try { return JSON.parse(fs.readFileSync(IM_LOG_FILE, "utf-8")).slice(-500); } catch { return []; }
+  })();
+  let imLogTimer = null;
+  function logIm(channel, dir, text, extra = {}) {
+    imLog.push({ ts: new Date().toISOString(), channel, dir, text: String(text || "").slice(0, 500), ...extra });
+    if (imLog.length > 500) imLog.splice(0, imLog.length - 500);
+    // 攒 500ms 再写，一轮任务的进出两条只落一次盘
+    if (!imLogTimer) imLogTimer = setTimeout(() => {
+      imLogTimer = null;
+      fs.writeFile(IM_LOG_FILE, JSON.stringify(imLog), () => {});
+    }, 500);
+  }
+  return { imLog, logIm, liveProgress: new Map() };
+}
+
+/** 成员自己那几条通道的会话键前缀：跟管理员的、跟别的成员的永远撞不上 */
+const ownKeyPrefix = (user) => {
+  const k = prefs.keyOf(user);
+  return k ? `u_${k}_` : "";
+};
+
+/**
+ * @param {object} o
+ * @param {string} [o.owner]  成员账号名：这一份通道是他本人绑的。空 = 管理员那份服务器级通道
+ * @param {string} [o.base]   路由前缀。管理员那份是 /im；成员那份由 im-accounts.js 挂在别处，传空串
+ * @param {Function} [o.scope] 成员那份：每条入站消息都在他的租户范围里跑（工作目录、规矩、额度）
+ * @param {object} [o.shared] 管理员那份的 shared（日志、进度），成员实例写进同一本
+ */
+function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = () => {}, priceOpts = null, renderSvg: renderSvgOpt = null, owner = "", base = "/im", scope = null, shared: sharedIn = null }) {
   const router = express.Router();
+  const shared = sharedIn || createShared();
+  const keyPrefix = owner ? ownKeyPrefix(owner) : "";
+  // 成员那份的入站全部在他自己的租户里跑；管理员那份原样
+  const inScope = (fn) => (scope ? scope(fn) : fn());
+  router.use((req, res, next) => {
+    if (!(owner && scope)) return next();
+    inScope(() => next()).catch((e) => { if (!res.headersSent) res.status(503).json({ ok: false, error: e.message }); });
+  });
   // 聊天那部分钱按哪张价目算：先跟额度记账同一个来源（调用者上下文里带着管理员改过的价和组织折扣），
   // 再是 server.js 给的，都没有就只看 config 里登记的价
   const chatPriceOpts = () => {
@@ -176,20 +219,9 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // ---------- IM 消息日志（助理模式面板展示，环形缓冲最多 200 条，落盘防重启丢历史） ----------
 
-  const IM_LOG_FILE = dataPath("data", "im-log.json");
-  const imLog = (() => {
-    try { return JSON.parse(fs.readFileSync(IM_LOG_FILE, "utf-8")).slice(-200); } catch { return []; }
-  })();
-  let imLogTimer = null;
-  function logIm(channel, dir, text, extra = {}) {
-    imLog.push({ ts: new Date().toISOString(), channel, dir, text: String(text || "").slice(0, 500), ...extra });
-    if (imLog.length > 200) imLog.splice(0, imLog.length - 200);
-    // 攒 500ms 再写，一轮任务的进出两条只落一次盘
-    if (!imLogTimer) imLogTimer = setTimeout(() => {
-      imLogTimer = null;
-      fs.writeFile(IM_LOG_FILE, JSON.stringify(imLog), () => {});
-    }, 500);
-  }
+  const imLog = shared.imLog;
+  // 成员那份写的每一条都记在他名下：只有他本人在助理页里看得见
+  const logIm = owner ? (channel, dir, text, extra = {}) => shared.logIm(channel, dir, text, { ...extra, owner }) : shared.logIm;
 
   // ---------- 谁看得见哪一条 ----------
   // 助理页以前是「一台服务器一份」：A 打开助理页，看到的是 B 刚才跟机器人说的话；接着发一句，
@@ -202,12 +234,16 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     const boss = seesAll(user);
     return (e) => (e && e.owner ? e.owner === me : boss);
   };
+  // 成员的「我的」= 助理页那段 + 他自己绑的通道里的那几段
+  const isMineKey = (user) => {
+    const mine = localKeyOf(user), pre = ownKeyPrefix(user);
+    return (k) => k === mine || (!!pre && k.startsWith(pre));
+  };
   const sessionCount = (user) => {
     if (typeof sessions.keys !== "function") return 0;
     const keys = sessions.keys();
     if (seesAll(user)) return keys.length;
-    const mine = localKeyOf(user);
-    return keys.filter((k) => k === mine).length;
+    return keys.filter(isMineKey(user)).length;
   };
 
   // ---------- 飞书 token / 发消息 ----------
@@ -595,7 +631,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   };
 
   // 正在执行的任务进度：sessionKey -> { text, channel, at }。网页助理页轮询 /im/progress 拿
-  const liveProgress = new Map();
+  const liveProgress = shared.liveProgress;
   // 把 agent 执行事件翻译成一行人话进度：飞书状态消息、网页助理页共用一份文案
   function progressLine(ev, st) {
     if (ev.type === "step_start" && !ev.depth) { st.step = ev.step; return null; }
@@ -615,6 +651,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   const renderSvg = renderSvgOpt || ((svg) => require("../domains/media/diagram").svgToPngAnyhow(svg));
 
   async function runInbound({ channel, sessionKey, text, reply, status, sendFile, sendImage, card, cardPromise, projectContext = "", logExtra = {} }) {
+    sessionKey = keyPrefix + sessionKey;
     logIm(channel, "in", text, logExtra);
     // 「停」：叫停正在跑的那件，不排队、不交给模型。飞书那头卡片自己会变成「已停止」，
     // 别的通道没有卡片，回一句让人知道按到了
@@ -967,7 +1004,9 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   // 飞书长连接在应用重启后会补推最近事件；公网回调与长连接误同时开启时，也可能同时投递同一条。
   // 不能只靠内存，更不能等 120ms 再落盘：刚回复完就重启时，那个定时器可能还没来得及写。
   // 最近 2000 个键同步、原子落盘；只存 message_id 或内容指纹，不存正文和联系人。
-  const FEISHU_DEDUPE_FILE = dataPath("data", "feishu-handled-messages.json");
+  const FEISHU_DEDUPE_FILE = owner
+    ? dataPath("data", "im-accounts", `${prefs.keyOf(owner)}.feishu-handled.json`)
+    : dataPath("data", "feishu-handled-messages.json");
   const handledMsgs = (() => {
     try {
       const rows = JSON.parse(fs.readFileSync(FEISHU_DEDUPE_FILE, "utf8"));
@@ -1291,7 +1330,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       eventDispatcher: new lark.EventDispatcher({}).register({
         "im.message.receive_v1": async (data) => {
           try {
-            await handleFeishuMessage(data);
+            await inScope(() => handleFeishuMessage(data));
           } catch (e) {
             console.error("[飞书] 处理长连接消息出错:", e.message);
             logIm("feishu", "error", `处理消息出错: ${e.message}`);
@@ -1299,7 +1338,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         },
         "drive.notice.comment_add_v1": async (data) => {
           try {
-            await handleFeishuDocMention(data);
+            await inScope(() => handleFeishuDocMention(data));
           } catch (e) {
             console.error("[飞书文档] 处理长连接事件出错:", e.message);
           }
@@ -1330,7 +1369,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       if (level === "error") logIm("qq", "error", text);
       console[level === "error" ? "error" : "log"](`[QQ] ${text}`);
     },
-    onMessage: async ({ chatType, openid, text, attachments, senderName, chatName, reply }) => {
+    onMessage: ({ chatType, openid, text, attachments, senderName, chatName, reply }) => inScope(async () => {
       const saved = [], failed = [];
       for (const a of attachments || []) {
         const kind = /^image\//i.test(a.contentType) ? "image" : /^audio\//i.test(a.contentType) ? "voice" : /^video\//i.test(a.contentType) ? "video" : "file";
@@ -1351,14 +1390,14 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         logExtra: { chat: chatName || senderName },
         reply,
       });
-    },
+    }),
   });
 
   async function startQQ(force = false) {
     return qq.start(force);
   }
 
-  router.post("/im/qq/test", async (_req, res) => {
+  router.post(`${base}/qq/test`, async (_req, res) => {
     try {
       await qq.getToken(true); // 先验凭证，错的直接报出来而不是进重连循环
       const st = await qq.start(true);
@@ -1408,7 +1447,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   }
 
   // 企业微信：GET 用于后台保存回调地址时的 URL 验证，POST 收消息
-  router.get("/im/wecom/events", (req, res) => {
+  router.get(`${base}/wecom/events`, (req, res) => {
     try {
       res.type("text/plain").send(wecom.verifyUrl(req.query));
     } catch (e) {
@@ -1417,7 +1456,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
   });
 
-  router.post("/im/wecom/events", rawXml, (req, res) => {
+  router.post(`${base}/wecom/events`, rawXml, (req, res) => {
     let msg;
     try {
       msg = wecom.parseCallback(req.query, req.body);
@@ -1443,7 +1482,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   });
 
   // 公众号：GET 验证服务器配置，POST 收消息
-  router.get("/im/mp/events", (req, res) => {
+  router.get(`${base}/mp/events`, (req, res) => {
     try {
       res.type("text/plain").send(mp.verifyUrl(req.query));
     } catch (e) {
@@ -1452,7 +1491,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
   });
 
-  router.post("/im/mp/events", rawXml, (req, res) => {
+  router.post(`${base}/mp/events`, rawXml, (req, res) => {
     let msg;
     try {
       msg = mp.parseCallback(req.query, req.body);
@@ -1478,7 +1517,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   });
 
   // 凭证连通性自测：只换 access_token，不发任何消息
-  router.post("/im/wechat/test", async (req, res) => {
+  router.post(`${base}/wechat/test`, async (req, res) => {
     const which = (req.body && req.body.which) === "mp" ? "mp" : "wecom";
     const url =
       which === "mp"
@@ -1513,13 +1552,13 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       saveConfig();
     },
     // 用户发来的图片/文件/语音：下载解密后落进工作目录，agent 就能直接读它
-    downloadMedia: async ({ kind, name, media }) => {
+    downloadMedia: ({ kind, name, media }) => inScope(async () => {
       const buf = await imMedia.downloadWechatCdn(media, { cdnBaseUrl: ilinkCfg().cdn_base_url });
       // 落盘出错的原话带工作目录的绝对路径，而它会被转告用户：这里认得工作目录，抹成相对名
       try { return imMedia.saveInbound(getWorkspaceDir(), name || imMedia.defaultName("微信", kind, ""), buf); }
       catch (e) { throw new Error(chatWhy(e, 300)); }
-    },
-    onMessage: ({ userId, text, saved, failed }) => {
+    }),
+    onMessage: ({ userId, text, saved, failed }) => inScope(() => {
       const t = imMedia.inboundNote({ channel: "微信", saved, failed, text: String(text || "").trim() });
       if (!t) return;
       return runInbound({
@@ -1534,21 +1573,21 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         sendFile: (rel) => ilink.sendFile(userId, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
         sendImage: (abs, name) => ilink.sendFile(userId, abs, name),
       });
-    },
+    }),
   });
 
   // 定时任务跑完、notify_user 都走 notify.pushBots：连上了、有人发过话就推到微信
   notify.registerPusher("wechat_ilink", {
     ready: () => { const st = ilink.status(); return st.configured && st.repliable > 0; },
     push: (text) => ilink.pushAll(text),
-  });
+  }, owner || undefined);
 
   async function startIlink(force = false) {
     return ilink.start(force);
   }
 
   // 扫码登录第一步：取二维码。qrcode_img_content 是条微信深链，必须编成二维码图片才能扫
-  router.post("/im/wechat/qrcode", async (_req, res) => {
+  router.post(`${base}/wechat/qrcode`, async (_req, res) => {
     try {
       const { qrcode, deepLink } = await ilinkApi.fetchQrcode(ilinkCfg().base_url);
       let dataUrl = "";
@@ -1564,7 +1603,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   });
 
   // 第二步：轮询扫码状态。服务端本身是长轮询（最长约 35 秒才回），前端拿到 wait 直接再问一次即可
-  router.get("/im/wechat/qrcode-status", async (req, res) => {
+  router.get(`${base}/wechat/qrcode-status`, async (req, res) => {
     const qrcode = String(req.query.qrcode || "");
     if (!qrcode) return res.status(400).json({ ok: false, error: "缺少 qrcode" });
     try {
@@ -1589,7 +1628,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
   });
 
-  router.post("/im/wechat/disconnect", async (_req, res) => {
+  router.post(`${base}/wechat/disconnect`, async (_req, res) => {
     try {
       await ilink.stop();
       config.im = config.im || {};
@@ -1603,7 +1642,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // ---------- 飞书事件回调（旧模式，有公网地址时可用） ----------
 
-  router.post("/im/feishu/events", async (req, res) => {
+  router.post(`${base}/feishu/events`, async (req, res) => {
     const body = req.body || {};
     if (body.type === "url_verification") {
       return res.json({ challenge: body.challenge });
@@ -1623,7 +1662,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // ---------- 状态 / 日志 / 测试 ----------
 
-  router.get("/im/status", (req, res) => {
+  router.get(`${base}/status`, (req, res) => {
     const f = fsCfg();
     res.json({
       feishu: { configured: !!(f.app_id && f.app_secret), missing: feishuMissing(), ws: wsStatus() },
@@ -1641,37 +1680,38 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // 上下文管理：IM 那几段会话记了多少、一键全清。只动 IM 通道的上下文，网页会话和长期记忆不碰。
   // 普通成员只数得着、也只清得掉自己那一段——一个人点一下就把全公司的上下文清了，那不叫功能
-  router.get("/im/sessions", (req, res) => {
+  router.get(`${base}/sessions`, (req, res) => {
     res.json({ count: sessionCount(req.user) });
   });
-  router.post("/im/sessions/clear", (req, res) => {
+  router.post(`${base}/sessions/clear`, (req, res) => {
     if (typeof sessions.clear !== "function") return res.status(400).json({ ok: false, error: "这个会话仓库不支持清空" });
     const boss = seesAll(req.user);
-    const mine = localKeyOf(req.user);
-    const cleared = boss ? sessions.clear() : sessions.clear((k) => k === mine);
+    const cleared = boss ? sessions.clear() : sessions.clear(isMineKey(req.user));
     logIm("system", "in", `已清空 ${cleared} 段 IM 会话上下文`, boss ? {} : { owner: req.user && req.user.username });
     res.json({ ok: true, cleared });
   });
 
   // 助理页的消息流。以前是 (_req, res) —— 那个下划线就是病根：谁登录进来都能把整本日志读走，
   // 包括别人跟机器人说过的每句话
-  router.get("/im/log", (req, res) => res.json(imLog.filter(visibleTo(req.user)).slice(-100).reverse()));
+  router.get(`${base}/log`, (req, res) => res.json(imLog.filter(visibleTo(req.user)).slice(-100).reverse()));
   // 正在执行的任务进度（网页助理页轮询用）。15 分钟没动的当异常残留过滤掉，别吓用户。
   // 「我自己那条」一律回成 local_assist 这个固定键：前端不用知道自己的会话键长什么样，
   // 也就不会因为换了个人而看不到自己的进度
-  router.get("/im/progress", (req, res) => {
+  router.get(`${base}/progress`, (req, res) => {
     const mine = localKeyOf(req.user);
+    const pre = ownKeyPrefix(req.user);
     const boss = seesAll(req.user);
     const out = {};
     for (const [k, v] of liveProgress) {
       if (Date.now() - v.at >= 900000) continue;
       if (k === mine) out.local_assist = v;
-      else if (boss && !k.startsWith("local_")) out[k] = v; // 飞书/QQ/webhook 这些服务器级通道
+      else if (pre && k.startsWith(pre)) out[k] = v; // 他自己绑的通道
+      else if (boss && !k.startsWith("local_") && !k.startsWith("u_")) out[k] = v; // 飞书/QQ/webhook 这些服务器级通道
     }
     res.json(out);
   });
 
-  router.post("/im/feishu/test", async (_req, res) => {
+  router.post(`${base}/feishu/test`, async (_req, res) => {
     try {
       await getFeishuToken(true);
       let botName = "";
@@ -1687,7 +1727,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // 只握手、只登录，不发任何一封信。密码错 / 端口错 / 被服务商挡了，都在这一步暴露，
   // 而不是等到半夜 agent 发日报时才炸——那时候没人在电脑前看得到报错
-  router.post("/im/smtp/test", async (_req, res) => {
+  router.post(`${base}/smtp/test`, async (_req, res) => {
     const cfg = smtpCfg();
     try {
       res.json({ ok: true, ...(await mailer.verify(cfg)) });
@@ -1700,21 +1740,24 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   // ---------- 机器人推送（企业微信 + 钉钉，配了哪个推哪个） ----------
 
   async function pushBots(text, opt) {
-    const sent = await notify.pushBots(config, text, opt);
+    // 成员那份只推他自己绑的群/微信，一条也不落到管理员那几个群里
+    const sent = await notify.pushBots(config, text, owner ? { ...(opt || {}), owner } : opt);
     for (const ch of sent) logIm(ch, "out", text);
   }
 
   // ---------- 通用 Webhook（任意 IM / 自动化工具桥接） ----------
 
-  router.post("/im/task", async (req, res) => {
+  router.post(`${base}/task`, async (req, res) => {
     const { message, secret, session } = req.body || {};
+    // 成员那份的地址谁都能拼出来：没设密钥就不收
+    if (owner && !imCfg().webhook_secret) return res.status(403).json({ error: "还没设密钥，这个地址先不收任务" });
     if (imCfg().webhook_secret && secret !== imCfg().webhook_secret) {
       return res.status(403).json({ error: "secret 不正确" });
     }
     if (!message) return res.status(400).json({ error: "缺少 message" });
 
     logIm("webhook", "in", message, { session: session || "default" });
-    const sessionKey = `webhook_${session || "default"}`;
+    const sessionKey = `${keyPrefix}webhook_${session || "default"}`;
     maybeResetIdleSession(sessionKey, "webhook");
     if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
     const history = sessions.get(sessionKey);
@@ -1752,7 +1795,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // 助理页里直接对话：走「local」通道，与 IM 消息同一份日志、同一套会话闲置重置逻辑。
   // 不在 PUBLIC_IM 名单里，天然要求已登录，不存在被公网白嫖执行任务的口子。
-  router.post("/im/local", async (req, res) => {
+  router.post(`${base}/local`, async (req, res) => {
     const message = String((req.body || {}).message || "").trim();
     if (!message) return res.status(400).json({ error: "缺少 message" });
     const modelName = String((req.body || {}).model || "").trim() || undefined; // 助理页模型选择器选的那个
@@ -1788,7 +1831,15 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
   });
 
-  return { router, startFeishuWs, startQQ, startIlink };
+  // 成员账号停用/删除、或者他自己把通道全清了：长连接全断，推送插口拔掉
+  async function stopAll() {
+    if (ws.client) { try { ws.client.close(); } catch {} ws.client = null; ws.startedWith = ""; }
+    try { qq.stop(); } catch {}
+    try { await ilink.stop(); } catch {}
+    notify.registerPusher("wechat_ilink", null, owner || undefined);
+  }
+
+  return { router, startFeishuWs, startQQ, startIlink, stopAll, shared };
 }
 
-module.exports = { createImRouter, unwrapFeishuInbound, feishuDedupeKeys, _internals: { pickAttachments } };
+module.exports = { createImRouter, ownKeyPrefix, unwrapFeishuInbound, feishuDedupeKeys, _internals: { pickAttachments } };

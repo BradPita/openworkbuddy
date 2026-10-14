@@ -7986,6 +7986,7 @@ var SAVES = [], SAVES_AT = [], POSTS = [], NAV = [], TEST_FAIL = new Set(), REFR
 var STATUS = { feishu: { configured: true, ws: { state: "connected" } }, qq: { configured: false, state: "off" }, wecom_app: { configured: false }, wechat_mp: { configured: false },
   wechat_ilink: { configured: false, state: "off" }, wecom: { configured: true }, dingtalk: { configured: false }, webhook: { configured: true, secret_set: false }, sessions: { count: 3 } };
 var QR = { status: "wait" }, SESS = { count: 3 };
+var MY = { saves: [], im: { webhook_secret: "********", qq: {}, feishu: {} }, hooks: { task: "/im/u/abc123/task", wecom: "/im/u/abc123/wecom/events", mp: "/im/u/abc123/mp/events", feishu: "/im/u/abc123/feishu/events" } };
 // 「扫码新建应用」：后端起 lark-cli config init --new，把验证链接渲染成码
 var NEWAPP = { create: { ok: true, url: "https://open.feishu.cn/app/verify?token=abc", qr: "data:image/png;base64,QQ" }, status: { state: "pending" } };
 var saveSettings = async (patch) => { SAVES.push(JSON.parse(JSON.stringify(patch))); SAVES_AT.push(POSTS.length); return true; };
@@ -7997,6 +7998,13 @@ window.fetch = async (url, opt) => {
   if (opt && opt.method === "POST") POSTS.push(u);
   const j = (o) => ({ ok: true, json: async () => o });
   if (u === "/im/status") return j(JSON.parse(JSON.stringify(STATUS)));
+  // 成员自己那套：读回来密钥是打码的，回调地址带他自己的随机号
+  if (u === "/im/my/config") {
+    if (opt && opt.method === "POST") MY.saves.push(JSON.parse(opt.body));
+    return j({ ok: true, im: MY.im, hooks: MY.hooks });
+  }
+  if (u === "/im/my/status") return j({ ...JSON.parse(JSON.stringify(STATUS)), feishu: { configured: false }, wecom: { configured: false } });
+  if (u === "/im/my/wechat/qrcode") return j({ ok: true, image: "data:image/png;base64,AA", qrcode: "q2" });
   if (TEST_FAIL.has(u)) return j({ ok: false, error: "凭证不对" });
   if (u.endsWith("/test")) return j({ ok: true, ws: { state: "connected" }, bot_name: "小买" });
   if (u === "/im/wechat/qrcode") return j({ ok: true, image: "data:image/png;base64,AA", qrcode: "q1" });
@@ -8255,6 +8263,34 @@ const IMPANE_CHECKS = `
     const two = [...old.querySelectorAll(".t")].map(px);
     ok("反向对照：字段名写成 .t 时两行一样大，分不出层", two[0] === two[1] && two[0] === 15, two.join("/"));
     old.remove();
+  }
+
+  // ---- 成员：绑的是他自己那套（2026-10-14「每个账户都能扫码绑定自己的助理」） ----
+  {
+    const mp = document.createElement("div");
+    mp.className = "settings-pane";
+    document.body.appendChild(mp);
+    const saves0 = SAVES.length;
+    await renderImPane(mp, { platform_owner: false, im_own: true, im: { wecom_bot_webhook: "https://qyapi/boss" } });
+    await settle();
+    const t2 = [...mp.querySelectorAll(".im-sec .im-sec-h b")].map((x) => x.textContent).join("|");
+    ok("成员页：没有「飞书增强」（那是服务器那份凭证）", t2 === "远程指挥|结果推送|发邮件|上下文管理", t2);
+    ok("成员页：一句话讲清绑的是自己的", mp.textContent.includes("你自己的"));
+    ok("成员页：不显示管理员那套的值", !mp.innerHTML.includes("qyapi/boss"));
+    ok("成员页：飞书卡没有「扫码新建应用」（那颗会写进服务器配置）", !mp.querySelector('[data-act="newapp"]'));
+    ok("成员页：密钥框里是打码，不是明文", mp.querySelector("#im-webhook-webhook_secret").value === "********");
+    ok("成员页：Webhook 帮助里是他自己那条地址", mp.querySelector('[data-ch="webhook"] .im-help').textContent.includes(location.origin + "/im/u/abc123/task"));
+    ok("成员页：企微应用回调地址也是他自己那条", mp.querySelector('[data-ch="wecom_app"] .im-help').textContent.includes("/im/u/abc123/wecom/events"));
+    const botBox = mp.querySelector('[data-ch="wecom_bot"]');
+    botBox.querySelector("input").value = "https://qyapi/mine";
+    botBox.querySelector(".im-conn").click();
+    await settle();
+    ok("成员页：连接存进他自己那份，不走服务器设置", MY.saves.length === 1 && MY.saves[0].im.wecom_bot_webhook === "https://qyapi/mine" && SAVES.length === saves0, JSON.stringify(MY.saves));
+    ok("成员页：打码原样交回去（服务端认得、不冲掉）", MY.saves[0].im.webhook_secret === "********");
+    mp.querySelector('[data-ch="wechat_ilink"] .im-conn').click();
+    await settle();
+    ok("成员页：微信扫码取的是他自己的码", POSTS.includes("/im/my/wechat/qrcode") && POSTS.lastIndexOf("/im/my/wechat/qrcode") > POSTS.lastIndexOf("/im/wechat/qrcode"));
+    mp.remove();
   }
   return names;
 })();

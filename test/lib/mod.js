@@ -92,6 +92,8 @@ const TABLE = Object.freeze({
   "im-store": "src/im/im-store.js",
   "im-wechat": "src/im/im-wechat.js",
   im: "src/im/im.js",
+  "im-accounts": "src/im/im-accounts.js",
+  "im-config": "src/im/im-config.js",
   intranet: "src/core/config/intranet.js",
   itinerary: "src/util/itinerary.js",
   jev: "src/core/judge/jev.js",

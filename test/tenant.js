@@ -1227,7 +1227,7 @@ async function login(username, password) {
   ok(!/(^|[^.\w])pushWecom\(/m.test(IMSRC), "im.js 里不再调那个不存在的 pushWecom（要推送走同文件的 pushBots）");
   ok(/const sessionKey = localKeyOf\(req\.user\);/.test(IMSRC), "im.js 的 /im/local 真按人算会话键");
   ok(!/const sessionKey = "local_assist"/.test(IMSRC), "那行写死的 local_assist 已经不在了");
-  ok(/router\.get\("\/im\/log", \(req, res\)/.test(IMSRC), "/im/log 真收下了 req（那个 _req 下划线就是病根）");
+  ok(/router\.get\(`\$\{base\}\/log`, \(req, res\)/.test(IMSRC), "/im/log 真收下了 req（那个 _req 下划线就是病根）");
   ok(/const \{ modelName, user: caller, \.\.\.rest \} = args \|\| \{\};/.test(SRV),
      "server.js 把 user 从 rest 里摘出来单独判了（留在 rest 里的话，一个 undefined 就把兜底覆盖掉）");
   ok(/user: caller \|\| \(owner \? owner\.username : undefined\)/.test(SRV),

@@ -112,7 +112,7 @@ const CANVAS_PART = /^public\/js\/app-07-canvas(?:-[^/]+)?\.js$/;
 // 拼出来只剩 server.js，「找不到就跳过」的断言跟着静悄悄变绿。按名字取，少一个当场抛。
 const SERVER_PARTS = Object.freeze([
   "routes/canvas", "routes/compose", "routes/drama", "routes/geo", "routes/library", "routes/prompt-tpls",
-  "compose-jobs", "demo-mask", "demo-timing", "deps-guard", "font-family", "im-reply", "media-probe",
+  "compose-jobs", "demo-mask", "demo-timing", "deps-guard", "font-family", "im-reply", "im-accounts", "media-probe",
   "out-decode", "pptx-layout", "task-dirs", "timeline-cards", "timeline-compose", "timeline-subs",
   "web-demo-plan", "web-demo-recorder", "winname", "ws-browse",
 ]);

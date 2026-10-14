@@ -163,7 +163,7 @@ const UI = {
   en: {
     kicker: "Open-source alternative", facts: "What you get with OpenWorkBuddy", who: "The short version", stay: "When to stay with",
     start: "Try it in three minutes", startText: "Download the installer, or clone the repo and run `npm install && npm start`. Add one model key in the setup wizard and ask for your first file.",
-    download: "Download", star: "View on GitHub", others: "Other comparisons", hub: "OpenWorkBuddy alternatives",
+    download: "Download", star: "⭐ Star on GitHub", others: "Other comparisons", hub: "OpenWorkBuddy alternatives",
     hubTitle: "OpenWorkBuddy vs Claude Cowork, Codex, WorkBuddy, Doubao, Qwen and DeepSeek",
     hubDesc: "How OpenWorkBuddy, an open-source local-first AI office agent, compares with Claude Cowork, Codex, WorkBuddy, Doubao, Qwen and DeepSeek — and when each one is the better fit.",
     hubLead: "Honest comparisons: what OpenWorkBuddy does, and when the other product is the better choice.",
@@ -173,7 +173,7 @@ const UI = {
   zh: {
     kicker: "开源替代", facts: "用 OpenWorkBuddy 能拿到什么", who: "一句话说清", stay: "这种情况还是用",
     start: "三分钟跑起来", startText: "下载安装包，或者克隆仓库跑 `npm install && npm start`。在首页向导里填一个模型 Key，就能要第一份文件了。",
-    download: "下载安装包", star: "去 GitHub", others: "其他对比", hub: "OpenWorkBuddy 替代对比",
+    download: "下载安装包", star: "去 GitHub 点 Star", others: "其他对比", hub: "OpenWorkBuddy 替代对比",
     hubTitle: "OpenWorkBuddy 对比 Claude Cowork、Codex、WorkBuddy、豆包、千问、DeepSeek",
     hubDesc: "开源、本机优先的 AI 办公助理 OpenWorkBuddy，跟 Claude Cowork、Codex、WorkBuddy、豆包、千问、DeepSeek 比有什么不同，各自什么时候更合适。",
     hubLead: "老实的对比：OpenWorkBuddy 做什么，以及什么时候别家更合适。",

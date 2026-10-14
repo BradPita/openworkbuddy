@@ -1979,6 +1979,8 @@ function pendingMembers(orgId) {
 // ---------- Express 路由与守卫 ----------
 // 外部回调有自己的签名/密钥校验，不走登录（微信侧还有 AES 解密这道闸）
 const PUBLIC_IM = new Set(["/im/task", "/im/feishu/events", "/im/wecom/events", "/im/mp/events"]);
+// 成员自己绑的那几条通道，回调地址多一段他的账号键（见 im/im-accounts.js）。同样只放这四个口子
+const PUBLIC_IM_OWN = /^\/im\/u\/[a-z0-9_-]{1,80}\/(task|feishu\/events|wecom\/events|mp\/events)$/;
 // 握手接口不需要登录。它只回「我是 OpenWorkBuddy、哪一版」，不带任何配置和数据——
 // 桌面壳在端口被占时靠它区分「另一台自己人」和「别的程序」（见 server.js 的 portHeldByUs）。
 // 摆在登录闸后面的话，一台还没登录的实例会回 401，壳就把自己人当成陌生人，转头换个口又起一台。
@@ -2006,7 +2008,7 @@ function authGuard(req, res, next) {
   const p = req.path.toLowerCase();
   const needsAuth =
     (p.startsWith("/api/") && !p.startsWith("/api/auth/") && !PUBLIC_API.has(p)) ||
-    (p.startsWith("/im/") && !PUBLIC_IM.has(p));
+    (p.startsWith("/im/") && !PUBLIC_IM.has(p) && !PUBLIC_IM_OWN.test(p));
   if (!needsAuth) return next();
   // 这一趟请求里，users.json 和 orgs.json 各读一次就够。
   // 改之前是 users 读 3 遍（认人 / 判令牌类型 / 记活跃）、orgs 读 4 遍

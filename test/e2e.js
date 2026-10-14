@@ -5834,7 +5834,7 @@ function testImSessionStore() {
 
   // 路由和界面闸门：清空接口在、状态里带会话数、助理设置页是卡片分区而不是九段说明平铺
   const imSrc = fs.readFileSync(modPath("im"), "utf8");
-  assert(imSrc.includes('router.get("/im/sessions"') && imSrc.includes('router.post("/im/sessions/clear"'), "im.js 缺会话数 / 清空接口");
+  assert(imSrc.includes('router.get(`${base}/sessions`') && imSrc.includes('router.post(`${base}/sessions/clear`'), "im.js 缺会话数 / 清空接口");
   assert(/sessions:\s*\{\s*count:/.test(imSrc), "/im/status 没带 sessions.count");
   // 这个轮询是常开的，窗口没在看就别问——服务端那头要扫一遍会话目录
   const a01Im = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");

@@ -43,6 +43,8 @@ const evolve = require("./src/agent/evolve");
 const { McpManager, cfgFingerprint, scrubText: mcpScrub } = require("./src/agent/mcp");
 const { createAgentRuntime, scanOutputs, sweepPlanOffThread } = require("./src/agent/agent");
 const { createImRouter } = require("./src/im/im");
+const imConfig = require("./src/im/im-config"); // IM 配置的合并 / 掩码：管理员那份和成员自己那份同一套规矩
+const { createImAccounts } = require("./src/im/im-accounts"); // 每个成员自己绑的消息渠道
 const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./src/core/automation/scheduler");
 const account = require("./src/domains/account/account");
 const { createStaticCompress: staticCompress } = require("./src/server/static-compress");
@@ -435,6 +437,7 @@ function saveExperts() {
 }
 const mcpManager = new McpManager();
 let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
+let imAccounts = null; // 成员自己绑的通道，跟 imBridge 一起建
 
 // ---------- 会话持久化：内存 + 磁盘（data/sessions/<id>.json） ----------
 // 结构：{ history: 统一格式历史(供LLM), transcript: 界面回放记录, title, updated_at }
@@ -2068,6 +2071,8 @@ app.get("/api/settings", (req, res) => {
     model_health: healthSummary(),
     // 界面靠它决定「服务器级的那些输入框画不画」：画了却一存就 403，比不画更气人
     platform_owner: isPlatformOwner(req),
+    // 「助理设置」那页成员也画：他绑的是自己那套通道（/im/my/*）
+    im_own: !!(req.user && !admin.isSoloDesktop() && !ownsGlobalWorkspace(req.user)),
     model_follow_last: myModel.model_follow_last,
     last_picked_model: myModel.last_picked_model,
     assist_model: myModel.assist_model,
@@ -2548,31 +2553,7 @@ app.post("/api/settings", (req, res) => {
       noteLayout(getWorkspaceDir(), b.workspace_layout);
     }
     config.im = config.im || {};
-    if (b.im) {
-      const clear = new Set(Array.isArray(b.im.clear) ? b.im.clear.map(String) : []);
-      if (b.im.feishu) {
-        const feishu = config.im.feishu = config.im.feishu || {};
-        imAssign(feishu, b.im.feishu, ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"], clear, "feishu.");
-        if (b.im.feishu.group_reply_mode !== undefined) {
-          feishu.group_reply_mode = b.im.feishu.group_reply_mode === "all" ? "all" : "mention";
-        }
-      }
-      if (b.im.qq) imAssign(config.im.qq = config.im.qq || {}, b.im.qq, ["app_id", "app_secret"], clear, "qq.");
-      if (b.im.wecom_app) imAssign(config.im.wecom_app = config.im.wecom_app || {}, b.im.wecom_app, ["corp_id", "agent_id", "secret", "token", "aes_key"], clear, "wecom_app.");
-      if (b.im.wechat_mp) imAssign(config.im.wechat_mp = config.im.wechat_mp || {}, b.im.wechat_mp, ["app_id", "app_secret", "token", "aes_key"], clear, "wechat_mp.");
-      if (b.im.smtp) {
-        const sm = (config.im.smtp = config.im.smtp || {});
-        // 凭证走「空不覆盖」那条老规矩：半张表单点一下保存，不该把已经存好的密码抹掉
-        imAssign(sm, b.im.smtp, ["host", "user", "pass"], clear, "smtp.");
-        // 端口 / 发件人 / 收件人白名单不是凭证，是用户随时会改的设置，清空就得真清空。
-        // 白名单尤其不能沿用老规矩——填了是硬闸，用户在界面上删干净了却删不掉，闸门就卡死在旧名单上了
-        for (const k of ["port", "from", "allow_to"]) {
-          if (b.im.smtp[k] !== undefined) sm[k] = String(b.im.smtp[k]).trim();
-        }
-      }
-      imAssign(config.im, b.im, ["wecom_bot_webhook", "dingtalk_webhook", "dingtalk_secret", "webhook_secret"], clear, "");
-      if (b.im.session_idle_hours !== undefined) config.im.session_idle_hours = Math.max(0, Math.min(720, +b.im.session_idle_hours || 0));
-    }
+    if (b.im) imConfig.mergeImPatch(config.im, b.im);
     if (Array.isArray(b.providers)) {
       const old = new Map((config.providers || []).map((p) => [p.id, p]));
       config.providers = b.providers.map((p) => {
@@ -5969,20 +5950,6 @@ app.post("/api/cache/clear", async (_req, res) => {
   res.json({ ok: true, freed: Math.max(0, before.total - after.total), before: before.total, after: after.total });
 });
 
-// IM 凭证专用的合并：空字符串不覆盖已经存好的值，除非「取消连接」在 im.clear 里点了名。
-// 起因是一个能把人坑惨的组合——设置页里任何一次保存（点某张卡的「连接」也算）都会把所有卡的输入框
-// 原样回写；输入框只要因为任何原因是空的（只填了一半就点连接、渲染时值没进去、浏览器清了密码框），
-// 已经存好的 App Secret 就被一行空串抹掉，通道第二天就连不上，界面还只写「未连接」。
-// 现在的规矩：想清空必须显式说要清哪个字段（"feishu.app_secret" / 顶层直接写字段名）。
-function imAssign(target, incoming, keys, clear, prefix) {
-  for (const k of keys) {
-    if (incoming[k] === undefined) continue;
-    const v = typeof incoming[k] === "string" ? incoming[k].trim() : incoming[k];
-    if (v === "" && String(target[k] || "") !== "" && !clear.has(prefix + k)) continue; // 留着旧的
-    target[k] = v;
-  }
-}
-
 app.get("/api/skills", (_req, res) =>
   // plugin 字段标出技能来自哪个 Agent Plugins 插件（本地技能没有这个字段），界面据此禁用编辑/删除
   res.json((runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, description: s.description, plugin: s.plugin || "" })))
@@ -8972,6 +8939,16 @@ function assistModelOf(owner) {
  * 定时任务的负责人还能不能替他跑。空串 = 能跑。
  * 删了、停用了、还没通过审核的，一律不跑——原来停用一个人只踢掉了登录态，他排的任务照样每天跑。
  */
+/** 成员自己绑的通道还能不能替他干活：账号删了、停了、还没审，一律不跑 */
+function imOwnerProblem(name) {
+  if (!name) return "没有账号";
+  const who = account.billingUser(name);
+  if (!who) return "账号已删除";
+  if (who.status === "disabled") return "账号已停用";
+  if (who.status === "pending") return "账号还没通过审核";
+  return "";
+}
+
 function scheduleOwnerProblem(name) {
   if (!name || !account.hasUsers()) return "";
   const who = account.billingUser(name);
@@ -9126,8 +9103,9 @@ function accountedRuntime(baseRuntime, source) {
       // 调用方（助理页）指定了模型就解析成真正的 LLM 顶上去。模型名不在列表里时 llmForSession
       // 返回的是会报错的桩，宁可当场报错也不许悄悄退回全局默认
       const { modelName, user: caller, ...rest } = args || {};
-      // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）
-      const want = modelName || (source === "im" ? assistModelOf(owner) : "");
+      // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）：
+      // 成员（助理页里的、或者他自己绑的微信/飞书里来的）跟着他自己选的那个走，没选过才退回管理员的
+      const want = modelName || (source === "im" ? assistModelOf(speaker || owner) : "");
       // 助理页是成员自己在用：他用不着的模型不许跑，没点名就用他自己的默认（见 llmForSession）。
       // 定时任务的负责人是成员时同理：管理员没共享的模型不替他跑
       const runAs = caller || (owner ? owner.username : "");
@@ -9164,7 +9142,7 @@ function accountedRuntime(baseRuntime, source) {
           ...(reopened.length ? { mediaReopened: reopened } : {}),
           taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
           baseDir: runDir,
-          projectContext: projectContextOf(projectFor(runner)),
+          projectContext: projectContextOf(projectFor(runner || speaker)),
           ...rest,
           ...(want ? { llmOverride: runLLM } : {}),
         }));
@@ -9337,7 +9315,7 @@ async function main() {
     },
     onResult: (item, text) =>
       // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
-      notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),
+      notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`, { user: (item && item.user) || "" }),
   });
   // 插上插座：agent 的 schedule_task / list_schedules 是靠这一句才看得见排期表的。
   // 纯 CLI 里没人调它，那两个工具就不会出现——而不是出现了再报「用不了」。
@@ -9369,6 +9347,27 @@ async function main() {
   // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
   imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions: imSessions, outputFiles, saveConfig });
   app.use(imBridge.router);
+  // 每个成员自己绑的通道：一人一份实例，消息在他自己的租户里跑，钱照助理页的规矩记
+  const imRun = accountedRuntime(runtime, "im");
+  const userNamed = (name) => account._internals.loadUsers().users.find((u) => u.username === name) || null;
+  const ownsOwnIm = (u) => !!u && !admin.isSoloDesktop() && !ownsGlobalWorkspace(u);
+  imAccounts = createImAccounts({
+    config,
+    problemOf: imOwnerProblem,
+    canOwn: ownsOwnIm,
+    makeInstance: ({ owner, config: view, saveConfig: saveOwn }) => createImRouter({
+      config: view, owner, base: "", shared: imBridge.shared, sessions: imSessions, outputFiles, saveConfig: saveOwn,
+      runtime: { ...imRun, runTask: (a) => imRun.runTask({ ...a, user: owner }) },
+      scope: (fn) => {
+        const why = imOwnerProblem(owner);
+        if (why) return Promise.reject(new Error(why));
+        return inTenantOf(userNamed(owner), "im", fn);
+      },
+    }),
+  });
+  app.use(imAccounts.router);
+  notify.setMemberCheck((name) => ownsOwnIm(userNamed(name)));
+  imAccounts.boot().catch((e) => console.warn("[我的通道] 启动失败:", e.message));
   imBridge
     .startFeishuWs()
     .then((s) => { if (s.state !== "off") console.log(`飞书长连接: ${s.state}`); })

@@ -5,12 +5,13 @@
 <h1 align="center">OpenWorkBuddy</h1>
 
 <p align="center">
- <b>An AI office assistant that runs on your own machine.</b><br>
+ <b>An open-source AI office assistant that runs on your own machine.</b><br>
  Ask for something once; it plans, does the work, checks it, and leaves a real<br>
  PPT / Word / Excel / web page on your disk — <b>a file you can open, not a chat log.</b>
 </p>
 
 <p align="center">
+ An open-source alternative to Claude Cowork · use the Claude Code or Codex already on your machine as the engine<br>
  <sub><a href="README.md"><b>中文</b></a> · English</sub>
 </p>
 
@@ -130,6 +131,21 @@ Model routing, tool calls, file acceptance, memory, permissions and local traces
 </tr>
 </table>
 
+<details>
+<summary><b>📣 Want to tell someone about it? Copy this</b></summary>
+
+```text
+OpenWorkBuddy: an open-source AI office assistant that runs on your own machine.
+Ask once; it plans, does the work, checks it, and hands you a PPT / Word / Excel / web page you can open, not a chat log.
+· Any model: DeepSeek, Qwen, Kimi, GLM, Ollama, or the Claude Code / Codex already on your machine
+· Your data stays local and it listens on 127.0.0.1 by default; or run it on a server for your team, each person binding their own WeChat or Feishu
+· Adding a capability = dropping in one Markdown file
+Good for: people who live in decks, weekly reports and research docs; teams that want a self-hosted AI assistant; developers who want to see how an agent is built.
+Free for personal non-commercial use: https://github.com/CatCatUncle/openworkbuddy
+```
+
+</details>
+
 ## Run it in three minutes
 
 **macOS** (no dialogs at all):
@@ -163,6 +179,8 @@ The signing certificate is still pending, so builds are ad-hoc signed: the OS is
 - **Nothing happens**: check `~/OpenWorkBuddy/logs/boot.log` → [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese)
 
 </details>
+
+> ⭐ **Got it running? Hit Star at the top right** so you can find it again in your Stars list; for release alerts, use **Watch → Custom → Releases**.
 
 ## What it looks like
 
@@ -224,7 +242,7 @@ Script, characters, scenes, shots, reference images, video, voice and the edit t
 
 Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, `Shift`/`⌘`+click to add or drop nodes from the selection, and `@` any node or asset from the chat box at the bottom.
 
-## Put it on a server for your team
+## Put it on a server for your team: multi-user, self-hosted
 
 ```bash
 git clone https://github.com/CatCatUncle/openworkbuddy.git && cd openworkbuddy
@@ -234,7 +252,7 @@ bash deploy.sh --domain buddy.example.com # Docker + automatic HTTPS
 Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin first** — the first account becomes super admin.
 → [部署](docs/部署.md) · [ops handbook](deploy/README.md) · [多人协作](docs/多人协作.md) · [账号与部署运维](docs/账号与部署运维.md) (Chinese)
 
-## Models
+## Models: DeepSeek, Qwen, Kimi, Ollama, Claude Code, Codex
 
 **Settings → Models**: pick a preset (OpenAI / Anthropic / OpenRouter / DeepSeek / Qwen / Zhipu / Kimi / Volcengine Ark / Ollama), paste the key, save — it applies immediately. Image, voice and video models have their own table. Reference → [配置模型](docs/配置模型.md) (Chinese)
 
@@ -282,6 +300,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 14** Every account can bind its own WeChat, Feishu, QQ, WeCom, Official Account, group bots and email: messages run as you, results go only to you
 - **Oct 14** Members on a shared server get their own setup: per-provider model sharing, their own API keys, their own experts, and their own assistant name and preferences
 - **Oct 14** Attachments with the Chinese enumeration comma (、) in their names are no longer split into two files that don't exist
 - **Oct 13** Sign up with an email: the part before @ becomes your username, and signing in with the email works too; failed sign-ups no longer count toward the limit
@@ -291,72 +310,6 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Oct 12** Local Codex / Claude Code can read files sent with a message: pasted text, images and documents now come with their full path, not just the file name
 - **Oct 10** Members, auditors and branch-org accounts can create multiple projects too: each gets its own folder inside their own working folder, and earlier outputs stay in the default project
 - **Oct 10** Drag from a canvas card's port onto another card to link them; cards that can't take the link turn red and say why. "+" adds a card that's already linked, and titles and prompts can be edited right on the card
-- **Oct 10** Channels can pick which API images, video and voice use, relays included; Test on Qwen image models no longer shows a false 400, and Model Studio image calls switch sync/async once when refused
-- **Oct 10** Turn outputs are ranked by importance: finished deliverables come first and the final one opens in the preview by itself; deleted files are marked "Deleted" and sink, and opening a file checks it's still there
-- **Oct 10** The input box grows with your text up to about a third of the window; an edge fades when there's more text out of view, and the scroll buttons no longer cover what you're typing
-- **Oct 10** With more than one account, members and branch-org accounts each get their own working folder, outputs and library, while admins keep the original shared one; files in Local output can now be deleted, though not while a task is running
-- **Oct 10** Local Claude Code: tick "Ask me before deleting files and similar" and rm, sudo and the like pop up an approval card and run only once approved; owner-only box, off by default
-- **Oct 10** Settings descriptions in plain words: each item says what it does, its default and whether it costs money; settings named in error messages match the Settings page word for word
-- **Oct 9** Switching the working folder no longer brings along another chat's files: folders you pick also get one subfolder per chat, and the placement is remembered per folder
-- **Oct 9** Attachments sent with a new chat's first message no longer say "file not found" when you open the preview
-- **Oct 9** Answered options stay pinned: after a long task's history is compacted the agent doesn't ask again, and if it's stuck it says where instead of quietly switching approach
-- **Oct 9** Local Codex tells the owner when a newer version is out, with an upgrade command; when a model isn't recognized it says which version you have and which models work
-- **Oct 9** The local engine's model dropdown lists specific models, the newest of several installed copies is used, and the engine test reports the model that actually ran
-- **Oct 9** Platform admins can switch to local Claude Code / Codex and use it right away; on shared servers only other accounts are held back
-- **Oct 9** DeepSeek V4 on the official endpoint gets up to 64K per reply; when a reply is cut off for length you're told plainly, and replying "continue" carries on
-- **Oct 9** Map settings: AMap errors in plain words, the key hint says to pick the Web Service key type, and routes in China can open in AMap or Google
-- **Oct 9** Attachments no longer stop at 30MB: the original file is uploaded and written to disk as it arrives, so screen recordings of a few hundred MB go through
-- **Oct 8** Tools lent to local Claude Code / Codex (image generation, library…) can run inside the main app instead: approval cards show up everywhere and usage is billed to whoever started the run; owner-only box, off by default
-- **Oct 8** Local Claude Code / Codex can pull PDFs, images and Word files from your library: they're copied into the run's working folder first, and only your own library is reachable
-- **Oct 7** Local Claude Code can hand actions that need approval to the Security Center: list-allowed ones run, anything needing a person's yes is refused; owner-only box, off by default
-- **Oct 7** Videos from local engines: after a stop or an early CLI exit, jobs the provider already accepted are collected in the background and land in the original chat; no new order is ever placed
-- **Oct 7** Stopping a local engine also stops the browsers and other descendant processes its scripts started, leaving no orphans
-- **Oct 7** The run page for local engines reads clearly: tools keep their real names, generated images show up mid-run, long silences get a still-running note, and deliverables are checked at the end
-- **Oct 7** Local engine usage is counted right: Codex resumes no longer recount the whole thread, and subscription runs are logged without spending credits; Ask and Plan runs are always read-only
-- **Oct 7** Lent tools are more dependable: outputs land in the run's own folder, the library shows only your own, and connectors from plugins are attached too
-- **Oct 7** "Open route" carries the whole day's stops into the map in order, under the same names as on the card; China opens AMap by default with a switch to Google, up to 15 stops a day
-- **Oct 7** Trip-card pins open a small place card you can page through stop by stop; "Navigate ▾" between two stops picks walking, transit, cycling or driving, and a QR code sends it to your phone
-- **Oct 7** Safer canvas spending: the Agent only hands over a to-generate list and nothing is charged until you click "Run"; a dropped connection no longer charges twice, and anything that may already be paid for is never re-bought automatically
-- **Oct 7** Deleted or cleared canvases can be brought back; Undo only undoes your own step; drag timeline cells to reorder shots, and one-click compose follows that order
-- **Oct 7** Lighter when idle: with nothing running, the server wakes about 2 times a second instead of 40; an unfocused window stops watching for stalls
-- **Oct 7** Trip cards redesigned: the map fills the card with the stops floating in a panel on the right; pins show photos and names, and clicking a stop glides the map to it; China days with four or more stops can open the whole route too
-- **Oct 6** System sandbox: commands and scripts the AI runs on macOS and Windows can't read your Keys or ledger or modify the app; switch it in Settings → Security; it adds 7–16 ms per command
-- **Oct 6** Only the models you configured: the relay, the judge model and memory embeddings no longer touch unregistered models; with a quota set, unpriced models are refused
-- **Oct 6** Quota gate gaps closed: fallback channels, vision and image generation are priced first; pricier tiers matched only by prefix are refused too
-- **Oct 6** Keys stay out of the AI's reach: child processes get no Key variables by default; network tools can't reach localhost, the LAN or cloud metadata
-- **Oct 6** External engines must name a model and are off by default for multi-user setups; Codex runs offline and writes only to the workspace by default
-- **Oct 6** Trip cards: itineraries in answers become a map you can drag and click, with per-day tabs, place cards and photos; Navigate opens Google Maps abroad and AMap in China; works without a Key
-- **Oct 6** The README now has two trip-card screenshots from a three-day Beijing plan: the map with each day's stops, and the timeline from morning to evening
-- **Oct 6** Images made by local Codex land in the conversation folder and preview in the output panel
-- **Oct 6** The commercial license now spells out the three cases where a license code is revoked and how to appeal; the app has no analytics or telemetry
-- **Oct 6** Source code moved into layered folders under src/, each layer depending only downward; read [代码架构](docs/代码架构.md) before extending it
-- **Oct 5** New project: connectors, experts and skills can be selected all at once, filtered and Shift-selected, or copied from an existing project
-- **Oct 5** Evals: judges see the process, prompts are editable, plus human review and a multi-dimension scorecard
-- **Oct 3** The README now has an AI short-drama episode made from one sentence: 75 seconds, click the poster
-- **Oct 2** Prompt templates open a fill-in form first, with choices, defaults and a live preview; select text and click "Make a blank" to write one; deletes can be undone
-- **Oct 2** The Windows installer is a wizard: choose the drive, see progress; the package went from over ten thousand files to about four thousand
-- **Oct 2** Windows tasks no longer flash a black window; Chinese paths, GBK output and high-DPI display fixed; the delete guard catches twenty-odd more spellings
-- **Oct 2** PPT preview follows each slide's real layout; the canvas keeps image proportions and the timeline is a film strip; the output panel closes on narrow windows
-- **Oct 2** Model channels fixed: GLM on Volcano Ark no longer rejected, wrong-channel models are flagged; Tongyi international and Wanxiang image jobs work
-- **Oct 1** Saying "install this skill" in chat installs it into the skill library; connecting an MCP server goes straight to the Connectors page
-- **Oct 1** Long Feishu replies are no longer cut off: they're split into several messages, and charts are sent as images
-- **Oct 1** Older conversations: files already in the workspace root are edited in place, and attachments still open after you switch folders
-- **Oct 1** The CLI gives each conversation its own folder too; "New task" while another task runs no longer lands in that task's folder; Copy works again
-- **Sep 30** Outputs get a folder per conversation in more places: projects without a folder, Feishu/WeChat chats and schedules no longer overwrite each other
-- **Sep 30** Templates can be added, edited and deleted: "Mine" is private to you; "Company" is shared across the org and only admins can change it
-- **Sep 30** Many open conversations no longer slow the window: they share one live channel, and saving and screenshots moved off the main thread
-- **Sep 30** First-run setup accepts a custom endpoint; Enter no longer sends while an input method is still composing
-- **Sep 30** One server can host several companies: the platform owner creates an org and sends its first invite; an expired org can't start new tasks but keeps its history
-- **Sep 30** Multi-user permission fixes: members can't see connector URLs, tenant admins can't turn the shell on, and re-enabling a member checks seats
-- **Sep 30** Scheduled tasks run as their owner and stop when the owner is disabled or offboarded; every sign-in attempt is logged
-- **Sep 30** New guide [账号与部署运维](docs/账号与部署运维.md) (Chinese): accounts, offboarding, password recovery, backups, running several orgs
-- **Sep 28** License terms spelled out: free for personal non-commercial use; company use (even internal only) and individual commercial use need a commercial license from the author, and companies can try it free for 30 days
-- **Sep 28** The admin console has a Commercial License page: enter a license code and it is verified on this machine, offline, with no features locked
-- **Sep 28** Memory embeddings on a Qwen (DashScope) channel are no longer marked "unavailable": requests are split to each provider's limit
-- **Sep 28** Rewrote the Word document skill; the Excel and PPT skill templates run as written
-- **Sep 28** Replies cut off mid-sentence no longer count as done: the model picks up where it stopped
-- **Sep 28** Pick a channel's API format: OpenAI, Responses, Anthropic, Gemini or Ollama native
-- **Sep 28** Sending "continue" to a chat still running elsewhere no longer errors: the page attaches to that run and slips your message in
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 
@@ -373,7 +326,7 @@ It runs commands, edits files and goes online, so there are command approvals, f
 
 Project layout, tests and PR conventions are in [CONTRIBUTING.md](CONTRIBUTING.md). No need to open an issue first — send the PR.
 
-## Coming from another tool
+## Coming from another tool: open-source alternative to Claude Cowork, Codex and more
 
 Looking for an **open-source alternative to Claude Cowork, Codex, Doubao or Qwen office features**, or a **DeepSeek agent harness**? Each has an honest comparison page, including when the other product is the better fit:
 

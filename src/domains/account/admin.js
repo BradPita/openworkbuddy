@@ -24,6 +24,7 @@ const rbac = require("./rbac"); // 角色分档和能力表
 const lifecycle = require("./lifecycle");
 const prefs = require("../../core/config/prefs"); // 哪些设置算「个人的」，那张表在这儿
 const quota = require("../../core/billing/quota"); // 按次计费的第三方 API：清单、额度、流水
+const notify = require("../../core/obs/notify"); // 推送认人：当前这趟是谁
 // API 中转站那四件：Key、预算、价目、账本。后台这一页是它们唯一的人类入口
 const vkeys = require("./vkeys");
 const budget = require("../../core/billing/budget");
@@ -428,7 +429,9 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
       }
       if (withLibraryDir) then = () => withLibraryDir(libDir, next);
     }
-    const inner = () => withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, then))));
+    // 推送也认人：成员的 notify_user、他通道里进来的任务，推回他自己绑的那几条（见 notify.js）
+    const who = (req.user && req.user.username) || "";
+    const inner = () => notify.withPushUser(who, () => withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, then)))));
     if (withLibraryBase) withLibraryBase(libBase, inner);
     else inner();
   };

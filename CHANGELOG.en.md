@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 14** On a shared server every account can bind its own messaging channels: in Assistant settings, scan your own WeChat, or add your own Feishu, QQ, WeCom app, Official Account, group bots, generic webhook and email. Messages run as you, with your own workspace, preferences and assistant model, and only you see the log; scheduled results and reminders go to the channels you bound, falling back to the server ones only if you bound none. Secrets come back masked, each callback URL carries a random token instead of your username, and a member's generic webhook rejects tasks until a secret is set. Disabled or deleted accounts are disconnected within a minute. The platform admin's channels are unchanged
 - **Oct 14** Members on a shared server get their own setup: the platform admin picks, per provider, which models members can use; members can add their own API keys, which only they can see and use, billed to them rather than the org's credits (the admin can turn this off for the whole server)
 - **Oct 14** Members can create their own experts that only they can delegate to; the platform admin can hide any of theirs from members one by one, and expert teams only list the experts a member can actually use
 - **Oct 14** Everyone can set their own assistant name, avatar and "My preferences": sent with every task after the org-wide preferences, without affecting anyone else

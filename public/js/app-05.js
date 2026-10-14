@@ -686,7 +686,8 @@ const PLATFORM_ONLY_CATS = new Set(["search", "map", "evolve", "trace", "ops", "
 async function renderSettings(active) {
   const s = await fetch("/api/settings").then(r => r.json());
   if (Array.isArray(s.moved_on_boot) && s.moved_on_boot.length) bootMoved = s.moved_on_boot;
-  const cats = s.platform_owner ? SETTING_CATS : SETTING_CATS.filter(([k]) => !PLATFORM_ONLY_CATS.has(k));
+  // 「助理设置」例外：成员绑的是他自己那套通道（自己的微信、飞书、群机器人），不碰服务器那套
+  const cats = s.platform_owner ? SETTING_CATS : SETTING_CATS.filter(([k]) => !PLATFORM_ONLY_CATS.has(k) || (k === "im" && s.im_own));
   // 从别处跳进一个已经不画的标签页（旧的深链、上次停在「数据」页），别留一屏空白：退回模型页
   if (!cats.some(([k]) => k === active)) active = cats[0][0];
   mBody.innerHTML = `<div class="settings-layout">
@@ -4324,14 +4325,41 @@ const IM_CHANNELS = [
     status: (_st, get) => (get("feishu_doc", "doc_app_id") ? ["ok", "独立凭证"] : ["off", "沿用机器人凭证"]) },
 ];
 
-function renderImPane(pane, s) {
-  const im = s.im || {};
+async function renderImPane(pane, s) {
+  // 成员：读写的是他自己那一份（/im/my/*），密钥回来是打码的，原样存回去不会冲掉真值
+  const mine = !s.platform_owner && !!s.im_own;
+  const P = mine ? "/im/my" : "/im";
+  let im = s.im || {}, hooks = null;
+  if (mine) {
+    pane.innerHTML = `<div class="d">正在读你的通道…</div>`;
+    const d = await fetch("/im/my/config").then((r) => r.json()).catch((e) => ({ ok: false, error: e.message }));
+    if (!d.ok) { pane.innerHTML = `<div class="ok-msg" style="color:var(--owb-err-text)">${esc(d.error || "读不到你的通道")}</div>`; return; }
+    im = d.im || {};
+    hooks = d.hooks || null;
+  }
+  const hookUrl = (k) => location.origin + (hooks ? hooks[k] : { task: "/im/task", wecom: "/im/wecom/events", mp: "/im/mp/events", feishu: "/im/feishu/events" }[k]);
+  // 帮助里的回调地址换成他自己那一条（带随机号）
+  const helpOf = (c) => (c.help || []).map((h) => h
+    .replace("https://你的域名/im/wecom/events", hookUrl("wecom"))
+    .replace("https://你的域名/im/mp/events", hookUrl("mp"))
+    .replace("POST /im/task", "POST " + hookUrl("task")));
+  const channels = mine ? IM_CHANNELS.filter((c) => c.grp !== "lark").map((c) => ({ ...c, newapp: false })) : IM_CHANNELS;
+  const testUrl = (c) => P + c.test.url.slice(3);
+  const saveIm = async (payload, msgEl) => {
+    if (!mine) return saveSettings(payload, msgEl);
+    const d = await fetch("/im/my/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      .then((r) => r.json()).catch((e) => ({ ok: false, error: e.message }));
+    if (!d.ok) { setMsg(msgEl, "circle-x", d.error || "保存失败", "err"); return false; }
+    im = d.im || im;
+    setMsg(msgEl, "circle-check", "已保存", "ok");
+    return true;
+  };
   const cfgVal = (c, f) => String(((c.path ? im[c.path] : im) || {})[f] || "");
   const inputId = (c, f) => `im-${c.key}-${f}`;
   const getField = (key, f) => { const el = pane.querySelector("#" + inputId({ key }, f)); return el ? el.value.trim() : ""; };
   const fieldsHtml = (c) => (c.fields || []).map(([f, ph, type]) =>
     `<input id="${inputId(c, f)}" type="${type === "password" ? "password" : "text"}" placeholder="${esc(ph)}" value="${esc(cfgVal(c, f))}" autocomplete="off" spellcheck="false">`).join("");
-  const helpHtml = (c) => (c.help ? `<details class="im-help"><summary>怎么拿凭证</summary><ol>${c.help.map((h) => `<li>${esc(h)}</li>`).join("")}</ol></details>` : "");
+  const helpHtml = (c) => (c.help ? `<details class="im-help"><summary>怎么拿凭证</summary><ol>${helpOf(c).map((h) => `<li>${esc(h)}</li>`).join("")}</ol></details>` : "");
   // 「一次粘贴自动填」：省掉在两个网页之间来回抄两串东西这件最容易出错的事
   const pasteHtml = (c) => (c.paste ? `<details class="im-help im-paste" data-paste="${c.key}"><summary>不想手打？粘一段过来自动识别</summary>
       <div class="d" style="font-size:12px;margin:2px 0 6px">${esc(c.paste.hint)}</div>
@@ -4371,13 +4399,14 @@ function renderImPane(pane, s) {
       </div>
       <div class="im-card-b">${bodyHtml(c)}</div>
     </div>`;
-  const grp = (k) => IM_CHANNELS.filter((c) => c.grp === k).map(cardHtml).join("");
+  const grp = (k) => channels.filter((c) => c.grp === k).map(cardHtml).join("");
   const sec = (title, desc, inner) => `<section class="im-sec"><div class="im-sec-h"><b>${title}</b><span>${desc}</span></div><div class="im-grid">${inner}</div></section>`;
   pane.innerHTML = `
+    ${mine ? `<div class="d" style="font-size:13px;margin-bottom:10px">这里绑的是你自己的：消息按你的账号跑，结果只推给你</div>` : ""}
     ${sec("远程指挥", "在这些 IM 里私聊或 @机器人 就能下任务，结果回到聊天里", grp("chat"))}
     ${sec("结果推送", "只出不进：任务和定时任务跑完自动推一份", grp("push"))}
     ${sec("发邮件", "AI 把写好的报告、做好的文件直接发到对方邮箱——出门之前一律弹给你过目", grp("mail"))}
-    ${sec("飞书增强", "让 AI 以你本人身份操作飞书、直接生成云文档", grp("lark"))}
+    ${mine ? "" : sec("飞书增强", "让 AI 以你本人身份操作飞书、直接生成云文档", grp("lark"))}
     ${sec("上下文管理", "IM 会话带多久的历史、什么时候另起一段", `
       <div class="im-card im-card-static packed">
         <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">${ic("timer")}</span><div class="tt"><b>闲置自动开新会话</b><span>太久没聊，下一条不再带旧上下文</span></div><i class="im-ar" aria-hidden="true"></i></div>
@@ -4392,7 +4421,7 @@ function renderImPane(pane, s) {
   // ---------- 读回 / 保存 ----------
   const imPayload = () => {
     const out = { feishu: {}, qq: {}, wecom_app: {}, wechat_mp: {}, smtp: {} };
-    for (const c of IM_CHANNELS) for (const [f] of c.fields || []) {
+    for (const c of channels) for (const [f] of c.fields || []) {
       const v = getField(c.key, f);
       if (c.path) out[c.path][f] = v; else out[f] = v;
     }
@@ -4412,7 +4441,7 @@ function renderImPane(pane, s) {
 
   // ---------- 状态灯：每张卡自己决定亮什么色、按钮写「连接」还是「取消连接」 ----------
   const applyStatus = (st, packInitial) => {
-    for (const c of IM_CHANNELS) {
+    for (const c of channels) {
       const card = pane.querySelector(`[data-ch="${c.key}"]`);
       if (!card || !c.status) continue;
       const [cls, txt] = c.status(st || {}, getField);
@@ -4434,7 +4463,7 @@ function renderImPane(pane, s) {
   };
   const refreshStatus = async (packInitial) => {
     let st = {};
-    try { st = await fetch("/im/status").then(r => r.json()); } catch {}
+    try { st = await fetch(P + "/status").then(r => r.json()); } catch {}
     applyStatus(st, packInitial);
     if (typeof refreshImStatus === "function") refreshImStatus();
     return st;
@@ -4450,10 +4479,10 @@ function renderImPane(pane, s) {
     btn.disabled = true;
     say(c, "保存中…");
     try {
-      if (!(await saveSettings(imPayload(), globalMsg))) return say(c, "保存失败", true);
+      if (!(await saveIm(imPayload(), globalMsg))) return say(c, "保存失败", true);
       if (c.test) {
         say(c, "测试中…");
-        const d = await fetch(c.test.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c.test.body || {}) })
+        const d = await fetch(testUrl(c), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c.test.body || {}) })
           .then(r => r.json()).catch((e) => ({ ok: false, error: e.message }));
         if (!d.ok) return say(c, d.error || "测试失败", true);
         say(c, c.test.ok(d), "ok");
@@ -4481,7 +4510,7 @@ function renderImPane(pane, s) {
       if (c.qr) {
         ilkRun++; // 作废在跑的轮询，否则它扫码成功后又把登录态写回来
         const box = pane.querySelector("#ilk-box"); if (box) box.style.display = "none";
-        const d = await fetch("/im/wechat/disconnect", { method: "POST" }).then(r => r.json()).catch((e) => ({ ok: false, error: e.message }));
+        const d = await fetch(P + "/wechat/disconnect", { method: "POST" }).then(r => r.json()).catch((e) => ({ ok: false, error: e.message }));
         if (!d.ok) throw new Error(d.error || "断开失败");
         say(c, "已断开，登录态已清除");
       } else {
@@ -4489,7 +4518,7 @@ function renderImPane(pane, s) {
         // 服务端默认「空值不覆盖已存的凭证」，所以真要清必须点名——否则清了个寂寞
         const payload = imPayload();
         payload.im.clear = (c.fields || []).map(([f]) => (c.path ? `${c.path}.${f}` : f));
-        if (!(await saveSettings(payload, globalMsg))) throw new Error("保存失败");
+        if (!(await saveIm(payload, globalMsg))) throw new Error("保存失败");
         say(c, "已断开，凭证已清空");
       }
       setPacked(card, false); // 断开之后摊开，让你能马上重填
@@ -4576,7 +4605,7 @@ function renderImPane(pane, s) {
     const btn = e.target.closest(".im-conn[data-act]");
     if (btn) {
       e.stopPropagation();
-      const c = IM_CHANNELS.find((x) => x.key === (btn.closest(".im-card") || {}).dataset?.ch);
+      const c = channels.find((x) => x.key === (btn.closest(".im-card") || {}).dataset?.ch);
       if (!c) return;
       return btn.dataset.act === "disconnect" ? disconnect(c, btn) : connect(c, btn);
     }
@@ -4594,7 +4623,7 @@ function renderImPane(pane, s) {
     }
   });
   // 粘进来就认，不用再点一次按钮
-  for (const c of IM_CHANNELS.filter((x) => x.paste)) {
+  for (const c of channels.filter((x) => x.paste)) {
     const ta = pane.querySelector(`#im-${c.key}-paste`);
     const r = pane.querySelector(`[data-paste-r="${c.key}"]`);
     if (!ta || !r) continue;
@@ -4616,7 +4645,7 @@ function renderImPane(pane, s) {
     ta.addEventListener("input", () => { if (ta.value.trim().length > 20) take(); });
   }
   pane.querySelector("#im-save").onclick = async () => {
-    if (await saveSettings(imPayload(), globalMsg)) refreshStatus(false);
+    if (await saveIm(imPayload(), globalMsg)) refreshStatus(false);
   };
   pane.querySelector("#im-goto-agent").onclick = async (e) => {
     e.preventDefault();
@@ -4651,7 +4680,7 @@ function renderImPane(pane, s) {
 
   // ---------- 微信扫码：取码 → 轮询状态（服务端一次挂最多 35 秒，回 wait 就接着问） ----------
   let ilkRun = 0; // 每次取码自增，旧轮询看见对不上就自己退出，防止两轮并行
-  const ilkC = IM_CHANNELS.find((x) => x.qr);
+  const ilkC = channels.find((x) => x.qr);
   const ilkSay = (txt, kind) => say(ilkC, txt, kind);
   const ilkStart = async () => {
     const ilkBox = pane.querySelector("#ilk-box"), ilkImg = pane.querySelector("#ilk-img");
@@ -4660,7 +4689,7 @@ function renderImPane(pane, s) {
     ilkSay("正在取二维码…");
     let qrcode;
     try {
-      const d = await fetch("/im/wechat/qrcode", { method: "POST" }).then(r => r.json());
+      const d = await fetch(P + "/wechat/qrcode", { method: "POST" }).then(r => r.json());
       if (!d.ok) return ilkSay(d.error || "取二维码失败", true);
       if (!d.image) return ilkSay("二维码渲染失败（服务端缺 qrcode 依赖）", true);
       qrcode = d.qrcode;
@@ -4672,7 +4701,7 @@ function renderImPane(pane, s) {
       if (run !== ilkRun) return; // 已经重新取码了，这轮作废
       let d;
       try {
-        d = await fetch(`/im/wechat/qrcode-status?qrcode=${encodeURIComponent(qrcode)}`).then(r => r.json());
+        d = await fetch(`${P}/wechat/qrcode-status?qrcode=${encodeURIComponent(qrcode)}`).then(r => r.json());
       } catch (e) { await new Promise(z => setTimeout(z, 2000)); continue; } // 网络抖动不算失败，接着问
       if (run !== ilkRun) return;
       if (!d.ok) return ilkSay(d.error || "轮询失败", true);
@@ -4694,7 +4723,7 @@ function renderImPane(pane, s) {
 
   refreshStatus(true);
   loadSess();
-  renderLarkQr(pane);
+  if (!mine) renderLarkQr(pane);
 }
 
 // ================= 安全中心面板 =================

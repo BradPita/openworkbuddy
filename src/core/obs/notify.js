@@ -43,34 +43,84 @@ async function pushDingtalk(imCfg, text) {
  */
 const extra = new Map(); // name -> { ready: () => boolean, push: async (text) => void }
 
-function registerPusher(name, pusher) {
+/**
+ * 成员自己绑的通道（见 im/im-accounts.js）：每人一套群机器人地址 + 一套插口。
+ * 谁的任务推给谁——成员的定时任务、notify_user 不再落进管理员的群和微信里。
+ */
+const owners = new Map(); // username -> { im: () => imCfg, pushers: Map<name, pusher> }
+let isMember = null; // server.js 给：这个账号算不算「成员」（平台管理员 / 单机版用的是服务器级那套）
+const { AsyncLocalStorage } = require("async_hooks");
+const userStore = new AsyncLocalStorage(); // 当前这趟是谁在跑（租户中间件绑上，见 admin.tenantScope）
+
+function withPushUser(name, fn) {
+  return name ? userStore.run(String(name), fn) : fn();
+}
+function setMemberCheck(fn) { isMember = typeof fn === "function" ? fn : null; }
+function registerOwner(owner, im) {
+  if (!owner) return;
+  const had = owners.get(owner);
+  owners.set(owner, { im, pushers: had ? had.pushers : new Map() });
+}
+function unregisterOwner(owner) { owners.delete(owner); }
+
+function registerPusher(name, pusher, owner) {
+  if (owner) {
+    if (!owners.has(owner)) owners.set(owner, { im: () => ({}), pushers: new Map() });
+    const m = owners.get(owner).pushers;
+    if (pusher) m.set(name, pusher); else m.delete(name);
+    return;
+  }
   if (pusher) extra.set(name, pusher);
   else extra.delete(name);
 }
 
-/** 有没有哪条通道推得出去：群机器人地址填了，或者插上的通道说自己好了 */
-function anyPushReady(config) {
-  const im = (config || {}).im || {};
+function readyIn(im, pushers) {
   if (im.wecom_bot_webhook || im.dingtalk_webhook) return true;
-  for (const p of extra.values()) { try { if (p.ready()) return true; } catch {} }
+  for (const p of pushers.values()) { try { if (p.ready()) return true; } catch {} }
   return false;
+}
+
+/**
+ * 这一趟该推哪一套。成员绑了能推的通道 → 只推他自己的；
+ * 他一条都没绑 → 照旧推服务器级那套（老行为，公司群收日报的用法不能一升级就断）
+ */
+function targetOf(config, { user, owner } = {}) {
+  if (owner) {
+    const o = owners.get(owner);
+    return { im: o ? (o.im() || {}) : {}, pushers: o ? o.pushers : new Map(), own: true };
+  }
+  const who = user !== undefined ? user : userStore.getStore();
+  if (who && isMember && isMember(who)) {
+    const o = owners.get(who);
+    if (o && readyIn(o.im() || {}, o.pushers)) return { im: o.im() || {}, pushers: o.pushers, own: true };
+  }
+  return { im: (config || {}).im || {}, pushers: extra, own: false };
+}
+
+/** 有没有哪条通道推得出去：群机器人地址填了，或者插上的通道说自己好了 */
+function anyPushReady(config, opt) {
+  const t = targetOf(config, opt);
+  return readyIn(t.im, t.pushers);
 }
 
 /**
  * 推送到所有已配置的通道；单通道失败不影响其他通道，返回成功的通道名列表。
  * skip：不推的通道名。从微信里发来的任务，回复已经在微信里了，别再推一遍
+ * owner：只推这个成员自己绑的（他通道里进来的任务用）；user：按这个人挑（不给就看当前租户）
  */
-async function pushBots(config, text, { skip = [] } = {}) {
-  const imCfg = (config || {}).im || {};
+async function pushBots(config, text, { skip = [], user, owner } = {}) {
+  const t = targetOf(config, { user, owner });
+  const imCfg = t.im;
   const sent = [];
   for (const [name, fn] of [["wecom", pushWecom], ["dingtalk", pushDingtalk]]) {
+    if (skip.includes(name)) continue;
     try {
       if (await fn(imCfg, text)) sent.push(name);
     } catch (e) {
       console.warn(`[${name}] 推送失败:`, e.message);
     }
   }
-  for (const [name, p] of extra) {
+  for (const [name, p] of t.pushers) {
     if (skip.includes(name)) continue;
     try {
       if (!p.ready()) continue;
@@ -83,4 +133,4 @@ async function pushBots(config, text, { skip = [] } = {}) {
   return sent;
 }
 
-module.exports = { pushBots, pushWecom, pushDingtalk, registerPusher, anyPushReady };
+module.exports = { pushBots, pushWecom, pushDingtalk, registerPusher, anyPushReady, registerOwner, unregisterOwner, setMemberCheck, withPushUser };
