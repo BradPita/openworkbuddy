@@ -6178,7 +6178,9 @@ const HUB_CHECKS = `
     seen.push(method + " " + url);
     if (method !== "GET") writes.push(method + " " + url);
     const j = (v, code) => Promise.resolve({ ok: !code || code < 400, status: code || 200, json: () => Promise.resolve(v), text: () => Promise.resolve("") });
-    if (url === "/api/experts") return j([{ name: "调研专员", alias: "查得深", avatar: "🔍", category: "研究分析", description: "查得深", tags: ["行业调研"], skills: [], builtin: true }]);
+    if (url === "/api/experts") return j([{ name: "调研专员", alias: "查得深", avatar: "🔍", category: "研究分析", description: "查得深", tags: ["行业调研"], skills: [], builtin: true }]
+      .concat(owner ? [] : [{ name: "我的写手", avatar: "✍️", category: "内容创作", description: "按我的口吻写", tags: [], skills: [], own: true }]));
+    if (url.startsWith("/api/my-experts/")) return j({ ok: true });
     if (url === "/api/expert-teams") return j([{ name: "内容组", avatar: "👥", description: "写稿一条龙", members: ["文案主笔", "配图师"] }]);
     if (url === "/api/skills") return j([{ name: "docx", description: "生成 Word 文档" }]);
     if (url === "/api/skills/defaults/list") return j([{ name: "pptx", title: "PPT 生成", why: "做演示文稿", author: "anthropic", license: "MIT", bytes: 2048, url: "https://example.com", repo: "a/b", subpath: "s", installed: false }]);
@@ -6208,8 +6210,20 @@ const HUB_CHECKS = `
   await show("experts");
   ok("专家：卡片照样看得到（他要召唤专家干活）", html().includes("调研专员"), html().slice(0, 200));
   ok("专家：「立即召唤」在", !!q(".e-use"));
-  ok("专家：不画「＋ 创建专家」", !q("#ex-add"));
-  ok("专家：不画「修改」「删除」", !q(".e-edit") && !q(".e-del"));
+  ok("★专家：成员也能「＋ 创建专家」，写明只有自己能用★", !!q("#ex-add") && /只有你自己能用/.test(q("#ex-add").textContent));
+  const cardOf = (name) => [...page.querySelectorAll(".ex-card[data-ei]")].find((c) => c.textContent.includes(name));
+  ok("专家：共享来的那位不画「修改」「删除」", !!cardOf("调研专员") && !cardOf("调研专员").querySelector(".e-edit") && !cardOf("调研专员").querySelector(".e-del"));
+  ok("专家：自己建的那位能改能删，标着「我的」", !!cardOf("我的写手") && !!cardOf("我的写手").querySelector(".e-edit") && /我的/.test(cardOf("我的写手").textContent));
+  ok("专家：成员不画共享开关", !q(".e-share"));
+  writes.length = 0;
+  const asked = [], keepAsk = window.askConfirm;
+  window.askConfirm = async (o) => { asked.push(o); return true; };
+  cardOf("我的写手").querySelector(".e-del").click();
+  for (let i = 0; i < 20 && !writes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  ok("删自己的专家先问一句", asked.some((o) => /我的写手/.test(o.title)), JSON.stringify(asked));
+  window.askConfirm = keepAsk;
+  for (let i = 0; i < 20 && !writes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  ok("★删的是自己那份（/api/my-experts），不碰共享专家表★", writes.includes("DELETE /api/my-experts/" + encodeURIComponent("我的写手")) && !writes.some((x) => x.startsWith("DELETE /api/experts/")), writes.join(" | "));
   await show("experts", "team");
   ok("专家团：「整团召唤」在", !!q(".t-use"));
   ok("专家团：不画「＋ 创建专家团」", !q("#team-add"));
@@ -6372,6 +6386,7 @@ const GATE_CHECKS = `
       pet: {}, security: { cmd_allow: ["ls"], cmd_ask: ["rm"] },
       ...(solo !== undefined ? { solo } : {}),
     });
+    if (url === "/api/my-assistant" && method === "GET") return j({ applies: true, name: "", avatar: "", persona: "", default_name: "小猫", default_avatar: "🐱" });
     if (url === "/api/model-catalog") return j({
       kinds: [
         { kind: "openrouter", label: "OpenRouter（聚合）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys" },
@@ -6754,7 +6769,14 @@ const GATE_CHECKS = `
   ok("成员这一页没有「助理的名字和头像」那张卡", !pp.querySelector("#as-name") && !pp.querySelector("#as-save"));
   ok("也没有「个性化偏好」那块和保存钮", !pp.querySelector("#ps-text") && !pp.querySelector("#ps-save"));
   ok("桌面宠物留着（那只跑在他自己电脑上）", !!pp.querySelector("#pet-card"));
-  ok("给了一句人话，还指了条真能走的路（写进记忆页）", /记忆/.test(pp.textContent) && /平台管理员/.test(pp.textContent));
+  for (let i = 0; i < 20 && !pp.querySelector("#ma-save"); i++) await new Promise((r) => setTimeout(r, 10));
+  ok("★成员有自己的「我的助理」：名字、头像、我的偏好★", !!pp.querySelector("#ma-name") && !!pp.querySelector("#ma-persona") && !!pp.querySelector("#ma-save"));
+  ok("说清只改他自己的，留空用全局那个名字", /别人不受影响/.test(pp.textContent) && /小猫/.test(pp.textContent), pp.textContent.slice(0, 200));
+  posts.length = 0;
+  pp.querySelector("#ma-name").value = "小秘";
+  pp.querySelector("#ma-save").click();
+  await new Promise((r) => setTimeout(r, 20));
+  ok("保存存到自己那份（/api/my-assistant），不碰全局设置", posts.some((x) => x.url === "/api/my-assistant" && x.body.name === "小秘") && !posts.some((x) => x.url === "/api/settings"), JSON.stringify(posts));
   owner = true;
   await renderSettings("persona");
   const ppo = mBody.querySelector("#settings-pane");

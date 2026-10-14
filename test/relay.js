@@ -1168,7 +1168,7 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
       eq(upRun(50, { provider: "新上的", model: NEWM }, inh, "boss"), "", "  └ 反向对照：管理员自己真走本机引擎，不经这本价目");
     } finally { security.setPlatformAdmin(null); security.setMultiUser(null); }
   }
-  ok(SRC9.includes("unpricedChat(user, llmForSession(getSession(sessionId)))"), "/api/chat 开流之前问过这一句");
+  ok(SRC9.includes("unpricedChat(user, llmForSession(getSession(sessionId), user))"), "/api/chat 开流之前问过这一句（按发起的人取模型）");
   ok(/const why = unpricedChat\(owner, runLLM\);\s*if \(why\) throw/.test(SRC9), "定时任务 / IM 那条路上也问过，拦下是抛出来，不是静悄悄跑完");
   const dramaSrc = fs.readFileSync(path.join(ROOT, "src/server/routes/drama.js"), "utf8");
   ok(/unpricedChat\(user, runLLM\)/.test(dramaSrc) && /unpricedWhy\) return res\.status\(402\)/.test(dramaSrc),

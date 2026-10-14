@@ -3518,8 +3518,8 @@ async function testEngineConnect(card, id) {
 
 function renderPersonaPane(pane, s) {
   const a = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK, ...(s.assistant || {}) };
-  // 助理叫什么、个性化偏好，都是**整台服务器**共用一份（改了别人也跟着变），归平台管理员。
-  // 桌面宠物是跑在他自己电脑上的那只，纯个人。所以成员进来这一页只剩宠物 + 一句说明。
+  // 全局那份助理名字、个性化偏好整台服务器共用，归平台管理员。成员进来是「我的助理」：
+  // 名字、头像、偏好只改他自己的（/api/my-assistant）。桌面宠物跑在他自己电脑上，纯个人。
   const po = !!s.platform_owner;
   pane.innerHTML = `
     ${!po ? `<div id="my-assistant"></div>` : `
