@@ -1032,6 +1032,7 @@ let histNote = "";        // 这次是靠什么找的，如实说
 let histErr = "";         // 搜挂了要说，不能拿「没搜到」糊过去——那是两件事
 let histTimer = null;
 let histSeq = 0;
+const pinBusy = new Map(); // 正在改置顶的那几条 → 第几下（见 togglePin），服务端那份并回来时别拿旧值盖掉
 const histStopping = new Set(); // 侧栏行上点了「停」、服务端已收下、还没真收尾的那几条（见 stopRowRun）
 // 侧栏停下的那一趟：sid → 当时那份 ui。收尾时 notifyRunDone 认出是它就不再报「已完成」——
 // 2026-09-29 刚弹完「已停下「X」」紧跟一条「「X」已完成，点侧栏查看」，两句话打架。按 ui 认，免得误伤同一条对话的下一趟
@@ -1137,8 +1138,14 @@ function renderHistory() {
   // 人扫一眼侧栏最想知道的就是「哪条在等我」，它沉在第八行，点亮了也等于没亮
   const askFirst = (id) => (attnPick(sessionAttn.get(id), false) === "ask" ? 0 : 1);
   for (const id of histStopping) if (!runningSessions.has(id)) histStopping.delete(id); // 真收尾了，「正在停」这个态跟着撤
-  const rows = list.slice().sort((a, b) => askFirst(a.id) - askFirst(b.id)).map(s => ["i:" + s.id,
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${attnDotHtml(s.id)}${histStopHtml(s)}<button type="button" class="hx" title="删除该任务" aria-label="删除该任务">${ic("x")}</button></div>`]);
+  const row = (s) => ["i:" + s.id,
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}${s.pinned_at ? " pinned" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${attnDotHtml(s.id)}${histStopHtml(s)}${histPinHtml(s)}<button type="button" class="hx" title="删除该任务" aria-label="删除该任务">${ic("x")}</button></div>`];
+  // 置顶的单独一组排最上面，按顶上去的先后（后顶的在上）；没有置顶的就还是一张扁平列表，不加组标题
+  const pinned = list.filter((s) => s.pinned_at).sort((a, b) => b.pinned_at - a.pinned_at);
+  const rest = list.filter((s) => !s.pinned_at).sort((a, b) => askFirst(a.id) - askFirst(b.id));
+  const rows = pinned.length
+    ? [["h:pin", `<div class="hist-sec">已置顶</div>`], ...pinned.map(row), ...(rest.length ? [["h:rest", `<div class="hist-sec">最近</div>`]] : []), ...rest.map(row)]
+    : rest.map(row);
   // 终端里正在跑的那几条，直接排在同一张列表的最上面，不再单开一撮。
   // 以前这里是「任务历史 → 10 → 终端里（openworkbuddy 命令行） → 才轮到内容」，三行铺垫才见着第一条任务。
   // Claude Cowork 和 Codex 的做法是一张扁平列表：来路和状态用行内的小图标表示，
@@ -1181,6 +1188,42 @@ function histStopHtml(s) {
   return histStopping.has(s.id)
     ? `<button type="button" class="hstop is-stopping" aria-disabled="true" title="正在停…" aria-label="${esc(`正在停「${t}」`)}">${ic("square")}</button>`
     : `<button type="button" class="hstop" title="停下这个任务" aria-label="${esc(`停下「${t}」`)}">${ic("square")}</button>`;
+}
+/** 行上那颗图钉：没顶的扫过才显形，顶了的常亮——一眼看得出这条是自己顶上来的，点它就放回去 */
+function histPinHtml(s) {
+  const t = stripSceneTag(s.title) || "任务";
+  return s.pinned_at
+    ? `<button type="button" class="hpin on" aria-pressed="true" title="取消置顶" aria-label="${esc(`取消置顶「${t}」`)}">${ic("pin")}</button>`
+    : `<button type="button" class="hpin" aria-pressed="false" title="置顶" aria-label="${esc(`置顶「${t}」`)}">${ic("pin")}</button>`;
+}
+/** 先在侧栏里挪过去，再告诉服务端；没存上就挪回来并说一声。连点两下以最后一下为准 */
+async function togglePin(sid) {
+  const s = sessions.find((x) => x.id === sid);
+  if (!s) return;
+  const on = !s.pinned_at, was = s.pinned_at;
+  const seq = (pinBusy.get(sid) || 0) + 1;
+  pinBusy.set(sid, seq);
+  s.pinned_at = on ? Date.now() : undefined;
+  saveSessions();
+  renderHistory();
+  const host = document.getElementById("history");
+  const b = host && host.querySelector(`.hist-item[data-id="${CSS.escape(sid)}"] .hpin`);
+  if (b) b.focus(); // 行挪了位置，键盘焦点跟着那颗图钉走
+  let err = "";
+  try {
+    const r = await fetch("/api/session/" + encodeURIComponent(sid) + "/pin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned: on }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) err = j.error || ("HTTP " + r.status);
+    else if (pinBusy.get(sid) === seq && on && j.pinned_at) s.pinned_at = j.pinned_at;
+  } catch { err = "没连上服务端"; }
+  if (pinBusy.get(sid) !== seq) return; // 后面又点了一下，结果归那一下管
+  pinBusy.delete(sid);
+  if (err) {
+    s.pinned_at = was;
+    toast(`${on ? "没置顶上" : "没取消掉"}：${err}`, "circle-x");
+  }
+  saveSessions();
+  renderHistory();
 }
 async function stopRowRun(sid) {
   if (!sid || histStopping.has(sid) || !runningSessions.has(sid)) return;
@@ -1245,6 +1288,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
     return;
   }
   if (e.target.closest(".hstop")) { await stopRowRun(item.dataset.id); return; } // 只停这一条，不打开它
+  if (e.target.closest(".hpin")) { await togglePin(item.dataset.id); return; }
   if (e.target.closest(".hx")) {
     if (!(await askConfirm({ title: "删掉这个任务？", hint: "它的对话记录一起没，找不回来。", ok: "删掉", danger: true }))) return;
     const id = item.dataset.id;
@@ -3368,6 +3412,9 @@ async function openPlusSub(tab) {
   plusMenu.querySelectorAll(".pm-row").forEach((r) => r.classList.toggle("on", r.dataset.tab === tab));
   const sub = plusMenu.querySelector("#pm-sub");
   if (!sub) return;
+  // 鼠标在同一行上进进出出会反复触发：这一格已经画好了就别再「读取中…」重取一遍
+  if (sub.dataset.tab === tab && sub.classList.contains("show")) return;
+  sub.dataset.tab = tab;
   sub.classList.add("show");
   sub.onclick = (e) => e.stopPropagation(); // 二级里点东西不该顺手把整个菜单关了
   sub.innerHTML = plusHead("读取中…");
@@ -3376,6 +3423,7 @@ async function openPlusSub(tab) {
     await PLUS_RENDER[tab](sub);
   } catch (e) {
     sub.innerHTML = plusEmpty("这一屏没打开：" + (e && e.message ? e.message : "接口没响应"));
+    delete sub.dataset.tab; // 没打开的那格，再指一下要能重试
   }
   plusFit(sub);
 }

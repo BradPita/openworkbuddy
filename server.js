@@ -829,7 +829,7 @@ function getSession(id) {
  * sess 传不传都行：长期攥着对象的调用方（定时任务录制器）把手里那份直接递进来，
  * 这样哪怕它已经被缓存清掉了，写盘照样落在对的内容上 —— 而不是悄没声地什么都不做。
  */
-function saveSession(id, sess) {
+function saveSession(id, sess, { keepTime = false } = {}) {
   const s = sess || sessions.get(id);
   // 内存里没有、调用方也没递一份进来：这不是正常状态，必须留个痕。
   // 悄悄 return 的话，真出了「跑完一整趟、回放里一片空白」这种事，日志里一个字都没有。
@@ -839,7 +839,8 @@ function saveSession(id, sess) {
   // 同步写了最新的一整份：后台排着的那趟作废，路上那趟也别晚到把这份盖回旧的（见 sessWriter 的 shouldCommit）
   const rec = sessWriters.get(id);
   if (rec) { rec.gen++; rec.w.cancel(); }
-  s.updated_at = new Date().toISOString();
+  // 置顶这种只改标记的写盘不算「动过」：不然一置顶，它在侧栏里的先后就跳到最前
+  if (!keepTime || !s.updated_at) s.updated_at = new Date().toISOString();
   // 盘上那份还是我们上回读 / 写下的样子（mtime+size 都对得上）：上一版不用再整份读回来 JSON.parse
   // 一遍才配当 .bak，直接硬链接过去（见 store.js linkBackup）。对不上——命令行写过、
   // 或者这条压根不在缓存里（定时任务把对象直接递进来那条路）——就还走老路先验再拷，
@@ -1022,6 +1023,7 @@ function sessionRow(id, s) {
     // 老会话该归到哪条线要看**读它的这个人**现在配的是什么引擎，那是前端拿 /api/lanes 算的事；
     // 在这儿按服务器配置替他填死，多用户下就会把别人的引擎口径安到他头上。
     lane: lanes.normalize(s.lane) || undefined,
+    pinned_at: Number(s.pinned_at) > 0 ? Number(s.pinned_at) : undefined,
   };
 }
 /**
@@ -8336,7 +8338,9 @@ app.get("/api/chat/live", (req, res) => {
 // 任务历史列表。前端侧栏以前只信 localStorage，清个缓存 / 换台机器就「历史全没了」，
 // 其实对话一直在 data/sessions/ 里躺着。这条接口是那份列表的权威来源，前端登录后跟本地缓存并一次。
 app.get("/api/sessions", (req, res) => {
-  const rows = listSessionsOnDisk().filter((r) => ownSession(req.user, r)).slice(0, 300);
+  const mine = listSessionsOnDisk().filter((r) => ownSession(req.user, r));
+  // 只回最近 300 条，置顶的不论多老都带上：不然顶了半年前那条，过阵子它就从侧栏掉出去了
+  const rows = mine.filter((r, i) => i < 300 || r.pinned_at);
   res.json({ sessions: rows.map(({ user, ...r }) => r) }); // 归属只用来过滤，不回给前端
 });
 
@@ -8497,6 +8501,23 @@ app.post("/api/session/:id/goal", (req, res) => {
     saveSession(req.params.id);
   }
   res.json({ ok: true, goal: s.goal });
+});
+
+// 侧栏「置顶」：标记记在会话本身上，清缓存、换台机器都还在。只有本人能改——
+// 管理员打得开同组织的会话，可替别人把他侧栏里的东西顶上去不是他的事
+app.post("/api/session/:id/pin", (req, res) => {
+  // getSession 遇到没有的 id 会现建一条空的：先看内存和盘上有没有，别为一颗图钉凭空造出个空壳
+  const id = String(req.params.id || "");
+  if (!sessions.has(id) && !fs.existsSync(sessFile(id))) return res.status(404).json({ error: "这个任务已经不在了" });
+  const s = guardSession(req, res);
+  if (!s) return;
+  const owner = sessionOwner(s);
+  if (req.user && owner && owner !== req.user.username) return res.status(403).json({ error: "只能置顶自己的任务" });
+  const on = !!(req.body || {}).pinned;
+  if (on) s.pinned_at = Number(s.pinned_at) > 0 ? s.pinned_at : Date.now();
+  else delete s.pinned_at;
+  saveSession(req.params.id, s, { keepTime: true });
+  res.json({ ok: true, pinned_at: s.pinned_at || 0 });
 });
 
 // ---------- 内置评测（界面版）：spawn 子进程跑 eval/run.js ----------
@@ -9476,6 +9497,21 @@ async function main() {
   tellShell(bound, { reused: false });
   // 站住之后再出的错（网卡被拔、系统休眠醒来）不该把一个已经能用的应用换成报错页
   server.on("error", (e) => console.error("[服务端] 监听出错:", (e && e.message) || e));
+  warmUpSlowPanes();
+}
+
+/**
+ * 站住几秒后，在后台把两样慢的先备好：
+ *   - 本机 CLI 探测（codex 冷的时候两三秒），不然第一次点「设置 → 智能体」要干等
+ *   - 自进化页数信号要扫的会话摘要（几百个会话半秒多）
+ * 失败无所谓：用到的时候照旧现算
+ */
+function warmUpSlowPanes() {
+  const t = setTimeout(() => {
+    try { engines.detectAll(prefs.agentCfg(config).engine_options || {}).catch(() => {}); } catch {}
+    evolve.warmDigests().catch(() => {});
+  }, 3000);
+  if (t.unref) t.unref();
 }
 
 /** 把最终端口交给桌面壳。没有壳（node server.js）时这一步什么都不做。 */

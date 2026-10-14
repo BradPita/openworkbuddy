@@ -150,6 +150,94 @@ function readSessions(dir = SESS_DIR) {
   return out;
 }
 
+// 一个会话文件里体检用得上的那点东西：每个助手回合的时间、上一句用户的话、分好类的毛病。
+// 原文动辄几百 KB（工具输出、截图描述），体检只要这一小撮；按文件的修改时间和大小缓存，
+// 没改过的文件不再解析。以前打开「自进化」一次要把全部会话解析 6 遍（信号 1 遍 + 每条规则打分各 1 遍），
+// 668 个会话、105MB 时要 2.4 秒，点一下「采纳」又整套重来。
+function digestSession(d, id) {
+  const sessAt = Date.parse(d.updated_at || "") || 0;
+  const tr = d.transcript || [];
+  const turns = [];
+  tr.forEach((t, i) => {
+    if (!t || t.type !== "assistant") return;
+    const at = Date.parse(t.at || "") || 0;
+    const task = String((tr[i - 1] || {}).text || "").slice(0, 120);
+    // 本机引擎写的 tool_result 曾经不带名字，但同一轮里的 tool_use 带着（id 相同）。老数据按 id 认回去，
+    // 不然那 51 条只能叫「未记名工具」——最大的一类信号连是哪个工具都说不出
+    const nameById = new Map();
+    for (const e of t.events || []) if (e.type === "tool_use" && e.id && e.name) nameById.set(e.id, e.name);
+    const hits = [];
+    for (const e of t.events || []) {
+      if (e.type === "tool_result" && e.isError) {
+        const c = classifyToolError(e.name || nameById.get(e.id) || "", e.preview);
+        if (c) hits.push({ c, excerpt: String(e.preview || "").slice(0, 200) });
+      } else {
+        const c = classifyEvent(e);
+        if (c) hits.push({ c, excerpt: String(e.note || e.message || e.text || "").slice(0, 200) });
+      }
+    }
+    turns.push({ turn: i, at, task, hits });
+  });
+  return { id, sessAt, turns };
+}
+
+const digestCache = new Map(); // 文件绝对路径 -> { stamp, digest }
+function sessionDigests(dir = SESS_DIR) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const out = [];
+  const seen = new Set();
+  for (const f of names) {
+    if (!f.endsWith(".json")) continue;
+    const file = path.resolve(dir, f);
+    let st;
+    try { st = fs.statSync(file, { bigint: true }); } catch { continue; }
+    const stamp = st.mtimeNs + ":" + st.size;
+    seen.add(file);
+    const hit = digestCache.get(file);
+    // 刚写过的文件不信缓存：有的文件系统时间戳粒度是几毫秒，同一毫秒里写两次、长度又一样，
+    // 修改时间和大小都对得上，缓存就成了旧的。两秒内动过的会话一般就一两个，重新解析不费事
+    const fresh = Date.now() - Number(st.mtimeNs / 1000000n) < 2000;
+    if (hit && hit.stamp === stamp && !fresh) { out.push(hit.digest); continue; }
+    try {
+      const digest = digestSession(JSON.parse(fs.readFileSync(file, "utf8")), f.replace(/\.json$/, ""));
+      digestCache.set(file, { stamp, digest });
+      out.push(digest);
+    } catch { digestCache.delete(file); } // 单个会话文件坏了不该让整套体检哑掉
+  }
+  // 删掉的会话别一直占着内存
+  const prefix = path.resolve(dir) + path.sep;
+  for (const k of digestCache.keys()) if (k.startsWith(prefix) && !seen.has(k)) digestCache.delete(k);
+  return out;
+}
+
+/**
+ * 开机后在后台把摘要先算好，第一次点开「自进化」不用等那半秒多。
+ * 一个文件一个文件地读，每读一个让一次路：几百个会话一口气同步解析会把服务端卡住，刚开的窗口跟着转圈
+ */
+async function warmDigests(dir = SESS_DIR) {
+  let names;
+  try { names = await fs.promises.readdir(dir); } catch { return 0; }
+  let n = 0;
+  for (const f of names) {
+    if (!f.endsWith(".json")) continue;
+    const file = path.resolve(dir, f);
+    try {
+      const st = await fs.promises.stat(file, { bigint: true });
+      const stamp = st.mtimeNs + ":" + st.size;
+      const hit = digestCache.get(file);
+      if (hit && hit.stamp === stamp) continue;
+      const text = await fs.promises.readFile(file, "utf8");
+      const now = await fs.promises.stat(file, { bigint: true });
+      if (now.mtimeNs + ":" + now.size !== stamp) continue; // 读的时候正被写，留给下回现算
+      digestCache.set(file, { stamp, digest: digestSession(JSON.parse(text), f.replace(/\.json$/, "")) });
+      n++;
+    } catch {}
+    await new Promise((r) => setImmediate(r));
+  }
+  return n;
+}
+
 /**
  * 数出这段时间里各类毛病出现了几次、分别在哪几个会话。
  * 每个信号都带**能点回去的证据**（会话 id + 第几轮 + 原文摘录）——
@@ -178,34 +266,21 @@ function mineSignals({ days = CAPS.window, since: sinceOpt = 0, dir = SESS_DIR, 
 
   let turns = 0;
   let undatedTurns = 0;
-  for (const sess of readSessions(dir)) {
-    const sessAt = Date.parse(sess.updated_at || "") || 0;
+  for (const sess of sessionDigests(dir)) {
+    const sessAt = sess.sessAt;
     // updated_at 不会早于任何一轮，所以它在窗口外就代表整个会话都在窗口外，可以整个跳过。
     // 反过来不成立——它在窗口内**不代表**里面每一轮都在窗口内，那得逐轮看。
     if (sessAt && sessAt < since) continue;
-    (sess.transcript || []).forEach((t, i) => {
-      if (t.type !== "assistant") return;
-      const turnAt = Date.parse(t.at || "") || 0;
-      if (turnAt && turnAt < since) return; // 这一轮自己带时间，且落在窗口外
-      if (!turnAt && datedOnly) return;     // 打分要问"生效之后"，没时间的回合答不了这个问题
+    for (const t of sess.turns) {
+      const turnAt = t.at;
+      if (turnAt && turnAt < since) continue; // 这一轮自己带时间，且落在窗口外
+      if (!turnAt && datedOnly) continue;     // 打分要问"生效之后"，没时间的回合答不了这个问题
       turns++;
       if (!turnAt) undatedTurns++;
-      const ask = (sess.transcript[i - 1] || {}).text || "";
-      // 本机引擎写的 tool_result 曾经不带名字，但同一轮里的 tool_use 带着（id 相同）。老数据按 id 认回去，
-      // 不然那 51 条只能叫「未记名工具」——最大的一类信号连是哪个工具都说不出
-      const nameById = new Map();
-      for (const e of t.events || []) if (e.type === "tool_use" && e.id && e.name) nameById.set(e.id, e.name);
-      for (const e of t.events || []) {
-        const ev = { session: sess._id, turn: i, at: turnAt || sessAt, dated: !!turnAt, task: String(ask).slice(0, 120), excerpt: "" };
-        if (e.type === "tool_result" && e.isError) {
-          ev.excerpt = String(e.preview || "").slice(0, 200);
-          bump(classifyToolError(e.name || nameById.get(e.id) || "", e.preview), ev);
-        } else {
-          const c = classifyEvent(e);
-          if (c) { ev.excerpt = String(e.note || e.message || e.text || "").slice(0, 200); bump(c, ev); }
-        }
+      for (const h of t.hits) {
+        bump(h.c, { session: sess.id, turn: t.turn, at: turnAt || sessAt, dated: !!turnAt, task: t.task, excerpt: h.excerpt });
       }
-    });
+    }
   }
 
   // 用户显式反馈：👎 是最贵也最准的信号，一条顶十条推断
@@ -649,9 +724,9 @@ module.exports = {
   CAPS,
   recordFeedback, readFeedback, feedbackSummary,
   recordRun, listRuns,
-  mineSignals,
+  mineSignals, warmDigests,
   activeRules, promptBlock, retireRule,
   gateProposal, listProposals, addProposals, decideProposal,
   proposeEdits, runReview, scoreRules,
-  _internals: { classifyToolError, classifyEvent, ruleDigest, readSessions, baselineOf, rulesChars, RULES_DIR, DATA_DIR },
+  _internals: { classifyToolError, classifyEvent, ruleDigest, readSessions, sessionDigests, warmDigests, baselineOf, rulesChars, RULES_DIR, DATA_DIR },
 };

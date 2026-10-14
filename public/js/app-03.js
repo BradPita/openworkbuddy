@@ -45,11 +45,14 @@ function renderPassword() {
 }
 
 async function renderAccount() {
-  mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
+  // 改完限额开关、充完值也走这里重画：页上已经是账号页就别先换成「加载中…」，不然整块闪一下、滚动跳回顶上
+  if (!mBody.querySelector("[data-acct-view]")) mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
+  const mark = mBody.firstElementChild;
   const [d, authState] = await Promise.all([
     fetch("/api/usage").then(r => r.json()).catch(() => null),
     fetch("/api/auth/state").then(r => r.json()).catch(() => ({})),
   ]);
+  if (mBody.firstElementChild !== mark) return; // 等的这会儿已经点去改密码、换了别的窗口
   if (!d) { mBody.innerHTML = '<div class="ab-empty">加载失败（未登录？）</div>'; return; }
   creditsOn = !!authState.credits_enabled;
   currentUser = d.user; renderUserChip();
@@ -58,7 +61,7 @@ async function renderAccount() {
   // 每加一档角色就要记得回来补一处，补漏了的样子是「那一项不显示」，没人会报
   const isAdmin = !!d.user.is_admin;
   mBody.innerHTML = `
-    <div class="card-item">
+    <div class="card-item" data-acct-view>
       <div class="t">${(() => { const a = avatarBits(d.user.avatar, d.user.username); return `<span class="ava${a.cls ? " " + a.cls : ""}" style="width:22px;height:22px;border-radius:50%;background:var(--owb-brand-grad);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size: 13px;overflow:hidden;vertical-align:-6px">${a.html}</span>`; })()}
         ${esc(displayName(d.user))}（${esc(d.user.role_label || "成员")}${d.user.nickname ? " · 登录名 " + esc(d.user.username) : ""}）
         <button id="acc-logout" style="float:right;padding:2px 10px;font-size: 13px">退出登录</button>
@@ -561,9 +564,10 @@ async function mergeServerSessions() {
       if (!local.at && r.at) local.at = r.at;
       if (!local.project && r.project) local.project = r.project;
       if (r.lane) local.lane = r.lane; // 服务端存的那份为准：终端里起的活儿只有它知道
+      if (typeof pinBusy === "undefined" || !pinBusy.has(r.id)) local.pinned_at = r.pinned_at || undefined; // 置顶以服务端为准，换台机器顶的也认；正在改的那条别被旧值盖回去
       continue;
     }
-    sessions.push({ id: r.id, title: r.title, at: r.at, project: r.project || undefined, lane: r.lane || undefined });
+    sessions.push({ id: r.id, title: r.title, at: r.at, project: r.project || undefined, lane: r.lane || undefined, pinned_at: r.pinned_at || undefined });
     added++;
   }
   sessions.sort((a, b) => (b.at || 0) - (a.at || 0));

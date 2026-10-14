@@ -328,8 +328,10 @@ function askConfirm(opts) {
 // 本地只是缓存，权威列表在服务端 /api/sessions。留 300 条跟服务端一个量级，
 // 免得刚从服务端并回来的历史转头又被截成 50 条。
 function saveSessions() {
-  try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 300))); }
-  catch { try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); } catch {} } // 配额满了退回小份，别让整个保存链条炸掉
+  // 截短时置顶的那几条不论排在第几都留着
+  const cut = (n) => sessions.filter((s, i) => i < n || s.pinned_at);
+  try { localStorage.setItem(SESS_KEY, JSON.stringify(cut(300))); }
+  catch { try { localStorage.setItem(SESS_KEY, JSON.stringify(cut(50))); } catch {} } // 配额满了退回小份，别让整个保存链条炸掉
 }
 /**
  * 往 HTML 里塞文字之前一律走这儿。

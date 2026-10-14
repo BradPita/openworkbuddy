@@ -990,7 +990,7 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok((read("src/agent/agent.js").match(/itinerary\.PROMPT_BLOCK/g) || []).length === 2, "提示词两条路都带上行程卡那一节（内置引擎、本机 Codex / Claude Code）");
     ok(/"amap": \{ url: "https:\/\/console\.amap\.com\//.test(read("public/js/app-03.js")), "设置页「去哪拿 Key」有高德");
     const app05 = read("public/js/app-05.js");
-    ok(/\["map", "地图", "map"\]/.test(app05) && /active === "map"\) renderMapPane\(pane, s\)/.test(app05) && /^function renderMapPane\(pane, s\)/m.test(app05),
+    ok(/\["map", "地图", "map"\]/.test(app05) && /active === "map"\) (drawn = )?renderMapPane\(pane, s\)/.test(app05) && /^function renderMapPane\(pane, s\)/m.test(app05),
       "设置里地图单独一页（左栏「地图」），不再埋在联网搜索页最底下");
     ok(/PLATFORM_ONLY_CATS = new Set\(\[[^\]]*"map"/.test(app05), "地图那页只给平台管理员（Key 是整台服务器的）");
     ok(!/renderMapCard|renderMapPane\(pane, s\);\n\}\n/.test(app05.slice(app05.indexOf("function renderSearchPane"), app05.indexOf("function renderMapPane"))), "联网搜索页底下不再挂一份");

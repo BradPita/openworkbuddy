@@ -778,6 +778,15 @@
   .hist-item .hstop .i { width: 11px; height: 11px; display: block; }
   .hist-item .hstop.is-stopping { opacity: 1; cursor: default; animation: hrun-pulse 1.2s ease-in-out infinite; }
   @media (hover: none), (pointer: coarse) { .hist-item .hstop { opacity: 1; pointer-events: auto; } }
+  /* 置顶：图钉平时跟 × 一样藏着，顶了的常亮；组标题只在有置顶时才出现 */
+  .hist-item .hpin { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
+  .hist-item:hover .hpin, .hist-item:focus-within .hpin, .hist-item .hpin.on { opacity: 1; pointer-events: auto; }
+  .hist-item .hpin:hover { color: var(--owb-text); }
+  .hist-item .hpin.on { color: var(--owb-text-2); }
+  .hist-item .hpin .i { width: 12px; height: 12px; display: block; }
+  .hist-sec { padding: 8px 10px 2px; font-size: 11px; color: var(--owb-text-3); }
+  .hist-sec:first-child { padding-top: 2px; }
+  @media (hover: none), (pointer: coarse) { .hist-item .hpin { opacity: 1; pointer-events: auto; } }
   /* 工程线顶上那一撮：这台机器的终端此刻正在跑的活儿，跟存下来的历史分开列 */
   /* 空态要能换行：它写的是「在终端里跑 openworkbuddy 你的活儿」，一句话比一行宽 */
   .hist-empty { font-size: 12px; line-height: 1.7; color: var(--owb-text-3); padding: 6px 10px; white-space: normal; }

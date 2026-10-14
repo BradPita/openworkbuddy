@@ -1398,24 +1398,36 @@ const HUB_SCENES = [
 const HUB_TABS = [["experts", "专家"], ["skills", "技能"], ["mcp", "连接器"], ["plugins", "插件"]];
 const fmtBytes = n => !n ? "—" : n < 1024 ? n + " B" : n < 1024 * 1024 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB";
 
-async function renderHubPage() {
+/**
+ * reuse：切 Tab、点「我创建的」只是换个看法，专家/技能名单还是刚才那份，不再打接口。
+ * 装完、删完、存完走默认（重新取一遍），但也不先把整页换成「加载中…」——
+ * 那一下页面塌成一行、滚动跳回顶上，看着就是整页刷新了。只有第一次打开、页上还什么都没有时才画它
+ */
+async function renderHubPage({ reuse = false } = {}) {
   const page = document.getElementById("assist-page");
   if (!page) return;
-  page.innerHTML = '<div class="hub-empty">加载中…</div>';
+  if (!page.querySelector(".hub-head")) page.innerHTML = '<div class="hub-empty">加载中…</div>';
+  const seq = (page._hubSeq = (page._hubSeq || 0) + 1);
   // 专家、技能、插件、连接器都是**装在这台服务器上**的东西，一份大家共用：谁装、谁改、谁删归平台管理员，
   // 用（召唤 / 立即使用 / 看正文）是所有人的。所以先把身份拿到手，下面四个 Tab 照它决定画不画那排写的按钮。
   if (!settingsCache) await refreshSettingsCache().catch(() => {});
-  const [experts, teams, skills] = await Promise.all([
-    fetch("/api/experts").then(r => r.json()).catch(() => []),
-    fetch("/api/expert-teams").then(r => r.json()).catch(() => []),
-    fetch("/api/skills").then(r => r.json()).catch(() => []),
-  ]);
-  hubState._experts = experts; hubState._teams = teams; hubState._skills = skills;
-  // 这一趟本来就拉了技能名单，顺手喂给输入框那份缓存：安装/保存/删除之后都会重画这一页，
-  // 等于每次改完技能都对了一遍，而且一次接口都没多打
-  skillsCache = Array.isArray(skills) ? skills : [];
-  skillsFetchAt = Date.now();
-  hubState._defaults = null; // 整页重载才丢缓存；搜索框敲字只走 renderHubBody，不重复打接口
+  if (!(reuse && hubState._experts)) {
+    // 技能页的「推荐技能」跟着一起取：放到画技能列表那一步再等，整块会先空一下（装完一个技能就塌一次）
+    const wantDefs = hubState.tab === "skills" && amPlatformOwner();
+    const [experts, teams, skills, defs] = await Promise.all([
+      fetch("/api/experts").then(r => r.json()).catch(() => []),
+      fetch("/api/expert-teams").then(r => r.json()).catch(() => []),
+      fetch("/api/skills").then(r => r.json()).catch(() => []),
+      wantDefs ? fetch("/api/skills/defaults/list").then(r => r.json()).catch(() => []) : null,
+    ]);
+    if (seq !== page._hubSeq || !page.isConnected) return; // 等的这会儿又点了别的，或者已经离开这页
+    hubState._experts = experts; hubState._teams = teams; hubState._skills = skills;
+    // 这一趟本来就拉了技能名单，顺手喂给输入框那份缓存：安装/保存/删除之后都会重画这一页，
+    // 等于每次改完技能都对了一遍，而且一次接口都没多打
+    skillsCache = Array.isArray(skills) ? skills : [];
+    skillsFetchAt = Date.now();
+    hubState._defaults = defs; // 重新取才换；搜索框敲字只走 renderHubBody，不重复打接口
+  }
   // 「只看我的」只在有真实依据的 Tab 上出现：专家有 builtin 标记、连接器有 connected 状态，技能两者都没有就不画。
   const mineLabel = { experts: "我创建的", mcp: "只看已连接" }[hubState.tab];
   const qHint = { experts: "搜索专家职称或描述", skills: "搜索技能", mcp: "搜索连接器", plugins: "搜索插件" }[hubState.tab];
@@ -1434,12 +1446,12 @@ async function renderHubPage() {
     <div id="hub-body"></div>`;
   page.querySelectorAll(".hub-tabs button").forEach(b => b.onclick = () => {
     hubState.tab = b.dataset.tab; hubState.cat = "全部"; hubState.mine = false; hubState.editing = null;
-    renderHubPage();
+    renderHubPage({ reuse: true });
   });
   const qi = page.querySelector("#hub-q");
   qi.oninput = () => { hubState.q = qi.value; renderHubBody(); };
   const mineBtn = page.querySelector("#hub-mine");
-  if (mineBtn) mineBtn.onclick = () => { hubState.mine = !hubState.mine; renderHubPage(); };
+  if (mineBtn) mineBtn.onclick = () => { hubState.mine = !hubState.mine; renderHubPage({ reuse: true }); };
   renderHubBody();
 }
 
@@ -2021,11 +2033,14 @@ function showScanGate(msgEl, d, retry) {
 // 一个插件包能同时带技能和 MCP 连接器。装坏的、部分零件被跳过的，都要在卡片上明说为什么，
 // 不能装完显示「成功」结果里面少了一半东西。
 async function renderHubPlugins(box) {
-  box.innerHTML = '<div class="hub-empty">加载中…</div>';
+  if (box.dataset.shown !== "plugins") box.innerHTML = '<div class="hub-empty">加载中…</div>'; // 同连接器那页：已经画着就不闪
+  const seq = (box._seq = (box._seq || 0) + 1);
   // 插件把技能和 MCP 连接器一起装进这台服务器，装/更新/卸载都是服务器级动作，归平台管理员。
   // 成员看得到装了哪些（他的 agent 用的就是这些），但不画那三颗点了必挂的按钮。
   const po = amPlatformOwner();
   const data = await fetch("/api/plugins").then(r => r.json()).catch(() => ({ spec: "", plugins: [], mcp: { connected: [], failures: [] } }));
+  if (seq !== box._seq) return;
+  box.dataset.shown = "plugins";
   const list = (data.plugins || []).filter(p => hubMatch(hubState.q, p.name, p.description, p.author,
     (p.skills || []).map(s => s.name).join(" "), (p.mcp_servers || []).map(s => s.name).join(" ")));
   const conn = new Set(((data.mcp || {}).connected || []).map(c => c.name));

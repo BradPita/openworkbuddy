@@ -6288,6 +6288,46 @@ const HUB_CHECKS = `
   await q(".e-del").onclick();
   ok("反向对照：真删掉了就不报错", !window.toasts.join("|").includes("[circle-x]"), window.toasts.join("|"));
 
+  // ⑦ 用户 10-15：「点击采纳就刷新这种交互不好」——这一页装完、删完、切 Tab 也一样不许整页闪「加载中…」
+  const tick = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0)); };
+  let flashed = 0;
+  const mo = new MutationObserver(() => { if (/加载中/.test(page.textContent)) flashed++; });
+  await show("experts");
+  mo.observe(page, { childList: true, subtree: true, characterData: true });
+  await renderHubPage(); await tick();
+  ok("★装完/删完重画：页上已经有内容就不先换成「加载中…」★", flashed === 0 && !!q(".ex-card"), String(flashed));
+  seen.length = 0;
+  page.querySelector('.hub-tabs button[data-tab="skills"]').click(); await tick();
+  ok("切 Tab：专家/技能名单用刚才那份，不再打接口", !seen.some((x) => /GET \\/api\\/(experts|expert-teams|skills)$/.test(x)), seen.join(" | "));
+  ok("  ← 推荐技能第一次进技能页才取，取完画出来", seen.includes("GET /api/skills/defaults/list") && !!q("[data-di]"), seen.join(" | "));
+  ok("  ← 切过去的那页是对的", hubState.tab === "skills" && !!q(".sk-use"));
+  seen.length = 0; flashed = 0;
+  await renderHubPage(); await tick();
+  ok("★技能页重画：推荐技能跟名单一起取，不再先空一块★", flashed === 0 && !!q("[data-di]") && seen.filter((x) => x === "GET /api/skills/defaults/list").length === 1, seen.join(" | "));
+  page.querySelector('.hub-tabs button[data-tab="mcp"]').click(); await tick();
+  flashed = 0;
+  const qi = q("#hub-q");
+  for (const ch of ["f", "fi", "fil"]) { qi.value = ch; qi.oninput(); }
+  await tick(12);
+  ok("★连接器页搜索框敲字：不每敲一个字闪一次「加载中…」★", flashed === 0 && html().includes("filesystem"), String(flashed));
+  // 字敲得快、先发的那趟后回来：不许把新结果盖回旧的
+  const realFetch = window.fetch;
+  let slowOnce = true;
+  window.fetch = (url, opt) => {
+    // 慢的那趟带回来的是旧状态（那会儿还一台都没接）
+    if (url === "/api/mcp" && slowOnce) { slowOnce = false; return new Promise((r) => setTimeout(() => r({ ok: true, status: 200, json: () => Promise.resolve({ servers: [], total_tools: 0 }) }), 60)); }
+    return realFetch(url, opt);
+  };
+  qi.value = "zzz"; qi.oninput();     // 慢的这趟：按「zzz」过滤，什么都不剩
+  qi.value = "file"; qi.oninput();    // 快的这趟：按「file」，filesystem 在
+  await new Promise((r) => setTimeout(r, 120));
+  window.fetch = realFetch;
+  // 别拿「filesystem」字样判：添加表单的占位文字里也有这个词，列表被盖空了照样找得到
+  ok("★先发后到的那趟不把新结果盖掉★", !!q(".mcp-del"), html().slice(0, 200));
+  mo.disconnect();
+  page.querySelector('.hub-tabs button[data-tab="experts"]').click(); await tick();
+  hubState.q = "";
+
   return names;
 })()
 `;
@@ -7978,6 +8018,91 @@ const TRIP_CHECKS = `
 })()
 `;
 
+// ---- 自进化页：点「采纳」不整页刷新，不重数信号 ----
+// 用户 10-15：「怎么每次一点击采纳就刷新啊，然后点击自进化进去要等几秒」。
+// 原来点完先把整页换成「读取中…」（页面塌成一行、滚动跳回顶上），再把信号和打分全部重算——
+// 信号要把所有会话解析一遍，审一条提案根本不会让它变。
+const EV0 = APP06.indexOf("const EV_ACT ="), EV1 = APP06.indexOf("// ---------- 外观页");
+if (EV0 < 0 || EV1 <= EV0) throw new Error("app-06.js 里的自进化页找不到了，前端测试没法定位真源码");
+const EVPANE_SRC = srcBlock("function escInline(") + "\n" + APP06.slice(EV0, EV1);
+const EVPANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div id='scroller' style='height:300px;overflow:auto;width:720px'><div class='settings-pane' id='pane'></div></div></body>";
+const EVPANE_STUBS = `
+  ${IC_STUB}
+var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+var TOASTS = [], HITS = { state: 0, signals: 0 }, HOLD = null;
+var toast = (m) => TOASTS.push(m);
+var saveSettings = async () => true;
+var askConfirm = async () => true;
+var mkRule = (i) => ({ id: "r" + i, text: "规则 " + i + " 的正文", meta: { at: "2026-10-0" + (i + 1) + "T00:00:00Z" } });
+var EV = { rules: [mkRule(0), mkRule(1)], proposals: [
+  { id: "p1", status: "pending", kind: "add_rule", title: "跑脚本前先查语法", rule: "先 node --check", why: "报错 76 次", verify: "降" },
+  { id: "p2", status: "pending", kind: "add_rule", title: "第二条", rule: "别的", why: "x", verify: "降" },
+] };
+window.fetch = async (url, opt) => {
+  const u = String(url).split("?")[0];
+  const j = (o) => ({ ok: true, json: async () => o });
+  if (u === "/api/evolve/state") { HITS.state++; return j({ caps: { rules: 12, window: 14, minEvidence: 3 }, rules: EV.rules, proposals: EV.proposals, scored: [], runs: [], auto: {} }); }
+  if (u === "/api/evolve/signals") { HITS.signals++; return j({ days: 14, turns: 185, signals: Array.from({ length: 12 }, (_, i) => ({ label: "信号" + i, count: 50 - i, rate: 0.1, actionable: "prompt" })) }); }
+  if (u.startsWith("/api/evolve/proposal/")) {
+    if (HOLD) await HOLD;
+    const id = decodeURIComponent(u.split("/").pop());
+    const p = EV.proposals.find((x) => x.id === id);
+    p.status = JSON.parse(opt.body).decision === "accept" ? "applied" : "rejected";
+    if (p.status === "applied") EV.rules = EV.rules.concat([{ id: "r_" + id, text: p.rule, meta: { at: "2026-10-15T00:00:00Z" } }]);
+    return j({ ok: true });
+  }
+  if (u.includes("/retire")) { EV.rules = EV.rules.filter((r) => !u.includes("/" + r.id + "/")); return j({ ok: true }); }
+  if (u === "/api/evolve/review") return j({ ok: true, turns: 185, added: [], gated: [] });
+  return j({});
+};
+`;
+const EVPANE_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const pane = document.getElementById("pane"), scroller = document.getElementById("scroller");
+  await renderEvolvePane(pane);
+  ok("进页面：state 和信号各取一次", HITS.state === 1 && HITS.signals === 1, JSON.stringify(HITS));
+  ok("  ← 两条待审、两条规则都画出来了", pane.querySelectorAll("[data-prop]").length === 2 && /已生效的规则（2\\/12）/.test(pane.textContent));
+
+  scroller.scrollTop = 400;
+  const before = scroller.scrollTop;
+  ok("  ← 页面够长、滚得下去（下面那条才有意义）", before > 100, String(before));
+  let flashed = false;
+  const mo = new MutationObserver(() => { if (/读取中/.test(pane.textContent)) flashed = true; });
+  mo.observe(pane, { childList: true, subtree: true, characterData: true });
+  let release; HOLD = new Promise((r) => { release = r; });
+  pane.querySelector('[data-prop="p1"] [data-act=accept]').click();
+  await wait(5);
+  const btn = pane.querySelector('[data-prop="p1"] [data-act=accept]');
+  ok("点了采纳：按钮当场变灰写「采纳中…」，不能再点第二下", btn && btn.disabled && /采纳中/.test(btn.textContent), btn && btn.outerHTML);
+  ok("  ← 另一条提案的按钮不受影响", !pane.querySelector('[data-prop="p2"] [data-act=accept]').disabled);
+  release(); HOLD = null;
+  await wait(40);
+  mo.disconnect();
+  ok("采纳完：页面没闪成「读取中…」（以前整页塌掉、滚动跳回顶上）", !flashed);
+  ok("  ← 信号没重数（审一条提案不会让它变）", HITS.signals === 1, JSON.stringify(HITS));
+  ok("  ← state 重取了一次：那条提案没了，规则多了一条", HITS.state === 2 && !pane.querySelector('[data-prop="p1"]') && /已生效的规则（3\\/12）/.test(pane.textContent), JSON.stringify(HITS));
+  ok("  ← 滚动位置还在原处附近，没跳回顶上", scroller.scrollTop > 100, String(scroller.scrollTop));
+  ok("  ← 信号那一栏还在（用的是刚才那份）", /信号0/.test(pane.textContent) && /185 个助手回合/.test(pane.textContent));
+
+  pane.querySelector('[data-retire="r0"]').click();
+  await wait(40);
+  ok("下架：同样只重取 state、不重数信号", HITS.signals === 1 && HITS.state === 3 && /已生效的规则（2\\/12）/.test(pane.textContent), JSON.stringify(HITS));
+
+  pane.querySelector("#ev-run").click();
+  await wait(40);
+  ok("跑一轮复盘之后：信号要重数（复盘就是冲着它去的）", HITS.signals === 2, JSON.stringify(HITS));
+
+  // 等结果那会儿人切走了：别把自进化页画到已经不在页面上的格子里，也别报错
+  const gone = document.createElement("div");
+  const p = renderEvolvePane(gone);
+  await p;
+  ok("切走了的格子不往里画", !gone.querySelector("#ev-run"));
+  return names;
+})()
+`;
 const IMPANE_HTML ="<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
 const IMPANE_STUBS = `
   ${IC_STUB}
@@ -13882,6 +14007,97 @@ const HIST_KEYED_CHECKS = `
   return { names, fails };
 })()
 `;
+// ================= 侧栏「置顶」 =================
+// 用户 10-15：「这个任务历史增加一个 pinned 的功能吧」（截图里是 Claude 侧栏的 Pinned 那一组）。
+// 这组验：图钉点一下那条就进「已置顶」一组排到最上面，后顶的在上；全取消了组标题跟着没；
+// 告诉服务端的是这一条、这个值；没存上就挪回去并说原因；连点两下以最后一下为准。
+// ★反向对照★ flat：不分组（置顶的照旧混在列表里）；norevert：没存上也不挪回去
+const HPIN_MUTANTS = {
+  flat: (src) => src.replace("const pinned = list.filter((s) => s.pinned_at)", "const pinned = list.filter(() => false)")
+    .replace("const rest = list.filter((s) => !s.pinned_at)", "const rest = list.filter(() => true)"),
+  norevert: (src) => src.replace("    s.pinned_at = was;\n", "\n"),
+};
+const HPIN_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const hist = document.getElementById("history");
+  const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+  const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
+  const pin = (id) => row(id) && row(id).querySelector(".hpin");
+  const order = () => [...hist.children].map((el) => el.classList.contains("hist-sec") ? "[" + el.textContent + "]" : el.dataset.id).join(",");
+  const posts = [];
+  let mode = "ok", hold = null;
+  let clock = 1000;
+  Date.now = () => ++clock;
+  fetch = async (u, init) => {
+    const k = String(u).split("?")[0];
+    const m = /^\\/api\\/session\\/([^/]+)\\/pin$/.exec(k);
+    if (m) {
+      const body = JSON.parse(init.body);
+      posts.push(decodeURIComponent(m[1]) + "=" + body.pinned);
+      if (hold) await hold;
+      if (mode === "throw") throw new TypeError("Failed to fetch");
+      if (mode === "403") return { ok: false, status: 403, json: async () => ({ error: "只能置顶自己的任务" }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, pinned_at: body.pinned ? 777 : 0 }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  activeLane = "office"; activeProject = "默认项目"; projectsLocked = false; histQuery = ""; histHits = null;
+  runningSessions = new Map();
+  sessions = [["a", "写周报"], ["b", "查日志"], ["c", "上个月那条合同"], ["d", "旅行计划"]]
+    .map(([id, title], i) => ({ id, title, at: 10 - i, project: "默认项目", lane: "office" }));
+  sessionId = "a"; __OPENED.length = 0; __TOASTS.length = 0;
+  renderHistory();
+
+  ok("没有置顶时还是一张扁平列表，不加组标题", order() === "a,b,c,d" && !hist.querySelector(".hist-sec"), order());
+  const C0 = pin("c");
+  ok("每行一颗图钉，是真按钮、读屏念得出顶的是哪条", !!C0 && C0.tagName === "BUTTON" && C0.getAttribute("type") === "button"
+    && C0.getAttribute("aria-label") === "置顶「上个月那条合同」" && C0.getAttribute("aria-pressed") === "false", C0 && C0.outerHTML.slice(0, 200));
+
+  C0.click(); await flush();
+  ok("★顶上去的那条排到最上面，单独一组★", order() === "[已置顶],c,[最近],a,b,d", order());
+  ok("告诉服务端的就是这一条、要顶", posts.join() === "c=true", posts.join());
+  ok("服务端回的时间记下来了，也存进了本地", sessions.find((x) => x.id === "c").pinned_at === 777 && __SAVED > 0);
+  ok("图钉换成按下状态，读屏改念「取消置顶」", pin("c").getAttribute("aria-pressed") === "true" && pin("c").classList.contains("on")
+    && pin("c").getAttribute("aria-label") === "取消置顶「上个月那条合同」");
+  ok("行挪了位置，焦点跟着图钉走", document.activeElement === pin("c"), document.activeElement && document.activeElement.className);
+  ok("点图钉不打开那条", __OPENED.length === 0 && sessionId === "a", JSON.stringify(__OPENED));
+  const op = (el) => { el.getAnimations().forEach((a) => a.finish()); return getComputedStyle(el).opacity; };
+  ok("顶了的那颗图钉常亮，没顶的平时藏着", op(pin("c")) === "1" && op(pin("b")) === "0", op(pin("c")) + "/" + op(pin("b")));
+
+  sessions.find((x) => x.id === "c").pinned_at = 5; // 先顶的
+  pin("d").click(); await flush();
+  ok("后顶的排在先顶的上面", order() === "[已置顶],d,c,[最近],a,b", order());
+
+  pin("d").click(); await flush();
+  pin("c").click(); await flush();
+  ok("全取消了：组标题跟着没，回到原来的先后", order() === "a,b,c,d" && !hist.querySelector(".hist-sec"), order());
+
+  // 没存上：挪回去，照实说
+  mode = "403"; __TOASTS.length = 0;
+  pin("b").click(); await flush();
+  ok("★没存上就挪回来★", order() === "a,b,c,d" && !sessions.find((x) => x.id === "b").pinned_at, order());
+  ok("说的是服务端给的原因", __TOASTS.join() === "没置顶上：只能置顶自己的任务", __TOASTS.join(" ／ "));
+  mode = "throw"; __TOASTS.length = 0;
+  pin("b").click(); await flush();
+  ok("没连上：也挪回来，说没连上", order() === "a,b,c,d" && __TOASTS.join() === "没置顶上：没连上服务端", __TOASTS.join(" ／ "));
+
+  // 连点两下（顶上 → 又取消），第一下的回话晚到：以最后一下为准
+  mode = "ok"; let release; hold = new Promise((r) => { release = r; });
+  pin("a").click(); await flush();
+  pin("a").click(); await flush();
+  release(); hold = null; await flush(); await flush();
+  ok("连点两下以最后一下为准", !sessions.find((x) => x.id === "a").pinned_at && order() === "a,b,c,d", order() + " " + posts.slice(-2).join());
+
+  // 搜索结果那一版不分组（那是服务端的命中列表）；本地筛标题时置顶的照样在上
+  sessions.find((x) => x.id === "d").pinned_at = 9;
+  histQuery = "旅"; renderHistory();
+  ok("筛标题时置顶的那条照样带着组标题", order() === "[已置顶],d", order());
+  histQuery = ""; delete sessions.find((x) => x.id === "d").pinned_at; renderHistory();
+  return { names, fails };
+})()
+`;
 // ================= 侧栏行上的「停」：只停这一条 =================
 // 以前要停一条后台任务，得先点开它、再点输入框那颗停止键；几条并跑时想停掉跑偏的那条，
 // 点开那一下就把正在看的那条换走了。现在每条在跑的行上一颗「停」，对着 /api/chat/stop 只发这一条的 id。
@@ -17037,6 +17253,14 @@ app.whenReady().then(async () => {
     } finally {
       if (!win10.isDestroyed()) win10.destroy();
     }
+    const winEV = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winEV.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(EVPANE_HTML));
+      const namesEV = await winEV.webContents.executeJavaScript(IC_BOOT + EVPANE_STUBS + "\n" + EVPANE_SRC + "\n" + EVPANE_CHECKS, true)
+        .catch((e) => { throw new Error("[自进化页] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesEV) console.log("  ✓ " + n);
+      console.log(`✅ 前端：自进化页（点采纳不闪「读取中」·不重数信号·按钮当场变灰·滚动不跳·复盘后才重数）${namesEV.length} 项通过`);
+    } finally { if (!winEV.isDestroyed()) winEV.destroy(); }
     const win13 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win13.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(COMPOSER_HTML));
@@ -17189,6 +17413,28 @@ app.whenReady().then(async () => {
           console.log(`✅ 前端：★反向对照★ 换回整片 innerHTML，「别的行还是原节点 / 点不重建 / 焦点不丢」当场红 ${id.length} 条（DOM 一字不差那几条照过 ${hk.names.length} 条）`);
         }
       } finally { if (!winHK.isDestroyed()) winHK.destroy(); }
+    }
+
+    // 侧栏「置顶」：真源码一遍，再两个变体各跑一遍
+    for (const mutant of ["", "flat", "norevert"]) {
+      const histSrc = HPIN_MUTANTS[mutant] ? HPIN_MUTANTS[mutant](HIST_MIN_SRC) : HIST_MIN_SRC;
+      if (HPIN_MUTANTS[mutant] && histSrc === HIST_MIN_SRC) throw new Error("[侧栏置顶·反向对照 " + mutant + "] 变体没改动源码（写法变了？）");
+      const winHP = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+      try {
+        await winHP.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+        const hp = await winHP.webContents.executeJavaScript(IC_BOOT + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + histSrc + "\n" + HIST_CLICK_SRC + "\n" + HPIN_CHECKS, true)
+          .catch((e) => { throw new Error("[侧栏置顶" + (mutant ? "·" + mutant : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (hp.fails.length) throw new Error("[侧栏置顶]\n" + hp.fails.join("\n"));
+          for (const n of hp.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：侧栏「置顶」（单独一组排最上·后顶的在上·全取消组标题就没·没存上挪回来照实说·连点以最后一下为准·含反向对照）${hp.names.length} 项通过`);
+          continue;
+        }
+        const must = { flat: /★顶上去的那条排到最上面，单独一组★/, norevert: /★没存上就挪回来★/ }[mutant];
+        const hit = hp.fails.filter((f) => must.test(f));
+        if (!hit.length) throw new Error(`★反向对照★ 变体「${mutant}」应当红在 ${must} 上，实际红的：\n` + (hp.fails.join("\n") || "一条没红"));
+        console.log(`✅ 前端：★反向对照★ 侧栏置顶换成「${{ flat: "不分组", norevert: "没存上不挪回" }[mutant]}」，${hit[0].replace(/ ｜.*/, "")} 当场红（共红 ${hp.fails.length} 条）`);
+      } finally { if (!winHP.isDestroyed()) winHP.destroy(); }
     }
 
     // 侧栏行上的「停」：真源码一遍，再三个变体各跑一遍，每个变体必须红在它该红的那条上

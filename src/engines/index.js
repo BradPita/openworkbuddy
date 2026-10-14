@@ -56,34 +56,59 @@ function get(id) {
  * 缓存的是 Promise，所以同时来的几个请求只会真探一次。
  */
 const DETECT_TTL = 60000;
-let detectCache = null; // { key, at, promise }
+// 过了一分钟还没过半小时：先把上回的结果交出去，后台再重探一遍。
+// codex 一次要起 --version 再问型号目录，冷的时候两三秒，以前每过一分钟开一次「智能体」页就干等这一截
+const DETECT_STALE_MAX = 30 * 60 * 1000;
+const detectCache = new Map(); // key -> { at, promise, value? }
 
 async function detectAll(overrides = {}, { force = false, latest = false } = {}) {
   const key = JSON.stringify(overrides || {});
-  if (!force && detectCache && detectCache.key === key && Date.now() - detectCache.at < DETECT_TTL) {
-    return detectCache.promise;
+  const hit = detectCache.get(key);
+  if (!force && hit) {
+    const age = Date.now() - hit.at;
+    if (age < DETECT_TTL) return hit.promise;
+    if (hit.value && age < DETECT_STALE_MAX) {
+      if (!hit.refreshing) {
+        // 探完才换进缓存：探的这几秒里别的请求照样拿旧的，不跟着干等
+        hit.refreshing = detectAllUncached(overrides, { latest: false }).then((value) => {
+          if (detectCache.get(key) === hit) remember(key, { at: Date.now(), promise: Promise.resolve(value), value });
+        }, () => { hit.refreshing = null; }); // 后台重探失败：旧的照用，下次再试
+      }
+      return hit.value;
+    }
   }
   if (force) { // 刚装完、刚登录就点检测的人，得当场看见结果
     which.forget();
     for (const b of BACKENDS) if (typeof b.forget === "function") b.forget();
   }
-  const promise = detectAllUncached(overrides, { latest }).catch((e) => {
-    if (detectCache && detectCache.promise === promise) detectCache = null; // 失败不许被缓存住一分钟
+  return probe(key, overrides, { latest });
+}
+
+function probe(key, overrides, { latest }) {
+  const ent = { at: Date.now(), promise: null };
+  ent.promise = detectAllUncached(overrides, { latest }).then((value) => { ent.value = value; return value; }, (e) => {
+    if (detectCache.get(key) === ent) detectCache.delete(key); // 失败不许被缓存住一分钟
     throw e;
   });
-  detectCache = { key, at: Date.now(), promise };
-  return promise;
+  remember(key, ent);
+  return ent.promise;
+}
+
+function remember(key, ent) {
+  detectCache.delete(key);
+  detectCache.set(key, ent);
+  while (detectCache.size > 32) detectCache.delete(detectCache.keys().next().value); // 一人一组路径，最老的先出
 }
 
 /** 缓存失效时真正去探。改这里记得想一下 detectAll 的缓存键够不够用 */
 async function detectAllUncached(overrides = {}, { latest = false } = {}) {
-  const out = [];
-  for (const b of BACKENDS) {
+  // 几个 CLI 各探各的，互不等：以前排着队探，总时长是每个的和
+  return Promise.all(BACKENDS.map(async (b) => {
     let r;
     const opts = latest ? { ...(overrides[b.id] || {}), latest: true } : overrides[b.id] || undefined;
     try { r = await b.detect(opts); }
     catch (e) { r = { id: b.id, installed: false, path: overrides[b.id] || b.bin, version: "", error: e.message }; }
-    out.push({
+    return {
       id: b.id, label: b.label, note: b.note, install: b.install,
       launchHeader: b.launchHeader, supportsResume: b.supportsResume,
       installed: !!r.installed, path: r.path, version: r.version || "",
@@ -106,9 +131,8 @@ async function detectAllUncached(overrides = {}, { latest = false } = {}) {
         model: (overrides[b.id] || {}).model || "",
         thinking: (overrides[b.id] || {}).thinking || "", // 空 = 跟随全局档位
       },
-    });
-  }
-  return out;
+    };
+  }));
 }
 
 /**
@@ -288,4 +312,4 @@ async function ask({ id, opts = {}, system, prompt, timeoutMs = 60000, signal })
   }
 }
 
-module.exports = { list, get, detectAll, resolve, currentId, admit, gateView, testConnect, ask, which, BUILTIN, BACKENDS };
+module.exports = { list, get, detectAll, resolve, currentId, admit, gateView, testConnect, ask, which, BUILTIN, BACKENDS, _detectCache: detectCache };

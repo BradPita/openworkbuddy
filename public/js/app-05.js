@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 async function renderHubMcp(box) {
-  box.innerHTML = '<div class="hub-empty">加载中…</div>';
+  // 搜索框每敲一个字、接入/删除之后都会走这里：已经画着连接器列表就别先换成「加载中…」，不然整块闪一下、滚动跳回顶上
+  if (box.dataset.shown !== "mcp") box.innerHTML = '<div class="hub-empty">加载中…</div>';
+  const seq = (box._seq = (box._seq || 0) + 1);
   // 连接器的配置里躺着 API Key 和令牌（env / headers），加一条就等于替整台服务器接了个外部系统——
   // 这是最不该摆给每个人的一颗按钮。成员看得到接了哪些、注入了多少工具（他的 agent 用的就是这些），
   // 但「＋ 添加连接器」「接入」「删除」和那张填 Key 的表单整块都不画。
@@ -10,6 +12,8 @@ async function renderHubMcp(box) {
     fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 })),
     fetch("/api/mcp/catalog").then(r => r.json()).catch(() => ({ items: [], categories: [], tools: {} })),
   ]);
+  if (seq !== box._seq) return; // 字敲得快，后发的那趟先回来了：旧的这趟别把新结果盖掉
+  box.dataset.shown = "mcp";
   const list = data.servers
     .map((sv, i) => ({ sv, i }))
     .filter(({ sv }) => (!hubState.mine || sv.connected) && hubMatch(hubState.q, sv.name, sv.command, sv.url, (sv.args || []).join(" ")));
@@ -690,6 +694,9 @@ async function renderSettings(active) {
   const cats = s.platform_owner ? SETTING_CATS : SETTING_CATS.filter(([k]) => !PLATFORM_ONLY_CATS.has(k) || (k === "im" && s.im_own));
   // 从别处跳进一个已经不画的标签页（旧的深链、上次停在「数据」页），别留一屏空白：退回模型页
   if (!cats.some(([k]) => k === active)) active = cats[0][0];
+  // 存完重画同一页（个性化、执行追踪、助理设置、智能体都这么干）：记住右边滚到哪了，画完拉回去，别一保存就跳回顶上
+  const oldPane = mBody.querySelector("#settings-pane");
+  const keepTop = oldPane && oldPane.dataset.cat === active ? oldPane.scrollTop : 0;
   mBody.innerHTML = `<div class="settings-layout">
     <div class="settings-nav">${cats.map(([k, label, icon]) =>
       `<div class="cat ${k === active ? "active" : ""}" data-cat="${k}"><span class="ci">${ic(icon)}</span>${label}</div>`).join("")}</div>
@@ -700,21 +707,27 @@ async function renderSettings(active) {
     if (cat) renderSettings(cat.dataset.cat);
   });
   const pane = mBody.querySelector("#settings-pane");
-  if (active === "models") renderModelsPane(pane, s);
-  else if (active === "search") renderSearchPane(pane, s);
-  else if (active === "map") renderMapPane(pane, s);
-  else if (active === "agent") renderAgentPane(pane, s);
-  else if (active === "persona") renderPersonaPane(pane, s);
-  else if (active === "look") renderLookPane(pane);
-  else if (active === "memory") renderMemoryPane(pane);
-  else if (active === "evolve") renderEvolvePane(pane);
-  else if (active === "trace") renderTracePane(pane, s);
-  else if (active === "ops") renderOpsPane(pane);
-  else if (active === "data") renderDataPane(pane, s);
-  else if (active === "security") renderSecurityPane(pane, s);
-  else if (active === "shortcuts") renderShortcutsPane(pane, s);
-  else if (active === "im") renderImPane(pane, s);
-  else renderAboutPane(pane);
+  pane.dataset.cat = active;
+  let drawn;
+  if (active === "models") drawn = renderModelsPane(pane, s);
+  else if (active === "search") drawn = renderSearchPane(pane, s);
+  else if (active === "map") drawn = renderMapPane(pane, s);
+  else if (active === "agent") drawn = renderAgentPane(pane, s);
+  else if (active === "persona") drawn = renderPersonaPane(pane, s);
+  else if (active === "look") drawn = renderLookPane(pane);
+  else if (active === "memory") drawn = renderMemoryPane(pane);
+  else if (active === "evolve") drawn = renderEvolvePane(pane);
+  else if (active === "trace") drawn = renderTracePane(pane, s);
+  else if (active === "ops") drawn = renderOpsPane(pane);
+  else if (active === "data") drawn = renderDataPane(pane, s);
+  else if (active === "security") drawn = renderSecurityPane(pane, s);
+  else if (active === "shortcuts") drawn = renderShortcutsPane(pane, s);
+  else if (active === "im") drawn = renderImPane(pane, s);
+  else drawn = renderAboutPane(pane);
+  if (keepTop) {
+    pane.scrollTop = keepTop; // 同步画完的这就够了
+    Promise.resolve(drawn).catch(() => {}).then(() => { if (pane.isConnected) pane.scrollTop = keepTop; });
+  }
 }
 /**
  * 保存失败的原因存在这儿。

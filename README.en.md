@@ -300,6 +300,8 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 15** Pin tasks to a Pinned group at the top of the history; pins follow you to other computers
+- **Oct 15** Accept in Self-evolve no longer reloads the page; Self-evolve and Agents open without a multi-second wait
 - **Oct 14** Every account can bind its own WeChat, Feishu, QQ, WeCom, Official Account, group bots and email: messages run as you, results go only to you
 - **Oct 14** Members on a shared server get their own setup: per-provider model sharing, their own API keys, their own experts, and their own assistant name and preferences
 - **Oct 14** Attachments with the Chinese enumeration comma (、) in their names are no longer split into two files that don't exist

@@ -741,12 +741,18 @@ function renderShortcutsPane(pane, s) {
 // 剩下的必须有人点「采纳」。所以这里要把证据摆够：治什么、凭几次、原话长啥样、生效后哪个数该降。
 const EV_ACT = { prompt: ["提示词能治", "var(--owb-ok-text)"], config: ["得改配置/换渠道", "var(--owb-warn)"], code: ["得改代码", "var(--owb-err-text)"] };
 
-async function renderEvolvePane(pane) {
-  pane.innerHTML = '<div class="card-item"><div class="d">读取中…</div></div>';
+// 点「采纳 / 驳回 / 下架」之后只重取 state：信号是会话里数出来的，审一条提案不会让它变，
+// 没必要再数一遍。也不先把整页换成「读取中…」——那一下页面塌成一行，滚动位置跳回顶上，看着就是整页刷新了
+async function renderEvolvePane(pane, { keepSignals = false } = {}) {
+  if (!pane.querySelector("#ev-run")) pane.innerHTML = '<div class="card-item"><div class="d">读取中…</div></div>';
+  const sigP = keepSignals && pane._evSignals ? Promise.resolve(pane._evSignals)
+    : fetch("/api/evolve/signals").then(r => r.json()).catch(() => ({}));
   const [st, sg] = await Promise.all([
     fetch("/api/evolve/state").then(r => r.json()).catch(() => ({})),
-    fetch("/api/evolve/signals").then(r => r.json()).catch(() => ({})),
+    sigP,
   ]);
+  if (!pane.isConnected) return; // 等的这会儿人已经切到别的设置页了
+  pane._evSignals = sg;
   const caps = st.caps || { rules: 12, window: 14, minEvidence: 3 };
   const rules = st.rules || [];
   const scored = st.scored || [];
@@ -846,12 +852,15 @@ async function renderEvolvePane(pane) {
   pane.querySelectorAll("[data-prop]").forEach(card => {
     const id = card.dataset.prop;
     const decide = async (decision) => {
+      const btns = card.querySelectorAll("button");
+      btns.forEach(b => { b.disabled = true; });
+      card.querySelector(`[data-act=${decision}]`).textContent = decision === "accept" ? "采纳中…" : "驳回中…";
       const r = await fetch("/api/evolve/proposal/" + encodeURIComponent(id), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, reason: (card.querySelector("[data-reason]").value || "").trim() }),
       }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
       toast(r.error ? "没成：" + r.error : decision === "accept" ? "已采纳，下次任务就带上了" : "已驳回，下轮不会再提");
-      renderEvolvePane(pane);
+      renderEvolvePane(pane, { keepSignals: true });
     };
     card.querySelector("[data-act=accept]").onclick = () => decide("accept");
     card.querySelector("[data-act=reject]").onclick = () => decide("reject");
@@ -864,7 +873,7 @@ async function renderEvolvePane(pane) {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ why: "在设置里人工下架" }),
     }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
     toast(r.error ? "没成：" + r.error : "已下架，提示词里不再带它");
-    renderEvolvePane(pane);
+    renderEvolvePane(pane, { keepSignals: true });
   });
 }
 

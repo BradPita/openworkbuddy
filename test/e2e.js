@@ -3950,6 +3950,30 @@ function testEvolveLoop() {
     assert.ok(!m.signals.some(s => s.key === "tool_error:edit_file"), "还有 edit_file 的错落在大杂烩桶里");
     assert.ok(by("edit_anchor_miss").samples.length && by("edit_anchor_miss").samples[0].session, "信号没带能点回去的证据");
 
+    // 没改过的会话不再解析：打开「自进化」一次要数 6 遍（信号 + 每条规则打分），
+    // 以前每一遍都把全部会话读一遍解析一遍，668 个会话时整页要等 2.4 秒
+    {
+      const past = new Date(Date.now() - 60e3);
+      for (const f of ["s1.json", "s2.json", "s3.json"]) fs.utimesSync(path.join(SESS, f), past, past);
+      ev.mineSignals({ days: 14 }); // 时间戳刚改过，这一遍按新的记下来
+      const realRead = fs.readFileSync;
+      let reads = [];
+      fs.readFileSync = function (f, ...rest) { if (String(f).startsWith(SESS)) reads.push(path.basename(String(f))); return realRead.call(this, f, ...rest); };
+      try {
+        const again = ev.mineSignals({ days: 14 });
+        assert.deepStrictEqual(reads, [], "没改过的会话又被读了一遍：" + reads.join(","));
+        assert.strictEqual(JSON.stringify(again.signals.map(s => [s.key, s.count, s.samples.length])), JSON.stringify(m.signals.map(s => [s.key, s.count, s.samples.length])), "走缓存数出来的跟现读的不一样");
+        fs.writeFileSync(path.join(SESS, "s4.json"), JSON.stringify({ updated_at: now, transcript: turn([err("edit_file", "没找到 old_text")]) }));
+        reads = [];
+        const plus = ev.mineSignals({ days: 14 });
+        assert.deepStrictEqual(reads, ["s4.json"], "新会话进来只该读它一个：" + reads.join(","));
+        assert.strictEqual(plus.turns, 7, "新会话没数进来");
+        assert.strictEqual(plus.signals.find(s => s.key === "edit_anchor_miss").count, 4);
+        fs.unlinkSync(path.join(SESS, "s4.json"));
+        assert.strictEqual(ev.mineSignals({ days: 14 }).turns, 6, "删掉的会话还在缓存里被数");
+      } finally { fs.readFileSync = realRead; }
+    }
+
     // 👎 落盘：同一轮改主意是改判，不是攒一堆重复记录
     ev.recordFeedback({ session: "s1", turn: 1, verdict: "down", note: "答非所问" });
     ev.recordFeedback({ session: "s1", turn: 3, verdict: "down", note: "" });
@@ -7874,6 +7898,90 @@ async function testLibraryTurnAnchor() {
 }
 
 /**
+ * 侧栏「置顶」的服务端那半：标记记在会话本身上，换台机器、清了缓存都还在。
+ * 盯的几条：只有本人能改（管理员打得开同事的会话，也不许替他顶）；置顶不改「最后动过」的时间，
+ * 不然顶一下它在列表里的先后就跳了；列表只回最近 300 条，置顶的不论多老都得带上；
+ * 不存在的任务回 404，不挂着不回话。
+ */
+async function testSessionPin() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pin-"));
+  const dir = path.join(home, "data", "sessions");
+  fs.mkdirSync(dir, { recursive: true });
+  const old = "2026-01-01T00:00:00.000Z";
+  const sess = (id, o) => fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify({
+    id, user: "e2e", updated_at: old, history: [], transcript: [{ type: "user", at: old, text: "hi" }], ...o }));
+  sess("s_mine", { title: "我的合同" });
+  sess("s_bob", { title: "同事的", user: "bob" });
+  // 比 300 条还靠后的两条老会话：一条顶着、一条没顶
+  sess("s_oldpin", { title: "很早顶上的", updated_at: "2025-01-01T00:00:00.000Z", pinned_at: 5 });
+  sess("s_oldplain", { title: "很早没顶的", updated_at: "2025-01-01T00:00:00.000Z" });
+  // 299 条填充比 s_mine 新：s_mine 正好排第 300 条（还在），两条 2025 年的排在 300 条以外
+  for (let i = 0; i < 299; i++) sess("s_fill" + i, { title: "填充" + i, updated_at: new Date(Date.parse("2026-02-01T00:00:00.000Z") + i * 1000).toISOString() });
+
+  const tok = { e2e: "e2e" + crypto.randomBytes(12).toString("hex"), bob: "bob" + crypto.randomBytes(12).toString("hex") };
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [
+      { username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() },
+      { username: "bob", salt: "x", hash: "x", role: "member", credits: 0, created_at: Date.now() },
+    ],
+    tokens: { [tok.e2e]: { user: "e2e", at: Date.now() }, [tok.bob]: { user: "bob", at: Date.now() } },
+  }));
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why } = await booted.wait();
+  const call = (who, method, p, body) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request({ host: "127.0.0.1", port, path: p, method, timeout: 8000, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      Cookie: "openworkbuddy_token=" + tok[who],
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    req.on("timeout", () => { req.destroy(); resolve({ code: -1, body: "超时没回话" }); });
+    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    if (data) req.write(data);
+    req.end();
+  });
+  const onDisk = (id) => JSON.parse(fs.readFileSync(path.join(dir, id + ".json"), "utf8"));
+  const rowOf = async (id) => (((await call("e2e", "GET", "/api/sessions")).json || {}).sessions || []).find((r) => r.id === id);
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+    const p1 = await call("e2e", "POST", "/api/session/s_mine/pin", { pinned: true });
+    assert(p1.code === 200 && p1.json && p1.json.pinned_at > 0, "本人置顶自己的任务没成（HTTP " + p1.code + "）：" + p1.body.slice(0, 200));
+    assert(onDisk("s_mine").pinned_at === p1.json.pinned_at, "置顶没落盘：重启、换台机器就没了");
+    assert.strictEqual(onDisk("s_mine").updated_at, old, "★置顶改了「最后动过」的时间★ 顶一下它在列表里的先后就跳了");
+    const r1 = await rowOf("s_mine");
+    assert(r1 && r1.pinned_at === p1.json.pinned_at, "侧栏列表里带不出置顶标记：" + JSON.stringify(r1));
+    const again = await call("e2e", "POST", "/api/session/s_mine/pin", { pinned: true });
+    assert(again.json && again.json.pinned_at === p1.json.pinned_at, "已经顶着再顶一次，顶上去的时间不该变（不然后顶的排序乱跳）");
+
+    const other = await call("e2e", "POST", "/api/session/s_bob/pin", { pinned: true });
+    assert(other.code === 403 && !onDisk("s_bob").pinned_at, "★管理员替同事置顶成了★（HTTP " + other.code + "）：" + other.body.slice(0, 200));
+    const bob = await call("bob", "POST", "/api/session/s_mine/pin", { pinned: false });
+    assert(bob.code === 403 && onDisk("s_mine").pinned_at, "★成员改了别人的置顶★（HTTP " + bob.code + "）：" + bob.body.slice(0, 200));
+    const gone = await call("e2e", "POST", "/api/session/s_nope/pin", { pinned: true });
+    assert(gone.code === 404, "不存在的任务该回 404，实际（HTTP " + gone.code + "）：" + gone.body.slice(0, 200));
+
+    assert(await rowOf("s_oldpin"), "★排在 300 条以外的置顶任务从列表里掉了★");
+    assert(!(await rowOf("s_oldplain")), "反向对照：排在 300 条以外、没顶的照旧不回");
+
+    const off = await call("e2e", "POST", "/api/session/s_mine/pin", { pinned: false });
+    assert(off.code === 200 && !("pinned_at" in onDisk("s_mine")), "取消置顶没清掉标记：" + off.body.slice(0, 200));
+    assert.strictEqual(onDisk("s_mine").updated_at, old, "取消置顶也不改「最后动过」的时间");
+    const r2 = await rowOf("s_mine");
+    assert(r2 && !r2.pinned_at, "取消后列表里还带着置顶标记：" + JSON.stringify(r2));
+    console.log("  ✓ 侧栏置顶：只有本人能改 · 落盘不改最后动过的时间 · 300 条以外的置顶照样回 · 不存在回 404");
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
  * 端口被占的三种情况。
  *
  * 这条对应的是 GitHub 上那句「下载之后打不开」。老写法在 EADDRINUSE 时只说一句
@@ -10151,6 +10259,7 @@ testCanvasEdgeVersion();
   await testFilePathRouting();
   await testLibraryOutputsTruth();
   await testLibraryTurnAnchor();
+  await testSessionPin();
   await testPortCollision();
   testShellI18n();
   await testSessionSearchLive();
@@ -10737,6 +10846,34 @@ async function testDetectCache() {
     // 换一组用户填的路径 = 换一个问题，不能拿旧答案糊弄
     await engines.detectAll({ "e2e-slow": { bin: "/tmp/other" } });
     assert.strictEqual(calls, base + 2, "用户改了 CLI 路径还在吃旧缓存");
+    // 过了一分钟：先拿上回的，后台重探；重探的这会儿再来的请求也不等
+    const ent = engines._detectCache.get("{}");
+    ent.at -= 61000;
+    const t1 = Date.now();
+    const stale = await engines.detectAll({});
+    assert(Date.now() - t1 < 30, `缓存过了一分钟就让人干等 ${Date.now() - t1}ms（codex 冷探要两三秒）`);
+    assert(stale.some((e) => e.id === "e2e-slow"), "过期那一下没把上回的结果交出来");
+    const t2 = Date.now();
+    await engines.detectAll({});
+    assert(Date.now() - t2 < 30, "后台重探的时候，别的请求跟着干等");
+    await new Promise((r) => setTimeout(r, 150));
+    assert.strictEqual(calls, base + 3, `过期后该在后台重探一遍，实际探了 ${calls - base - 2} 遍`);
+    assert(Date.now() - engines._detectCache.get("{}").at < 1000, "后台探完没换进缓存，下一个人还拿旧的");
+    ent.at -= 31 * 60 * 1000; // 半小时以上的老黄历不再顶着用
+    engines._detectCache.get("{}").at -= 31 * 60 * 1000;
+    const t3 = Date.now();
+    await engines.detectAll({});
+    assert(Date.now() - t3 >= 50 && calls === base + 4, "过了半小时还在拿旧结果，装卸了 CLI 也看不出来");
+    // 几个 CLI 各探各的：两个各 60ms 的桩，一起探不该排成 120ms
+    const stub2 = { ...stub, id: "e2e-slow2", detect: async () => { await new Promise((r) => setTimeout(r, 60)); return { id: "e2e-slow2", installed: true, path: "y", version: "1" }; } };
+    const real = engines.BACKENDS.splice(0); // 只留两个桩：真 claude / codex 的耗时不该算进来
+    engines.BACKENDS.push(stub, stub2);
+    try {
+      const t4 = Date.now();
+      const both = await engines.detectAll({ par: 1 });
+      assert(Date.now() - t4 < 110, `几个 CLI 排着队探（${Date.now() - t4}ms）`);
+      assert.deepStrictEqual(both.map((e) => e.id), ["e2e-slow", "e2e-slow2"], "并行探完顺序乱了");
+    } finally { engines.BACKENDS.splice(0, engines.BACKENDS.length, ...real); }
   } finally {
     engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
     await engines.detectAll({}, { force: true }); // 别把桩留在缓存里影响后面的用例
@@ -10748,7 +10885,8 @@ async function testDetectCache() {
   assert.strictEqual((srv.match(/detectAll\([^\n]*latest/g) || []).length, 1, "除了「重新检测」那一处，别处的 detectAll 也在联网问新版");
   const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
   assert(/renderEngineCard\(box, true\)/.test(ui), "设置页「重新检测本机」按钮没要求强制重探");
-  console.log("  ✓ 本机 CLI 探测有缓存（5 次并发只探 1 遍）、「重新检测」仍真去重探、改了路径不吃旧缓存");
+  assert(/warmUpSlowPanes\(\);/.test(srv) && /engines\.detectAll\(prefs\.agentCfg/.test(srv) && /evolve\.warmDigests\(\)/.test(srv), "开机没在后台先探 CLI、先算自进化摘要，第一次点开要干等");
+  console.log("  ✓ 本机 CLI 探测有缓存（5 次并发只探 1 遍）、过期先给旧的后台重探、几个 CLI 一起探、开机先备好、「重新检测」仍真去重探、改了路径不吃旧缓存");
 }
 
 async function testStreamRender() {
@@ -14990,7 +15128,7 @@ function testLookPrefsStatic() {
   const rd = (f) => fs.readFileSync(path.join(pub, f), "utf8");
   const a02 = rd(path.join("js", "app-02.js")), a05 = rd(path.join("js", "app-05.js")), a06 = rd(path.join("js", "app-06.js")), html = rd("index.html");
   assert(/\["look", "外观", "palette"\]/.test(a05), "设置目录里没有「外观」页");
-  assert(/active === "look"\) renderLookPane\(pane\)/.test(a05), "renderSettings 没把 look 派给 renderLookPane");
+  assert(/active === "look"\) (drawn = )?renderLookPane\(pane\)/.test(a05), "renderSettings 没把 look 派给 renderLookPane");
   assert(/^function renderLookPane\(pane\)/m.test(a06), "app-06 没定义 renderLookPane");
   assert(/act === "appearance"\) openModal\("settings", "look"\)/.test(a02), "头像菜单的「外观」没有直达外观页");
   const cats = a05.slice(a05.indexOf("const SETTING_CATS = ["), a05.indexOf("];", a05.indexOf("const SETTING_CATS = [")));
