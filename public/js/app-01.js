@@ -5077,7 +5077,7 @@ async function previewFile(name, root, opts) {
     // 网页不给——文章必须从第一行读起。
     // sandbox 不给 allow-same-origin：工作区网页是模型写的或网上下的，同源就能以应用的身份调 /api/*。
     // 服务端对这类响应另回一条 CSP sandbox，直接在新标签页打开也一样隔离。
-    // 页面里的 localStorage / Cookie 因此用不了，这是故意的。
+    // 预览使用独立的临时存储兼容网页脚本，Cookie 和应用存储仍不可访问。
     // fit=1 让服务端在页面尾巴挂上报尺寸的脚本（外面读不到 contentDocument 了，只能等它自己报）
     body.innerHTML = `<div class="pv-fit${kind === "svg" ? " pv-fit-mid" : ""}"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
     fitPreviewFrame(body);

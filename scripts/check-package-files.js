@@ -40,6 +40,7 @@ const ASSETS = [
   "extension/chrome/recorder.js",
   "extension/chrome/recording-background.js",
   "public/js/preview-probe.js",
+  "public/js/preview-runtime.js",
   "extension/chrome/popup.html",
   "extension/chrome/popup.js",
 ];

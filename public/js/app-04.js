@@ -1421,7 +1421,7 @@ async function renderLibPreview(prev, lib) {
           // 挂一小段脚本让它自己把尺寸报出来——只进这个临时 blob，磁盘上那份文件一个字没动
           // 等页面回来的这段时间里用户可能已经点了别的文件：这一块早被换下来了，别再造一份没人看的 blob
           if (!body.isConnected) return;
-          const blob = URL.createObjectURL(new Blob([text + PV_FIT_REPORTER], { type: "text/html" }));
+          const blob = URL.createObjectURL(new Blob([OWBPreviewRuntime.inject(text, new URL("/js/preview-runtime.js", document.baseURI).href) + PV_FIT_REPORTER], { type: "text/html" }));
           renderLibPreview.last = { blob, host: prev }; // 下一次换预览时 revoke，见本函数开头
           body.outerHTML = `<div class="pv-fit"><iframe src="${blob}" sandbox="allow-scripts" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
           fitPreviewFrame(prev, { selfReport: true });

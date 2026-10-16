@@ -7348,6 +7348,7 @@ const PV_FIT_JS = 'var w0=-1;function s(){try{var d=document.documentElement,b=d
 const PV_FIT_HTML = "<script>(function(){" + PV_FIT_JS + "})()</script>";
 // 太大的网页不挂：挂的话要整份读进内存再发。不挂也看得到，前端等不到尺寸会退回「占满面板、框里自己滚」
 const PV_ANNOTATION_HTML = "<script>" + fs.readFileSync(appPath("public/js/preview-probe.js"), "utf8") + "</script>";
+const previewRuntime = require("./public/js/preview-runtime");
 const PV_FIT_MAX_BYTES = 20 * 1024 * 1024;
 /**
  * 给这次响应挂上自报脚本，挂不上返回 null（调用方照原样 sendFile）。只动这一次响应，盘上的文件一个字节不改。
@@ -7356,7 +7357,7 @@ const PV_FIT_MAX_BYTES = 20 * 1024 * 1024;
  * SVG 是 XML，根元素后面多一个字就整张解析失败，所以得塞进最后那个 </svg> 前面，脚本包 CDATA。
  */
 function withFitReporter(buf, type) {
-  if (/^text\/html\b/i.test(type)) return Buffer.concat([buf, Buffer.from(PV_ANNOTATION_HTML), Buffer.from(PV_FIT_HTML)]);
+  if (/^text\/html\b/i.test(type)) return Buffer.concat([Buffer.from(previewRuntime.inject(buf.toString("latin1")), "latin1"), Buffer.from(PV_ANNOTATION_HTML), Buffer.from(PV_FIT_HTML)]);
   if (/^image\/svg\+xml\b/i.test(type)) {
     const s = buf.toString("latin1");
     const at = s.lastIndexOf("</svg");

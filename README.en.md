@@ -265,6 +265,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate
 - **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal
 - **Oct 16** Preview region annotations and line comments enter editable revision drafts; individual change blocks can be reverted and restored
 - **Oct 16** Team tasks use organization models and connectors with separate usage records; browser recordings generate reviewable skill drafts

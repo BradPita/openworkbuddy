@@ -4833,14 +4833,15 @@ if (ACT0 < 0 || ACT1 <= ACT0 || ACT2 <= ACT1) throw new Error("app-00-ui.js 的 
 const ACT_SRC = UI00_SRC.slice(ACT0, ACT1);
 const ACT_KEYS = UI00_SRC.slice(ACT1, ACT2 + "else boot();\n})();".length);
 // 预览面板上的「所在位置」「复制文件」两颗按钮：画不画看 canOpenOnHost，点下去发什么看这两个函数
-const DEAD_SRC = HOSTCAP_SRC + "\n" + srcBlock("function revealFile(") + "\n" + srcBlock("function copyHostFile(") + "\n" + COPYTEXT_SRC
+const DEAD_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "preview-runtime.js"), "utf8") + "\n"
+  + HOSTCAP_SRC + "\n" + srcBlock("function revealFile(") + "\n" + srcBlock("function copyHostFile(") + "\n" + COPYTEXT_SRC
   + "\n" + srcLine("function dirOf(")
   + "\n" + ACT_SRC + "\n" + APP01_NAV.slice(PVK0, PVK1) + "\n"
   + APP01_NAV.slice(NAV0, NAV1) + "\n" + APP01_NAV.slice(PVF0, PVF1)
   + "\n" + APP01_NAV.slice(OVH0, OVH1)
   + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(ADL0, ADL1) + "\n" + APP03_AT.slice(RUN0, RUN1)
   + "\n" + APP04_LIB.slice(LIB0, LIB1);
-const DEAD_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
+const DEAD_HTML = "<!doctype html><meta charset='utf-8'><base href='http://127.0.0.1:1/'><style>" + UI_CSS + "</style><body>"
   + "<div class='side-nav top'>"
   + "<div class='item' data-view='hub'>专家</div><div class='item' data-view='autom'>自动化</div>"
   + "<div class='item' data-view='prompts'>参考模板库</div><div class='item' data-view='lib'>资料库</div>"
