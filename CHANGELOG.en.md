@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 16** Release checks: isolate packaging fixtures in temporary directories, include SHA-256 checksums, and summarize changes since the last published release rather than an unpublished tag
 - **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal
 - **Oct 16** Preview region annotations and line comments enter editable revision drafts; individual change blocks can be reverted and restored
 - **Oct 16** Team tasks use organization models and connectors with separate usage records; browser recordings generate reviewable skill drafts

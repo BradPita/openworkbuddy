@@ -437,11 +437,14 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
       ok(!aliasError, "打包输出经过目录别名时，仍识别包内依赖", (aliasError || "").slice(0, 200));
     } finally { fs.rmSync(alias, { recursive: true, force: true }); }
 
-    const fallback = fs.mkdtempSync(path.join(ROOT, "node_modules", ".owb-dep-fallback-"));
+    const fallback = fs.mkdtempSync(path.join(os.tmpdir(), "owb-dep-fallback-"));
     try {
-      fs.writeFileSync(path.join(fallback, "package.json"), JSON.stringify({ dependencies: { express: "*" } }));
+      const nestedApp = path.join(fallback, "app"), parentDependency = path.join(fallback, "node_modules", "owb-fixture-parent");
+      fs.mkdirSync(nestedApp); fs.mkdirSync(parentDependency, { recursive: true });
+      fs.writeFileSync(path.join(parentDependency, "index.js"), "module.exports = {};\n");
+      fs.writeFileSync(path.join(nestedApp, "package.json"), JSON.stringify({ dependencies: { "owb-fixture-parent": "*" } }));
       let fallbackError = null;
-      try { await gate.assertDepsRequirable(fallback); } catch (e) { fallbackError = e.message; }
+      try { await gate.assertDepsRequirable(nestedApp); } catch (e) { fallbackError = e.message; }
       ok(fallbackError && /包外面/.test(fallbackError), "反向对照：依赖落到上层目录时仍拒绝，不把仓库依赖算进包里");
     } finally { fs.rmSync(fallback, { recursive: true, force: true }); }
 

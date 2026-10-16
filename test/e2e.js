@@ -14186,6 +14186,10 @@ function testReleasePipeline() {
       want("v0.1.1", [d2]);
       // 正题：按 tag 区间挖，不是按日期抓。同一天发两版时，日期口径会把上一版的也算进来
       want("v0.1.2", [d3]);
+      assert(JSON.stringify(items(relNotes("v0.1.2", { cwd, previousTag: "v0.1.0" }))) === JSON.stringify([d3, d2]),
+        "发布说明应从上一正式版本取完整区间，跳过未发布的标签");
+      assert(JSON.stringify(items(require("child_process").execFileSync(process.execPath, [path.join(root, "scripts/release-notes.js"), "v0.1.2", "v0.1.0"], { cwd, encoding: "utf8" }))) === JSON.stringify([d3, d2]),
+        "命令行显式基线应与模块调用一致");
       // 上一个 tag 按版本号取：按字面排 v0.1.10 会排在 v0.1.2 前面，上一版就找错了
       want("v0.1.10", [d4]);
       // 反向对照：没加动态的那版、最早那个 tag，宁可一个字不写也别瞎猜
