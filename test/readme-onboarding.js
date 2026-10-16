@@ -5,17 +5,20 @@ process.on("uncaughtException", error => { console.error(error.stack || error); 
 const fs = require("fs"), path = require("path"), assert = require("assert/strict");
 const root = path.join(__dirname, ".."), read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 let count = 0;
+const brokenStrong = /\*\*[^*\n]*\p{P}\*\*(?=[\p{L}\p{N}])/u;
 for (const [file, label, why, commercial] of [["README.md", "## 快速开始：", "## 为什么是它", "## 商用授权"], ["README.en.md", "## Quick start:", "## Why this one", "## Commercial license"]]) {
  const text = read(file), start = text.indexOf(label);
  assert.ok(start > 0 && start < text.indexOf(why) && start < text.indexOf(commercial));
  assert.ok(text.indexOf('href="#quick-start"') < start);
  const quick = text.slice(start, text.indexOf(why));
+ assert.ok(!brokenStrong.test(quick), file + ": a punctuation-ended bold label must not touch the following word");
  assert.ok(quick.includes("first-report.html")); assert.ok(quick.includes("npm ci\nnpm start")); assert.ok(quick.includes("localhost:3800")); assert.ok(quick.includes("Node.js 18+"));
  assert.ok(quick.includes("Craft")); assert.ok(quick.includes("examples/quick-start/"));
  assert.match(text, /utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result/);
  assert.ok(!text.includes('width="120"')); assert.ok(text.includes('src="docs/images/demo.gif"'));
  count++; console.log("✓ " + file + ": clear first task, prerequisites, verified-output criteria and early start link");
 }
+assert.ok(brokenStrong.test("**计时方式：**从开始安装") && !brokenStrong.test("**计时方式**：从开始安装"), "Bold label rendering guard must detect the broken form and accept the rendered form");
 for (const [file, sections] of [["examples/quick-start/task.md", ["本周完成", "进行中", "下周计划"]], ["examples/quick-start/task.en.md", ["Completed this week", "In progress", "Next week"]]]) {
  const text = read(file); assert.ok(text.includes("first-report.html")); assert.ok(sections.every((section) => text.includes(section)));
 }
