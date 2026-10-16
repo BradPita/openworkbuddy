@@ -415,6 +415,10 @@ Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
  <sub>顺手把它转给一个天天手搓 PPT、周报、会议纪要的同事，比一百次曝光管用。</sub>
 </p>
 
+## 致谢
+
+Credit to the [linux.do](https://linux.do/) community.
+
 ## 贡献者
 
 感谢每一个动手改过这个项目的人。想加入他们：[参与贡献](CONTRIBUTING.md)。
