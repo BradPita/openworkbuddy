@@ -14,12 +14,13 @@ app.whenReady().then(async()=>{
   const read=p=>fs.readFileSync(path.join(__dirname,"..","public/js",p),"utf8");
   await win.webContents.insertCSS(fs.readFileSync(path.join(__dirname,"..","public/css/ui.css"),"utf8"));
   const result=await win.webContents.executeJavaScript(read("i18n.js")+"\n"+read("app-12-review.js")+"\n"+read("app-13-annotate.js")+`\n(async()=>{
+    I18N.setLang('en');
     window.sessionId='s_fixture';window.pvCurrent='report.html';window.pvRoot='';window.toast=s=>{window.lastToast=s};window.refreshFilesCache=()=>{};
     let calls=[],reverted=false;window.fetch=async(u,o)=>{calls.push([u,o]);if(o?.method==='POST')reverted=!reverted;return {ok:true,json:async()=>({path:'report.html',hash:'fixture',current:true,hunks:[{id:'one',old_line:2,new_line:2,removed:['<script>private</script>\\n'],added:['new line\\n'],reverted}]})}};
     const wrap=document.getElementById('review');await openCheckpointReview(wrap,sessionId,'ck_fixture');
     const safe=!document.querySelector('.review-hunk script')&&wrap.textContent.includes('<script>private</script>');
     document.querySelectorAll('.review-line')[1].click();document.querySelector('.review-note textarea').value='Fix this line';document.querySelector('.review-note button').click();
-    const draft=document.getElementById('input').value;await document.querySelector('.review-hunk>.step-rewind').onclick();const undone=document.querySelector('.review-hunk>.step-rewind').textContent.includes('撤销');
+    const draft=document.getElementById('input').value;await document.querySelector('.review-hunk>.step-rewind').onclick();const undone=document.querySelector('.review-hunk>.step-rewind').textContent==='Undo this block revert';
     sessionId='other';const before=document.getElementById('input').value;const cross=appendReviewDraft('s_fixture','wrong')===false&&document.getElementById('input').value===before;sessionId='s_fixture';
     wrap.remove();beginPreviewAnnotation();return {safe,draft,undone,cross,inline:!!document.querySelector('.annotation-overlay')&&!document.querySelector('dialog,[role=dialog]')};
   })()`,true);

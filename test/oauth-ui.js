@@ -15,6 +15,7 @@ app.whenReady().then(async () => {
   await win.loadURL("http://127.0.0.1:" + server.address().port);
   const source = p => fs.readFileSync(path.join(__dirname, "..", "public/js", p), "utf8");
   const results = await win.webContents.executeJavaScript(source("i18n.js") + "\n" + source("app-11-oauth.js") + `\n(async()=>{
+   I18N.setLang('en');
    const names=[], ok=(n,v)=>{if(!v)throw Error(n);names.push(n)};
    let calls=[], opened=0, replaced='', closed=0, changes=0, mode='ok'; const card=document.getElementById('card');
    window.open=()=>{opened++;return {opener:{},location:{replace:u=>{replaced=u}},close:()=>{closed++}}};
@@ -24,12 +25,13 @@ app.whenReady().then(async () => {
    ok('展开设置不会自动打开外部网页',opened===0&&calls.length===0);
    card.querySelector('[data-secret]').value='fixture-secret';await card.querySelector('[data-start]').onclick();
    ok('明确点击后打开服务商网页，回调为当前工作台',opened===1&&replaced.startsWith('https://auth.example.invalid/')&&calls[0].body.redirect_uri===location.origin+'/api/mcp/oauth/callback');
-   ok('完成后清空临时密钥，恢复按钮并刷新状态',card.querySelector('[data-secret]').value===''&&!card.querySelector('[data-start]').disabled&&changes===1&&card.querySelector('.mcp-oauth-status').textContent.includes('已连接'));
+   ok('完成后清空临时密钥，恢复按钮并刷新状态',card.querySelector('[data-secret]').value===''&&!card.querySelector('[data-start]').disabled&&changes===1&&card.querySelector('.mcp-oauth-status').textContent==='OAuth authorization complete. The connector is connected.');
    mode='fail';await card.querySelector('[data-start]').onclick();ok('失败保留可重试的面板并关闭空白页',closed===1&&!card.querySelector('[data-start]').disabled&&card.textContent.includes('fixture failed'));
    mode='ok';let targets=[];window.open=(u)=>{targets.push(u);return null};await card.querySelector('[data-start]').onclick();ok('桌面端拒绝空白窗口时仍请求打开真实授权网址',targets[0]==='about:blank'&&targets[1]==='https://auth.example.invalid/authorize');
-   mode='ok';await card.querySelector('[data-remove]').onclick();ok('移除动作单独请求且说明上游授权仍由服务商管理',calls.at(-1).u.endsWith('/remove')&&card.textContent.includes('服务商的账号授权'));
+   mode='ok';await card.querySelector('[data-remove]').onclick();ok('移除动作单独请求且说明上游授权仍由服务商管理',calls.at(-1).u.endsWith('/remove')&&card.querySelector('.mcp-oauth-status').textContent==='Local authorization removed. Manage account authorization in the provider settings.');
    card.querySelector('[data-close]').click();ok('收起不冒充移除授权',!card.children.length&&calls.filter(x=>x.u.endsWith('/remove')).length===1);
    I18N.setLang('en');show();I18N.apply(card);ok('授权操作支持英文',card.querySelector('[data-start]').textContent==='Open provider authorization');
+   card.querySelector('[data-close]').click();I18N.setLang('zh');show();I18N.apply(card);ok('切换中文后授权操作仍可用',card.querySelector('[data-start]').textContent==='打开服务商授权页');
    return names;
   })()`, true);
   results.forEach(n => console.log("✓ " + n)); console.log(`OAuth UI: ${results.length} checks passed`);win.destroy();await new Promise(r => server.close(r));app.exit(0);
