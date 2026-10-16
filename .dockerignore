@@ -69,7 +69,8 @@ npm-debug.log*
 # 只维护 package-lock.json，这份是过期的
 pnpm-lock.yaml
 # 个人笔记，没进 git，也别进镜像
-docs/能力对照-Cowork-Codex.md
+docs/能力对照-*.md
+docs/Agent效率*.md
 
 # --- 第三方技能：不进 git，也不该由我们的镜像替上游分发 ---
 # skills/ 目录本身要进镜像（首次启动从这儿铺到数据目录），排的是里面这些别人的包。

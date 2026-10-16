@@ -133,6 +133,8 @@ const sessionDirs = new Map(); // sessionId -> 该对话在当前根下的成果
 // sessionId -> Set(该对话分文件夹以前摊在当前根上的产出，相对名)。老对话接着聊，新产出进新格、老的还在根上，
 // 「本对话」两边都得摆，不然一条对话在面板里只剩后半截
 const sessionRootFiles = new Map();
+// sessionId -> Set(这条对话前后产出过的文件名)。回放和直播都往里记，侧栏行上的文件图标、顶栏的「N 个文件」按它数
+const sessionMadeFiles = new Map();
 // sessionId -> 该对话最近用的那格，不管在不在当前根下。只拿来找历史里的附件：换过根以后 sessionDirs 清掉了，
 // 附件缩略图还得拼得出「任务_X/图.jpg」，服务端按这个名字挨个根去找
 const sessionAttachDirs = new Map();
@@ -1920,9 +1922,11 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       }
     } else if (ev.type === "title") {
       // 服务端给首轮任务起的短标题（截断标题太丑）；不进 transcript，回放不经过这里
+      // 人正在改名（存的那一趟还没回来）：模型起的不盖人起的。服务端那边也认 title_manual，这儿防的是两下错开的那一瞬
+      const naming = typeof histEditBusy !== "undefined" && histEditBusy.has(turnSid + ":title");
       const s = sessions.find((x) => x.id === turnSid);
-      if (s && ev.title) { s.title = ev.title; saveSessions(); renderHistory(); }
-      if (turnSid === sessionId && ev.title) document.getElementById("session-title").textContent = ev.title;
+      if (s && ev.title && !naming) { s.title = ev.title; saveSessions(); renderHistory(); }
+      if (turnSid === sessionId && ev.title && !naming) document.getElementById("session-title").textContent = ev.title;
     } else if (ev.type === "interject") {
       endText();
       // 插队时前端已经放了「等待注入」占位（服务端按 FIFO 注入，转正最早那个就是它）
@@ -1988,6 +1992,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         sessionRootFiles.get(turnSid).add(String(n));
       }
       renderTurnOutputs(body, turnOut, pool, ev); // 先算差异，快照要等 applyOutputArrival 才推进
+      if (typeof noteMadeFiles === "function") noteMadeFiles(turnSid, turnOut.map((f) => f.name));
       // 前几回合的产出块里也挂着这几件的话一起撤。只在眼前这条对话跑着的时候做：
       // 回放往前补旧轮时，那会儿删掉的文件后来可能又写回来了，拿旧消息去改后面的块就改错了
       if (gone.length && !isReplaying && turnSid === sessionId && typeof markOutputGone === "function")
@@ -2486,6 +2491,176 @@ function useDirective(t) {
   if (t.kind === "skill") return `【使用技能：${t.name}】按这份技能说明书的步骤，做下面这件事。\n\n`;
   return `【交给专家：${t.name}】把下面这件事委派给这位专家（delegate_to_expert）。\n\n`;
 }
+// ================= 导入本机终端里的 Claude Code / Codex 会话 =================
+/**
+ * 新任务的空白页底下那一行「发现本机 N 条 … 会话 · 导入」。
+ * 只有这台机器的主人（个人桌面版、平台管理员）拿得到条数；别人那边服务端回 403，
+ * 记一笔就再也不问了——成员连有几条都不该知道，也别每开一次新任务就去撞一次闸。
+ * 条数服务端只 readdir + stat 还带缓存，这里再晚 300ms 才问，空白页先画出来。
+ */
+let localImportGone = false;
+let localImportPoll = null;
+function offerLocalImport(box) {
+  setTimeout(async () => {
+    if (localImportGone || !box.isConnected) return;
+    let d;
+    try {
+      const r = await fetch("/api/import/local");
+      if (r.status === 403) { localImportGone = true; return; }
+      if (!r.ok) return;
+      d = await r.json();
+    } catch { return; }
+    const rows = (d && Array.isArray(d.sources) ? d.sources : []).filter((s) => s && Number(s.count) > 0);
+    if (!box.isConnected) return;
+    box.innerHTML = rows.map((s) => `<button class="btn-plain" data-src="${esc(s.source)}">${ic("terminal")}`
+      + `<span>发现本机 ${Number(s.count)} 条 ${esc(s.name)} 会话</span><span aria-hidden="true">·</span><span class="ei-act">导入</span></button>`).join("");
+    box.hidden = !rows.length;
+    box.onclick = (e) => {
+      const b = e.target.closest("button[data-src]");
+      if (b) openLocalImport(b.dataset.src);
+    };
+  }, 300);
+}
+/** 「3 分钟前 / 昨天 / 09-14」，去年以前的带上年份 */
+function importWhen(t) {
+  if (!t) return "";
+  const d = (Date.now() - t) / 1000;
+  if (d < 60) return "刚刚";
+  if (d < 3600) return Math.floor(d / 60) + " 分钟前";
+  if (d < 86400) return Math.floor(d / 3600) + " 小时前";
+  if (d < 172800) return "昨天";
+  const dt = new Date(t);
+  const md = (dt.getMonth() + 1) + "-" + String(dt.getDate()).padStart(2, "0");
+  return dt.getFullYear() === new Date().getFullYear() ? md : dt.getFullYear() + "-" + md;
+}
+/** 弹窗：先列条数和最近几条，勾好了再导；导入在后台跑，这边轮询进度 */
+async function openLocalImport(source) {
+  mask.classList.add("show");
+  modalBox.classList.remove("wide");
+  mTitle.textContent = "导入本机会话";
+  mBody.innerHTML = `<p class="li-hint">原文件只读不改，导进来的在「工程」那栏，可以接着聊。</p>
+    <label class="li-head"><input type="checkbox" id="li-all"><span>全选</span><span class="li-total" id="li-total"></span></label>
+    <div class="li-list" id="li-list"><div class="li-empty">正在读…</div></div>
+    <div class="li-more" id="li-more-box" hidden><button class="btn-plain" id="li-more">再列一些</button></div>
+    <div class="li-foot"><span class="li-status" id="li-status"></span><button class="btn-plain" id="li-open" hidden>打开看看</button><button class="btn-brand" id="li-go" disabled>导入</button></div>`;
+  const $ = (id) => document.getElementById(id);
+  const listEl = $("li-list"), allEl = $("li-all"), goEl = $("li-go"), statusEl = $("li-status");
+  let total = 0, next = 0, loading = false;
+  const picked = new Set();
+  const say = (...parts) => { statusEl.innerHTML = parts.filter(Boolean).map((p) => `<span>${esc(p)}</span>`).join(""); };
+  const refresh = () => {
+    const n = allEl.checked ? total : picked.size;
+    goEl.disabled = !n;
+    say(allEl.checked && total ? `全部 ${total} 条都选上了` : n ? `选了 ${n} 条` : "");
+  };
+  const loadMore = async () => {
+    if (loading || next == null) return;
+    loading = true;
+    let d;
+    try {
+      const r = await fetch(`/api/import/local/list?source=${encodeURIComponent(source)}&offset=${next}&limit=30`);
+      d = await r.json();
+      if (!r.ok) throw new Error((d && d.error) || "");
+    } catch (e) {
+      listEl.innerHTML = `<div class="li-empty">${esc((e && e.message) || "本机会话没读出来，稍后再试")}</div>`;
+      loading = false;
+      return;
+    }
+    loading = false;
+    if (!$("li-list")) return; // 弹窗已经关了 / 换成别的了
+    if (!next) {
+      listEl.innerHTML = "";
+      mTitle.textContent = `导入本机 ${d.name || source} 会话`;
+    }
+    total = Number(d.total) || 0;
+    next = d.next;
+    $("li-total").textContent = total ? `共 ${total} 条` : "";
+    for (const it of d.items || []) {
+      const row = document.createElement("label");
+      row.className = "li-row";
+      row.innerHTML = `<input type="checkbox" value="${esc(it.id)}"${allEl.checked || picked.has(it.id) ? " checked" : ""}>`
+        + `<span class="li-t" data-i18n-skip>${esc(it.title)}</span>`
+        + `<span class="li-m">${it.folder ? `<span data-i18n-skip>${esc(it.folder)}</span>` : ""}<span>${esc(importWhen(it.at))}</span></span>`;
+      listEl.appendChild(row);
+    }
+    if (!listEl.children.length) listEl.innerHTML = `<div class="li-empty">没有能导入的会话了</div>`;
+    $("li-more-box").hidden = next == null;
+    refresh();
+  };
+  listEl.addEventListener("change", (e) => {
+    const cb = e.target.closest("input[type=checkbox]");
+    if (!cb) return;
+    if (cb.checked) picked.add(cb.value); else picked.delete(cb.value);
+    if (!cb.checked && allEl.checked) allEl.checked = false;
+    refresh();
+  });
+  allEl.addEventListener("change", () => {
+    listEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+      cb.checked = allEl.checked;
+      if (allEl.checked) picked.add(cb.value); else picked.delete(cb.value);
+    });
+    refresh();
+  });
+  $("li-more").onclick = loadMore;
+  goEl.onclick = async () => {
+    goEl.disabled = true;
+    allEl.disabled = true;
+    const body = allEl.checked ? { source, all: true } : { source, ids: [...picked] };
+    let d, r;
+    try {
+      r = await fetch("/api/import/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      d = await r.json();
+    } catch { d = null; }
+    if (!r || (!r.ok && r.status !== 409) || !d || !d.job) {
+      say((d && d.error) || "没导成，稍后再试");
+      goEl.disabled = false;
+      allEl.disabled = false;
+      return;
+    }
+    if (r.status === 409) say(d.error || "上一批还在导，等它导完再来");
+    watchLocalImport(d.job);
+  };
+  await loadMore();
+}
+/** 轮询导入进度。弹窗关了也接着问，导完把会话并进任务历史、把空白页那行条数刷一遍 */
+function watchLocalImport(job) {
+  clearInterval(localImportPoll);
+  const show = (j) => {
+    const statusEl = document.getElementById("li-status");
+    if (!statusEl || !j) return;
+    const parts = j.state === "done"
+      ? [`导好了 ${j.done} 条`, j.skipped ? `跳过 ${j.skipped} 条导过的或空的` : "", j.failed ? `${j.failed} 条没读出来` : ""]
+      : [`正在导 ${j.done + j.skipped + j.failed}/${j.total}`];
+    statusEl.innerHTML = parts.filter(Boolean).map((p) => `<span>${esc(p)}</span>`).join("");
+    const open = document.getElementById("li-open");
+    if (open && j.state === "done" && j.first) {
+      open.hidden = false;
+      open.onclick = () => {
+        closeModal();
+        if (activeLane !== "cli") {
+          activeLane = "cli";
+          try { localStorage.setItem("owb_lane", activeLane); } catch {}
+          renderLaneTabs();
+        }
+        openSession(j.first);
+      };
+    }
+  };
+  show(job);
+  if (job && job.state === "done") { finishLocalImport(); return; }
+  localImportPoll = setInterval(async () => {
+    let j;
+    try { j = (await fetch("/api/import/local/job").then((r) => r.json())).job; } catch { return; }
+    if (!j) { clearInterval(localImportPoll); return; }
+    show(j);
+    if (j.state === "done") { clearInterval(localImportPoll); finishLocalImport(); }
+  }, 800);
+}
+async function finishLocalImport() {
+  await mergeServerSessions();
+  const box = document.querySelector("#empty .empty-import");
+  if (box) offerLocalImport(box);
+}
 function buildEmpty() {
   const tpl = document.createElement("div");
   tpl.className = "empty"; tpl.id = "empty";
@@ -2495,7 +2670,9 @@ function buildEmpty() {
   tpl.innerHTML = `<h1>把事情交给我</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
       `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
-    <div class="chips" id="scene-chips"></div>`;
+    <div class="chips" id="scene-chips"></div>
+    <div class="empty-import" hidden></div>`;
+  offerLocalImport(tpl.querySelector(".empty-import"));
   const chipsEl = tpl.querySelector("#scene-chips");
   const renderChips = (scene) => {
     chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button>${ic(i)}${esc(t)}</button>`).join("");
@@ -2953,6 +3130,8 @@ function rewindButton(sid, ckptId) {
     refreshFilesCache(); // 文件区跟着刷新
   };
   wrap.appendChild(b);
+  const review = document.createElement("button"); review.type = "button"; review.className = "step-rewind"; review.textContent = "逐块审查";
+  review.onclick = () => openCheckpointReview(wrap, sid, ckptId); wrap.appendChild(review);
   return wrap;
 }
 
@@ -5857,6 +6036,7 @@ function makeOutCard(f, isHtml, root) {
   // 一个 🎬 图标只说明「这是个视频」，第一帧才说明「这是哪个视频」——
   // 一回合出三条片子的时候，靠图标是分不出哪条是哪条的。
   const isVid = /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
+  const pinTitle = typeof I18N !== "undefined" && I18N.t ? I18N.t("置顶文件到侧栏") : "置顶文件到侧栏";
   // 整张图放进来之后，扁盒子配竖图必然剩一圈留白。底下垫一层同一张图的放大模糊版把它填掉：
   // 用的是同一个 url，浏览器走缓存，不会多下一次。视频没有这层——它自己带黑底，本来就是电影画幅的样子。
   // 缩略图走 ?thumb=320，不要原图。卡片只有 120px 宽，而工作空间里真实躺着
@@ -5881,6 +6061,7 @@ function makeOutCard(f, isHtml, root) {
   card.innerHTML = `<div class="out-thumb">${thumb}</div>
     <div class="out-info"><span class="out-name">${esc(f.name.split("/").pop())}</span><span class="out-meta">${fmtSize(f.size)}</span></div>
     <div class="out-acts">
+      <button class="oa-ico${typeof isPinnedFile === "function" && isPinnedFile("ws", f.name, root || "") ? " on" : ""}" data-a="pin" title="${pinTitle}" aria-label="${pinTitle}">${ic("pin")}</button>
       <button class="oa-main" data-a="${isHtml ? "br" : "pv"}" title="${mainTx}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${mainTx}</span></button>
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
       <a class="oa-ico" href="${withRoot("/api/files/download/" + fpath(f.name), root)}" download title="下载">${ic("download")}</a></div>`;
@@ -5896,6 +6077,11 @@ function makeOutCard(f, isHtml, root) {
   };
   onActivate(card, (e) => {
     if (e.target.closest("a")) return;
+    if (e.target.closest('[data-a="pin"]')) {
+      e.preventDefault(); e.stopPropagation();
+      if (typeof togglePinnedFile === "function") togglePinnedFile("ws", f.name, root, null);
+      return;
+    }
     if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e, root);
     if (e.target.closest('[data-a="br"]')) {
       e.stopPropagation();
@@ -6360,6 +6546,7 @@ async function refreshSettingsCache() {
   const wasPerChat = wsPerChat();
   const wasRoot = settingsCache && settingsCache.workspace_dir;
   settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
+  if (typeof syncTaskBillingControls === "function") syncTaskBillingControls();
   if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
   if (settingsCache && Array.isArray(settingsCache.moved_on_boot) && settingsCache.moved_on_boot.length) bootMoved = settingsCache.moved_on_boot;
   // 换了项目/工作空间，「本对话 / 全部」该不该出现跟着变；不重画的话要等下一次刷文件列表才对得上
@@ -6410,6 +6597,7 @@ function currentSessModel() {
 // 「新对话沿用上次手动选的模型」（设置 → 模型 里的开关）：算出新对话该预选谁。
 // 直接写进 pendingModel 让标签立刻显示出来——用户发消息前就看得见用的是哪个，绝不静默换模型
 function defaultPendingModel() {
+  if (typeof currentTaskBillingScope === "function" && currentTaskBillingScope() === "team") return taskDefaultModel();
   const s = settingsCache;
   if (s && s.model_follow_last && s.last_picked_model && s.last_picked_model !== s.active_model
       && (s.models || []).some(m => m.name === s.last_picked_model)) return s.last_picked_model;
@@ -6429,7 +6617,7 @@ function defaultPendingModel() {
 function activeEngine() {
   const ag = (settingsCache && settingsCache.agent) || {};
   const id = ag.engine || "builtin";
-  if (id === "builtin" || inAssistMode) return null;
+  if (id === "builtin" || inAssistMode || (typeof currentTaskBillingScope === "function" && currentTaskBillingScope() === "team")) return null;
   const o = (ag.engine_options || {})[id] || {};
   return { id, label: ag.engine_label || id, model: (o.model || "").trim() };
 }
@@ -6437,7 +6625,7 @@ function updateModelLabel() {
   if (!settingsCache) return;
   const eng = activeEngine();
   const ov = currentSessModel();
-  const text = eng ? (eng.model || eng.label) : (ov || settingsCache.active_model);
+  const text = eng ? (eng.model || eng.label) : (ov || (typeof taskDefaultModel === "function" ? taskDefaultModel() : settingsCache.active_model));
   const btn = document.getElementById("model-btn");
   document.getElementById("model-label").textContent = modelShown(text);
   // 本机 CLI 在跑的时候，光看模型名跟 API 模型长得一模一样——用户分不清这次花不花钱。
@@ -6453,6 +6641,7 @@ function updateModelLabel() {
   // 助理页顶栏那个选择器（页面开着才有）跟输入框这个显示同一个值，别让两处对不上
   const al = document.getElementById("im-model-label");
   if (al) { al.textContent = modelShown(ov || settingsCache.active_model); renderModelMenu(document.getElementById("im-model-menu")); }
+  if (typeof syncSessionHeader === "function") syncSessionHeader();
 }
 async function setSessionModel(name) { // name: 模型名；null = 跟随全局默认
   // 本机引擎在跑的时候，这里选什么都到不了 CLI。让它落库再显示成「已切换」，

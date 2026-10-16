@@ -35,6 +35,9 @@ if (typeof require("electron") === "string") {
   process.exit(1);
 }
 const { app, BrowserWindow } = require("electron");
+const BROWSER_PROFILE = fs.mkdtempSync(path.join(require("os").tmpdir(), "owb-frontend-profile-"));
+app.setPath("userData", BROWSER_PROFILE);
+process.on("exit", () => { try { fs.rmSync(BROWSER_PROFILE, { recursive: true, force: true }); } catch {} });
 
 // ---- 看门狗：卡住了要自己喊一声，别让人对着一片空白猜 ----
 // 2026-09-13，`npm test` 第一次跑在 CI 的 macOS 机器上，这个进程起来之后再没回过话，
@@ -109,6 +112,7 @@ const SEND_STUBS = [
   "function stripSceneTag(t) { return String(t).replace(/^【[^】]*】/, ''); }",
   "window.modelSet = null; async function setSessionModel(m) { window.modelSet = m; }",
   "window.turns = []; async function runTurn(sid, text, mode, regen) { window.turns.push({ sid: sid, text: text, mode: mode, regen: regen }); }",
+  "window.hist = 0; function renderHistory() { window.hist++; }",
 ].join("\n");
 
 const SEND_CHECKS = `
@@ -135,6 +139,15 @@ const SEND_CHECKS = `
   await doSend("再来一张", "auto");
   ok("同一条对话发第二句不会又多出一行", sessions.length === 1, JSON.stringify(sessions));
   ok("第二轮走的还是同一个 id", turns.length === 2 && turns[1].sid === sid, JSON.stringify(turns));
+
+  // ---- 3b. 接着聊一条老的：它排回最前面、时间记成现在，侧栏按天分组时归进「今天」 ----
+  sessions.unshift({ id: "s_old", title: "老任务", at: 5 });
+  sessions[1].at = 1;
+  const t0 = Date.now(), h0 = window.hist, sv0 = window.saved;
+  await doSend("接着刚才的", "auto");
+  ok("★接着聊的那条排回最前，时间记成现在★", sessions.length === 2 && sessions[0].id === sid && sessions[0].at >= t0 && sessions[1].id === "s_old", JSON.stringify(sessions));
+  ok("挪完存了一下、侧栏也跟着重画", window.saved > sv0 && window.hist > h0, window.saved + "/" + window.hist);
+  sessions = sessions.filter((x) => x.id === sid);
 
   // ---- 4. ★反向对照★ 一个附件都没传、直接发第一条：照样得建行 ----
   sessionId = null; sessions = []; turns.length = 0;
@@ -672,8 +685,8 @@ const TURNOUT_CHECKS = `
     ok("网页卡的主操作是「在浏览器打开」、其余是「预览」，字留给读屏、屏幕上不占位",
       html.querySelector(".oa-main .tx").textContent === "在浏览器打开" && ppt.querySelector(".oa-main .tx").textContent === "预览" &&
       html.querySelector(".oa-main .tx").getBoundingClientRect().width <= 1);
-    ok("三个图标钮都带 title（没字全靠它）", html.querySelectorAll(".out-acts [title]").length === 3 &&
-      html.querySelector('[data-a="br"]').title === "在浏览器打开" && html.querySelector('[data-a="rv"]').title === "打开所在位置" && html.querySelector("a[download]").title === "下载");
+    ok("四个图标钮都带 title（没字全靠它）", html.querySelectorAll(".out-acts [title]").length === 4 &&
+      html.querySelector('[data-a="pin"]').title === "置顶文件到侧栏" && html.querySelector('[data-a="br"]').title === "在浏览器打开" && html.querySelector('[data-a="rv"]').title === "打开所在位置" && html.querySelector("a[download]").title === "下载");
     ok("图标钮是 26px 方钮，不是带边框的长条", html.querySelector('[data-a="rv"]').getBoundingClientRect().width <= 28 && getComputedStyle(html.querySelector('[data-a="rv"]')).borderStyle === "none");
     ok("卡能落焦点（tabindex=0），但不套 role=button（里面还有真按钮）", html.tabIndex === 0 && !html.getAttribute("role"));
     // OFFICE_RE 只认 .doc/.ppt/.xls 这种老二进制格式（app 里预览不了，只能交给系统程序）；pptx/docx/xlsx 有结构化预览，走「点击预览」
@@ -3633,18 +3646,21 @@ const ENGPICK_CHECKS = `
 // 这里验的是这张卡有没有把三件事说清楚：
 // 还差几项（进度条）、拆解/验收自己歪了要留痕（不能静默）、停了要说为什么停并且能接着冲。
 const GOAL_SRC = APP02.slice(APP02.indexOf("// ================= Goal 目标卡"), APP02.indexOf("// ================= 工作空间选择"));
+const GOAL_SLOT_HTML = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8").split("\n").find((line) => line.includes('id="chat-scroll"') && line.includes('id="goal-card"'));
+if (!GOAL_SLOT_HTML) throw new Error("执行计划必须在聊天滚动区内显示");
 const GOAL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
-  + "<body style='margin:0;width:760px'><div id='goal-card' style='display:none'></div></body>";
+  + "<body style='margin:0;width:760px'>" + GOAL_SLOT_HTML + "</body>";
 const GOAL_STUBS = [
   IC_STUB,
   "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
   "var sessionId = 's1';",
   "var sessionGoals = new Map();",
   "var SENT = []; var doSend = (t, m) => SENT.push([t, m]);",
-  "var fetch = async () => ({ json: async () => ({}) });",
+  "var fetch = async () => ({ ok: true, json: async () => ({}) });",
+  "var toast = () => {};",
 ].join("\n");
 const GOAL_CHECKS = `
-(() => {
+(async () => {
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
   const card = document.getElementById("goal-card");
@@ -3659,6 +3675,25 @@ const GOAL_CHECKS = `
   const w = bar.getBoundingClientRect().width / card.querySelector(".gc-bar").getBoundingClientRect().width;
   ok("进度条按打勾的比例走（4 条里 1 条 ≈ 25%）", Math.abs(w - 0.25) < 0.03, Math.round(w * 100) + "%");
   ok("没达成的一条条都列着", card.querySelectorAll(".gc-item").length === 4 && card.querySelectorAll(".gc-item.ok").length === 1);
+  ok("执行计划是聊天流里的区域，没有弹窗或遮罩", card.parentElement.id === "chat-scroll" && !document.querySelector('dialog, [role="dialog"]') && getComputedStyle(card).position !== "fixed");
+  const folded = card.getBoundingClientRect().height;
+  ok("默认折叠验收清单，只显示标题与进度", !card.querySelector("details").open && !card.querySelector(".gc-item").checkVisibility() && folded < 90);
+  card.querySelector("details").open = true;
+  ok("在原处展开全部标准", card.getBoundingClientRect().height > folded + 60 && card.querySelector(".gc-item").getBoundingClientRect().height > 0);
+  const summary = card.querySelector("summary");
+  summary.focus();
+  const selectedText = card.querySelector(".gc-item-text").firstChild;
+  const range = document.createRange(); range.selectNodeContents(selectedText);
+  window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  sessionGoals.get("s1").round = 2;
+  renderGoalCard();
+  ok("进度更新保留用户的展开状态", card.querySelector("details").open);
+  ok("更新进度保留展开按钮的键盘焦点", document.activeElement === summary && summary.isConnected);
+  ok("更新进度不会打断清单文本选择", window.getSelection().toString() === "有画布" && selectedText.isConnected);
+  window.getSelection().removeAllRanges();
+  card.querySelector("details").open = false;
+  renderGoalCard();
+  ok("进度更新不会擅自打开清单", !card.querySelector("details").open);
   ok("负向控制：一切正常时不摆警告条也不摆暂停条", !card.querySelector(".gc-note") && !card.querySelector(".gc-paused"));
 
   // 拆解/验收这一步自己歪了：必须写在卡上，不许静默（不然用户对着不动的进度条以为是活没干好）
@@ -3681,14 +3716,75 @@ const GOAL_CHECKS = `
   sessionGoals.set("s1", G({ status: "done", round: 2, criteria: [{ text: "有画布", done: true }, { text: "方向键能控制", done: true }], paused: "自动补跑已用满 3 轮" }));
   renderGoalCard();
   ok("达成了就说达成", /已达成/.test(card.querySelector(".gc-meta").textContent) && card.classList.contains("ok"));
+  await new Promise((resolve) => setTimeout(resolve, 400));
   const w2 = card.querySelector(".gc-bar i").getBoundingClientRect().width / card.querySelector(".gc-bar").getBoundingClientRect().width;
   ok("进度条满格", w2 > 0.98, Math.round(w2 * 100) + "%");
   ok("达成之后不再劝人接着冲（哪怕服务端还留着上一轮的暂停原因）", !card.querySelector(".gc-paused"));
+
+  card.querySelector("details").open = true;
+  sessionId = "s2";
+  sessionGoals.set("s2", G());
+  renderGoalCard();
+  ok("换任务时新计划默认折叠", !card.querySelector("details").open);
+  const scroll = document.getElementById("chat-scroll");
+  scroll.style.height = "180px";
+  document.getElementById("chat-col").style.height = "900px";
+  const top = card.getBoundingClientRect().top;
+  scroll.scrollTop = 120;
+  ok("计划随对话滚走，不固定盖在消息上", card.getBoundingClientRect().top < top - 100);
+  scroll.scrollTop = 0;
+  document.body.style.width = "360px";
+  renderGoalCard();
+  ok("窄窗口下标题和进度不会撑出页面", card.getBoundingClientRect().right <= 360 && card.scrollWidth <= card.clientWidth + 1);
+  sessionGoals.get("s2").criteria = [{ text: "https://example.invalid/" + "long".repeat(100), done: false }, { text: "<img src=x onerror=alert(1)>", done: false }];
+  renderGoalCard(); card.querySelector("details").open = true;
+  ok("展开后的长链接能换行，不撑出手机屏幕", card.scrollWidth <= card.clientWidth + 1);
+  ok("清单内容按文字展示，不能插入可执行标签", !card.querySelector("img") && card.querySelectorAll(".gc-item")[1].textContent.includes("<img"));
+  sessionGoals.set("s2", G({ criteria: [] })); renderGoalCard();
+  ok("拆解尚未返回时不显示无效的进度条", card.querySelector(".gc-bar").hidden && !card.querySelector(".gc-item"));
+  document.body.style.width = "760px";
+
+  sessionGoals.set("s2", G()); renderGoalCard();
+  const originalFetch = fetch;
+  let requested = "", finishRequest;
+  fetch = (url) => { requested = url; return new Promise((resolve) => { finishRequest = resolve; }); };
+  card.querySelector(".gc-close").click();
+  ok("归档请求等待期间不重复提交", card.querySelector(".gc-close").disabled);
+  sessionId = "s1";
+  sessionGoals.set("s1", G()); renderGoalCard();
+  finishRequest({ ok: true }); await new Promise((resolve) => setTimeout(resolve, 0));
+  ok("归档等待时切换任务，只归档原来的任务", requested === "/api/session/s2/goal" && sessionGoals.get("s2").status === "closed" && sessionGoals.get("s1").status === "active" && card.dataset.sid === "s1");
+  fetch = async () => ({ ok: false });
+  card.querySelector(".gc-close").click(); await new Promise((resolve) => setTimeout(resolve, 0));
+  ok("归档失败时清单留在原处，允许重试", sessionGoals.get("s1").status === "active" && card.style.display !== "none" && !card.querySelector(".gc-close").disabled);
+  fetch = originalFetch;
 
   // 归档：卡收起来
   sessionGoals.set("s1", G({ status: "closed" }));
   renderGoalCard();
   ok("归档的目标不再占地方", card.style.display === "none" && card.innerHTML === "");
+  return names;
+})()
+`;
+
+const GOAL_EN_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond) => { if (!cond) throw new Error(name); names.push(name); };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  sessionId = "s1";
+  const g = { text: "保存", criteria: [{ text: "取消", done: false }], status: "active", round: 0 };
+  sessionGoals.set("s1", g);
+  I18N.setLang("en"); renderGoalCard(); await tick();
+  const card = document.getElementById("goal-card");
+  ok("英文计划标题与进度已翻译", card.querySelector(".gc-label").textContent === "Execution plan" && card.querySelector(".gc-meta").textContent === "0/1 criteria · Round 0");
+  ok("用户目标与验收正文保留原文", card.querySelector(".gc-title-text").textContent === "保存" && card.querySelector(".gc-item-text").textContent === "取消");
+  card.querySelector("details").open = true;
+  const summary = card.querySelector("summary"); summary.focus();
+  g.round = 1; g.criteria[0].done = true; renderGoalCard(); await tick();
+  ok("英文进度更新不打开弹窗、不丢焦点", !document.querySelector('dialog, [role="dialog"]') && card.querySelector("details").open && document.activeElement === summary && card.querySelector(".gc-meta").textContent === "1/1 criteria · Round 1");
+  I18N.setLang("zh"); await tick();
+  ok("切回中文保留展开状态并还原界面文案", card.querySelector(".gc-label").textContent === "执行计划" && card.querySelector("details").open && card.querySelector(".gc-meta").textContent === "1/1 项 · 第 1 轮");
   return names;
 })()
 `;
@@ -3991,6 +4087,171 @@ function testEngineI18n() {
   ok(`反向对照：摘掉那一节，${m1.length}/${ENGINE_I18N_CASES.length} 句当场露中文`, m1.length === ENGINE_I18N_CASES.length, "只红了 " + m1.length + " 句，这几句是别处吃下的：" + ENGINE_I18N_CASES.map(([s]) => s).filter((s) => !m1.includes(s)).join(" ／ "));
   return names;
 }
+
+// ================= 侧栏任务历史那几句的英文 =================
+// 置顶、按天分组的组标题、行上的文件图标，都是 app-02 renderHistory 拼出来写进侧栏的，覆盖率闸门扫不到模板里的拼接。
+// 漏翻了英文界面上侧栏就钉着「已置顶」「10月13日」。这里逐句过真词典，再摘掉 i18n.js 那一节看它们当场露中文
+const HIST_I18N_CASES = [
+  ["已置顶", "Pinned"],
+  ["置顶", "Pin"],
+  ["取消置顶", "Unpin"],
+  ["置顶「Weekly report」", "Pin “Weekly report”"],
+  ["取消置顶「Weekly report」", "Unpin “Weekly report”"],
+  ["没置顶上：只能置顶自己的任务", "Couldn't pin it: You can only pin your own tasks"],
+  ["没置顶上：没连上服务端", "Couldn't pin it: Couldn't reach the server"],
+  ["没取消掉：这个任务已经不在了", "Couldn't unpin it: This task is gone"],
+  ["10月13日", "Oct 13"],
+  ["1月9日", "Jan 9"],
+  ["产出过 1 个文件", "Made 1 file"],
+  ["产出过 12 个文件", "Made 12 files"],
+  // 每行的「⋯」菜单
+  ["更多操作", "More actions"],
+  ["更多操作「Weekly report」", "More actions for “Weekly report”"],
+  ["「Weekly report」的操作", "Actions for “Weekly report”"],
+  ["在新窗口打开", "Open in new window"],
+  ["标为未读", "Mark as unread"],
+  ["标为已读", "Mark as read"],
+  ["改名…", "Rename…"],
+  ["移到项目…", "Move to project…"],
+  ["移到哪个项目", "Move to project"],
+  ["改个名字", "Rename task"],
+  ["改好", "Save"],
+  ["最多 50 个字", "Up to 50 characters"],
+  ["名字太长了，最多 50 个字", "That name is too long. Up to 50 characters"],
+  ["名字没改成：只能改自己任务的名字", "Couldn't rename it: You can only rename your own tasks"],
+  ["名字没改成：名字不能是空的", "Couldn't rename it: The name can't be empty"],
+  ["没挪成：只能挪自己的任务", "Couldn't move it: You can only move your own tasks"],
+  ["没挪成：这里没有项目可挪", "Couldn't move it: There are no projects to move it to"],
+  ["没挪成：没有这个项目", "Couldn't move it: That project doesn't exist"],
+  ["已移到「Website」，之前的文件还在原处", "Moved to “Website”. Earlier files stay where they were"],
+  ["标成了未读，回头再看", "Marked as unread to come back to"],
+  ["这个任务已经不在了", "This task is gone"],
+  // 把任务拖进「已置顶」：落点上那句、头一回点图钉顶上去时的提示
+  ["拖到这里置顶", "Drop here to pin"],
+  ["下回直接把任务拖进「已置顶」也行", "Next time, you can drag a task into Pinned"],
+];
+function testHistI18n() {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const root = path.join(__dirname, "..");
+  const jsDir = path.join(root, "public", "js");
+  const app02 = fs.readFileSync(path.join(jsDir, "app-02.js"), "utf8");
+  // 源码里真这么拼：措辞改了这边当场红，词典跟着改
+  for (const frag of ["\"已置顶\"", "`置顶「${t}」`", "`取消置顶「${t}」`", "`${d.getMonth() + 1}月${d.getDate()}日`", "`产出过 ${s.files} 个文件`", "`${on ? \"没置顶上\" : \"没取消掉\"}：${err}`"]) {
+    ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");
+  }
+  for (const frag of ['title="更多操作"', "`更多操作「${t}」`", "}」的操作`", '"在新窗口打开"', '"标为未读"', '"标为已读"', '"改名…"', '"移到项目…"', ">移到哪个项目<",
+    'title: "改个名字"', 'ok: "改好"', "`最多 ${HIST_TITLE_MAX} 个字`", "`名字没改成：${err}`", "`没挪成：${err}`", "`已移到「${project}」，之前的文件还在原处`",
+    '"<span>拖到这里置顶</span>"', 'toast("下回直接把任务拖进「已置顶」也行"']) {
+    ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");
+  }
+  // 圆点上的悬停提示（手动标的未读）和打开链接里的任务已被删掉时那句提示，各在自己的文件里
+  const attnSrc = fs.readFileSync(path.join(jsDir, "app-01-attention.js"), "utf8");
+  ok("源码里真有：标成了未读那句提示", attnSrc.includes('"标成了未读，回头再看"'), "app-01-attention.js 里找不到「标成了未读，回头再看」——措辞改过？词典跟着改");
+  const app03 = fs.readFileSync(path.join(jsDir, "app-03.js"), "utf8");
+  ok("源码里真有：链接里的任务不在了那句", app03.includes('toast("这个任务已经不在了"'), "app-03.js 里找不到 toast(\"这个任务已经不在了\"——措辞改过？词典跟着改");
+  // 改名、挪项目被服务端拒的那几句原因，拼进上面「名字没改成：」「没挪成：」后面
+  const serverSrc = fs.readFileSync(path.join(root, "server.js"), "utf8");
+  for (const frag of ['"名字不能是空的"', "`名字太长了，最多 ${SESS_TITLE_MAX} 个字`", '"只能改自己任务的名字"', '"只能挪自己的任务"', '"这里没有项目可挪"', '"没有这个项目"']) {
+    ok("服务端真有：" + frag.slice(0, 18), serverSrc.includes(frag), "server.js 里找不到 " + frag + "——措辞改过？词典跟着改");
+  }
+  const I18N_MOD = require(path.join(jsDir, "i18n.js"));
+  const bad = (mod) => HIST_I18N_CASES.filter(([zh, en]) => mod.tr(zh, "en") !== en);
+  const b0 = bad(I18N_MOD);
+  ok(`英文界面一句句都对（${HIST_I18N_CASES.length} 句）`, b0.length === 0, b0.map(([zh, en]) => zh + " → " + I18N_MOD.tr(zh, "en") + "（该是 " + en + "）").join(" ／ "));
+  const en = (zh) => I18N_MOD.tr(zh, "en");
+  ok("  └ 今天 / 昨天 / 更早这三个组标题也翻", en("今天") === "Today" && en("昨天") === "Yesterday" && en("更早") === "Older", [en("今天"), en("昨天"), en("更早")].join("/"));
+  ok("  └ 不像日期的不瞎翻（13 月、32 日原样留着）", en("13月1日") === "13月1日" && en("10月32日") === "10月32日", en("13月1日") + " / " + en("10月32日"));
+  // ★反向对照★ 摘掉「侧栏任务历史」那一节再加载：这一节管的句子得全露中文
+  const src = fs.readFileSync(path.join(jsDir, "i18n.js"), "utf8");
+  const a = src.indexOf("// ---------- 侧栏任务历史：置顶、按天分组"), b = src.indexOf("// 套餐名在句首", a);
+  ok("i18n.js 里那一节找得到（节标题没改）", a > 0 && b > a);
+  const mod = { exports: {} };
+  new Function("module", "window", src.slice(0, a) + src.slice(b))(mod, undefined);
+  const b1 = bad(mod.exports);
+  ok(`反向对照：摘掉那一节，${b1.length}/${HIST_I18N_CASES.length} 句当场不对`, b1.length === HIST_I18N_CASES.length,
+    "这几句是别处吃下的：" + HIST_I18N_CASES.filter((c) => !b1.includes(c)).map(([zh]) => zh).join(" ／ "));
+  return names;
+}
+// ================= 「在新窗口打开」带过去的 ?s= =================
+// 新窗口靠地址栏里的 ?s=会话号 认出要开哪条。开完得从地址栏擦掉，不然一刷新又跳回那条；
+// 不在自己侧栏里的（删掉了、别人的）别硬开一片空白，说一声；乱写的号连提示都不给
+const OPEN_LINK_SRC = (() => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
+  const a = src.indexOf("async function openLinkedSession() {");
+  const b = src.indexOf("\n}\n", a);
+  if (a < 0 || b <= a) throw new Error("app-03.js 里找不到 openLinkedSession（被改名/挪走？），前端测试没法定位真源码");
+  return src.slice(a, b + 3);
+})();
+async function testOpenLinkedSession(src = OPEN_LINK_SRC) {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const run = async (href, ids) => {
+    const st = { replaced: [], toasts: [], opened: [] };
+    const history = { replaceState: (_a, _b, url) => st.replaced.push(url) };
+    const fn = new Function("location", "history", "sessions", "toast", "openSession", src + "\nreturn openLinkedSession;")(
+      { href }, history, ids.map((id) => ({ id })), (m) => st.toasts.push(String(m)), async (sid) => { st.opened.push(sid); });
+    await fn();
+    return st;
+  };
+  let st = await run("http://127.0.0.1:3800/?lang=en&s=abc_123#files", ["abc_123", "x"]);
+  ok("★带着 ?s= 打开的新窗口直接开那条任务★", st.opened.join() === "abc_123", JSON.stringify(st));
+  ok("★开完就从地址栏擦掉 s，刷新不再跳一次★", st.replaced.length === 1 && !/[?&]s=/.test(st.replaced[0]), JSON.stringify(st.replaced));
+  ok("  └ 地址栏里别的参数和 # 原样留着", st.replaced[0] === "/?lang=en#files", st.replaced[0]);
+  st = await run("http://127.0.0.1:3800/?s=gone1", ["abc_123"]);
+  ok("侧栏里没有的（删掉了 / 别人的）不硬开，说一声", st.opened.length === 0 && st.toasts.join() === "这个任务已经不在了", JSON.stringify(st));
+  ok("  └ 也照样擦掉，地址栏干干净净", st.replaced[0] === "/", JSON.stringify(st.replaced));
+  st = await run("http://127.0.0.1:3800/?s=..%2Fx", ["../x"]);
+  ok("乱写的号不开、也不弹提示，只擦掉", st.opened.length === 0 && st.toasts.length === 0 && st.replaced[0] === "/", JSON.stringify(st));
+  st = await run("http://127.0.0.1:3800/?lang=en", ["abc_123"]);
+  ok("地址栏里没有 s 的平常打开：一下都不动", st.opened.length === 0 && st.toasts.length === 0 && st.replaced.length === 0, JSON.stringify(st));
+  return names;
+}
+const OPEN_LINK_MUTANTS = [
+  ["不擦地址栏", 'u.searchParams.delete("s");', "", "★开完就从地址栏擦掉 s，刷新不再跳一次★"],
+  ["不认侧栏", 'if (!sessions.some((s) => s.id === sid)) { toast("这个任务已经不在了", "circle-x"); return; }', "", "侧栏里没有的（删掉了 / 别人的）不硬开，说一声"],
+  ["不验号", "if (!/^[\\w-]{1,80}$/.test(sid)) return;", "", "乱写的号不开、也不弹提示，只擦掉"],
+];
+
+// ================= 改名那一趟还没回来，模型起的标题别盖人起的 =================
+// 首轮跑完服务端会推一个 {type:"title"}。人恰好在这时改了名、存的那一趟还没回来：
+// 服务端认 title_manual 只管得住它自己那份，推下来的这一下得在前端也让一让
+const TITLE_EV_SRC = (() => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
+  const head = '} else if (ev.type === "title") {';
+  const a = src.indexOf(head);
+  const b = src.indexOf('} else if (ev.type === "interject") {', a);
+  if (a < 0 || b <= a) throw new Error("app-01.js 里找不到 title 事件那一段（被改名/挪走？），前端测试没法定位真源码");
+  return src.slice(a + head.length, b);
+})();
+function testTitleEventGuard(src = TITLE_EV_SRC) {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const run = (busy, sid, cur) => {
+    const st = { saved: 0, rendered: 0 };
+    const sessions = [{ id: "s1", title: "我自己起的" }, { id: "s2", title: "帮我把这个季度的销售数据整理一" }];
+    const titleEl = { textContent: "原标题" };
+    const document = { getElementById: (id) => (id === "session-title" ? titleEl : null) };
+    new Function("ev", "turnSid", "sessionId", "sessions", "histEditBusy", "saveSessions", "renderHistory", "document", src)(
+      { type: "title", title: "整理 Q3 销售数据" }, sid, cur, sessions, new Map(busy.map((k) => [k, 1])), () => st.saved++, () => st.rendered++, document);
+    return { sessions, titleEl, st };
+  };
+  let r = run(["s1:title"], "s1", "s1");
+  ok("★改名那一趟还没回来时，模型起的标题不盖侧栏里人起的★", r.sessions[0].title === "我自己起的", r.sessions[0].title);
+  ok("★顶上的标题也不跟着被换★", r.titleEl.textContent === "原标题", r.titleEl.textContent);
+  r = run(["s1:title"], "s2", "s2");
+  ok("别的任务在改名，不耽误这条换上模型起的标题", r.sessions[1].title === "整理 Q3 销售数据" && r.titleEl.textContent === "整理 Q3 销售数据", JSON.stringify(r.sessions[1]));
+  r = run([], "s2", "s1");
+  ok("没在改名就照常换上，存下来并重画侧栏", r.sessions[1].title === "整理 Q3 销售数据" && r.st.saved === 1 && r.st.rendered === 1, JSON.stringify(r.st));
+  ok("  └ 不是正看着的那条，顶上的标题不动", r.titleEl.textContent === "原标题", r.titleEl.textContent);
+  r = run(["s2:project"], "s2", "s2");
+  ok("挪项目在存不拦标题（只认改名那一项）", r.sessions[1].title === "整理 Q3 销售数据", r.sessions[1].title);
+  return names;
+}
+const TITLE_EV_MUTANTS = [
+  ["整个不让", 'histEditBusy.has(turnSid + ":title")', "false", "★改名那一趟还没回来时，模型起的标题不盖侧栏里人起的★"],
+  ["顶上不让", "turnSid === sessionId && ev.title && !naming", "turnSid === sessionId && ev.title", "★顶上的标题也不跟着被换★"],
+];
 
 // 拼音打一半按回车/Esc：回车是把字母上屏、Esc 是取消拼字——这两下都是给输入法的。
 // 没过 imeKey 的回车会把半截拼音当整条发出去、把搜索跳到拼音字母匹配的那页；
@@ -5796,7 +6057,11 @@ const LIBWS_CHECKS = `
   ok("libState：上次停在「工作区」，下次打开还在「工作区」", st1.view === "ws", st1.view);
   ok("libState：停在哪一层不记——下次打开那个文件夹可能已经没了，从最外层开始", st1.wsDir === "", JSON.stringify(st1.wsDir));
   ok("libState：一上来先铺 300 个", st1.wsN === 300 && st1.orphanN === 300, st1.wsN + "/" + st1.orphanN);
-  ok("反向对照：认不出来的值退回「文件夹」", mkState(lsOf("finder")).view === "dir");
+  ok("反向对照：认不出来的值退回「推荐」", mkState(lsOf("finder")).view === "rec");
+  const st0 = mkState({ getItem: () => null, setItem() {}, removeItem() {} });
+  ok("libState：头一回打开停在「推荐」、网格摆、文件夹页签先看目录、来源不限",
+     st0.view === "rec" && st0.mode === "icon" && st0.fold === "dir" && st0.from === "all" && st0.allN === 300 && st0.favN === 300,
+     JSON.stringify({ v: st0.view, m: st0.mode, f: st0.fold, fr: st0.from }));
 
   // 测试页是 data: URL，localStorage 一碰就抛；换成一份看得见里面的内存版，好查「wsDir 没被存下来」
   const mem = {};
@@ -5913,9 +6178,11 @@ const LIBWS_CHECKS = `
   ok("标签：多了一个「工作区」", !!wsTab && wsTab.textContent.trim() === "工作区", wsTab ? wsTab.outerHTML.slice(0, 200) : "没有这个标签");
   ok("标签：图标用的是现成的 hard-drive", !!wsTab.querySelector('use[href="#i-hard-drive"]'), wsTab.innerHTML.slice(0, 160));
   const sideR = page.querySelector(".lib-side").getBoundingClientRect().right;
-  ok("标签：四个都放得下、字没被挤掉（232px 的侧栏横排四个会截字）",
-     tabs.length === 4 && tabs.every((t) => t.scrollWidth <= t.clientWidth + 1 && t.getBoundingClientRect().right <= sideR + 1),
+  ok("标签：六个主导航与三个文件夹找法都放得下、字没被挤掉",
+     tabs.length === 9 && tabs.every((t) => t.scrollWidth <= t.clientWidth + 1 && t.getBoundingClientRect().right <= sideR + 1),
      tabs.map((t) => t.textContent.trim() + ":" + t.scrollWidth + "/" + t.clientWidth).join(" "));
+  ok("标签：新导航包括推荐、收藏、文件夹、图像、全部文件与笔记",
+     ["rec", "fav", "img", "all"].every((view) => !!page.querySelector('.lib-tabs:not(.lib-fold-tabs) [data-view="' + view + '"]')) && !!page.querySelector("[data-folder]") && !!page.querySelector('[data-src="notes"]'));
 
   // 夹具要自洽：全量 120 就只给 120 个（文件面板那份永远是全量里的一截，不会比全量还多）
   const WSF_REST = WSF.splice(120);
@@ -6457,12 +6724,12 @@ const GATE_CHECKS = `
   ok("成员的设置页里没有「联网搜索 / 地图 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」这七页（点进去每一颗按钮都是 403）",
     !["search", "map", "evolve", "trace", "ops", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
   ok("混着他自己东西的那几页留着（模型看得到有哪些、安全看得到档位、个性化里有他的宠物）",
-    ["models", "agent", "security", "persona", "memory", "shortcuts", "look", "about"].every((k) => memberCats.includes(k)), memberCats.join(","));
+    ["models", "agent", "security", "persona", "memory", "shortcuts", "look", "browser", "about"].every((k) => memberCats.includes(k)), memberCats.join(","));
   await renderSettings("data");
   ok("从旧深链跳进一个已经不画的页，退回第一页，不留一屏空白", activeCat() && activeCat().cat === "models", JSON.stringify(activeCat()));
   owner = true;
   await renderSettings("models");
-  ok("反向对照：平台管理员 15 页一个不少", navCats().length === 15 && navCats().includes("map") && navCats().includes("data") && navCats().includes("trace") && navCats().includes("ops"), navCats().join(","));
+  ok("反向对照：平台管理员 16 页一个不少", navCats().length === 16 && navCats().includes("map") && navCats().includes("data") && navCats().includes("trace") && navCats().includes("ops") && navCats().includes("browser"), navCats().join(","));
 
   // ② 模型页：他改不了服务器的账单，但得知道有哪些模型
   owner = false;
@@ -8434,6 +8701,20 @@ const SC0 = APP02_SC.indexOf("const SHORTCUT_ACTIONS = {");
 const SC1 = APP02_SC.indexOf("\n};", SC0);
 if (SC0 < 0 || SC1 < 0) throw new Error("app-02.js 里找不到 SHORTCUT_ACTIONS 这张表");
 const SHORTCUT_SRC = APP02_SC.slice(SC0, SC1 + 3);
+const APKEY0 = APP02_SC.indexOf("function handleApprovalShortcut(e) {");
+const APKEY1 = APP02_SC.indexOf("async function pollApprovals()", APKEY0);
+if (APKEY0 < 0 || APKEY1 <= APKEY0) throw new Error("app-02.js 里待审批快捷键函数找不到了，前端测试没法定位真源码");
+const APPROVAL_KEY_SRC = APP02_SC.slice(APKEY0, APKEY1);
+const APPROVAL_COMPOSER_START = APP02_SC.indexOf("function bindComposer()");
+const APPROVAL_COMPOSER_END = APP02_SC.indexOf("function queueText(", APPROVAL_COMPOSER_START);
+const APPROVAL_DISPATCH_START = APP02_SC.indexOf('document.addEventListener("keydown", (e) => {', SC0);
+const APPROVAL_DISPATCH_END = APP02_SC.indexOf("// ================= 对话内搜索", APPROVAL_DISPATCH_START);
+if (APPROVAL_COMPOSER_START < 0 || APPROVAL_COMPOSER_END <= APPROVAL_COMPOSER_START
+  || APPROVAL_DISPATCH_START < 0 || APPROVAL_DISPATCH_END <= APPROVAL_DISPATCH_START
+  || !APP02_SC.slice(APPROVAL_COMPOSER_START, APPROVAL_COMPOSER_END).includes("if (handleApprovalShortcut(e)) return;")
+  || !APP02_SC.slice(APPROVAL_DISPATCH_START, APPROVAL_DISPATCH_END).includes("if (handleApprovalShortcut(e)) return;")) {
+  throw new Error("app-02.js 的 composer 或全局快捷键分发没有调用待审批快捷键守卫");
+}
 const ONB_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='auth-mask' id='onb-mask'><div class='auth-card onb-card'><div class='onb-steps' id='onb-steps'></div><div id='onb-body'></div></div></div></body>";
 const ONB_STUBS = `
@@ -8441,6 +8722,10 @@ const ONB_STUBS = `
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const TOASTS = [], POSTS = [], MODALS = []; let REFRESHED = 0;
   function toast(m) { TOASTS.push(String(m)); }
+  const inputEl = document.createElement("textarea"); document.body.appendChild(inputEl);
+  let DRAFT = false; function hasDraft() { return DRAFT; }
+  const SC_MAC = true; function imeKey(e) { return !!(e && (e.isComposing || e.keyCode === 229)); }
+  let pendingQuote = null; const pendingAttach = [];
   function refreshSettingsCache() { REFRESHED++; }
   function openModal(k, sub) { MODALS.push(k + ":" + (sub || "")); }
   // SHORTCUT_ACTIONS 里 "stop" 这一条要用到的几个：普通弹层遮罩、对话内搜索、以及「正在跑就先停任务」
@@ -8948,6 +9233,40 @@ const ONB_CHECKS = `
   ok("反向对照：改之前那块（finally 里 if (!go.isConnected) return;）这把尺子当场量得出来",
      finOldBlocks.length === 1 && /\\breturn\\b/.test(finOldBlocks[0]), finOldBlocks);
 
+  // ---- 审批条快捷键：复用真按钮流程，不另发请求 ----
+  const approvalBar = (disabled = false, withSession = false) => {
+    document.getElementById("approval-bar")?.remove();
+    const bar = document.createElement("div"); bar.id = "approval-bar";
+    const row = document.createElement("div"); row.className = "ap-row";
+    if (withSession) { const session = document.createElement("button"); session.className = "ap-ok"; session.dataset.scope = "session"; row.appendChild(session); }
+    const once = document.createElement("button"); once.className = "ap-ok"; once.dataset.scope = "once"; once.disabled = disabled; once.dataset.hit = "once";
+    const no = document.createElement("button"); no.className = "ap-no"; no.disabled = disabled; no.dataset.hit = "no";
+    once.onclick = () => { window.__apHits.push("once"); };
+    no.onclick = () => { window.__apHits.push("no"); };
+    row.append(once, no); bar.appendChild(row); document.body.appendChild(bar); return bar;
+  };
+  const keyEvent = (key, opt = {}) => ({ key, target: opt.target || inputEl, metaKey: !!opt.metaKey, ctrlKey: !!opt.ctrlKey,
+    altKey: !!opt.altKey, shiftKey: !!opt.shiftKey, isComposing: !!opt.isComposing, keyCode: opt.keyCode || 0, defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; } });
+  const noApproval = keyEvent("Escape");
+  ok("没有待审批条时 Esc 不被接管", !handleApprovalShortcut(noApproval) && !noApproval.defaultPrevented);
+  window.__apHits = []; approvalBar();
+  const rejectKey = keyEvent("Escape", { target: inputEl });
+  ok("空输入时 Esc 点拒绝按钮并拦住全局停止", handleApprovalShortcut(rejectKey) && rejectKey.defaultPrevented && window.__apHits.join() === "no", window.__apHits);
+  window.__apHits = []; approvalBar(false, true);
+  const allowKey = keyEvent("Enter", { metaKey: true, target: inputEl });
+  ok("⌘Enter 只点「本次允许」，不选会话/永久放行", handleApprovalShortcut(allowKey) && allowKey.defaultPrevented && window.__apHits.join() === "once", window.__apHits);
+  window.__apHits = []; DRAFT = true;
+  const draftKey = keyEvent("Enter", { metaKey: true, target: inputEl });
+  ok("输入框有草稿时不抢 ⌘Enter", !handleApprovalShortcut(draftKey) && !draftKey.defaultPrevented && !window.__apHits.length);
+  DRAFT = false; const other = document.createElement("input"); document.body.appendChild(other);
+  const otherKey = keyEvent("Enter", { metaKey: true, target: other });
+  ok("焦点在别的编辑框时不抢快捷键", !handleApprovalShortcut(otherKey) && !otherKey.defaultPrevented);
+  const ime = keyEvent("Enter", { metaKey: true, isComposing: true, target: inputEl });
+  ok("输入法组合期间不允许审批快捷键", !handleApprovalShortcut(ime) && !ime.defaultPrevented);
+  approvalBar(true);
+  const settled = keyEvent("Escape", { target: inputEl });
+  ok("按钮已在提交中时不重复审批", !handleApprovalShortcut(settled) && !settled.defaultPrevented);
   return names;
 })().catch((e) => { throw new Error("[向导] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__onbNames || 0)); })
 `;
@@ -9663,7 +9982,7 @@ const LOOK_CHECKS = FLUSH_SRC + `
   ok("点分区空白处：不改任何状态、不报错", (() => { pane.querySelector(".card-item").click(); return lookGet("fs") === "m" && getTheme() === "light"; })());
 
   // 左栏目录：图标 + 短名，别一列密密麻麻的字
-  ok("设置目录 15 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 15 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
+  ok("设置目录 16 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 16 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
   if (fails.length) throw new Error("外观：" + (names.length + fails.length) + " 条里挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
   return names;
 `;
@@ -12467,6 +12786,7 @@ const COMPOSER_STUBS = [
   "var CLI = false; const cliBusy = () => CLI;",
   "let currentMode = 'craft';",
   "const inputEl = document.getElementById('input'), sendBtn = document.getElementById('send');",
+  "function handleApprovalShortcut() { return false; }",
   "const pendingAttach = [];",
   "let sessionId = 's1'; const sessionQueues = new Map();",
   "const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };",
@@ -12820,13 +13140,13 @@ const HUB_MCP_CHECKS = `
   card("brave-search").querySelector(".mcp-use").click(); await wait(10);
   ok("点「接入」→ 表单弹开、命令/参数/名称预填", disp($("#mcp-add-form")) !== "none" && $("#mcp-name").value === "brave-search" && $("#mcp-cmd").value === "/x/npx" && $("#mcp-args").value === "-y @brave/brave-search-mcp-server");
   ok("环境变量框预填 BRAVE_API_KEY=（值留给用户）", $("#mcp-env").value === "BRAVE_API_KEY=");
-  ok("提示「还差 BRAVE_API_KEY 没填」+ 光标停在环境变量框", $("#mcp-msg").textContent.includes("还差 BRAVE_API_KEY 没填") && document.activeElement === $("#mcp-env"));
+  ok("预设只展示必填凭据，光标停在 Key 输入框", $("#mcp-msg").textContent.includes("还差 BRAVE_API_KEY 没填") && document.activeElement === $('input[data-preset-key="BRAVE_API_KEY"]') && !$("#mcp-config-details").open && $("#mcp-add-dialog").open);
   ok("「去哪拿 Key」链接显示并指向文档", disp($("#mcp-docs")) !== "none" && $("#mcp-docs").href === "https://brave.com/search/api/");
   // Key 没填就点添加：拦下来，不发请求
   $("#mcp-add").click(); await wait(10);
   ok("Key 没填点「添加并连接」→ 提示还差、不发请求", TOASTS.some((t) => t.includes("还差 BRAVE_API_KEY")) && POSTS.length === 0);
   // 填了带等号的值：按第一个等号切；原有条目不带 env / headers 回传
-  $("#mcp-env").value = "BRAVE_API_KEY=abc=123";
+  $('input[data-preset-key="BRAVE_API_KEY"]').value = "abc=123";
   $("#mcp-add").click(); await wait(30);
   ok("填好 Key 后添加：发了一次 POST", POSTS.length === 1);
   const body = POSTS[0].servers;
@@ -12839,7 +13159,7 @@ const HUB_MCP_CHECKS = `
   // github（远程 + 要填 Authorization）
   card("github").querySelector(".mcp-use").click(); await wait(10);
   ok("接入 github：切到远程单选、地址预填、请求头预填 Authorization: Bearer", $('input[name="mcp-kind"][value="http"]').checked && $("#mcp-url").value === "https://api.githubcopilot.com/mcp/" && $("#mcp-headers").value === "Authorization: Bearer " && disp($(".mcp-f-http")) !== "none" && disp($(".mcp-f-stdio")) === "none");
-  ok("光标停在请求头框", document.activeElement === $("#mcp-headers"));
+  ok("远程预设光标停在授权凭据输入框", document.activeElement === $('input[data-preset-key="Authorization"]'));
   const n0 = POSTS.length;
   $("#mcp-add").click(); await wait(10);
   ok("只有「Bearer 」没令牌就点添加 → 拦下，提示还差 Authorization", TOASTS.some((t) => t.includes("还差 Authorization")) && POSTS.length === n0);
@@ -13342,7 +13662,9 @@ const HIST_MIN_SRC = (() => {
 // 真样式要注进来：高亮态、那个数字徽标都只写在 CSS 里，只看 class 名的话改坏了照样全绿。
 // 侧栏宽度也按真值给（默认 250px，拖到底是 180px），不然「一行放得下」这条等于没验
 const laneHtml = (sideW) => "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
-  + "<body style='margin:0'><aside style='width:" + sideW + "px'>"
+  + "<body style='margin:0'><button id='inbox-toggle' aria-expanded='false'></button><span id='inbox-count' hidden></span><div class='inbox-wrap'><div id='attention-inbox' hidden></div></div><button id='session-title' aria-haspopup='menu' aria-expanded='false'>新任务</button>"
+  + "<span id='session-context' hidden><span id='session-context-dot'></span><span id='session-context-text'></span></span>"
+  + "<button id='toggle-files'><span id='session-file-count'>文件</span></button><aside style='width:" + sideW + "px'>"
   + "<div class='lane-tabs' id='lane-tabs' role='tablist' aria-label='工作线'></div>"
   // 标题行那个计数徽章也摆上：它现在有「平时不显示、过滤时才写」这条规矩，没有这个元素就验不了
   + "<div class='side-label'><span class='sl-t'>任务历史</span><span class='sl-n' id='hist-count'></span></div>"
@@ -13551,6 +13873,7 @@ const LANE_STUBS = [
   "var sessionId = '';",
   "var runningSessions = new Set();",
   "var sessions = [];",
+  "var sessionModels = new Map(); var I18N = { t: (s) => s };",
   "var activeProject = '默认项目';",
   "var projectsLocked = false;",
   "var projects = [];",
@@ -13852,6 +14175,20 @@ const LANE_CHECKS = `
     ["a2", "a3", "a4"].every((id) => getComputedStyle(dot(id)).width === "8px" && !/rgba\\(0, 0, 0, 0\\)|transparent/.test(getComputedStyle(dot(id)).backgroundColor)),
     bgs.join(" / "));
   ok("注意力·等你（黄）和出错（红）的颜色分得开", bgs[3] !== bgs[1], bgs.join(" / "));
+  syncAttentionInbox();
+  const inboxRows = [...document.querySelectorAll("#attention-inbox .inbox-row")];
+  ok("收件箱·待答复优先，其次出错、运行中、未读", inboxRows.map((r) => r.dataset.inboxId).join() === "a4,a2,a1,a3", inboxRows.map((r) => r.dataset.inboxId).join());
+  ok("收件箱·状态各自可辨，干净任务不列入", inboxRows.map((r) => r.dataset.state).join() === "ask,error,running,unseen" && !inboxRows.some((r) => r.dataset.inboxId === "a5"), inboxRows.map((r) => r.dataset.state).join());
+  ok("收件箱·铃铛角标计数与列表一致", document.getElementById("inbox-count").textContent === "4" && !document.getElementById("inbox-count").hidden);
+  inboxRows[0].click(); await Promise.resolve();
+  ok("收件箱·点一条待答复跳到原任务", __OPENED[0] === "a4" && document.getElementById("attention-inbox").hidden, JSON.stringify(__OPENED));
+  scheduleInboxById.set("run-alone", { id: "run-alone", name: "独立排期结果", session_id: "schedule-session" });
+  scheduleInboxRows = [{ id: "__schedule__:run-alone", title: "独立排期结果", state: "unseen", status: "定时任务已完成", at: 9 }];
+  syncAttentionInbox();
+  const scheduleInboxRow = document.querySelector('[data-inbox-id="__schedule__:run-alone"]');
+  ok("收件箱·独立排期结果也能进入列表", !!scheduleInboxRow && scheduleInboxRow.textContent.includes("定时任务已完成"));
+  __OPENED.length = 0; scheduleInboxRow.click(); await Promise.resolve();
+  ok("收件箱·点独立排期结果打开执行过程", __OPENED[0] === "schedule-session", JSON.stringify(__OPENED));
   ok("注意力·只有在跑那颗在闪，等你的那几颗是静止的",
     getComputedStyle(dot("a1")).animationName !== "none" && getComputedStyle(dot("a4")).animationName === "none",
     getComputedStyle(dot("a1")).animationName + "/" + getComputedStyle(dot("a4")).animationName);
@@ -13946,8 +14283,8 @@ const HIST_KEYED_CHECKS = `
   renderHistory();
   ok("按行改·首铺跟整片重铺一字不差", same() && order() === "a,b,c,d", order());
   const A = row("a"), B = row("b"), C = row("c"), D = row("d"), RUN = A.querySelector(".hrun");
-  // 焦点落在 c 行自己的删除键上（真 Tab 走得到的那颗），不给行加 tabindex——加了 DOM 就跟重铺那份对不上了
-  const CX = C.querySelector(".hx");
+  // 焦点落在 c 行自己的「⋯」上（真 Tab 走得到的那颗），不给行加 tabindex——加了 DOM 就跟重铺那份对不上了
+  const CX = C.querySelector(".hmore");
   CX.focus();
   const focused0 = document.activeElement === CX;
 
@@ -14008,13 +14345,14 @@ const HIST_KEYED_CHECKS = `
 })()
 `;
 // ================= 侧栏「置顶」 =================
-// 用户 10-15：「这个任务历史增加一个 pinned 的功能吧」（截图里是 Claude 侧栏的 Pinned 那一组）。
+// 用户 10-15：「这个任务历史增加一个 pinned 的功能吧」。
 // 这组验：图钉点一下那条就进「已置顶」一组排到最上面，后顶的在上；全取消了组标题跟着没；
 // 告诉服务端的是这一条、这个值；没存上就挪回去并说原因；连点两下以最后一下为准。
+// 其余几条按天分组；这组里 Date.now 被换成一千出头、at 是 10..7，全落在同一天，组标题都是「今天」。
 // ★反向对照★ flat：不分组（置顶的照旧混在列表里）；norevert：没存上也不挪回去
 const HPIN_MUTANTS = {
   flat: (src) => src.replace("const pinned = list.filter((s) => s.pinned_at)", "const pinned = list.filter(() => false)")
-    .replace("const rest = list.filter((s) => !s.pinned_at)", "const rest = list.filter(() => true)"),
+    .replace("list.filter((x) => !x.pinned_at)", "list.filter(() => true)"),
   norevert: (src) => src.replace("    s.pinned_at = was;\n", "\n"),
 };
 const HPIN_CHECKS = `
@@ -14050,13 +14388,13 @@ const HPIN_CHECKS = `
   sessionId = "a"; __OPENED.length = 0; __TOASTS.length = 0;
   renderHistory();
 
-  ok("没有置顶时还是一张扁平列表，不加组标题", order() === "a,b,c,d" && !hist.querySelector(".hist-sec"), order());
+  ok("没有置顶时不出「已置顶」这组，只按天分", order() === "[今天],a,b,c,d", order());
   const C0 = pin("c");
   ok("每行一颗图钉，是真按钮、读屏念得出顶的是哪条", !!C0 && C0.tagName === "BUTTON" && C0.getAttribute("type") === "button"
     && C0.getAttribute("aria-label") === "置顶「上个月那条合同」" && C0.getAttribute("aria-pressed") === "false", C0 && C0.outerHTML.slice(0, 200));
 
   C0.click(); await flush();
-  ok("★顶上去的那条排到最上面，单独一组★", order() === "[已置顶],c,[最近],a,b,d", order());
+  ok("★顶上去的那条排到最上面，单独一组★", order() === "[已置顶],c,[今天],a,b,d", order());
   ok("告诉服务端的就是这一条、要顶", posts.join() === "c=true", posts.join());
   ok("服务端回的时间记下来了，也存进了本地", sessions.find((x) => x.id === "c").pinned_at === 777 && __SAVED > 0);
   ok("图钉换成按下状态，读屏改念「取消置顶」", pin("c").getAttribute("aria-pressed") === "true" && pin("c").classList.contains("on")
@@ -14068,33 +14406,563 @@ const HPIN_CHECKS = `
 
   sessions.find((x) => x.id === "c").pinned_at = 5; // 先顶的
   pin("d").click(); await flush();
-  ok("后顶的排在先顶的上面", order() === "[已置顶],d,c,[最近],a,b", order());
+  ok("后顶的排在先顶的上面", order() === "[已置顶],d,c,[今天],a,b", order());
 
   pin("d").click(); await flush();
   pin("c").click(); await flush();
-  ok("全取消了：组标题跟着没，回到原来的先后", order() === "a,b,c,d" && !hist.querySelector(".hist-sec"), order());
+  ok("全取消了：「已置顶」那组跟着没，回到原来的先后", order() === "[今天],a,b,c,d", order());
 
   // 没存上：挪回去，照实说
   mode = "403"; __TOASTS.length = 0;
   pin("b").click(); await flush();
-  ok("★没存上就挪回来★", order() === "a,b,c,d" && !sessions.find((x) => x.id === "b").pinned_at, order());
+  ok("★没存上就挪回来★", order() === "[今天],a,b,c,d" && !sessions.find((x) => x.id === "b").pinned_at, order());
   ok("说的是服务端给的原因", __TOASTS.join() === "没置顶上：只能置顶自己的任务", __TOASTS.join(" ／ "));
   mode = "throw"; __TOASTS.length = 0;
   pin("b").click(); await flush();
-  ok("没连上：也挪回来，说没连上", order() === "a,b,c,d" && __TOASTS.join() === "没置顶上：没连上服务端", __TOASTS.join(" ／ "));
+  ok("没连上：也挪回来，说没连上", order() === "[今天],a,b,c,d" && __TOASTS.join() === "没置顶上：没连上服务端", __TOASTS.join(" ／ "));
 
   // 连点两下（顶上 → 又取消），第一下的回话晚到：以最后一下为准
   mode = "ok"; let release; hold = new Promise((r) => { release = r; });
   pin("a").click(); await flush();
   pin("a").click(); await flush();
   release(); hold = null; await flush(); await flush();
-  ok("连点两下以最后一下为准", !sessions.find((x) => x.id === "a").pinned_at && order() === "a,b,c,d", order() + " " + posts.slice(-2).join());
+  ok("连点两下以最后一下为准", !sessions.find((x) => x.id === "a").pinned_at && order() === "[今天],a,b,c,d", order() + " " + posts.slice(-2).join());
 
   // 搜索结果那一版不分组（那是服务端的命中列表）；本地筛标题时置顶的照样在上
   sessions.find((x) => x.id === "d").pinned_at = 9;
   histQuery = "旅"; renderHistory();
   ok("筛标题时置顶的那条照样带着组标题", order() === "[已置顶],d", order());
   histQuery = ""; delete sessions.find((x) => x.id === "d").pinned_at; renderHistory();
+  return { names, fails };
+})()
+`;
+// ================= 侧栏拖拽置顶 =================
+// 拖的是一条任务，不是文字/文件：只能进侧栏里的置顶落点；没置顶组时才临时冒出落点，
+// 已有置顶组时标题/组内任务收拖；置顶任务拖回普通列表就取消。还要守住输入框不收任务 ID、
+// dragstart 不同步改 DOM（Chromium 会因此取消拖动）、重画后 dragend 仍能收尾、焦点不被抢。
+// ★反向对照★ texttoo / nodefer / selfend / anywhere / leak / tipalways / focussteal
+const DRAGPIN_MUTANTS = {
+  texttoo: (src) => src.replace('e.dataTransfer.setData(TASK_DRAG_TYPE, s.id);', 'e.dataTransfer.setData(TASK_DRAG_TYPE, s.id); e.dataTransfer.setData("text/plain", s.id);'),
+  nodefer: (src) => src.replace('setTimeout(show, 0);', 'show();'),
+  selfend: (src) => src.replace('item.addEventListener("dragend", histDragEnd, { once: true });', 'document.getElementById("history").addEventListener("dragend", histDragEnd, { once: true });'),
+  anywhere: (src) => src.replace('const ok = !!d && ((at === "pin" && !d.pinned) || (at === "unpin" && d.pinned));', 'const ok = !!d;'),
+  leak: (src) => src.replace('  e.stopPropagation();\n  const d = histDrag;', '  const d = histDrag;'),
+  tipalways: (src) => src.replace(' && !tipSeen("drag-pin")', ''),
+  focussteal: (src) => src.replace('togglePin(s.id, null)', 'togglePin(s.id)'),
+};
+const HIST_TASK_DRAGOVER_SRC = (() => {
+  const a = APP02.indexOf('document.addEventListener("dragover", (e) => {');
+  const b = APP02.indexOf('document.addEventListener("dragenter"', a);
+  if (a < 0 || b <= a) throw new Error("app-02.js 里的全页拖拽入口找不到了，前端测试没法定位真源码");
+  return APP02.slice(a, b);
+})();
+const DRAGPIN_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const hist = document.getElementById("history");
+  const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+  const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
+  const pin = (id) => row(id) && row(id).querySelector(".hpin");
+  const posts = [];
+  fetch = async (u, init) => {
+    const k = String(u).split("?")[0];
+    const m = /^\\/api\\/session\\/([^/]+)\\/pin$/.exec(k);
+    if (!m) return { ok: true, json: async () => ({}) };
+    const body = JSON.parse(init.body); posts.push(decodeURIComponent(m[1]) + "=" + body.pinned);
+    return { ok: true, status: 200, json: async () => ({ ok: true, pinned_at: body.pinned ? 777 : 0 }) };
+  };
+  activeLane = "office"; activeProject = "默认项目"; projectsLocked = false; histQuery = ""; histHits = null;
+  runningSessions = new Map();
+  sessions = [["a", "写周报"], ["b", "查日志"], ["c", "旅行计划"]]
+    .map(([id, title], i) => ({ id, title, at: 10 - i, project: "默认项目", lane: "office" }));
+  sessionId = "a"; __OPENED.length = 0; __TOASTS.length = 0;
+  const timers = [];
+  window.setTimeout = (fn) => { timers.push(fn); return timers.length; };
+  const runTimer = () => { const fn = timers.shift(); if (fn) fn(); };
+  window.matchMedia = (q) => ({ matches: q === "(pointer: fine)" });
+  renderHistory();
+  const zone = document.querySelector(".hist-pin-drop");
+  ok("没有置顶组时落点初始隐藏", !!zone && zone.hidden);
+  const transfer = () => {
+    const data = {};
+    return { types: [], effectAllowed: "", dropEffect: "", setData(k, v) { data[k] = v; if (!this.types.includes(k)) this.types.push(k); }, getData(k) { return data[k] || ""; } };
+  };
+  const dragEvent = (type, dt, target) => {
+    const e = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(e, "dataTransfer", { value: dt });
+    target.dispatchEvent(e); return e;
+  };
+  const start = (id) => { const el = row(id), dt = transfer(); const e = dragEvent("dragstart", dt, el); return { el, dt, e }; };
+  const finish = (dt, target) => dragEvent("drop", dt, target);
+
+  let drag = start("b");
+  ok("★dragstart 只写自定义任务类型，不把 ID 当纯文字★", drag.dt.types.includes("application/x-owb-task") && !drag.dt.types.includes("text/plain"), drag.dt.types.join(","));
+  ok("★dragstart 当下不改 DOM，拖动不会被同步重画掐掉★", !drag.el.classList.contains("dragging") && zone.hidden);
+  runTimer();
+  ok("下一拍才显示临时落点并淡化拖起的行", !zone.hidden && drag.el.classList.contains("dragging") && hist.classList.contains("hist-dragging"));
+  let leakCount = 0;
+  const leaked = () => { leakCount++; };
+  document.addEventListener("dragover", leaked, { once: true });
+  const blocked = dragEvent("dragover", drag.dt, row("a"));
+  ok("★没置顶的任务不能松在普通行上★", !blocked.defaultPrevented && !zone.classList.contains("over"));
+  const accept = dragEvent("dragover", drag.dt, zone);
+  ok("任务拖到临时置顶落点会被接住，光标显示移动", accept.defaultPrevented && drag.dt.dropEffect === "move" && zone.classList.contains("over"));
+  ok("★任务拖拽不泄漏到页面级输入框拖放监听★", leakCount === 0, String(leakCount));
+  // 页面级监听对普通文件/文字仍照常响应。
+  const textDrop = transfer(); textDrop.setData("text/plain", "普通文字");
+  const ordinary = dragEvent("dragover", textDrop, document.body);
+  ok("普通文字拖放仍交给页面输入框", ordinary.defaultPrevented);
+  const outsideTask = dragEvent("dragover", drag.dt, document.body);
+  ok("任务拖到侧栏外不触发页面输入框拖放", !outsideTask.defaultPrevented);
+  finish(drag.dt, zone); await flush();
+  ok("放进置顶落点后请求服务端置顶这一条", posts.join() === "b=true", posts.join());
+  ok("拖放后只显示一个置顶分组，临时落点收起", !!hist.querySelector('.hist-sec[data-sec="pin"]') && zone.hidden);
+  ok("★拖放置顶不抢键盘焦点★", document.activeElement !== pin("b"));
+  ok("拖动已教会用户，记下提示已看", __LANE_LS["owb-tip-drag-pin"] === "1");
+
+  // 已有置顶分组时，组标题和置顶行接受置顶任务；置顶行拖回普通任务则取消置顶。
+  drag = start("c"); runTimer();
+  const pinHead = hist.querySelector('.hist-sec[data-sec="pin"]');
+  const groupOver = dragEvent("dragover", drag.dt, pinHead);
+  ok("已有置顶组时标题接受未置顶任务", groupOver.defaultPrevented && hist.classList.contains("drop-pin"));
+  finish(drag.dt, pinHead); await flush();
+  ok("已有置顶组上放下后也能置顶", sessions.find((x) => x.id === "c").pinned_at === 777 && posts.includes("c=true"));
+  drag = start("b"); runTimer();
+  const unpinOver = dragEvent("dragover", drag.dt, row("a"));
+  ok("置顶任务拖到普通任务上可取消置顶", unpinOver.defaultPrevented);
+  finish(drag.dt, row("a")); await flush();
+  ok("拖回普通列表后请求取消置顶", posts.includes("b=false") && !sessions.find((x) => x.id === "b").pinned_at);
+
+  // 未落下就结束、以及拖动行已被重画移除，都必须清理 hover / 临时落点。
+  drag = start("a"); runTimer(); drag.el.dispatchEvent(new Event("dragend", { bubbles: true }));
+  ok("未放下就结束时清理拖动态和落点", !hist.classList.contains("hist-dragging") && zone.hidden && !drag.el.classList.contains("dragging"));
+  drag = start("a"); runTimer(); const detached = drag.el; detached.remove();
+  detached.dispatchEvent(new Event("dragend", { bubbles: true }));
+  ok("★原行重画/脱离列表后，行自身仍能收到 dragend 并收尾★", !hist.classList.contains("hist-dragging") && zone.hidden);
+  renderHistory();
+
+  // 点击图钉只提示第一次，拖动和取消置顶不抢焦点、不重复提示。
+  delete __LANE_LS["owb-tip-drag-pin"]; __TOASTS.length = 0;
+  pin("a").click(); await flush();
+  ok("第一次用图钉置顶时提示可拖动", __TOASTS.filter((x) => x === "下回直接把任务拖进「已置顶」也行").length === 1, __TOASTS.join(" ／ "));
+  ok("★提示展示一次后持久化标记★", __LANE_LS["owb-tip-drag-pin"] === "1");
+  pin("a").click(); await flush();
+  pin("c").click(); await flush();
+  ok("★再次置顶或取消置顶不重复提示★", __TOASTS.filter((x) => x === "下回直接把任务拖进「已置顶」也行").length === 1, __TOASTS.join(" ／ "));
+  return { names, fails };
+})()
+`;
+// ================= 侧栏每行的「⋯」菜单 =================
+// 改名、移到项目、标为未读、新窗口打开、删除收进一个菜单；右键这一行弹的也是这一份。
+// 要守的：键盘全程够得着（↑↓/Home/End/字母键/Esc 退一层），按下的键不漏到全局（Esc 会叫停正在跑的、
+// 数字键会替人选提问卡），收起后焦点回到原处；改名、挪项目先改侧栏再告诉服务端，没存上改回去照实说；
+// 亲手标的未读切回窗口不算看过、刷新还亮着；行重画过菜单还认得自己挂在哪一行。
+// ★反向对照★ 五个变体各自红在自己那条上：按键漏出去、改名没存上不改回、切回窗口就擦掉亲手标的未读、
+// 重画后不补「开着」、收起不还焦点。
+const HMENU_STUBS = [
+  "var imeKey = (e) => !!(e && (e.isComposing || e.keyCode === 229));",
+  "var __ASKED = [], __ANSWER = null;",
+  "var askText = async (opts) => { __ASKED.push(opts); return __ANSWER; };",
+  "var __CONFIRMS = [], __CONFIRM = false;",
+  "var askConfirm = async (opts) => { __CONFIRMS.push(opts); return __CONFIRM; };",
+  "var sessionQueues = new Map();",
+  "var __WIN = [];",
+  "window.open = (u, t, f) => { __WIN.push([u, t, f]); return null; };",
+].join("\n");
+const HMENU_MUTANTS = {
+  leak: (src) => src.replace('if (used || (e.key.length === 1 && e.key !== " ")) { e.preventDefault(); e.stopPropagation(); }', "if (used) e.preventDefault();"),
+  norevert: (src) => src.replace("if (err) { show(was); toast(", "if (err) { toast("),
+  autoclear: (src) => src.replace("const keep = !!(auto && st.manual);", "const keep = false;"),
+  nosync: (src) => src.replace("  if (!m.at.btn) return; // 鼠标右键开的，跟「⋯」无关\n", "  return;\n"),
+  nofocus: (src) => src.replace("try { if (to && to.focus) to.focus(); } catch {}", ""),
+};
+const HMENU_MUST = {
+  leak: /★菜单里按的 Esc 不漏到全局「停下」★/,
+  norevert: /★名字没存上就改回去★/,
+  autoclear: /★亲手标的未读，切回窗口不算看过★/,
+  nosync: /★行重画过，「⋯」还显示开着★/,
+  nofocus: /★Esc 收起后焦点回到「⋯」★/,
+};
+const HMENU_LABEL = { leak: "按键漏出去", norevert: "改名没存上不改回", autoclear: "切回窗口就擦掉亲手标的未读", nosync: "重画后不补「开着」", nofocus: "收起不还焦点" };
+const HMENU_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  try {
+  const hist = document.getElementById("history");
+  const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+  const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
+  const more = (id) => row(id) && row(id).querySelector(".hmore");
+  const ht = (id) => (row(id) ? row(id).querySelector(".ht").textContent : "（没这一行）");
+  const S = (id) => sessions.find((x) => x.id === id) || {};
+  const menu = () => document.querySelector(".hmenu");
+  const items = () => [...(menu() ? menu().querySelectorAll(".hm-i") : [])];
+  const labels = () => items().map((b) => (b.querySelector("span") || {}).textContent).join("|");
+  const act = (a) => (menu() ? menu().querySelector('.hm-i[data-act="' + a + '"]') : null);
+  const pick = (name) => { const b = menu() && menu().querySelector('[data-name="' + name + '"]'); if (b) b.click(); return !!b; };
+  const tap = async (id) => { const b = more(id); if (b) b.click(); await flush(); return !!b; };
+  const key = (k, opts) => {
+    const e = new KeyboardEvent("keydown", Object.assign({ key: k, bubbles: true, cancelable: true }, opts || {}));
+    (document.activeElement || document.body).dispatchEvent(e);
+    return e;
+  };
+  const focusName = () => (document.activeElement ? document.activeElement.tagName + "." + document.activeElement.className : "无");
+  const posts = [], reply = {};
+  let hold = null;
+  fetch = async (u, init) => {
+    const k = String(u).split("?")[0];
+    posts.push(((init && init.method) || "GET") + " " + k + (init && init.body ? " " + init.body : ""));
+    if (hold) await hold;
+    const r = reply[k];
+    if (r) return { ok: r.status < 400, status: r.status, json: async () => r.body };
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const leaked = [];
+  document.addEventListener("keydown", (e) => leaked.push(e.key));
+  const title = document.getElementById("session-title");
+  activeLane = "office"; activeProject = "默认项目"; projectsLocked = false; histQuery = ""; histHits = null;
+  projects = [{ name: "默认项目" }, { name: "官网" }];
+  runningSessions = new Set();
+  sessions = [["a", "写周报"], ["b", "整理发票"], ["c", "查日志"]].map(([id, t], i) => ({ id, title: t, at: 10 - i, project: "默认项目", lane: "office", files: id === "a" ? 3 : 0 }));
+  sessionId = "a"; __OPENED.length = 0; __TOASTS.length = 0;
+  settingsCache = { agent: { engine: "codex" }, models: [], active_model: "" };
+  Object.defineProperty(navigator, "onLine", { configurable: true, get: () => true });
+  renderHistory();
+  ok("顶栏标题可打开同一套任务菜单", !title.disabled && title.getAttribute("aria-haspopup") === "menu");
+  ok("顶栏标出本机环境和已连接状态", document.getElementById("session-context-text").textContent === "本机"
+    && document.getElementById("session-context-dot").classList.contains("on"),
+    document.getElementById("session-context-text").textContent + "/" + document.getElementById("session-context-dot").className);
+  settingsCache = { agent: { engine: "builtin" }, models: [{ name: "local-ollama", base_url: "http://192.168.1.22:11434/v1" }], active_model: "" };
+  sessionModels.set("a", "local-ollama"); renderHistory();
+  ok("走局域网 Ollama 的任务也标成本机", document.getElementById("session-context-text").textContent === "本机");
+  sessionModels.delete("a"); settingsCache = { agent: { engine: "codex" }, models: [], active_model: "" }; renderHistory();
+  ok("成果文件按钮显示当前任务文件数", document.getElementById("session-file-count").textContent === "3"
+    && document.getElementById("toggle-files").title.includes("3"),
+    document.getElementById("session-file-count").textContent + "/" + document.getElementById("toggle-files").title);
+  title.click(); await Promise.resolve();
+  ok("点顶栏标题打开改名/置顶/移项目/删除菜单", !!menu() && labels() === "在新窗口打开|置顶|标为未读|改名…|移到项目…|删除", labels());
+  ok("顶栏菜单展开状态同步到读屏属性", title.getAttribute("aria-expanded") === "true");
+  key("Escape");
+  ok("Esc 收起顶栏菜单并把焦点还给标题", !menu() && document.activeElement === title && title.getAttribute("aria-expanded") === "false");
+
+  // ① 行上那颗「⋯」
+  const B = more("b");
+  ok("每行一颗「⋯」：真按钮、读屏念得出是哪条、标着会弹菜单", !!B && B.tagName === "BUTTON" && B.getAttribute("aria-haspopup") === "menu"
+    && B.getAttribute("aria-expanded") === "false" && B.getAttribute("aria-label") === "更多操作「整理发票」", B ? B.outerHTML.slice(0, 200) : "没有");
+  ok("行上不再常驻删除键（收进菜单了）", !hist.querySelector(".hx"));
+
+  // ② 点开
+  await tap("b");
+  ok("点「⋯」弹出菜单，挂在 body 上", !!menu() && menu().parentElement === document.body && menu().getAttribute("role") === "menu");
+  ok("菜单念得出是哪条的", !!menu() && menu().getAttribute("aria-label") === "「整理发票」的操作", menu() ? menu().getAttribute("aria-label") : "");
+  ok("六样按顺序：新窗口 / 置顶 / 未读 / 改名 / 移到项目 / 删除", labels() === "在新窗口打开|置顶|标为未读|改名…|移到项目…|删除", labels());
+  ok("五样带着自己的字母键", items().map((b) => b.getAttribute("aria-keyshortcuts") || "").join("") === "PURMD" && items().filter((b) => b.querySelector("kbd")).length === 5);
+  ok("删除标成危险色", !!act("del") && act("del").classList.contains("danger") && !!act("rename") && getComputedStyle(act("del")).color !== getComputedStyle(act("rename")).color);
+  ok("「⋯」标上开着", !!B && B.getAttribute("aria-expanded") === "true" && B.classList.contains("on"));
+  ok("焦点落在第一项上", document.activeElement === items()[0], focusName());
+  ok("点「⋯」不打开那条任务", __OPENED.length === 0, JSON.stringify(__OPENED));
+  if (menu()) {
+    const cs = getComputedStyle(menu());
+    ok("菜单浮在最上层、不被侧栏裁掉", cs.position === "fixed" && Number(cs.zIndex) > 60, cs.position + "/" + cs.zIndex);
+    const r = menu().getBoundingClientRect(), br = B.getBoundingClientRect();
+    ok("贴着「⋯」往下开，整张都在窗口里", Math.abs(r.left - Math.max(8, Math.min(br.left, innerWidth - r.width - 8))) < 1 && r.top >= br.bottom && r.bottom <= innerHeight - 8,
+      JSON.stringify([r.left, r.top, br.left, br.bottom]));
+  }
+
+  // ③ 键盘
+  key("ArrowDown");
+  ok("↓ 到下一项", document.activeElement === items()[1], focusName());
+  key("End");
+  ok("End 到最后一项（删除）", !!act("del") && document.activeElement === act("del"), focusName());
+  key("ArrowDown");
+  ok("最后一项再 ↓ 绕回第一项", document.activeElement === items()[0], focusName());
+  key("ArrowUp");
+  ok("第一项 ↑ 绕到最后一项", !!act("del") && document.activeElement === act("del"), focusName());
+  key("Home");
+  ok("Home 回第一项", document.activeElement === items()[0], focusName());
+  leaked.length = 0;
+  key("1");
+  ok("菜单里按数字键不漏到页面上（提问卡不会被替人选一项）", leaked.length === 0 && !!menu(), leaked.join());
+  key("Escape");
+  ok("★菜单里按的 Esc 不漏到全局「停下」★", leaked.length === 0, leaked.join());
+  ok("Esc 收起菜单", !menu());
+  ok("★Esc 收起后焦点回到「⋯」★", document.activeElement === more("b"), focusName());
+  ok("「⋯」标回收着", !!more("b") && more("b").getAttribute("aria-expanded") === "false" && !more("b").classList.contains("on"));
+
+  // ④ 再点一下收、点外面收、Tab 收、带修饰键的放过去
+  await tap("b"); await tap("b");
+  ok("再点一下「⋯」就收", !menu());
+  await tap("b");
+  document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  ok("点菜单外面就收", !menu());
+  await tap("b");
+  const tab = key("Tab");
+  ok("Tab 收起菜单、焦点回到「⋯」，这一下 Tab 不拦", !menu() && document.activeElement === more("b") && !tab.defaultPrevented, focusName());
+  await tap("b"); leaked.length = 0;
+  const mk = key("k", { metaKey: true });
+  ok("带 ⌘ 的组合键收起菜单、照常传给全局快捷键", !menu() && leaked.join() === "k" && !mk.defaultPrevented, leaked.join());
+
+  // ⑤ 在新窗口打开
+  await tap("b");
+  if (act("win")) act("win").click();
+  await flush();
+  ok("在新窗口打开：开的是这一条的地址、新窗口、不带 opener", __WIN.length === 1 && __WIN[0][0] === location.pathname + "?s=b" && __WIN[0][1] === "_blank" && __WIN[0][2] === "noopener",
+    JSON.stringify(__WIN).slice(-120));
+  ok("点完一项菜单就收", !menu());
+
+  // ⑥ 置顶（字母键）
+  await tap("b"); posts.length = 0;
+  key("p"); await flush();
+  ok("按 P 置顶：只顶这一条", posts.join() === 'POST /api/session/b/pin {"pinned":true}' && !!S("b").pinned_at, posts.join(" ／ "));
+  ok("置顶后焦点回到这一行的「⋯」", document.activeElement === more("b"), focusName());
+  await tap("b");
+  ok("顶了的再打开，那一项写「取消置顶」", !!act("pin") && act("pin").textContent.includes("取消置顶"));
+  key("p"); await flush();
+  ok("再按 P 取消置顶", !S("b").pinned_at);
+
+  // ⑦ 标为未读
+  const dotB = () => (row("b") ? row("b").querySelector(".hdot.unseen") : null);
+  const saved0 = __SAVED;
+  await tap("b"); key("u"); await flush();
+  ok("标为未读：行上亮起未读点", !!dotB(), row("b") ? row("b").outerHTML.slice(0, 300) : "");
+  ok("未读点的提示说的是自己标的", !!dotB() && dotB().title === "标成了未读，回头再看", dotB() ? dotB().title : "");
+  ok("标为未读记进本地列表（刷新还亮着）", S("b").unread === true && __SAVED > saved0);
+  await tap("b");
+  ok("标过的再打开，那一项写「标为已读」", !!act("unread") && act("unread").textContent.includes("标为已读"));
+  key("Escape");
+  attnSeen("b", true);
+  ok("★亲手标的未读，切回窗口不算看过★", !!dotB() && S("b").unread === true);
+  sessionAttn.delete("b"); renderHistory();
+  ok("（刷新的前提）内存里那本账清了，点就灭", !dotB());
+  attnRestoreUnread(); renderHistory();
+  ok("刷新以后从本地列表认回来、接着亮", !!dotB() && !!sessionAttn.get("b") && sessionAttn.get("b").manual === true);
+  attnSeen("b");
+  ok("点开这一条才算看过：点熄掉、本地记的也擦掉", !dotB() && !("unread" in S("b")));
+  await tap("b"); key("u"); await flush();
+  await tap("b"); key("u"); await flush();
+  ok("菜单里点「标为已读」也熄掉、也擦掉", !dotB() && !("unread" in S("b")));
+
+  // ⑧ 改名
+  __ASKED.length = 0; __ANSWER = "  周报   第二版 "; posts.length = 0;
+  let release; hold = new Promise((r) => { release = r; });
+  reply["/api/session/b/title"] = { status: 200, body: { ok: true, title: "周报 第二版" } };
+  await tap("b"); key("r"); await flush();
+  const A0 = __ASKED[0] || {};
+  ok("改名框：标题、原来的名字、按钮上的字", A0.title === "改个名字" && A0.value === "整理发票" && A0.ok === "改好", JSON.stringify(A0));
+  ok("改名框：超过 50 个字当场说", typeof A0.validate === "function" && A0.validate("字".repeat(51)) === "最多 50 个字" && A0.validate("字".repeat(50)) === "");
+  ok("改名：行上先换成新名字（不等服务端）", ht("b") === "周报 第二版", ht("b"));
+  ok("改名：存着的时候记着「正在存」（并回服务端那份时别被旧名字盖回去）", histEditBusy.has("b:title"));
+  release(); hold = null; await flush(); await flush();
+  ok("改名：告诉服务端的是收拾过空白的名字", posts.join() === 'POST /api/session/b/title {"title":"周报 第二版"}', posts.join(" ／ "));
+  ok("改名：存完了不再记着", !histEditBusy.has("b:title") && S("b").title === "周报 第二版");
+  __ANSWER = "周报定稿"; reply["/api/session/a/title"] = { status: 200, body: { ok: true, title: "周报定稿" } };
+  await tap("a"); key("r"); await flush(); await flush();
+  ok("改的是眼前这条：页头的标题跟着换", title.textContent === "周报定稿", title.textContent);
+  __TOASTS.length = 0; __ANSWER = "别人的名字";
+  reply["/api/session/b/title"] = { status: 403, body: { error: "只能改自己任务的名字" } };
+  await tap("b"); key("r"); await flush(); await flush();
+  ok("★名字没存上就改回去★", ht("b") === "周报 第二版" && S("b").title === "周报 第二版", ht("b"));
+  ok("没存上照实说原因", __TOASTS.join() === "名字没改成：只能改自己任务的名字", __TOASTS.join(" ／ "));
+  posts.length = 0; __ANSWER = null;
+  await tap("b"); key("r"); await flush();
+  __ANSWER = "周报 第二版";
+  await tap("b"); key("r"); await flush();
+  ok("取消了、或者名字没变：不发请求", posts.length === 0, posts.join(" ／ "));
+
+  // ⑨ 移到项目
+  posts.length = 0; __TOASTS.length = 0;
+  await tap("c"); key("m"); await flush();
+  const radios = () => [...(menu() ? menu().querySelectorAll('[role="menuitemradio"]') : [])];
+  ok("按 M 进「移到哪个项目」：返回 + 小标题 + 每个项目一项", !!act("back") && !!menu().querySelector(".hm-sec") && radios().map((b) => b.textContent).join("|") === "默认项目|官网",
+    menu() ? menu().textContent : "菜单没了");
+  ok("现在所在的项目打着勾", radios().map((b) => b.getAttribute("aria-checked")).join() === "true,false");
+  ok("进去焦点落在头一个能挪去的项目上", !!radios()[1] && document.activeElement === radios()[1], focusName());
+  key("Escape");
+  ok("子菜单里 Esc 先退回上一层，焦点落回「移到项目…」", !!menu() && !!act("move") && document.activeElement === act("move"), focusName());
+  key("ArrowRight");
+  ok("→ 也进得去", !!act("back"));
+  key("ArrowLeft");
+  ok("← 退回来", !!act("move") && document.activeElement === act("move"), focusName());
+  key("m"); await flush();
+  pick("默认项目"); await flush();
+  ok("点现在所在的项目：什么都不发", posts.length === 0 && S("c").project === "默认项目", posts.join(" ／ "));
+  reply["/api/session/c/project"] = { status: 200, body: { ok: true } };
+  await tap("c"); key("m"); await flush();
+  pick("官网"); await flush(); await flush();
+  ok("挪到「官网」：告诉服务端、这一行从眼前这个项目里走掉", posts.join() === 'POST /api/session/c/project {"project":"官网"}' && S("c").project === "官网" && !row("c"), posts.join(" ／ "));
+  ok("挪完说清楚文件没跟着搬", __TOASTS.join() === "已移到「官网」，之前的文件还在原处", __TOASTS.join(" ／ "));
+  __TOASTS.length = 0; reply["/api/session/b/project"] = { status: 400, body: { error: "没有这个项目" } };
+  await tap("b"); key("m"); await flush();
+  pick("官网"); await flush(); await flush();
+  ok("没挪成就挪回来", S("b").project === "默认项目" && !!row("b"));
+  ok("没挪成照实说原因", __TOASTS.join() === "没挪成：没有这个项目", __TOASTS.join(" ／ "));
+  projects = [{ name: "默认项目" }];
+  await tap("b");
+  ok("只有一个项目：菜单里没有「移到项目…」", !act("move") && labels() === "在新窗口打开|置顶|标为未读|改名…|删除", labels());
+  key("m"); await flush();
+  ok("  └ 按 M 也不进", !act("back") && !!menu());
+  key("Escape");
+  projects = [{ name: "默认项目" }, { name: "官网" }]; projectsLocked = true;
+  await tap("b");
+  ok("项目锁着（租户端）：菜单里没有「移到项目…」", !!menu() && !act("move"));
+  key("Escape"); projectsLocked = false; renderHistory();
+
+  // ⑩ 删除
+  __CONFIRM = false; posts.length = 0;
+  await tap("b"); key("d"); await flush();
+  const C0 = __CONFIRMS[0] || {};
+  ok("删除先问一声，选了不删就什么都不动", __CONFIRMS.length === 1 && C0.title === "删掉这个任务？" && C0.danger === true && !!row("b") && posts.length === 0, JSON.stringify(__CONFIRMS));
+  __CONFIRM = true;
+  await tap("b"); key("d"); await flush();
+  ok("确认了才删：本地没了、告诉服务端", !row("b") && !sessions.some((x) => x.id === "b") && posts.includes("DELETE /api/session/b"), posts.join(" ／ "));
+
+  // ⑪ 右键
+  const comp = document.createElement("textarea"); document.body.appendChild(comp); comp.focus();
+  if (row("a")) row("a").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 60, clientY: 40 }));
+  await flush();
+  ok("右键一行弹同一份菜单", !!menu() && menu().getAttribute("aria-label") === "「周报定稿」的操作", menu() ? menu().getAttribute("aria-label") : "没弹");
+  if (menu()) {
+    const r = menu().getBoundingClientRect();
+    ok("鼠标右键的贴着鼠标开", Math.abs(r.left - 60) < 1 && Math.abs(r.top - 40) < 1, r.left + "," + r.top);
+  }
+  ok("鼠标右键开的不把「⋯」标成开着", !!more("a") && more("a").getAttribute("aria-expanded") === "false");
+  key("Escape");
+  ok("鼠标右键开的，收起后焦点回到右键之前在的地方", document.activeElement === comp, focusName());
+  if (row("a")) row("a").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: innerWidth - 2, clientY: innerHeight - 2 }));
+  await flush();
+  if (menu()) {
+    const r = menu().getBoundingClientRect();
+    ok("靠右下角右键：往里收，整张还在窗口里", r.right <= innerWidth - 7.5 && r.bottom <= innerHeight - 7.5 && r.left >= 8 && r.top >= 8, JSON.stringify([r.left, r.top, r.right, r.bottom, innerWidth, innerHeight]));
+  } else ok("靠右下角右键：往里收，整张还在窗口里", false, "没弹");
+  key("Escape");
+  const pinA = () => row("a") && row("a").querySelector(".hpin");
+  const kbMenu = () => { const p = pinA(); if (p) { p.focus(); p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 0, clientY: 0 })); } };
+  kbMenu(); await flush();
+  if (menu() && more("a")) {
+    const r = menu().getBoundingClientRect(), br = more("a").getBoundingClientRect();
+    ok("键盘弹的右键菜单（没有鼠标位置）贴着「⋯」开", r.top >= br.bottom - 0.5 && Math.abs(r.left - Math.max(8, Math.min(br.left, innerWidth - r.width - 8))) < 1, JSON.stringify([r.left, r.top, br.left, br.bottom]));
+  } else ok("键盘弹的右键菜单（没有鼠标位置）贴着「⋯」开", false, "没弹");
+  key("Escape");
+  ok("  └ 收起后焦点回到弹菜单之前那颗键上", !!pinA() && document.activeElement === pinA(), focusName());
+  kbMenu(); await flush();
+  S("a").pinned_at = 5; renderHistory();
+  key("Escape");
+  ok("  └ 那颗键被重画掉了：落到这一行的「⋯」上", !!more("a") && document.activeElement === more("a"), focusName());
+  S("a").pinned_at = undefined; renderHistory();
+  const fake = document.createElement("div"); fake.className = "hist-item found"; fake.dataset.id = "a"; hist.appendChild(fake);
+  const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 });
+  fake.dispatchEvent(ev);
+  ok("搜索命中的行右键不弹这份菜单，也不拦系统菜单", !menu() && !ev.defaultPrevented);
+  fake.remove();
+
+  // ⑫ 菜单开着时侧栏重画
+  await tap("a");
+  S("a").title = "周报定稿（新）"; renderHistory();
+  ok("★行重画过，「⋯」还显示开着★", !!menu() && !!more("a") && more("a").getAttribute("aria-expanded") === "true" && more("a").classList.contains("on"));
+  key("Escape");
+  ok("  └ 收起后焦点回到重画出来的那颗「⋯」", document.activeElement === more("a"), focusName());
+  await tap("a");
+  sessions = sessions.filter((x) => x.id !== "a"); renderHistory();
+  ok("菜单挂着的那一行没了：菜单跟着收", !menu());
+  } catch (e) { fails.push("✗ 跑到一半抛了：" + ((e && (e.stack || e.message)) || String(e))); }
+  return { names, fails };
+})()
+`;
+// ================= 侧栏按天分组 + 产出文件的图标 =================
+// 任务一多，侧栏是一长串标题，找「前天那条」只能一条条往下扫。现在按最后动过的那天分组：
+// 今天 / 昨天 / 前几天各一组写日期（10月13日）/ 满一周的都归「更早」；产出过文件的行，标题后面带一个文件图标。
+// 这组验：分组按日历天算（昨晚 11 点那条是「昨天」，不是「24 小时内」）；组内按时间倒着排；
+// 等你答的那条只排到它自己那组的最前，不打乱日期；终端里正在跑的归「今天」；文件图标只长在产出过文件的行上；
+// 回放 / 直播里看见新文件，行上跟着长出图标，数只增不减。
+// ★反向对照★ nogroup：不分组（全塞一组）；hours24：按 24 小时一格算；asklost：组内不把等你的排前；noicon：不画图标
+const HDAY_MUTANTS = {
+  nogroup: (src) => src.replace("const [k, label] = histDayOf(s.at, now);", "const [k, label] = [\"old\", \"更早\"];"),
+  hours24: (src) => src.replace("const n = Math.round((day(now) - d) / 864e5);", "const n = Math.floor((now - t) / 864e5);"),
+  asklost: (src) => src.replace("...g.rows.sort((a, b) => askFirst(a.id) - askFirst(b.id)).map(row)", "...g.rows.map(row)"),
+  noicon: (src) => src.replace("if (!(s.files > 0)) return \"\";", "return \"\";"),
+};
+const HDAY_MUST = {
+  nogroup: /★今天 \/ 昨天 \/ 前几天 \/ 更早各一组★/,
+  hours24: /★按日历天算：昨晚 11 点那条归「昨天」★/,
+  asklost: /★等你答的排到自己那组最前★/,
+  noicon: /★产出过文件的行带文件图标★/,
+};
+const HDAY_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const hist = document.getElementById("history");
+  const order = () => [...hist.children].map((el) => el.classList.contains("hist-sec") ? "[" + el.textContent + "]" : (el.dataset.id || "cli:" + el.dataset.cli)).join(",");
+  const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
+  // 「现在」钉在本地时间 2026-10-15 凌晨 1 点：离午夜只差一小时，按 24 小时一格算的话昨晚那条会被算进今天
+  const NOW = new Date(2026, 9, 15, 1, 0, 0).getTime();
+  const at = (mo, d, h, mi) => new Date(2026, mo - 1, d, h, mi || 0, 0).getTime();
+  Date.now = () => NOW;
+  activeLane = "office"; activeProject = "默认项目"; projectsLocked = false; histQuery = ""; histHits = null;
+  runningSessions = new Map(); sessionId = "t1";
+  const mk = (id, a, extra) => Object.assign({ id, title: "任务" + id, at: a, project: "默认项目", lane: "office" }, extra || {});
+  // 故意打乱存的顺序：侧栏得按时间排，不能照抄数组的先后
+  sessions = [
+    mk("t5", at(10, 9, 12)),
+    mk("t2", at(10, 14, 23)),
+    mk("p1", at(10, 12, 9), { pinned_at: 5 }),
+    mk("t7", undefined),
+    mk("t1", at(10, 15, 0, 30)),
+    mk("t4", at(10, 13, 12), { files: 2 }),
+    mk("t6", at(10, 8, 12)),
+    mk("t3", at(10, 14, 10)),
+    mk("t8", NOW + 5 * 60e3), // 别处时钟快了五分钟：也算今天，不许跑到「更早」
+  ];
+  renderHistory();
+  const want = "[已置顶],p1,[今天],t8,t1,[昨天],t2,t3,[10月13日],t4,[10月9日],t5,[更早],t6,t7";
+  ok("★今天 / 昨天 / 前几天 / 更早各一组★", order() === want, order());
+  ok("★按日历天算：昨晚 11 点那条归「昨天」★", /\\[昨天\\],t2,/.test(order()), order());
+  ok("满一周的、没记过时间的都归「更早」", /\\[更早\\],t6,t7$/.test(order()), order());
+  ok("组标题是普通文字，不是按钮，读屏照念", [...hist.querySelectorAll(".hist-sec")].every((el) => el.tagName === "DIV" && !el.querySelector("button")));
+  ok("置顶的只出现在「已置顶」里，日期组里不重复", hist.querySelectorAll('.hist-item[data-id="p1"]').length === 1);
+
+  // 等你答的那条：只排到它自己那组的最前，不跳过日期组标题
+  attnAsk("t3", "q1", { text: "用哪个模板？" });
+  renderHistory();
+  ok("★等你答的排到自己那组最前★", /\\[昨天\\],t3,t2,/.test(order()), order());
+  ok("等你答的那条还在「昨天」里，没越过「今天」", order().indexOf("t3") > order().indexOf("[昨天]") && order().indexOf("[今天]") < order().indexOf("[昨天]"), order());
+  attnForget("t3");
+  renderHistory();
+
+  // 文件图标：产出过文件的才有，读屏念得出几个
+  const F = row("t4") && row("t4").querySelector(".hfile");
+  ok("★产出过文件的行带文件图标★", !!F && F.getAttribute("role") === "img" && F.getAttribute("aria-label") === "产出过 2 个文件", row("t4") && row("t4").innerHTML.slice(0, 240));
+  ok("图标跟在标题后面，不挤到标题前头", !!F && F.previousElementSibling && F.previousElementSibling.classList.contains("ht"));
+  ok("没产出过文件的行没有图标", !row("t1").querySelector(".hfile") && !row("t2").querySelector(".hfile"));
+  const fw = F ? F.getBoundingClientRect().width : 0;
+  ok("图标是小号的（12px 上下），不撑高这一行", fw > 0 && fw <= 14 && row("t4").getBoundingClientRect().height <= row("t1").getBoundingClientRect().height + 0.5, fw + "px / " + (row("t4") && row("t4").getBoundingClientRect().height));
+
+  // 回放或直播里看见新文件：同名只算一个，数只增不减
+  window.sessionMadeFiles = new Map();
+  const s0 = __SAVED;
+  noteMadeFiles("t1", ["周报.docx", "周报.docx", "数据.xlsx"]);
+  ok("新文件进来，行上跟着长出图标、同名只算一个", sessions.find((x) => x.id === "t1").files === 2
+    && row("t1").querySelector(".hfile") && row("t1").querySelector(".hfile").getAttribute("aria-label") === "产出过 2 个文件" && __SAVED > s0,
+    row("t1") && row("t1").innerHTML.slice(0, 200));
+  const T4 = row("t4");
+  noteMadeFiles("t4", ["只看见了一个.md"]);
+  ok("服务端数过的比这边看见的多：不往小了改，行也不重画", sessions.find((x) => x.id === "t4").files === 2 && row("t4") === T4);
+  noteMadeFiles("t1", []); noteMadeFiles("", ["x"]); noteMadeFiles("不在侧栏的", ["x"]);
+  ok("空名单、空 id、侧栏里没有的那条：都不炸", sessions.find((x) => x.id === "t1").files === 2);
+
+  // 工程线：终端里正在跑的归「今天」那组，排在组里最前
+  activeLane = "cli";
+  cliLiveRows = [{ id: "live1", title: "终端那趟", live: true, startedAt: NOW - 60e3 }];
+  sessions = [mk("c1", at(10, 15, 0, 10), { lane: "cli" }), mk("c2", at(10, 1, 9), { lane: "cli" })];
+  renderHistory();
+  ok("终端里正在跑的排在「今天」最前", order() === "[今天],cli:live1,c1,[更早],c2", order());
+  sessions = [mk("c2", at(10, 1, 9), { lane: "cli" })];
+  renderHistory();
+  ok("今天还没别的任务：替终端那趟立一个「今天」", order() === "[今天],cli:live1,[更早],c2", order());
+  cliLiveRows = []; activeLane = "office";
+  sessions = []; renderHistory();
+  ok("一条都没有：只剩空态，不留孤零零的组标题", !hist.querySelector(".hist-sec") && !!hist.querySelector(".hist-empty"), hist.innerHTML.slice(0, 160));
   return { names, fails };
 })()
 `;
@@ -14461,6 +15329,23 @@ const MERGE_CHECKS = `
   __REPLY = { sessions: [] };
   await mergeServerSessions();
   ok("服务端如实回「一条没有」时也不清本地", sessions.length === 1 && sessions[0].id === "keep1");
+
+  // ---- 改名 / 挪项目还在存：这时候并回来的是改之前那份，不能把刚改的盖回去 ----
+  sessions = [{ id: "s1", title: "新名字", at: 100, project: "客户 B" }];
+  __REPLY = { sessions: [{ id: "s1", title: "旧名字", at: 100, project: "客户 A" }] };
+  window.histEditBusy = new Map([["s1:title", 1], ["s1:project", 1]]);
+  await mergeServerSessions();
+  ok("★改名还在存的时候，服务端的旧名字不盖回来★", sessions[0].title === "新名字", sessions[0].title);
+  ok("★挪项目还在存的时候，服务端的旧项目不盖回来★", sessions[0].project === "客户 B", sessions[0].project);
+  window.histEditBusy.clear();
+  await mergeServerSessions();
+  ok("存完了就不再拦，服务端那份照常盖过来", sessions[0].title === "旧名字" && sessions[0].project === "客户 A", JSON.stringify(sessions[0]));
+  delete window.histEditBusy;
+  // ---- 别的设备上挪过项目：本地还记着客户 A，服务端已经是客户 B ----
+  sessions = [{ id: "s1", title: "整理季度数据", at: 100, project: "客户 A" }];
+  __REPLY = { sessions: [{ id: "s1", title: "整理季度数据", at: 100, project: "客户 B" }] };
+  await mergeServerSessions();
+  ok("别的设备上挪过项目的，这边跟着挪", sessions[0].project === "客户 B", sessions[0].project);
   return names;
 })()
 `;
@@ -15042,7 +15927,7 @@ const MOD_PLATFORMS = [
   { tag: "Linux", platform: "Linux x86_64", ua: null, mac: false, metaName: "Super" },
 ];
 const MOD_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body>"
-  + "<div id='mask'></div><button id='new-task'></button><button id='toggle-files'></button><textarea id='ta'></textarea><div id='pane'></div></body>";
+  + "<div id='mask'></div><button id='new-task'></button><button id='toggle-files'></button><button id='hist-find'></button><textarea id='ta'></textarea><div id='pane'></div></body>";
 const MOD_STUBS = `
   ${IC_STUB}
   const CALLED = [], SAVED = [];
@@ -15051,6 +15936,7 @@ const MOD_STUBS = `
   function askConfirm() { return Promise.resolve(false); }
   let settingsCache = { shortcuts: {} };
   let figZoom = null, pendingQuote = null; const inputEl = null;
+  function handleApprovalShortcut() { return false; }
   const mask = document.getElementById("mask");
   function openModal(k, sub) { CALLED.push("modal:" + k + (sub ? ":" + sub : "")); }
   function openChatSearch() { CALLED.push("chat-search"); }
@@ -15065,6 +15951,7 @@ const MOD_STUBS = `
   function nextAttn() { CALLED.push("next-attn"); }
   document.getElementById("new-task").onclick = () => CALLED.push("new-chat");
   document.getElementById("toggle-files").onclick = () => CALLED.push("toggle-files");
+  document.getElementById("hist-find").onclick = () => CALLED.push("toggle-hist-search");
 `;
 // 改之前那套默认键（写死 Meta）。mac 上换成 Mod 之后必须逐条解析成跟它一模一样的键——mac 用户不许察觉到任何变化
 const MOD_OLD_DEFAULTS = ["Meta+Comma", "Meta+F", "Enter", "Shift+Enter", "Meta+N", "Escape", "Meta+BracketLeft", "Meta+BracketRight", "Meta+B", "Shift+Meta+B",
@@ -15100,7 +15987,7 @@ const MOD_CHECKS = (P) => `
   ok("解析完的默认键之间没有撞车", dup.length === 0, dup);
   if (MAC) {
     const old = ${JSON.stringify(MOD_OLD_DEFAULTS)}.map(canonAccel);
-    ok("★mac：默认键逐条跟改之前那套 Meta 写法一模一样★", JSON.stringify(resolved.map(([, a]) => a)) === JSON.stringify(old), resolved);
+    ok("★mac：原有默认键逐条跟改之前那套 Meta 写法一模一样★", JSON.stringify(resolved.filter(([id]) => id !== "search-tasks").map(([, a]) => a)) === JSON.stringify(old), resolved);
   } else {
     ok("★" + TAG + "：默认键里一个 Meta（Win/Super 键）都没有★", resolved.every(([, a]) => !/Meta/.test(a)), resolved.filter(([, a]) => /Meta/.test(a)));
   }
@@ -15109,6 +15996,8 @@ const MOD_CHECKS = (P) => `
   // ---- 显示：非 mac 写成 Ctrl+Shift+B，不出 ⌘⌃⌥⇧ ----
   const D = accelDisplay;
   ok("打开设置显示成 " + (MAC ? "⌘," : "Ctrl+,"), D(def("open-settings")) === (MAC ? "⌘," : "Ctrl+,"), D(def("open-settings")));
+  ok("新建任务显示成 " + (MAC ? "⌘N" : "Ctrl+N"), D(def("new-chat")) === (MAC ? "⌘N" : "Ctrl+N"));
+  ok("搜索任务显示成 " + (MAC ? "⌘K" : "Ctrl+K"), D(def("search-tasks")) === (MAC ? "⌘K" : "Ctrl+K"));
   ok("切右侧面板显示成 " + (MAC ? "⇧⌘B" : "Ctrl+Shift+B"), D(def("toggle-files")) === (MAC ? "⇧⌘B" : "Ctrl+Shift+B"), D(def("toggle-files")));
   ok("唤起窗口显示成 " + (MAC ? "⌥⇧W" : "Alt+Shift+W"), D(def("toggle-window")) === (MAC ? "⌥⇧W" : "Alt+Shift+W"), D(def("toggle-window")));
   ok("换行显示成 " + (MAC ? "⇧⏎" : "Shift+Enter"), D(def("newline")) === (MAC ? "⇧⏎" : "Shift+Enter"), D(def("newline")));
@@ -15124,6 +16013,9 @@ const MOD_CHECKS = (P) => `
   CALLED.length = 0;
   ev = press({ key: "f", code: "KeyF", [flag(OTHER)]: true });
   ok("反向对照：" + OTHER + "+F 什么都不触发、也不拦", CALLED.length === 0 && !ev.defaultPrevented, CALLED);
+  CALLED.length = 0;
+  ev = press({ key: "k", code: "KeyK", [flag(M)]: true });
+  ok("★真按 " + (MAC ? "⌘K" : "Ctrl+K") + "：打开任务历史搜索并拦住默认行为★", CALLED.join() === "toggle-hist-search" && ev.defaultPrevented, CALLED);
   CALLED.length = 0;
   press({ key: "B", code: "KeyB", shiftKey: true, [flag(M)]: true });
   ok("Shift+" + M + "+B 切右侧面板", CALLED.join() === "toggle-files", CALLED);
@@ -16757,7 +17649,7 @@ const PANELFIT_CHECKS = (opts) => FIT_SRC + `
   return names;
 })()`;
 
-// 行里那几个「鼠标扫过才冒出来」的操作：移除项目、删掉任务、只整理这个任务、复制我发的话。
+// 行里那几个「鼠标扫过才冒出来」的操作：移除项目、任务行的「⋯」、只整理这个任务、复制我发的话。
 // 之前它们是拿 visibility:hidden 藏的——而 visibility:hidden 同时把元素踢出 Tab 序，
 // 于是纯键盘的人这辈子够不着「移除项目」；.del/.hx 还是 <span>，连自己的焦点都没有。
 // 实测：四处行内操作，键盘一个都够不着。现在改成「透明 + 不吃点击」，焦点一落就显形。
@@ -16773,17 +17665,19 @@ const ROWACT_MARKUP = (() => {
       throw new Error(where + " 里 class=\"" + cls + "\" 的 <button> 有 " + hits.length + " 个，期望 " + want +
         "——行内操作一旦退回 <span>，它就没有自己的焦点，键盘再也够不着");
     }
-    return hits.map((h) => h.replace(/\$\{[^}]*\}/g, '<svg class="i" width="14" height="14"></svg>'));
+    // 读屏名里还套着一层模板（aria-label="${esc(`更多操作「${t}」`)}"）：先换成字面量，不然下一步把它换成 <svg> 会拆散引号
+    return hits.map((h) => h.replace(/\$\{esc\(`([^`]*)`\)\}/g, (_, t) => t.replace(/\$\{[^}]*\}/g, "第一件事"))
+      .replace(/\$\{[^}]*\}/g, '<svg class="i" width="14" height="14"></svg>'));
   };
   const del = lift(APP02, "del", "app-02.js（侧栏项目行）", 1)[0];
-  const hx = lift(APP02, "hx", "app-02.js（任务历史行）", 1)[0];
+  const hmore = lift(APP02, "hmore", "app-02.js（任务历史行的「⋯」）", 1)[0];
   const ops = lift(APP02X, "op", "app-01.js（整理面板）", 2);
   const ucopy = lift(APP02X, "u-copy", "app-01.js（我发的那条消息）", 1)[0];
   // 行本身的 tabindex 是 markActivatable 在运行时补的（见 app-00-ui.js），这里照它的结果摆。
   // 那个函数还在不在，下面另有一条静态断言盯着，不靠这份 markup 替它作证。
   return '<div class="side"><div id="proj-list">'
     + '<div class="proj-item" data-name="甲项目" tabindex="0"><span class="pn">甲项目</span>' + del + '</div></div>'
-    + '<div id="history"><div class="hist-item" data-id="s1" tabindex="0"><span class="ht">第一件事</span>' + hx + '</div></div></div>'
+    + '<div id="history"><div class="hist-item" data-id="s1" tabindex="0"><span class="ht">第一件事</span>' + hmore + '</div></div></div>'
     + '<div class="sweep-panel"><div class="sw-tasks"><div class="sw-task" data-task="x">'
     + '<span class="nm">任务甲</span><span class="sw-sz">1 MB</span><span class="cnt">3 个</span>' + ops.join("") + '</div></div></div>'
     + '<div class="turn"><div class="u-msg">' + ucopy + '<div class="bubble" translate="no">帮我写个周报</div></div></div>';
@@ -16822,7 +17716,7 @@ const ROWACT_CHECKS = `
   };
   const CASES = [
     ["项目行·移除项目", ".proj-item", ".del"],
-    ["任务历史行·删掉", ".hist-item", ".hx"],
+    ["任务历史行·更多操作", ".hist-item", ".hmore"],
     ["整理面板·行内操作", ".sw-task", ".op"],
     ["我发的消息·复制", ".u-msg", ".u-copy"],
   ];
@@ -16886,7 +17780,7 @@ const ROWACT_CHECKS = `
   if (!window.__rowactMutant) {
     // ★反向对照★ 把「透明 + 不吃点击」换回 visibility:hidden，四个操作必须当场全退出 Tab 序
     const st = document.createElement("style");
-    st.textContent = ".proj-item .del, .hist-item .hx, .sw-task .op, .u-msg .u-copy { visibility: hidden; }";
+    st.textContent = ".proj-item .del, .hist-item .hmore, .sw-task .op, .u-msg .u-copy { visibility: hidden; }";
     document.head.appendChild(st);
     await settle();
     const stillTab = CASES.map(([n, r, a]) => [n, document.querySelector(r + " " + a)]).filter(([n, el]) => el && tabbable(el));
@@ -17011,9 +17905,22 @@ app.whenReady().then(async () => {
       await win2b.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SEND_HTML));
       const names2b = await win2b.webContents.executeJavaScript(SEND_STUBS + "\n" + ENSURE_SID_SRC + "\n" + SEND_SRC + "\n" + SEND_CHECKS, true);
       for (const n of names2b) console.log("  ✓ " + n);
-      console.log(`✅ 前端：会话 id 接力（先传附件后发消息·沿用同一个 id·历史列表不重复建行）${names2b.length} 项通过`);
+      console.log(`✅ 前端：会话 id 接力（先传附件后发消息·沿用同一个 id·历史列表不重复建行·接着聊的排回最前）${names2b.length} 项通过`);
     } finally {
       if (!win2b.isDestroyed()) win2b.destroy();
+    }
+    {
+      // ★反向对照★ 接着聊时不挪位置：「排回最前」那条必须当场红
+      const bumpOff = SEND_SRC.replace("const i = sessions.findIndex((s) => s.id === sessionId);", "const i = -1;");
+      if (bumpOff === SEND_SRC) throw new Error("[会话 id 接力·反向对照] 变体没改动源码（doSend 里接着聊那段写法变了？）");
+      const win2c = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+      try {
+        await win2c.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SEND_HTML));
+        let red = "";
+        await win2c.webContents.executeJavaScript(SEND_STUBS + "\n" + ENSURE_SID_SRC + "\n" + bumpOff + "\n" + SEND_CHECKS, true).catch((e) => { red = String((e && e.message) || e); });
+        if (!/★接着聊的那条排回最前/.test(red)) throw new Error("★反向对照★ 接着聊不挪位置，应当红在「接着聊的那条排回最前」上，实际：" + (red || "一条没红"));
+        console.log("✅ 前端：★反向对照★ 接着聊不挪位置，「接着聊的那条排回最前」当场红");
+      } finally { if (!win2c.isDestroyed()) win2c.destroy(); }
     }
 
     const win3 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
@@ -17228,7 +18135,7 @@ app.whenReady().then(async () => {
     const win11 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win11.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ONB_HTML));
-      const names11 = await win11.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n" + ONB_STUBS + "\n" + ONB_SRC + "\n" + SHORTCUT_SRC + "\n" + ONB_CHECKS, true);
+      const names11 = await win11.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n" + ONB_STUBS + "\n" + ONB_SRC + "\n" + SHORTCUT_SRC + "\n" + APPROVAL_KEY_SRC + "\n" + ONB_CHECKS, true);
       for (const n of names11) console.log("  ✓ " + n);
       console.log(`✅ 前端：首次开箱向导（大脑必配·云端/本机二选一·验活失败不翻页·搜索保存再测活·多媒体按行填·清单收尾·走完不再弹·关于页可重开）${names11.length} 项通过`);
     } finally {
@@ -17285,8 +18192,21 @@ app.whenReady().then(async () => {
       const namesMG = await winMG.webContents.executeJavaScript(IC_BOOT + MERGE_STUBS + "\n" + APP03_MERGE + "\n" + MERGE_CHECKS, true)
         .catch((e) => { throw new Error("[历史并回] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesMG) console.log("  ✓ " + n);
-      console.log(`✅ 前端：登录后把服务端的任务历史并回侧栏（本地空了能补回·只补不删·润色过的标题盖过半句话·老服务端/断网一条不清）${namesMG.length} 项通过`);
+      console.log(`✅ 前端：登录后把服务端的任务历史并回侧栏（本地空了能补回·只补不删·润色过的标题盖过半句话·老服务端/断网一条不清·改名挪项目存着时不被盖回）${namesMG.length} 项通过`);
     } finally { if (!winMG.isDestroyed()) winMG.destroy(); }
+    // ★反向对照★ 摘掉「正在存就别盖」那一道：改的名字、挪的项目都得当场被服务端旧值顶回去
+    for (const [f, want] of [["title", "★改名还在存的时候，服务端的旧名字不盖回来★"], ["project", "★挪项目还在存的时候，服务端的旧项目不盖回来★"]]) {
+      const guard = '!editing("' + f + '")';
+      const mut = APP03_MERGE.replace(guard, "true");
+      if (mut === APP03_MERGE) throw new Error("[历史并回] app-03.js 里找不到 " + guard + "——保护改过写法？反向对照跟着改");
+      const winMX = mkWin({ show: false, width: 400, height: 400, webPreferences: { offscreen: true } });
+      try {
+        await winMX.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MERGE_HTML));
+        const err = await winMX.webContents.executeJavaScript(IC_BOOT + MERGE_STUBS + "\n" + mut + "\n" + MERGE_CHECKS, true).then(() => "", (e) => String((e && e.message) || e));
+        if (!err.includes(want)) throw new Error("[历史并回] 反向对照没红：摘掉 " + guard + " 后该栽在「" + want + "」，实际 " + (err || "全过了"));
+      } finally { if (!winMX.isDestroyed()) winMX.destroy(); }
+    }
+    console.log("✅ 前端：★反向对照★ 摘掉「正在存就别盖」，改的名字、挪的项目当场被旧值顶回去");
 
     const winPJ = mkWin({ show: false, width: 300, height: 600, webPreferences: { offscreen: true } });
     try {
@@ -17437,6 +18357,81 @@ app.whenReady().then(async () => {
       } finally { if (!winHP.isDestroyed()) winHP.destroy(); }
     }
 
+    // 侧栏拖拽置顶：真源码一遍，再七个变体各跑一遍，每个都得红在对应行为上
+    for (const mutant of ["", ...Object.keys(DRAGPIN_MUTANTS)]) {
+      const base = HIST_MIN_SRC + "\n" + HIST_CLICK_SRC;
+      const histSrc = DRAGPIN_MUTANTS[mutant] ? DRAGPIN_MUTANTS[mutant](base) : base;
+      if (DRAGPIN_MUTANTS[mutant] && histSrc === base) throw new Error("[拖拽置顶·反向对照 " + mutant + "] 变体没改动源码（写法变了？）");
+      const winDP = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+      try {
+        await winDP.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+        const dp = await winDP.webContents.executeJavaScript(IC_BOOT + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_TASK_DRAGOVER_SRC + "\n" + histSrc + "\n" + DRAGPIN_CHECKS, true)
+          .catch((e) => { throw new Error("[拖拽置顶" + (mutant ? "·" + mutant : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (dp.fails.length) throw new Error("[拖拽置顶]\n" + dp.fails.join("\n"));
+          for (const n of dp.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：侧栏拖拽置顶（自定义拖拽类型·落点只接收合法操作·普通拖放照旧·重画仍能收尾·一次性提示·含七个反向对照）${dp.names.length} 项通过`);
+          continue;
+        }
+        const must = {
+          texttoo: /★dragstart 只写自定义任务类型，不把 ID 当纯文字★/,
+          nodefer: /★dragstart 当下不改 DOM，拖动不会被同步重画掐掉★/,
+          selfend: /★原行重画\/脱离列表后，行自身仍能收到 dragend 并收尾★/,
+          anywhere: /★没置顶的任务不能松在普通行上★/,
+          leak: /★任务拖拽不泄漏到页面级输入框拖放监听★/,
+          tipalways: /★提示展示一次后持久化标记★|★再次置顶或取消置顶不重复提示★/,
+          focussteal: /★拖放置顶不抢键盘焦点★/,
+        }[mutant];
+        const hit = dp.fails.filter((f) => must.test(f));
+        if (!hit.length) throw new Error(`★反向对照★ 拖拽置顶变体「${mutant}」应当红在 ${must} 上，实际红的：\n` + (dp.fails.join("\n") || "一条没红"));
+        console.log(`✅ 前端：★反向对照★ 拖拽置顶变体「${mutant}」当场红在对应行为（共红 ${dp.fails.length} 条）`);
+      } finally { if (!winDP.isDestroyed()) winDP.destroy(); }
+    }
+
+    // 侧栏每行的「⋯」菜单：真源码一遍，再五个变体各跑一遍，每个都得红在自己那条上
+    for (const mutant of ["", ...Object.keys(HMENU_MUTANTS)]) {
+      const base = HIST_MIN_SRC + "\n" + HIST_CLICK_SRC;
+      const histSrc = mutant ? HMENU_MUTANTS[mutant](base) : base;
+      if (mutant && histSrc === base) throw new Error("[行菜单·反向对照 " + mutant + "] 变体没改动源码（写法变了？）");
+      const winHM = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+      try {
+        await winHM.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+        const hm = await winHM.webContents.executeJavaScript(IC_BOOT + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + histSrc + "\n" + HMENU_STUBS + "\n" + HMENU_CHECKS, true)
+          .catch((e) => { throw new Error("[行菜单" + (mutant ? "·" + mutant : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (hm.fails.length) throw new Error("[行菜单]\n" + hm.fails.join("\n"));
+          for (const n of hm.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：侧栏每行的「⋯」菜单（键盘全程够得着·按键不漏到全局·收起还焦点·改名挪项目先改后存·没存上改回去·亲手标的未读刷新还在·含反向对照）${hm.names.length} 项通过`);
+          continue;
+        }
+        const must = HMENU_MUST[mutant];
+        const hit = hm.fails.filter((f) => must.test(f));
+        if (!hit.length) throw new Error(`★反向对照★ 行菜单变体「${mutant}」应当红在 ${must} 上，实际红的：\n` + (hm.fails.join("\n") || "一条没红"));
+        console.log(`✅ 前端：★反向对照★ 行菜单换成「${HMENU_LABEL[mutant]}」，${hit[0].replace(/ ｜.*/, "")} 当场红（共红 ${hm.fails.length} 条）`);
+      } finally { if (!winHM.isDestroyed()) winHM.destroy(); }
+    }
+
+    // 侧栏按天分组 + 文件图标：真源码一遍，再四个变体各跑一遍，每个都得红在自己那条上
+    for (const mutant of ["", "nogroup", "hours24", "asklost", "noicon"]) {
+      const histSrc = HDAY_MUTANTS[mutant] ? HDAY_MUTANTS[mutant](HIST_MIN_SRC) : HIST_MIN_SRC;
+      if (HDAY_MUTANTS[mutant] && histSrc === HIST_MIN_SRC) throw new Error("[侧栏按天分组·反向对照 " + mutant + "] 变体没改动源码（写法变了？）");
+      const winHD = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+      try {
+        await winHD.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+        const hd = await winHD.webContents.executeJavaScript(IC_BOOT + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + histSrc + "\n" + HDAY_CHECKS, true)
+          .catch((e) => { throw new Error("[侧栏按天分组" + (mutant ? "·" + mutant : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!mutant) {
+          if (hd.fails.length) throw new Error("[侧栏按天分组]\n" + hd.fails.join("\n"));
+          for (const n of hd.names) console.log("  ✓ " + n);
+          console.log(`✅ 前端：侧栏按天分组（今天/昨天/前几天/更早·按日历天·等你答的只排组内最前·终端在跑的归今天·产出文件的行带图标·含反向对照）${hd.names.length} 项通过`);
+          continue;
+        }
+        const hit = hd.fails.filter((f) => HDAY_MUST[mutant].test(f));
+        if (!hit.length) throw new Error(`★反向对照★ 变体「${mutant}」应当红在 ${HDAY_MUST[mutant]} 上，实际红的：\n` + (hd.fails.join("\n") || "一条没红"));
+        console.log(`✅ 前端：★反向对照★ 侧栏按天分组换成「${{ nogroup: "不分组", hours24: "按 24 小时一格", asklost: "组内不排等你的", noicon: "不画文件图标" }[mutant]}」，${hit[0].replace(/ ｜.*/, "")} 当场红（共红 ${hd.fails.length} 条）`);
+      } finally { if (!winHD.isDestroyed()) winHD.destroy(); }
+    }
+
     // 侧栏行上的「停」：真源码一遍，再三个变体各跑一遍，每个变体必须红在它该红的那条上
     for (const mutant of ["", "global", "onscreen", "opens", "noisy"]) {
       const clickSrc = HSTOP_MUTANTS[mutant] ? HSTOP_MUTANTS[mutant](HIST_CLICK_SRC) : HIST_CLICK_SRC;
@@ -17467,6 +18462,7 @@ app.whenReady().then(async () => {
       await winGC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GOAL_HTML));
       const namesGC = await winGC.webContents.executeJavaScript(IC_BOOT + GOAL_STUBS + "\n" + GOAL_SRC + "\n" + GOAL_CHECKS, true)
         .catch((e) => { throw new Error("[Goal 目标卡] " + ((e && (e.stack || e.message)) || String(e))); });
+      namesGC.push(...await winGC.webContents.executeJavaScript(I18N_SRC + "\n" + GOAL_EN_CHECKS, true));
       for (const n of namesGC) console.log("  ✓ " + n);
       console.log(`✅ 前端：Goal 目标卡（进度条·拆解验收失败留痕·停了说为什么并能接着冲）${namesGC.length} 项通过`);
     } finally { if (!winGC.isDestroyed()) winGC.destroy(); }
@@ -17529,6 +18525,36 @@ app.whenReady().then(async () => {
       const namesMRI = testMultiRunI18n();
       for (const n of namesMRI) console.log("  ✓ " + n);
       console.log(`✅ 前端：多开那两波的英文（打开对话的等待和失败·预览页载入·成果区分格·侧栏行上的停·含反向对照）${namesMRI.length} 项通过`);
+    }
+
+    {
+      const namesHI = testHistI18n();
+      for (const n of namesHI) console.log("  ✓ " + n);
+      console.log(`✅ 前端：侧栏任务历史那几句的英文（置顶·按天分组的组标题·文件图标·「⋯」菜单·含反向对照）${namesHI.length} 项通过`);
+    }
+
+    {
+      const namesOL = await testOpenLinkedSession();
+      for (const n of namesOL) console.log("  ✓ " + n);
+      console.log(`✅ 前端：「在新窗口打开」带过去的 ?s=（开那条·开完擦掉·别的参数留着·侧栏没有的说一声·乱写的号不理）${namesOL.length} 项通过`);
+      for (const [tag, from, to, want] of OPEN_LINK_MUTANTS) {
+        const mut = OPEN_LINK_SRC.replace(from, to);
+        if (mut === OPEN_LINK_SRC) throw new Error("[新窗口打开] 反向对照「" + tag + "」找不到要摘的那句——源码改过？跟着改");
+        const err = await testOpenLinkedSession(mut).then(() => "", (e) => String((e && e.message) || e));
+        if (!err.startsWith(want + "：")) throw new Error("[新窗口打开] 反向对照「" + tag + "」该栽在「" + want + "」，实际 " + (err || "全过了"));
+      }
+      console.log("✅ 前端：★反向对照★ 新窗口打开：不擦地址栏 / 不认侧栏 / 不验号，各自当场红");
+      const namesTE = testTitleEventGuard();
+      for (const n of namesTE) console.log("  ✓ " + n);
+      console.log(`✅ 前端：改名还没存完，模型起的标题不盖人起的（侧栏和顶上都让·别的任务照换·只认改名那项）${namesTE.length} 项通过`);
+      for (const [tag, from, to, want] of TITLE_EV_MUTANTS) {
+        const mut = TITLE_EV_SRC.replace(from, to);
+        if (mut === TITLE_EV_SRC) throw new Error("[标题让一让] 反向对照「" + tag + "」找不到要摘的那句——源码改过？跟着改");
+        let err = "";
+        try { testTitleEventGuard(mut); } catch (e) { err = String((e && e.message) || e); }
+        if (!err.startsWith(want + "：")) throw new Error("[标题让一让] 反向对照「" + tag + "」该栽在「" + want + "」，实际 " + (err || "全过了"));
+      }
+      console.log("✅ 前端：★反向对照★ 标题让一让：整个不让 / 顶上不让，各自当场红");
     }
 
     {

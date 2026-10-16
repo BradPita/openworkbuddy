@@ -363,13 +363,13 @@ function secretValues(cfg = {}) {
  * 「Bearer xxx」「api_key=xxx」和带 user:pass／query 的网址，最后截到 300 字——
  * 原文是要照抄给用户的（不替人下结论），但不能顺手把 Key 也抄出去。
  */
-function scrubText(text, cfg = {}) {
+function scrubText(text, cfg = {}, { limit = 300 } = {}) {
   let s = String(text == null ? "" : text);
   for (const v of secretValues(cfg)) s = s.split(v).join("***");
   s = scrubGeneric(s)
     // 只认 ASCII 段：中文括号句号紧贴在网址后面时别被吞进去。路径里夹着随机串的也洗（key 当路径段的那种）
     .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>\u0080-\uffff]+/gi, (u) => (/[@?#]/.test(u) || u.split("/").slice(3).some((p) => looksRandom(safeDecode(p))) ? redactUrl(u) : u));
-  return s.length > 300 ? `${s.slice(0, 300)}…` : s;
+  return limit > 0 && s.length > limit ? `${s.slice(0, limit)}…` : s;
 }
 
 /**
@@ -545,11 +545,12 @@ class StdioTransport {
  * initialize 返回的 Mcp-Session-Id 之后每次都要带回去。
  */
 class HttpTransport {
-  constructor(name, { url, headers = {} }) {
+  constructor(name, { url, headers = {}, oauthToken = null, oauthFetch = null }) {
     this.name = name;
     this.url = url;
     this.origin = new URL(url).origin;
     this.headers = headers;
+    this.oauthToken = oauthToken; this.oauthFetch = oauthFetch; this.oauthSecrets = new Set();
     this.nextId = 1;
     this.sessionId = "";
   }
@@ -568,13 +569,27 @@ class HttpTransport {
   }
 
   async _post(body, timeoutMs, signal) {
-    const resp = await fetch(this.url, {
+    let token = this.oauthToken ? await this.oauthToken({}) : null;
+    const send = async () => {
+      if (signal && signal.aborted) throw signal.reason;
+      const headers = this._headers();
+      if (token) {
+        for (const key of Object.keys(headers)) if (key.toLowerCase() === "authorization") delete headers[key];
+        headers.Authorization = "Bearer " + token; this.oauthSecrets.add(token);
+        while (this.oauthSecrets.size > 4) this.oauthSecrets.delete(this.oauthSecrets.values().next().value);
+      }
+      return (token && this.oauthFetch ? this.oauthFetch : fetch)(this.url, {
       method: "POST",
-      headers: this._headers(),
+      headers,
       body: JSON.stringify(body),
       redirect: "manual", // 配置的 header 绝不能跟着跳转发到别的源去
       signal: signal || AbortSignal.timeout(timeoutMs),
     });
+    };
+    let resp = await send();
+    if (token && resp.status === 401 && this.oauthToken) {
+      await resp.body?.cancel(); token = await this.oauthToken({ force: true }); resp = await send();
+    }
     if (resp.status >= 300 && resp.status < 400) {
       const loc = resp.headers.get("location") || "";
       throw new Error(`服务器要求跳转到 ${loc}；带凭据的请求不会自动跟随跳转，请直接把 url 配成最终地址`);
@@ -601,9 +616,17 @@ class HttpTransport {
         : await resp.json();
       if (!msg) throw new Error(`MCP ${this.name}.${method} 没有返回对应 id=${id} 的响应`);
       if (msg.error) throw new Error(msg.error.message || JSON.stringify(msg.error));
-      return msg.result;
+      let result = msg.result;
+      if (this.oauthSecrets.size) {
+        let serialized = JSON.stringify(result);
+        if (typeof serialized === "string") { for (const secret of this.oauthSecrets) serialized = serialized.split(secret).join("***"); result = JSON.parse(serialized); }
+      }
+      return result;
     } catch (e) {
-      if (!(signal && signal.aborted)) throw e;
+      if (!(signal && signal.aborted)) {
+        if (this.oauthSecrets.size) { let message = String(e.message || e); for (const secret of this.oauthSecrets) message = message.split(secret).join("***"); throw new Error(message); }
+        throw e;
+      }
       this.notify(CANCELLED, cancelParams(id)); // 不等它：notify 自己吞错，停止不该被一个通知拖住
       throw stoppedErr(this.name, method);
     } finally {
@@ -735,7 +758,7 @@ class McpManager {
    * root：工具表缓存和图片落在哪个目录的 .openworkbuddy/ 底下（目录或返回目录的函数）。
    * 不给就跟着工作区走（见 workspaceRoot）。测试给一个临时目录，别往用户真的工作区里写。
    */
-  constructor({ root } = {}) {
+  constructor({ root, oauthToken = null, oauthFetch = null } = {}) {
     this.root = root || null;
     this.clients = new Map(); // serverName -> McpClient（lazy 的那几台也在里头：工具表是缓存的，还没真连）
     this.failures = []; // [{ name, plugin, error }] 起不来的服务器，界面要能看见为什么
@@ -750,6 +773,7 @@ class McpManager {
      * 出现了模型就会去调，调到一半才发现连不上，白烧一轮。
      */
     this.disabled = new Set();
+    this.oauthToken = oauthToken; this.oauthFetch = oauthFetch;
   }
 
   /** 哪些服务器现在是关着的（server.js 从 config.mcp_disabled 灌进来） */
@@ -781,7 +805,7 @@ class McpManager {
       // 用户在 ＋ 菜单里把这台关了。停在 _drop 之后、new McpClient 之前：
       // 先停是为了「开着的时候被关掉」这一路真的能把进程收掉，再 continue 才是不去连它。
       if (this.disabled.has(cfg.name)) continue;
-      const client = new McpClient(cfg.name, cfg);
+      const client = new McpClient(cfg.name, { ...cfg, ...(cfg.url && this.oauthToken ? { oauthToken: (options) => this.oauthToken(cfg, options), oauthFetch: this.oauthFetch } : {}) });
       client.plugin = cfg.plugin || "";
       const hit = cache[cfg.name];
       if (hit && hit.fp === cfgFingerprint(cfg) && Array.isArray(hit.tools)) {
@@ -966,11 +990,12 @@ class McpManager {
     };
   }
 
-  /** 转换为 agent 统一工具定义（命名 mcp__server__tool） */
-  toolDefs() {
+  /** 转换为 agent 统一工具定义（命名 mcp__server__tool）。给了 keep(服务器, 工具) 就只留它点头的（连接器页上设了不让用的摘掉） */
+  toolDefs(keep) {
     const defs = [];
     for (const [server, client] of this.clients) {
       for (const t of client.tools) {
+        if (keep && !keep(server, t.name)) continue;
         defs.push({
           name: `mcp__${server}__${t.name}`,
           description: `[MCP:${server}] ${t.description || t.name}`,
@@ -985,11 +1010,27 @@ class McpManager {
     return name.startsWith("mcp__");
   }
 
+  /**
+   * mcp__服务器__工具 拆回两半。插件带来的服务器叫「插件名__id」，名字里自己就有 __：
+   * 先按连着的名字认最长的那个，认不出再按老规矩切在第一个 __ 上
+   * @returns {{server: string, tool: string} | null}
+   */
+  resolve(fullName) {
+    const s = String(fullName || "");
+    if (!s.startsWith("mcp__")) return null;
+    const rest = s.slice(5);
+    let best = "";
+    for (const name of this.clients.keys()) if (name.length > best.length && rest.length > name.length + 2 && rest.startsWith(name + "__")) best = name;
+    if (best) return { server: best, tool: rest.slice(best.length + 2) };
+    const m = s.match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/);
+    return m ? { server: m[1], tool: m[2] } : null;
+  }
+
   async call(fullName, input, { signal } = {}) {
-    const m = fullName.match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/);
-    if (!m) return { content: `无效的 MCP 工具名: ${fullName}`, isError: true };
-    const client = this.clients.get(m[1]);
-    if (!client) return { content: `MCP 服务器未连接: ${m[1]}`, isError: true };
+    const r = this.resolve(fullName);
+    if (!r) return { content: `无效的 MCP 工具名: ${fullName}`, isError: true };
+    const client = this.clients.get(r.server);
+    if (!client) return { content: `MCP 服务器未连接: ${r.server}`, isError: true };
     if (client.lazy) {
       // 已经点了停止就别再去拉起它：npx 那种一拉就是一个进程，这一单又用不上
       if (signal && signal.aborted) return STOPPED_RESULT();
@@ -998,14 +1039,14 @@ class McpManager {
       if (why === GONE) {
         // 被同名的顶掉了（比如刚保存过连接器）：交给表里现在那台；被停掉了就是没连。
         // 别说成「连不上、别再调」——那台好好的，模型会就此绕开一个能用的连接器
-        const now = this.clients.get(m[1]);
-        return now && now !== client ? this.call(fullName, input, { signal }) : { content: `MCP 服务器未连接: ${m[1]}`, isError: true };
+        const now = this.clients.get(r.server);
+        return now && now !== client ? this.call(fullName, input, { signal }) : { content: `MCP 服务器未连接: ${r.server}`, isError: true };
       }
       // 连不上的那台已经从工具表里摘掉了：明说别再调，不然模型会换着参数重试一台根本连不上的服务器
-      if (why) return { content: `MCP 服务器 ${m[1]} 第一次调用时去连，没连上：${why}。它的工具已从工具表里摘掉，别再调了`, isError: true };
+      if (why) return { content: `MCP 服务器 ${r.server} 第一次调用时去连，没连上：${why}。它的工具已从工具表里摘掉，别再调了`, isError: true };
     }
     try {
-      return await client.callTool(m[2], input, undefined, { signal, root: this.root || undefined });
+      return await client.callTool(r.tool, input, undefined, { signal, root: this.root || undefined });
     } catch (e) {
       if (e.stopped) return STOPPED_RESULT();
       return { content: `MCP 调用失败: ${e.message}`, isError: true };

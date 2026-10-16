@@ -114,7 +114,7 @@ function parse(line, opt) {
   // 第一个判的是 raw 而不是 body——body 已经修过边了，那个空格只在原文里还看得见
   if (/^[ \t]/.test(raw)) return { kind: "task", text: body };
   if (body.startsWith("//")) return { kind: "task", text: body.slice(1).trim() };
-  // !git status：自己跑一条命令看一眼，不花钱、不等模型（Claude Code / Codex 都是这个写法）。
+  // !git status：自己跑一条命令看一眼，不花钱、不等模型。
   // 跑完的输出由 cli.js 记下来，跟着下一句话带给模型。光一个 ! 没东西可跑，当普通的话发；
   // 真想发一句 ! 开头的话就写 !!，跟 // 一个路数（全角的 ！ 本来就不算，中文感叹不会误触）
   if (body.startsWith("!!")) return { kind: "task", text: body.slice(1).trim() };

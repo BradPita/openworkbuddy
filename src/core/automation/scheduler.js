@@ -361,7 +361,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
     return t && allowed(t, viewer) ? t : null;
   }
 
-  function add({ name, cron, at, task, catch_up, user, org }) {
+  function add({ name, cron, at, task, catch_up, user, org, source_session_id, billing_scope }) {
     task = String(task || "").trim();
     if (!task) throw new Error("任务描述不能为空");
     // 只跑一次 vs 周期跑，二选一。两个都给会各跑各的（cron 每天响 + at 再响一次），
@@ -384,6 +384,10 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       // 也是「这个人离职了，他的定时任务要跟着停」能落地的前提（见 lifecycle.js）
       user: String(user || ""),
       org: String(org || "") || orgOfTask({ user }),
+      // AI 从一段真实对话里创建的排期保留来源会话；独立创建的排期为空。
+      // 这是内部字段，HTTP API 不接受客户端传入，避免伪造跨会话关联。
+      source_session_id: String(source_session_id || ""),
+      billing_scope: billing_scope === "team" ? "team" : "personal",
       created_at: new Date().toISOString(),
       last_run: null,
       last_result: null,
@@ -507,6 +511,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
     const run = {
       id: "run_" + startedMs.toString(36) + Math.random().toString(36).slice(2, 6),
       task_id: item.id,
+      source_session_id: item.source_session_id || "",
       name: item.name,
       trigger,
       started_at: item.last_run,

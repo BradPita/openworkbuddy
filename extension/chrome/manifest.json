@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "OpenWorkBuddy",
+  "version": "1.1.0",
+  "description": "让 OpenWorkBuddy 在你批准后操作这个 Chrome。Lets OpenWorkBuddy work in this Chrome, one approved step at a time.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "scripting", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "OpenWorkBuddy", "default_popup": "popup.html" }
+}

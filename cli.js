@@ -2522,7 +2522,7 @@ function splitFiles(text) {
   }
 
   // Shift+Tab 循环权限档。放权这件事十有八九是「手停在半路上才发现档位不对」，
-  // 那时候再去敲 /perm ask 已经太慢——Codex 的 /approvals、Claude Code 的 Shift+Tab 都在这个位置。
+  // 那时候再去敲 /perm ask 已经太慢，得是一个随手就能按到的键。
   function cyclePerm() {
     // 「全自动」不进这个圈：Shift+Tab 就挨着 Tab，误碰一下就把命令确认也关了，
     // 而人正盯着自己那半行字，根本不会去读屏幕上多出来的一行。要到全自动得明着敲 /perm full。
@@ -2536,7 +2536,7 @@ function splitFiles(text) {
     sayAbove(dim(`权限 → 「${m.label}」（${next}）　${m.desc}（只管这一趟；Shift+Tab 到不了「全自动」，那个得敲 /perm full）\n`));
   }
 
-  // Esc Esc：把之前问过的话拉回输入行改了重问。Codex 的招牌交互。
+  // Esc Esc：把之前问过的话拉回输入行改了重问。
   // 这儿只「放回去」，不回卷历史——真删掉已经跑过的那几轮，等于把模型已经做过的事悄悄抹了，
   // 而人看不见抹了什么。要重来就开 /new，要接回去就 /resume，两条路都在明面上。
   let escArmed = 0;

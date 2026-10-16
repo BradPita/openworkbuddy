@@ -2,8 +2,7 @@
 # 再 git tag v0.1.1 && git push origin v0.1.1。完整清单在 docs/发版.md。
 #
 # 为什么 Windows 包必须在 CI 上打：开发机是 Mac，没装 wine，electron-builder 造不出 NSIS 安装器。
-# 所以 Windows 那份是这条流水线第一次真正跑出来的产物——它没在开发机上被人工验证过，
-# 谁先装谁就是第一个测试者，有问题请开 issue。
+# Windows 产物由 runner 构建，并通过静默安装、启动和页面加载检查后上传。
 name: release
 
 on:
@@ -123,6 +122,26 @@ jobs:
         # 「允许缺失」这种输入项，只能靠 continue-on-error 兜，别让它把整个 release 拖红
         continue-on-error: true
         with: { path: dist }
+      - name: Generate installer checksums
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          assets = sorted(p for p in Path("dist").rglob("*") if p.is_file() and p.suffix in {".dmg", ".zip", ".exe"})
+          if assets:
+              names = [p.name for p in assets]
+              if len(names) != len(set(names)):
+                  raise SystemExit("Duplicate installer names")
+              rows = []
+              for p in assets:
+                  digest = hashlib.sha256()
+                  with p.open("rb") as stream:
+                      for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                          digest.update(chunk)
+                  rows.append(f"{digest.hexdigest()}  {p.name}")
+              Path("dist/SHA256SUMS.txt").write_text("\n".join(rows) + "\n")
+          PY
       - uses: softprops/action-gh-release@v3
         with:
           # 缺了平台就落草稿由人拍板：下面那段正文写死了 Windows 的文件名，
@@ -132,85 +151,46 @@ jobs:
           generate_release_notes: true
           body: |
             ${{ steps.notes.outputs.md }}
-            ## 安装
+            ## 安装 / Install
 
-            **macOS 一句话装好**（下载 → 装进「应用程序」→ 摘掉隔离标记 → 打开，不会被 Gatekeeper 拦）：
-
-            ```
-            curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash
-            ```
-
-            手动下包的话：
-
-            - **macOS（Apple 芯片）** → `OpenWorkBuddy-*-mac-arm64.dmg`
-            - **macOS（Intel）** → `OpenWorkBuddy-*-mac-x64.dmg`
-              —— ⚠️ **下 dmg 的第一次打开一定会弹「未打开“OpenWorkBuddy”· Apple 无法验证…」，只有「完成 / 移到废纸篓」两个按钮。**
-              点**「完成」**→ **系统设置 → 隐私与安全性** → 滚到最下面 → 点**「仍要打开」**→ 输开机密码。做这一次就够了。
-              细节和另外两条路见下面「第一次打开会被系统拦一下」。
-            - **Windows（x64 / ARM 同一个包）** → `OpenWorkBuddy-*-win-setup.exe` ← **绝大多数人下这个**（双击打开安装向导，能选装在哪个盘，有进度条，装时自动选架构）
-            - **Windows 免安装版** → `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`
-              —— **只在公司电脑不让装软件时才用**。它的原理是自解压：每次启动都要把整个应用解压到 `%TEMP%`，
-              还要被 Defender 逐个扫一遍，第一次可能要等好几分钟，期间任务管理器里有进程、屏幕上什么都没有。
-
-            ## 第一次打开会被系统拦一下
-
-            代码签名证书还在申请（苹果一年 99 美元、Windows 一年几千块），所以现在发出去的包是 ad-hoc 签名的。
-            系统拦的是「这个开发者我没见过」，**不是「这个文件有毒」**——包里的签名本身完好，
-            `codesign --verify --deep --strict` 自己验得出来。证书批下来之后这一步就没有了。
-
-            **macOS · 三条路，挑一条**
-
-            1. **不想碰终端（推荐）**：双击 → 弹窗点 **「完成」**（**别点「移到废纸篓」**）→ 打开
-               **「系统设置 → 隐私与安全性」**→ 一直滚到最下面的「安全性」那一段，会看到
-               「已阻止使用“OpenWorkBuddy”，因为它来自身份不明的开发者」→ 点 **「仍要打开」**→
-               输开机密码 → 再弹一次点 **「打开」**。做这一次就够了，以后双击直接开。
-               （「仍要打开」这一栏**只在你刚刚被拦过之后才出现**。设置里翻不到的话，先回去双击一次应用，再进设置。）
-            2. **一句命令**：**先把 .app 从 dmg 拖进「应用程序」**（dmg 是只读卷，在里面执行会失败），然后在终端跑：
-
-            ```
-            xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app
-            ```
-
-            3. **一个弹窗都不想见**：用最上面那句 curl。浏览器下载的文件会被打上 `com.apple.quarantine` 标记，
-               curl 下的不会——整条路径上没有 Gatekeeper。
-
-            两条容易走错的岔路：
-
-            - **别照着网上「右键 → 打开」的教程点。** 那条只在 **macOS 14 及更早**有效；macOS 15 (Sequoia) 起
-              苹果取消了这条通道，右键弹窗里已经没有第二个「打开」按钮——照着点会以为「就是打不开」。
-            - **提示「已损坏，应将它移到废纸篓」和上面不是一回事。** 那是签名真的被弄坏了（网盘、同步盘、
-              某些解压工具都会干这事）。重下一次，或者就地重签：`codesign --force --deep --sign - /Applications/OpenWorkBuddy.app`
-
-            **Windows**：弹出「Windows 已保护你的电脑」时，点弹窗里的灰色小字 **「更多信息」**，下面才会出现 **「仍要运行」**。
-
-            装完先去设置里填模型 API Key。你的配置、会话、工作区都在 `~/OpenWorkBuddy`，卸载不会删。
-
-            ## 双击了没反应？
-
-            每次启动都会写一份日志，先看它停在哪儿：
-
-            ```
-            ~/OpenWorkBuddy/logs/boot.log          # Windows: C:\Users\你\OpenWorkBuddy\logs\boot.log
-            ```
-
-            常见的几种，以及对应的解法：
-
-            | 现象 | 解法 |
+            | 系统 / Platform | 下载文件 / Asset |
             |---|---|
-            | 双击安装包没反应，也没弹「Windows 已保护你的电脑」 | 看 360 / 火绒 / 电脑管家的隔离区，把 OpenWorkBuddy 恢复并加进信任 |
-            | 免安装版双击后一直停在「正在打开」 | 改用 `-win-setup.exe` 安装版（免安装版每次启动都要解压整包） |
-            | 窗口不出现，或者出来一整片黑 | 在 `~/OpenWorkBuddy/config.json` 的 `server` 里加 `"disable_gpu": true` |
-            | 弹框说「放数据的文件夹建不起来」 | 设环境变量 `OPENWORKBUDDY_HOME` 指到本机一个能写的文件夹 |
-            | 弹框说「已经在运行了，但窗口没出来」 | 任务管理器里结束 OpenWorkBuddy 进程再打开 |
-            | 弹框说端口用不了 | 把 `config.json` 里的 `server.port` 换成 3810 之类 |
+            | macOS · Apple Silicon | `OpenWorkBuddy-*-mac-arm64.dmg` |
+            | macOS · Intel | `OpenWorkBuddy-*-mac-x64.dmg` |
+            | Windows · x64 / ARM64 | `OpenWorkBuddy-*-win-setup.exe` |
+            | Windows · portable | `OpenWorkBuddy-*-win-x64-portable.exe` / `OpenWorkBuddy-*-win-arm64-portable.exe` |
 
-            **失败时应该总有一个写着原因的窗口或弹框。如果你什么都没看到，那本身就值得开一个 issue**，
-            带上那份 `boot.log`。更全的排查表在 [安装与启动](https://github.com/CatCatUncle/openworkbuddy/blob/main/docs/%E5%AE%89%E8%A3%85%E4%B8%8E%E5%90%AF%E5%8A%A8.md)。
+            **Windows 推荐安装版**：按机器自动选架构。免安装版每次启动都要解压，首次打开可能较慢，请勿重复双击。
+            **On Windows, use the setup installer** unless you need a portable copy. Portable builds extract on every launch and may take longer to open.
 
-            ## 升级
+            `SHA256SUMS.txt` 提供各安装包的 SHA-256 校验值，可核对下载内容是否一致。
+            Compare your download's SHA-256 hash with `SHA256SUMS.txt` to check file integrity.
 
-            以后有新版，**不用卸载重装**：下这里的新包覆盖装一次就行，`~/OpenWorkBuddy` 里的配置、
-            会话和成果文件都不动。从源码跑的话 `git pull && npm install` 重启即可。
+            ### 第一次打开 / First launch
 
-            应用里 **设置 → 关于 → 检查更新** 会告诉你线上是不是有新版、你这种装法怎么升。
-            （没有一键自动更新：这些包没有代码签名证书，macOS 的自动更新通道会校验签名，硬做只会是一颗永远报错的按钮。）
+            当前 macOS 包使用 ad-hoc 签名，未经过 Apple 公证；Windows 包未使用代码签名证书。
+            请从本仓库 Releases 下载，并在确认来源后决定是否继续安装。
+            macOS builds use ad-hoc signing without Apple notarization. Windows builds are not code signed. Verify the download source before proceeding.
+
+            - **macOS「无法验证」**：先将应用拖到「应用程序」。关闭提示，进入 **系统设置 → 隐私与安全性 → 仍要打开**，按系统要求确认。
+              **macOS “cannot be verified”**: move the app to Applications, dismiss the prompt, then use **System Settings → Privacy & Security → Open Anyway**.
+              [Apple 操作说明 / Apple instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+            - **macOS「已损坏」**：重新下载；仍有问题时检查签名及启动日志，见下方安装指南。这个提示不能只按「无法验证」处理。
+              **macOS “is damaged”**: download a fresh copy, then check the signature and startup log using the installation guide if needed.
+            - **Windows SmartScreen**：核对来源后选择 **更多信息 → 仍要运行**。组织设备还可能受管理员策略限制。
+              After checking the source, use **More info → Run anyway**. Managed devices may have additional restrictions.
+
+            装完后注册账号，在「设置 → 模型」配置可用的模型，再完成 [第一份周报](https://github.com/CatCatUncle/openworkbuddy#quick-start)。模型服务可能收费；不附带 API Key。
+            After registering, connect a model in Settings → Models and complete the [first report task](https://github.com/CatCatUncle/openworkbuddy/blob/main/README.en.md#quick-start). Model providers may charge for usage; no API key is included.
+
+            ### 排查与升级 / Troubleshooting and upgrades
+
+            - **双击无反应 / No window**：查看 `~/OpenWorkBuddy/logs/boot.log`（Windows：`%USERPROFILE%\OpenWorkBuddy\logs\boot.log`）。分享日志前请删去个人路径、账号和凭据。
+            - **黑屏 / Blank window**：在数据目录的 `config.json` 中，将 `server.disable_gpu` 设为 `true`，然后重启。
+            - **数据目录 / Data directory**：默认 `~/OpenWorkBuddy`，可用 `OPENWORKBUDDY_HOME` 更改。卸载应用不会删除此目录。
+            - **升级 / Upgrade**：备份数据目录，关闭应用，下载同架构的新安装包覆盖安装。免安装版换成新文件。源码用户执行 `git pull`、`npm ci` 后重启。
+
+            [中文安装与启动](https://github.com/CatCatUncle/openworkbuddy/blob/main/docs/%E5%AE%89%E8%A3%85%E4%B8%8E%E5%90%AF%E5%8A%A8.md) · [English user guide](https://catcatuncle.github.io/openworkbuddy/guides/user.html) · [中文用户指南](https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html) · [开发者 / Developer guide](https://catcatuncle.github.io/openworkbuddy/guides/developer.html)
+
+            有用的话欢迎 [Star 收藏](https://github.com/CatCatUncle/openworkbuddy/stargazers)，通过 **Watch → Custom → Releases** 接收新版本通知。
+            Star the repository if it helps you, or enable **Watch → Custom → Releases** for release notifications.

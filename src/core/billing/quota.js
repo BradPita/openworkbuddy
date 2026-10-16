@@ -27,6 +27,7 @@
  * 但「不限」不等于「不记」：流水一直在记，管理员先看得见花在哪，再决定要不要设限。
  */
 
+const taskBilling = require("./task-billing");
 const path = require("path");
 const { dataPath } = require("../../platform/paths");
 const log = require("../../platform/log");
@@ -391,6 +392,7 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, b
 
   try {
     ledger.append({
+      ...taskBilling.current(),
       ts: new Date().toISOString(), day: localDay(), month: localMonth(),
       cap, n: cnt,
       org: (who && who.org) || "default",
@@ -411,6 +413,7 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, b
   try {
     usageStore.append({
       ts: new Date().toISOString(), day: localDay(),
+      ...taskBilling.current(),
       kind: "api",                                  // 跟聊天的 "run" 、充值的 "topup" 分开
       cap, units: u, unit: (pricing.UNITS[cap] || CAPS[cap]).unit,
       user: (who && who.user) || "",

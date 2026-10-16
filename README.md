@@ -1,50 +1,80 @@
-<p align="center">
- <img src="build/icon.png" width="120" alt="OpenWorkBuddy">
-</p>
-
+<p align="center"><img src="build/icon.png" width="64" alt="OpenWorkBuddy"></p>
 <h1 align="center">OpenWorkBuddy</h1>
-
-<p align="center">
- <b>开源、跑在你自己电脑上的 AI 办公助理。</b><br>
- 交代一句话，它自己规划、动手、验收，把 PPT / Word / Excel / 网页落到你硬盘上。<br>
- <b>给你的是能打开的文件，不是一段聊天记录。</b>
-</p>
-
-<p align="center">
- Claude Cowork / 豆包办公 / 千问办公的开源替代 · 本机的 Claude Code、Codex 能直接当发动机<br>
- <sub>A local-first AI office agent that hands you files, not chat logs. · <a href="README.en.md"><b>English</b></a></sub>
-</p>
-
-<p align="center">
- <a href="#三分钟跑起来"><b>▶&nbsp;三分钟跑起来</b></a>
- &nbsp;·&nbsp; <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a>
- &nbsp;·&nbsp; <a href="docs/功能清单.md">功能清单</a>
- &nbsp;·&nbsp; <a href="#文档">文档</a>
- &nbsp;·&nbsp; <a href="#商用授权--企业服务"><b>商用授权 · 企业服务</b></a>
- &nbsp;·&nbsp; <a href="#交流群">交流群</a>
- &nbsp;·&nbsp; <a href="CHANGELOG.md">变更记录</a>
-</p>
-
-<p align="center">
- <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
- <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts"></a>
-</p>
-
-<p align="center">
- 个人非商用、学校和公益机构 <b>免费</b>；公司使用（哪怕只在内部）和个人商用，须买 <b>商业授权</b><br>
- 公司可免费试用 30 天（还没用在实际业务上），长期用必须买：<a href="mailto:contact@aijentra.com"><b>contact@aijentra.com</b></a><br>
- 我们承接 <b>企业 FDE 驻场</b> · <b>AI 培训</b> · <b>AI 落地咨询</b>，<a href="#商用授权--企业服务">怎么合作 ↓</a>
-</p>
-
-<p align="center">
- <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy 演示：说一句话，助理自己干活，交付能打开的文件">
-</p>
+<p align="center"><b>本机优先的 AI 办公工作台，把你的资料和要求变成可打开、可修改的文件。</b><br>
+给经常做周报、PPT、表格和文档的人，也给需要自托管的团队。<br>
+使用你选择的模型，查看执行过程，在成果区核对交付文件。</p>
+<p align="center"><a href="#quick-start"><b>▶ 交付第一份周报</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a> · <a href="https://catcatuncle.github.io/openworkbuddy/zh/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">项目网站</a> · <a href="#文档">文档</a> · <a href="README.en.md">English</a></p>
+<p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="正式发布版本"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial 许可证"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="收藏项目"></a></p>
+<p align="center"><sub>个人非商用、学校和公益机构免费；公司及个人商用须获 <a href="COMMERCIAL-LICENSE.md">商业授权</a>。模型与媒体服务的费用由所选服务商决定。</sub></p>
+<p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy 操作演示：输入任务、查看执行过程、打开成果文件"><br><sub>界面流程演示；首次成功耗时按下面的任务实测。</sub></p>
 
 ---
+
+<a id="quick-start"></a>
+<a id="三分钟跑起来"></a>
+## 快速开始：交付第一份周报
+
+**前置条件：**一台能运行应用的电脑，以及一个可用的模型服务、已安装的本地模型或已登录的本机 CLI。用 API 时需要自己的 Key；第一条任务只生成 HTML，不需要生图、视频、消息渠道或额外连接器。
+
+1. **安装并启动。** macOS / Windows 在 [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) 选择适合芯片的安装包：Windows 安装版 `*-win-setup.exe`，免安装版 `*-win-x64-portable.exe` / `*-win-arm64-portable.exe`；macOS 用 `.dmg`。Linux 用下方源码方式或 [Docker 部署](docs/部署.md)。
+2. **连接模型。** 首次启动注册账号；在「设置 → 模型」选择服务商、填写准确型号和 API 地址、添加 Key，再测试连接。已有本机 CLI 的用户也可在「设置 → 智能体」选择它。
+3. **复制任务，打开结果。** 选择 Craft 执行模式，粘贴下面的任务。完成后在「成果文件」点击 `first-report.html`，核对三段内容，再试一句“把下周计划改成复选清单”。
+
+```text
+请把下面的本周记录做成一页周报，保存为 first-report.html。
+项目：示例网站
+本周完成：上线产品页；修复移动端菜单。
+进行中：补充用户指南。
+下周计划：完成英文版；收集 5 条试用反馈。
+要求：中文，分“本周完成 / 进行中 / 下周计划”三段；
+单文件 HTML，样式内嵌，不引用外链资源；保留原始事实，不补造数据。
+写完确认文件存在，并在成果区提供可打开的文件。
+```
+
+**成功标准：**磁盘上有非空的 `first-report.html`；预览中三段都在、事项与输入一致；第二次要求能更新同一份文件。看到聊天回复或“安装完成”，都还未达到这次任务的成功标准。可复制的任务文件：[中文](examples/quick-start/task.md) / [English](examples/quick-start/task.en.md)。
+
+**计时方式：**从开始安装计到首次打开且核对通过，分别记录下载、启动、模型配置和任务等待。“三分钟”是优化目标，实际时间取决于网络、模型准备情况和任务执行，当前没有发布实测成功率。
+
+<details>
+<summary><b>从源码运行：Node.js 18+、npm 与 Git</b></summary>
+
+```bash
+git clone https://github.com/CatCatUncle/openworkbuddy.git
+cd openworkbuddy
+npm ci
+npm start
+```
+
+看到服务已启动后，打开 <http://localhost:3800>，继续上面的第 2、3 步。桌面开发模式用 `npm run app`。开发时数据默认在仓库的数据目录；安装包的数据默认在 `~/OpenWorkBuddy`。完整说明见 [安装与启动](docs/安装与启动.md)。
+
+</details>
+
+### 卡住时先看这里
+
+| 卡在哪 | 下一步 |
+|---|---|
+| 系统阻止首次打开 | 按 [安装与启动](docs/安装与启动.md) 对应系统的说明处理 |
+| `npm ci` 在 Electron 下载处失败 | 核对网络与 Node 版本，查看 [源码启动排错](docs/安装与启动.md#启动时容易卡住的几件事) |
+| 服务启动报端口占用 | macOS / Linux 用 `PORT=3801 npm start`；Windows cmd 用 `set PORT=3801 && npm start`，打开新端口 |
+| 测试连接失败，或任务报上游错误 | 核对服务商的 API 地址、型号、Key 和额度，见 [模型配置](docs/配置模型.md) |
+| 任务在等批准或答复 | 查看输入框上方的审批卡或收件箱，处理后继续 |
+| 回复说完成但找不到文件 | 确认当前项目，在成果区和工作目录核对文件；让助理检查 `first-report.html`，不要直接把这次计作成功 |
+
+跑通后再试 [核心场景](#你说一句它交给你)，或阅读 [用户指南](https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html)。觉得有用可以 Star 收藏；要收到新版本通知，设置 **Watch → Custom → Releases**。
+
+字号、主题和显示密度可在「头像菜单 → 外观」调整。
+
+<details open>
+<summary><b>第一次打开被系统拦住</b></summary>
+
+当前 macOS 发行包使用本地签名，尚未通过 Apple 公证。请使用本仓库 Releases 的安装包。
+
+- **macOS「无法验证」**：如你选择继续安装，先关闭提示，进入 **系统设置 → 隐私与安全性 → 仍要打开**，按系统要求确认。[Apple 操作说明](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)。
+- **macOS「已损坏」**：先重新下载；仍打不开时按[安装与启动](docs/安装与启动.md)检查签名与启动日志，不能只按「无法验证」处理。
+- **Windows**：核对下载来源后，在 SmartScreen 选择「更多信息 → 仍要运行」。
+- **双击没反应**：查看 `~/OpenWorkBuddy/logs/boot.log`，见[双击了没反应](docs/安装与启动.md#双击了没反应)。
+
+</details>
 
 ## 你说一句，它交给你
 
@@ -63,37 +93,6 @@
 > [!NOTE]
 > 多任务并行、目标验收、👍👎 进自进化、双层记忆、权限档位、IM 远程指挥、桌面宠物…… 全部能力见 **[功能清单](docs/功能清单.md)**。
 
-## 商用授权 · 企业服务
-
-> [!IMPORTANT]
-> **个人非商用、学校公益免费；公司使用（哪怕只在内部用）和个人商用，必须买商业授权。**
-> 公司可以免费试用 30 天（前提是还没用在实际业务上），长期用必须买。
-> 发邮件到 **[contact@aijentra.com](mailto:contact@aijentra.com)**，写清楚公司、怎么用、大概多少人用，我们尽快回你。细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
-
-| 你的情况 | 要不要买授权 |
-|---|---|
-| 个人非商用：自用、学习、研究、业余项目 | 免费 |
-| 学校、科研机构、公益组织、政府机构 | 免费 |
-| 公司评估试用：最长 30 天，还没用在实际业务上 | 免费 |
-| 公司 / 团队用在实际业务里，**哪怕只在内部** | **必须买** |
-| **个人商用**：个人接单、给客户干活、做付费产品或服务 | **必须买** |
-| 做 SaaS 对外服务、打包售卖、给客户交付 / 外包 / 定制 | **必须买** |
-
-买授权不解锁任何功能：只有这一份代码，没有功能锁、不倒计时，授权不联网验证。软件不向作者或任何第三方回传使用数据；检查更新时会去 GitHub Releases 查有没有新版（GitHub 能看到本机 IP）。
-没授权就商用，权利人可以依法追究民事责任；未经许可删改版权声明，还可能单独构成侵权——依据和判例见 [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果)。
-
-除了授权，我们还承接企业 AI 业务：
-
-| 服务 | 做什么 |
-|---|---|
-| **企业 FDE（驻场工程）** | 工程师进你们团队，把 Agent 接进真实业务流程，跑起来再交接 |
-| **AI 培训** | 企业内训，让团队把 AI 用进日常工作，不停在尝鲜 |
-| **AI 落地咨询** | 挑场景、定方案、算成本；私有化部署、行业智能体都能谈 |
-
-作者是前大厂 Agent 工程师，服务过跨境电商、制造业、AI 初创、私募金融机构、消费品巨头、国央企等客户。常驻深圳，欢迎来交流和考察。
-
-📮 合作邮箱：**[contact@aijentra.com](mailto:contact@aijentra.com)**
-
 ## 为什么是它
 
 <table>
@@ -102,14 +101,14 @@
 
 <b>📄 文件是真的。</b>
 
-PPT / Word / Excel / 网页都真生成，成果面板里点开就能验收。说写了文件却不在磁盘上，当场拦下重做。
+PPT / Word / Excel / 网页都真生成，成果面板里点开就能验收。交付后在成果区和磁盘上核对实际文件。
 
 </td>
 <td width="50%" valign="top">
 
 <b>🔌 模型随便换，东西全在你手里。</b>
 
-DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 界面点一下就切；本机装了 <b>Claude Code / Codex</b> 的，一键拿它当发动机，不用另买 token。会话、文件、Key 全在本机，默认只听 <code>127.0.0.1</code>。
+DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 界面点一下就切；本机装了 <b>Claude Code / Codex</b> 的，一键拿它当发动机，不用另买 token。配置与成果文件留在本机，默认只听 <code>127.0.0.1</code>；云模型和远程连接器会收到完成任务所需的数据。
 
 </td>
 </tr>
@@ -145,42 +144,6 @@ OpenWorkBuddy：开源的 AI 办公助理，跑在自己电脑上。
 ```
 
 </details>
-
-## 三分钟跑起来
-
-**macOS**（一个弹窗都没有）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash
-```
-
-**Windows**：[Releases](https://github.com/CatCatUncle/openworkbuddy/releases) 下 `-win-setup.exe`（x64 / ARM 通用）；不让装软件就用免安装版 `-win-x64-portable.exe`。
-
-**源码**（Node.js 18+，零构建）：
-
-```bash
-git clone https://github.com/CatCatUncle/openworkbuddy.git
-cd openworkbuddy && npm install
-npm run app # 桌面版；或 npm start → http://localhost:3800
-```
-
-填一个模型 Key，然后说人话就行。数据都在 `~/OpenWorkBuddy`，卸载不删。字号、主题在右上角头像 →「外观」。
-
-<details open>
-<summary><b>第一次打开被系统拦住</b></summary>
-
-<br>
-
-证书还在申请，包是 ad-hoc 签名：系统拦的是「没见过的开发者」，不是文件有毒。
-
-- **macOS 无法验证**：弹窗点「完成」→ 系统设置 → 隐私与安全性 → 拉到底点「仍要打开」。或者把 .app 拖进「应用程序」后跑 `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`。网上「右键 → 打开」只对 macOS 14 及更早有效。
-- **macOS 已损坏**：签名被网盘/解压工具弄坏了，重下一次。
-- **Windows**：「更多信息」→「仍要运行」。
-- **双击没反应**：看 `~/OpenWorkBuddy/logs/boot.log` → [安装与启动](docs/安装与启动.md#双击了没反应)
-
-</details>
-
-> ⭐ **跑起来了？点一下右上角的 Star**，下次在自己的 Stars 列表里就找得到；想收新版提醒，点 **Watch → Custom → Releases**。
 
 ## 长这样
 
@@ -302,6 +265,18 @@ flowchart TB
 
 ## 最新动态
 
+- **10-16** OAuth 第二期：HTTP 连接器在服务商页面授权，令牌自动刷新，可移除本机授权
+- **10-16** 预览支持圈选批注，文件改动能逐块回退、撤销，并按行提出修改要求
+- **10-16** 团队任务使用组织共享模型和连接器，费用与个人任务分别记录；浏览器录制可生成技能草稿
+- **10-16** 英文界面新增漏翻检查，用户原文不翻译；官网提供中英文用户和开发者指南
+
+- **10-16** 任务可生成组织内只读链接，本人随时撤回；分享设置在页面里，单人模式隐藏
+- **10-16** 快速开始提前，附可复制的周报任务、文件核对标准和故障排查；采用指标标明缺失
+- **10-15** 执行计划在页面内折叠展开，随对话滚动；更新进度时保留展开状态和焦点
+- **10-15** 顶栏新增收件箱：待审批和待答复优先，接着是出错、运行中和未读任务；独立定时任务的完成结果也会出现，点开可看完整执行过程
+- **10-15** 定时任务按创建方式归还结果：在对话里安排的任务把结论写回原对话，独立安排的任务留在收件箱；会话关联只在服务端保存，不通过列表接口暴露
+- **10-15** 历史按日期分组，标记产出文件；行菜单支持改名、移项目和未读标记，任务与文件均可置顶
+- **10-15** 审批卡支持 Esc 拒绝和主修饰键 + Enter 单次放行；⌘N 新建任务、⌘K 搜索任务，输入框下方会提示 AI 可能出错
 - **10-15** 任务历史能置顶：点图钉放进最上面的「已置顶」，换台电脑也在
 - **10-15** 自进化里点「采纳」不再整页刷新；自进化、智能体页打开不用再等几秒
 - **10-14** 每个账号都能绑自己的微信、飞书、QQ、企微、公众号、群机器人和邮箱：消息按本人跑，结果只推给本人
@@ -338,6 +313,37 @@ flowchart TB
 
 项目结构、测试、PR 规范都在 [参与贡献](CONTRIBUTING.md)。不用先开 issue 问，直接发 PR。
 
+## 商用授权 · 企业服务
+
+> [!IMPORTANT]
+> **个人非商用、学校公益免费；公司使用（哪怕只在内部用）和个人商用，必须买商业授权。**
+> 公司可以免费试用 30 天（前提是还没用在实际业务上），长期用必须买。
+> **[联系维护者](https://github.com/CatCatUncle)**，写清楚公司、怎么用、大概多少人用，我们尽快回你。细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+
+| 你的情况 | 要不要买授权 |
+|---|---|
+| 个人非商用：自用、学习、研究、业余项目 | 免费 |
+| 学校、科研机构、公益组织、政府机构 | 免费 |
+| 公司评估试用：最长 30 天，还没用在实际业务上 | 免费 |
+| 公司 / 团队用在实际业务里，**哪怕只在内部** | **必须买** |
+| **个人商用**：个人接单、给客户干活、做付费产品或服务 | **必须买** |
+| 做 SaaS 对外服务、打包售卖、给客户交付 / 外包 / 定制 | **必须买** |
+
+买授权不解锁任何功能：只有这一份代码，没有功能锁、不倒计时，授权不联网验证。软件不向作者或任何第三方回传使用数据；检查更新时会去 GitHub Releases 查有没有新版（GitHub 能看到本机 IP）。
+没授权就商用，权利人可以依法追究民事责任；未经许可删改版权声明，还可能单独构成侵权——依据和判例见 [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果)。
+
+除了授权，我们还承接企业 AI 业务：
+
+| 服务 | 做什么 |
+|---|---|
+| **企业 FDE（驻场工程）** | 工程师进你们团队，把 Agent 接进真实业务流程，跑起来再交接 |
+| **AI 培训** | 企业内训，让团队把 AI 用进日常工作，不停在尝鲜 |
+| **AI 落地咨询** | 挑场景、定方案、算成本；私有化部署、行业智能体都能谈 |
+
+作者是前大厂 Agent 工程师，服务过跨境电商、制造业、AI 初创、私募金融机构、消费品巨头、国央企等客户。常驻深圳，欢迎来交流和考察。
+
+📮 合作联系：**[联系维护者](https://github.com/CatCatUncle)**
+
 ## 从别家换过来：Claude Cowork、Codex、豆包办公的开源替代
 
 在找 **Claude Cowork、Codex、豆包办公、千问办公的开源替代**，或者想给 **DeepSeek 找一个 agent 外壳（harness）**？每一家都写了一页老实对比，也写了什么时候还是用它更合适：
@@ -353,6 +359,10 @@ flowchart TB
 OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 
 ## 文档
+
+首次成功的试用流程、计时口径与缺失指标 → [采用与反馈](docs/采用与反馈.md)。
+
+在线文档：**[用户指南](https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html)** · **[开发者指南](https://catcatuncle.github.io/openworkbuddy/zh/guides/developer.html)** · [中英文项目网站](https://catcatuncle.github.io/openworkbuddy/zh/)
 
 | 文档 | 一句话 | 文档 | 一句话 |
 |---|---|---|---|
@@ -373,7 +383,7 @@ OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 
 ## 协议
 
-**个人非商用、学校公益免费；公司使用（哪怕只在内部）和个人商用要买商业授权**，公司可先免费试用 30 天。购买发邮件到 [contact@aijentra.com](mailto:contact@aijentra.com)。
+**个人非商用、学校公益免费；公司使用（哪怕只在内部）和个人商用要买商业授权**，公司可先免费试用 30 天。购买请[联系维护者](https://github.com/CatCatUncle)。
 
 协议 [PolyForm Noncommercial 1.0.0](LICENSE)，细则和没授权商用的后果见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。部署配置、脚本、技能模板另按 MIT（[清单](COMMERCIAL-LICENSE.md#按-mit-授权的部分)）；名称和图标不在授权范围内。
 

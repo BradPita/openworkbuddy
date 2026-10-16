@@ -406,19 +406,21 @@ function libSize(n) { return !n ? "—" : n > 1048576 ? (n / 1048576).toFixed(1)
  */
 const LIB_KINDS = [
   ["all", "全部", () => true],
-  ["doc", "文档", (n) => /\.(md|markdown|txt|docx?|pdf|rtf)$/i.test(n)],
-  ["sheet", "表格", (n) => /\.(csv|tsv|xlsx?|numbers)$/i.test(n)],
-  ["web", "网页", (n) => /\.html?$/i.test(n)],
-  ["img", "图片", (n) => /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(n)],
-  ["media", "音视频", (n) => /\.(mp4|mov|webm|mkv|mp3|wav|m4a|aac|flac)$/i.test(n)],
+  ["doc", "文档", (n) => /\.(md|markdown|txt|docx?|rtf|pages|odt)$/i.test(n)],
+  ["sheet", "表格", (n) => /\.(csv|tsv|xlsx?|numbers|ods)$/i.test(n)],
+  ["slide", "演示", (n, f) => /\.(pptx?|key|odp)$/i.test(n) || (!!(f && f.deck) && /\.html?$/i.test(n))],
+  ["pdf", "PDF", (n) => /\.pdf$/i.test(n)],
+  ["web", "网页", (n, f) => /\.html?$/i.test(n) && !(f && f.deck)],
+  ["img", "图片", (n) => /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|heic|heif)$/i.test(n)],
+  ["media", "音视频", (n) => /\.(mp4|mov|webm|mkv|m4v|mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(n)],
 ];
-function libKindOk(name) {
+function libKindOk(name, file) {
   const k = LIB_KINDS.find((x) => x[0] === (libState.kind || "all"));
-  return !k || k[2](name);
+  return !k || k[2](name, file);
 }
 /** 这个文件归哪一类（给「按类型分组」用；跟上面的筛选共用同一套判定，两处不会打架） */
-function libKindOf(name) {
-  const k = LIB_KINDS.find((x) => x[0] !== "all" && x[2](name));
+function libKindOf(name, file) {
+  const k = LIB_KINDS.find((x) => x[0] !== "all" && x[2](name, file));
   return k ? k[1] : "其他";
 }
 /**
@@ -470,7 +472,7 @@ function libGroupFiles(files) {
     : ["今天", "最近 7 天", "最近 30 天", "更早", "时间不详"];
   const bag = new Map();
   for (const f of files) {
-    const key = how === "kind" ? libKindOf(f.name) : libTimeBucket(f.mtime);
+    const key = how === "kind" ? libKindOf(f.name || f.path, f) : libTimeBucket(f.mtime);
     if (!bag.has(key)) bag.set(key, []);
     bag.get(key).push(f);
   }
@@ -594,6 +596,27 @@ function libNameWhy(v) {
   return "";
 }
 
+function libRecentKey() {
+  const who = typeof currentUser !== "undefined" && currentUser ? currentUser.username : "solo";
+  return "owb_lib_recent:" + String(who || "solo");
+}
+
+/** Mixed-source lists use the same rows, preview and pin actions as folders. */
+function libCollectionHtml(data, more) {
+  if (!data || data.error) return `<div class="lib-none">${esc((data && data.error) || "文件列表读取失败")}</div>`;
+  const items = Array.isArray(data.items) ? data.items : [];
+  const rows = libGroupFiles(items).map((g) =>
+    (g.label ? `<div class="sec lib-grp">${esc(g.label)} <span class="n">${g.items.length}</span></div>` : "") +
+    g.items.map((f) => libRowHtml(f.src, f, { full: f.path, dir: I18N.tr(f.src === "lib" ? "参考资料" : "本地产物") + (String(f.path).includes("/") ? " / " + String(f.path).split("/").slice(0, -1).join("/") : ""), gone: !!f.missing, note: f.missing ? esc(I18N.tr("已不在")) : undefined })).join("")
+  ).join("");
+  const total = Number(data.total) || items.length;
+  const offset = Number(data.offset) || 0, limit = Number(data.limit) || LIB_CHUNK;
+  const pages = more === "all" && total > limit ? `<div class="lib-page-nav">${offset > 0 ? `<button type="button" class="lib-more" data-alloff="${Math.max(0, offset - limit)}">上一页</button>` : ""}<span>${offset + 1}–${Math.min(offset + items.length, total)} / ${total}</span>${offset + limit < total ? `<button type="button" class="lib-more" data-alloff="${offset + limit}">下一页</button>` : ""}</div>` : "";
+  return `${data.lib_capped || data.ws_capped ? '<div class="lib-none">文件较多，当前只列出一部分；请缩小类型或来源范围。</div>' : ""}
+    ${rows || '<div class="lib-none">没有符合条件的文件</div>'}
+    ${more === "all" ? pages : more ? libMoreHtml(more, total - items.length) : ""}`;
+}
+
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
@@ -607,7 +630,13 @@ async function renderLibPage() {
   // .as-undefined 这种谁也没写过样式的类名，整页就散了。
   if (!LIB_MODES.some((m) => m[0] === libState.mode)) libState.mode = "list";
   if (!LIB_GROUPS.some((g) => g[0] === libState.group)) libState.group = "none";
-  if (libState.view !== "task" && libState.view !== "ws") libState.view = "dir";
+  if (!["dir", "task", "ws", "rec", "fav", "img", "all"].includes(libState.view)) libState.view = "dir";
+  if (!["dir", "task", "ws"].includes(libState.fold)) libState.fold = "dir";
+  if (!["all", "lib", "ws"].includes(libState.from)) libState.from = "all";
+  if (!(libState.allN >= LIB_CHUNK)) libState.allN = LIB_CHUNK;
+  if (!(libState.favN >= LIB_CHUNK)) libState.favN = LIB_CHUNK;
+  if (!(libState.allOff >= 0)) libState.allOff = 0;
+  if (libState.view === "img") libState.kind = "img";
   if (typeof libState.wsDir !== "string") libState.wsDir = "";
   if (!(libState.wsN >= LIB_CHUNK)) libState.wsN = LIB_CHUNK;
   if (!(libState.wsOff >= 0)) libState.wsOff = 0; // 工作区那一层翻到第几页（从第几条起），换层/换视图归零
@@ -616,12 +645,20 @@ async function renderLibPage() {
   // 一个文件，右边也要说得出「这是哪次任务做的」。服务端按会话文件 mtime 增量缓存，
   // 多这一趟不会真去重解析几百个 JSON。未归属的全量只有「按任务」那一栏要，别的视图不背这个包
   const wantTree = libState.view === "ws" && !q;
-  const [lib, ws, out, found, tree] = await Promise.all([
+  const collectionView = ["rec", "img", "all"].includes(libState.view);
+  const folderView = ["dir", "task", "ws"].includes(libState.view);
+  let recents = [];
+  try { const saved = JSON.parse(localStorage.getItem(libRecentKey()) || "[]"); if (Array.isArray(saved)) recents = saved.filter((f) => f && ["lib", "ws"].includes(f.src) && typeof f.name === "string").slice(0, 8); } catch {}
+  const collectionQuery = new URLSearchParams({ kind: libState.view === "img" ? "img" : libState.kind || "all", from: libState.from, limit: String(libState.allN), offset: String(libState.allOff) });
+  const [lib, ws, out, found, tree, collection, favorites, recentStats] = await Promise.all([
     fetch("/api/library?dir=" + encodeURIComponent(libState.dir || "")).then(r => r.json()).catch(() => ({ files: [], notes: [] })),
     fetch("/api/files").then(r => r.json()).catch(() => []),
     fetch("/api/library/outputs" + (libState.view === "task" && !q ? "?orphan_limit=" + LIB_ORPHAN_ALL : "")).then(r => r.json()).catch(() => ({ error: "读不到任务产出" })),
     q ? fetch("/api/library/search?q=" + encodeURIComponent(q)).then(r => r.json()).catch(() => ({ error: "搜不动了" })) : Promise.resolve(null),
     wantTree ? libTreeOf(libState.wsDir, libState.wsOff) : Promise.resolve(null),
+    collectionView && !q ? fetch("/api/library/all?" + collectionQuery).then(r => r.json()).catch(() => ({ error: "文件列表读取失败" })) : Promise.resolve(null),
+    libState.view === "fav" && !q ? fetch("/api/library/favorites").then(r => r.json()).catch(() => ({ error: "收藏读取失败" })) : Promise.resolve(null),
+    libState.view === "rec" && !q && recents.length ? fetch("/api/library/stat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: recents.map((f, i) => ({ id: String(i), src: f.src, path: f.name })) }) }).then(r => r.json()).catch(() => null) : Promise.resolve(null),
   ]);
   // 服务端把越界/不存在的 dir 规整成了 ""，界面跟着回到根，否则面包屑指着一个进不去的地方
   libState.dir = (lib && typeof lib.dir === "string") ? lib.dir : "";
@@ -652,15 +689,14 @@ async function renderLibPage() {
     <a href="#" data-dir="">${ic("book-open-text")}资料库</a>
     ${(lib.crumbs || []).map(c => `<span>/</span><a href="#" data-dir="${esc(c.path)}">${esc(c.name)}</a>`).join("")}
   </div>`;
-  const recents = JSON.parse(localStorage.getItem("owb_lib_recent") || "[]");
 
   // ── 三种视图 ────────────────────────────────────────────────────────────
   // 「文件夹」= 东西放在哪；「按任务」= 东西是哪次做出来的。后者是被点名要的——
   // 人记文件是按「上周让它写的那份周报」记的，
   // 不是按 out/2026-09/report-final-v3.md 记的。搜索一开口就接管整块列表，
   // 因为搜的时候「我现在在哪一层」已经不重要了。
-  const libFiles = (lib.files || []).filter(f => libKindOk(f.name));
-  const wsKind = ws.filter(f => libKindOk(f.name));
+  const libFiles = (lib.files || []).filter(f => libKindOk(f.name, f));
+  const wsKind = ws.filter(f => libKindOk(f.name, f));
   const wsFiles = wsKind.slice(0, 120);
   // 工作区一共多少个文件，服务端全量数出来的。下面那段只是最近动过的一截，
   // 不说清楚的话，人会把这一百来个当成全部——「资料库没有显示我这个工作区下面的所有文件」就是这么来的
@@ -669,6 +705,17 @@ async function renderLibPage() {
   const wsPartial = wsTotal === null || wsTotal > ws.length || wsKind.length > wsFiles.length;
   let body = "";
   if (q) body = libSearchHtml(found, q, recents);
+  else if (collectionView) {
+    const opened = libState.view === "rec" && recentStats && recentStats.items ? recents.flatMap((f, i) => {
+      const meta = recentStats.items[String(i)];
+      return !meta || meta.missing || meta.skip || (libState.from !== "all" && f.src !== libState.from) || !libKindOk(f.name, meta) ? [] : [{ ...meta, src: f.src, path: f.name }];
+    }) : [];
+    body = (opened.length ? `<div class="sec lib-sec">最近打开</div>${libCollectionHtml({ items: opened })}<div class="sec lib-sec">最近修改</div>` : "") + libCollectionHtml(collection, "all");
+  }
+  else if (libState.view === "fav") {
+    const items = favorites && Array.isArray(favorites.items) ? favorites.items.filter((f) => (libState.from === "all" || f.src === libState.from) && libKindOk(f.path, f)) : [];
+    body = libCollectionHtml(favorites && !favorites.error ? { items: items.slice(0, libState.favN), total: items.length } : favorites, "fav");
+  }
   else if (libState.view === "task") body = libTasksHtml(out);
   else if (libState.view === "ws") body = libWsHtml(tree);
   // 两段分开摆，各带各的标题和各自的操作。合在一起的后果不是「乱」，是用户把两件事当成了一件：
@@ -697,12 +744,16 @@ async function renderLibPage() {
       <div class="lib-side">
         <div class="hub-search">${ic("search")}<input id="lb-q" placeholder="搜文件名、正文、任务名…" value="${esc(libState.q)}">${q ? `<a href="#" id="lb-qx" class="lb-qx" title="清空搜索">${ic("x")}</a>` : ""}</div>
         <div class="lib-tabs" role="tablist">
-          <button type="button" class="lib-tab ${libState.view === "dir" ? "on" : ""}" data-view="dir" role="tab" aria-selected="${libState.view === "dir"}">${ic("folder-tree")}文件夹</button>
-          <button type="button" class="lib-tab ${libState.view === "task" ? "on" : ""}" data-view="task" role="tab" aria-selected="${libState.view === "task"}">${ic("sparkles")}按任务</button>
-          <button type="button" class="lib-tab ${libState.view === "ws" ? "on" : ""}" data-view="ws" role="tab" title="当前项目的工作目录，一层层点进去，每个文件都找得到" aria-selected="${libState.view === "ws"}">${ic("hard-drive")}工作区</button>
+          <button type="button" class="lib-tab ${libState.view === "rec" ? "on" : ""}" data-view="rec" role="tab" aria-selected="${libState.view === "rec"}">${ic("clock")}推荐</button>
+          <button type="button" class="lib-tab ${libState.view === "fav" ? "on" : ""}" data-view="fav" role="tab" aria-selected="${libState.view === "fav"}">${ic("star")}收藏</button>
+          <button type="button" class="lib-tab ${folderView ? "on" : ""}" data-folder role="tab" aria-selected="${folderView}">${ic("folder-tree")}文件夹</button>
+          <button type="button" class="lib-tab ${libState.view === "img" ? "on" : ""}" data-view="img" role="tab" aria-selected="${libState.view === "img"}">${ic("image")}图像</button>
+          <button type="button" class="lib-tab ${libState.view === "all" ? "on" : ""}" data-view="all" role="tab" aria-selected="${libState.view === "all"}">${ic("file-text")}全部文件</button>
           <button type="button" class="lib-tab ${libState.pick && libState.pick.src === "notes" ? "on" : ""}" data-src="notes" role="tab" title="给助理留的长期备忘：不是文件，是几句话。每次任务它查资料库时都会连着读到" aria-selected="${!!(libState.pick && libState.pick.src === "notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
         </div>
+        ${folderView ? `<div class="lib-tabs lib-fold-tabs" role="tablist" aria-label="文件查找方式">${[["dir", "目录", "folder-tree"], ["task", "按任务", "sparkles"], ["ws", "工作区", "hard-drive"]].map(([v, label, icon]) => `<button type="button" class="lib-tab ${libState.view === v ? "on" : ""}" data-view="${v}" role="tab" aria-selected="${libState.view === v}">${ic(icon)}${esc(label)}</button>`).join("")}</div>` : ""}
         <div class="lib-kinds">${LIB_KINDS.map(([k, label]) => `<button type="button" class="lib-kind ${(libState.kind || "all") === k ? "on" : ""}" data-kind="${k}">${esc(label)}</button>`).join("")}</div>
+        ${!folderView && !q ? `<label class="lib-source">来源<select id="lb-from"><option value="all"${libState.from === "all" ? " selected" : ""}>全部来源</option><option value="lib"${libState.from === "lib" ? " selected" : ""}>参考资料</option><option value="ws"${libState.from === "ws" ? " selected" : ""}>本地产物</option></select></label>` : ""}
         <div class="lib-side-tip">我的文档<br>
           任务里 AI 也读得到这儿的资料（library_list / library_read）</div>
       </div>
@@ -710,7 +761,8 @@ async function renderLibPage() {
         <div class="lib-bar">
           ${q ? `<div class="lib-where">${ic("search")}搜「${esc(q)}」</div>`
             : libState.view === "task" ? `<div class="lib-where">${ic("sparkles")}按任务看产出</div>`
-            : libState.view === "ws" ? libWsCrumbs(tree) : crumbs}
+            : libState.view === "ws" ? libWsCrumbs(tree)
+            : !folderView ? `<div class="lib-where">${esc(({ rec: "最近使用与修改", fav: "我的收藏", img: "图像", all: "全部文件" })[libState.view])}</div>` : crumbs}
           <div class="lib-bar-acts">
             <div class="lib-seg" role="group" aria-label="分组方式">${LIB_GROUPS.map(([g, label]) =>
               `<button type="button" class="lib-gp ${(libState.group || "none") === g ? "on" : ""}" data-group="${g}" aria-pressed="${(libState.group || "none") === g}">${esc(label)}</button>`).join("")}</div>
@@ -746,14 +798,34 @@ async function renderLibPage() {
   if (qx) qx.onclick = (e) => { e.preventDefault(); libState.q = ""; renderLibPage(); };
   page.querySelectorAll(".lib-tab[data-view]").forEach(b => b.onclick = () => {
     libState.view = b.dataset.view;
+    if (["dir", "task", "ws"].includes(libState.view)) libState.fold = libState.view;
+    if (libState.view === "img") libState.kind = "img";
+    else if (libState.kind === "img") libState.kind = "all";
+    libState.pick = null; libState.allOff = 0;
     // 换了视图，「再显示」攒下来的条数归位：回来时又是一上来铺满几千行，那一下卡顿没人想要
     libState.wsN = LIB_CHUNK; libState.orphanN = LIB_CHUNK; libState.wsOff = 0;
-    try { localStorage.setItem("owb_lib_view", libState.view); } catch {}
+    try { localStorage.setItem("owb_lib_view", libState.view); localStorage.setItem("owb_lib_fold", libState.fold); } catch {}
     renderLibPage();
   });
+  const folderTab = page.querySelector("[data-folder]");
+  if (folderTab) folderTab.onclick = () => {
+    libState.view = libState.fold; libState.pick = null;
+    try { localStorage.setItem("owb_lib_view", libState.view); } catch {}
+    renderLibPage();
+  };
+  const source = page.querySelector("#lb-from");
+  if (source) source.onchange = () => {
+    libState.from = source.value; libState.allN = LIB_CHUNK; libState.favN = LIB_CHUNK; libState.allOff = 0; libState.pick = null;
+    try { localStorage.setItem("owb_lib_from", libState.from); } catch {}
+    renderLibPage();
+  };
   const nb = page.querySelector('.lib-tab[data-src="notes"]');
   if (nb) nb.onclick = () => { libState.pick = { src: "notes", name: "" }; renderLibPage(); };
-  page.querySelectorAll(".lib-kind").forEach(b => b.onclick = () => { libState.kind = b.dataset.kind; renderLibPage(); });
+  page.querySelectorAll(".lib-kind").forEach(b => b.onclick = () => {
+    libState.kind = b.dataset.kind; libState.allN = LIB_CHUNK; libState.favN = LIB_CHUNK; libState.allOff = 0;
+    if (libState.view === "img" && libState.kind !== "img") libState.view = "all";
+    renderLibPage();
+  });
   // 摆法和分组都记到本地：这一页每个人的用法差很远——有人一直用列表找文档，有人一直用画廊过图
   page.querySelectorAll(".lib-md").forEach(b => b.onclick = () => {
     libState.mode = b.dataset.mode;
@@ -830,12 +902,16 @@ async function renderLibPage() {
     const ls1 = page.querySelector(".lib-list");
     if (ls1) ls1.scrollTop = 0;
   });
+  page.querySelectorAll("[data-alloff]").forEach(b => b.onclick = async () => {
+    libState.allOff = Math.max(0, Number(b.dataset.alloff) || 0);
+    await renderLibPage();
+  });
   // 「再显示」：多铺一截，而且待在原地——重画整页会把列表滚回顶上，
   // 人刚翻到第三百个，点一下又得从头往下划，那这颗按钮就白点了
   page.querySelectorAll("[data-more]").forEach(b => b.onclick = async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const k = b.dataset.more === "orphan" ? "orphanN" : "wsN";
+    const k = ({ orphan: "orphanN", all: "allN", fav: "favN" })[b.dataset.more] || "wsN";
     libState[k] = (libState[k] || LIB_CHUNK) + LIB_CHUNK;
     const ls0 = page.querySelector(".lib-list");
     const top = ls0 ? ls0.scrollTop : 0, left = ls0 ? ls0.scrollLeft : 0;
@@ -960,7 +1036,7 @@ async function renderLibPage() {
     libState.pick = { src: el.dataset.src, name: el.dataset.name, task: el.dataset.task || "" };
     if (el.dataset.src !== "notes") {
       const rec = [{ src: el.dataset.src, name: el.dataset.name }, ...recents.filter(r => !(r.src === el.dataset.src && r.name === el.dataset.name))].slice(0, 8);
-      localStorage.setItem("owb_lib_recent", JSON.stringify(rec));
+      try { localStorage.setItem(libRecentKey(), JSON.stringify(rec)); } catch {}
     }
     page.querySelectorAll(".lib-it").forEach(x => x.classList.toggle("active", x === el));
     // 右栏是按需出现的：没选东西时 data-prev=off，CSS 那边直接 display:none（见 index.html
@@ -1010,10 +1086,10 @@ async function renderLibPage() {
 function libTasksHtml(data) {
   if (!data) return `<div class="lib-none">读取中…</div>`;
   if (data.error) return `<div class="lib-none">${esc(data.error)}</div>`;
-  const all = (data.tasks || []).map((t) => ({ ...t, files: (t.files || []).filter((f) => libKindOk(f.name)) }));
+  const all = (data.tasks || []).map((t) => ({ ...t, files: (t.files || []).filter((f) => libKindOk(f.name, f)) }));
   const nGone = all.reduce((n, t) => n + t.files.filter((f) => f.gone).length, 0);
   const tasks = (libState.gone ? all : all.map((t) => ({ ...t, files: t.files.filter((f) => !f.gone) }))).filter((t) => t.files.length);
-  const orphans = (data.orphans || []).filter((f) => libKindOk(f.name));
+  const orphans = (data.orphans || []).filter((f) => libKindOk(f.name, f));
   // 总数照服务端全量数出来的说（不筛类型时）；筛了类型就数筛剩的——这时候服务端给的是全量清单，
   // 数得准。只铺前 orphanN 个，其余靠「再显示」一截截往下翻，翻得到最后一个
   const nOrphan = (libState.kind || "all") === "all" && typeof data.orphan_total === "number" ? data.orphan_total : orphans.length;
@@ -1104,7 +1180,7 @@ function libWsHtml(tree) {
   if (!tree) return `<div class="lib-none">读取中…</div>`;
   if (tree.error) return `<div class="lib-none">${esc(tree.error)}</div>`;
   const dirs = tree.dirs || [];
-  const files = (tree.files || []).filter((f) => libKindOk(f.name));
+  const files = (tree.files || []).filter((f) => libKindOk(f.name, f));
   // 文件夹和文件一起算这一截：一层里三千个子文件夹也照样卡
   const n = Math.max(LIB_CHUNK, libState.wsN || LIB_CHUNK);
   const dShow = dirs.slice(0, n);
@@ -1148,8 +1224,8 @@ function libWsHtml(tree) {
 function libSearchHtml(data, q, recents) {
   if (!data) return `<div class="lib-none">搜索中…</div>`;
   if (data.error) return `<div class="lib-none">${esc(data.error)}</div>`;
-  const lib = (data.lib || []).filter((f) => libKindOk(f.name));
-  const ws = (data.ws || []).filter((f) => libKindOk(f.name));
+  const lib = (data.lib || []).filter((f) => libKindOk(f.name, f));
+  const ws = (data.ws || []).filter((f) => libKindOk(f.name, f));
   const notes = data.notes || [];
   const tasks = data.tasks || [];
   const total = lib.length + ws.length + notes.length + tasks.length;
@@ -1172,7 +1248,7 @@ function libSearchHtml(data, q, recents) {
           <span class="nm">${libMark(t.title, t.by === "title" ? q : "")}</span><span class="n">${(t.files || []).length}</span><span class="tm">${esc(libWhen(t.at))}</span>
           <a href="#" class="go" data-open="${esc(t.id)}" title="回到这次对话">${ic("message-square")}</a>
         </div>
-        <div class="lib-fs">${(t.files || []).filter((f) => libKindOk(f.name) && (libState.gone || !f.gone)).map((f) => libRowHtml("ws", f, {
+        <div class="lib-fs">${(t.files || []).filter((f) => libKindOk(f.name, f) && (libState.gone || !f.gone)).map((f) => libRowHtml("ws", f, {
           cls: "lib-sub", task: t.id, dir: "", q, note: f.gone ? "已不在" : undefined, jump: { id: t.id, turn: f.turn },
         })).join("")}</div>
       </div>`).join("")}` : ""}

@@ -105,12 +105,15 @@ const PLATFORM_WRITE = [
   "/im/wechat/", "/im/qq/test", "/im/feishu/test", "/im/smtp/test",
   // 哪些渠道共享给成员、成员能不能自己填 Key（成员自己那几条走 /api/my-models，不在这张表里）
   "/api/models/",
+  // 导入本机会话：读的是跑服务器那个系统账号的 ~/.claude、~/.codex（读表里也有，连有几条都不给）
+  "/api/import/",
 ];
 const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",
   "/api/evolve", "/api/eval", "/api/feishu",
   // 查扫码状态是 GET，可扫成功那一下就把新凭据写进全局配置
   "/im/wechat/",
+  "/api/import/",
 ];
 // 两张表里为什么都没有 /api/library：资料库现在一人一份（server.js 的 libraryRootOf）。
 // 以前它是整台机器共用的一个目录，于是这儿只能按「谁的东西」拦：写拦住，读拦不住——
@@ -206,6 +209,10 @@ function setDeployment({ host, shell } = {}) {
 }
 function isSoloDesktop() {
   return desktopShell && soloAccounts();
+}
+/** 服务只绑在本机回环地址上（不管是不是桌面壳）：读本机别的应用配置这类事，只在这种形态下做 */
+function servesLoopback() {
+  return LOOPBACK.has(deployHost.replace(/^\[|\]$/g, ""));
 }
 /**
  * 是不是不止一个账号了。子进程环境（platform/child-env.js）拿它决定属主清单里像 Key 的变量名给不给。
@@ -1138,4 +1145,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, keepsSharedSpace, sharedWorkspaceGuard, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, keepsSharedSpace, sharedWorkspaceGuard, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, servesLoopback, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };

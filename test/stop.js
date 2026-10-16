@@ -317,6 +317,7 @@ async function agentMcpChecks() {
   const mgr = {
     toolDefs: () => [{ name: "mcp__srv__hang", description: "[MCP:srv] 慢工具", input_schema: { type: "object", properties: {} } }],
     isMcpTool: (n) => String(n).startsWith("mcp__"),
+    resolve: () => ({ server: "srv", tool: "hang" }),
     // 5 秒兜底同上：实现坏了不至于把套件吊死，5 秒远大于要断言的 1.5 秒
     call: (name, input, o = {}) => new Promise((res) => {
       seen.calls++;

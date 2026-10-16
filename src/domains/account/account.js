@@ -27,6 +27,7 @@ const store = require("../../platform/store");
 const org = require("./org");
 const log = require("../../platform/log");
 const rbac = require("./rbac"); // 谁能做什么：角色分档和能力表只有那一个文件说了算
+const taskBilling = require("../../core/billing/task-billing");
 const usageStore = require("../../core/billing/usage-store");
 const pricing = require("../../core/billing/pricing");
 const budget = require("../../core/billing/budget"); // 钱闸的内存账：这一笔也得算进这个月的预算里
@@ -1174,6 +1175,7 @@ function chargeOne(user, info, credits) {
     ts: new Date().toISOString(),
     day: localDay(),
     kind: "run",
+    billing_scope: taskBilling.current().billing_scope,
     user: user.username,
     source: info.source || "web",
     sessionId: info.sessionId || "",

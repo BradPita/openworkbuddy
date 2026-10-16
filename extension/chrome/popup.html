@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OpenWorkBuddy</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1f2328; --mute: #656d76; --line: #d0d7de; --bg: #ffffff; --field: #f6f8fa; --brand: #2f6feb; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e6edf3; --mute: #9198a1; --line: #3d444d; --bg: #0d1117; --field: #151b23; --brand: #4493f8; --ok: #3fb950; --warn: #d29922; --bad: #f85149; }
+  }
+  body { margin: 0; width: 300px; background: var(--bg); color: var(--fg); font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+  main { padding: 14px 16px 16px; }
+  h1 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+  .status { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mute); flex: none; }
+  .dot.online { background: var(--ok); }
+  .dot.connecting { background: var(--warn); }
+  .dot.error { background: var(--bad); }
+  label { display: block; margin: 0 0 4px; color: var(--mute); font-size: 12px; }
+  input { box-sizing: border-box; width: 100%; margin: 0 0 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit; }
+  input:focus { outline: 2px solid var(--brand); outline-offset: -1px; }
+  .row { display: flex; gap: 8px; }
+  button { flex: 1; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit; cursor: pointer; }
+  button.main { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button:disabled { opacity: .6; cursor: default; }
+  .note { margin: -4px 0 10px; color: var(--mute); font-size: 12px; }
+  .note.warn { color: var(--warn); }
+  .err { margin: 10px 0 0; color: var(--bad); font-size: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>OpenWorkBuddy</h1>
+  <p class="status"><span class="dot" id="dot"></span><span id="state"></span></p>
+
+  <section id="pair">
+    <label for="addr" data-t="addr"></label>
+    <input id="addr" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:3800">
+    <p class="note" id="where"></p>
+    <label for="code" data-t="code"></label>
+    <input id="code" autocomplete="off" spellcheck="false" data-ph="codePh">
+    <div class="row"><button class="main" id="go" data-t="go"></button></div>
+  </section>
+
+  <section id="linked" hidden>
+    <p class="note" id="who"></p>
+    <div class="row">
+      <button id="retry" data-t="retry"></button>
+      <button id="unpair" data-t="unpair"></button>
+    </div>
+  </section>
+
+  <p class="err" id="err" hidden></p>
+</main>
+<script src="popup.js"></script>
+</body>
+</html>

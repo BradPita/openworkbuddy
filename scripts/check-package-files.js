@@ -33,6 +33,15 @@ const ASSETS = [
   "src/platform/render/thumb-worker.js",         // 缩略图编码的 Worker 线程：thumb.js / htmlshot.js 按路径 new Worker，少了封面静默变灰
   "experts.json",            // 首次启动 seed 到 ~/OpenWorkBuddy
   "config.example.json",     // 同上
+  // Chrome 扩展：不进 require 图，整个文件夹拷出去给 Chrome 加载（src/server/routes/chrome.js）
+  "extension/chrome/manifest.json",
+  "extension/chrome/background.js",
+  "extension/chrome/page-ops.js",
+  "extension/chrome/recorder.js",
+  "extension/chrome/recording-background.js",
+  "public/js/preview-probe.js",
+  "extension/chrome/popup.html",
+  "extension/chrome/popup.js",
 ];
 
 /**
@@ -246,6 +255,7 @@ function assertPackComplete(appDir) {
  * 在包里直接 require 的话，它缺的依赖会顺着上层目录找到仓库自己的 node_modules，删过头也照样绿。
  */
 async function assertDepsRequirable(appDir) {
+  appDir = fs.realpathSync(appDir);
   const pkg = JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8"));
   const names = Object.keys(pkg.dependencies || {});
   const slim = require("./slim-deps");
@@ -265,7 +275,8 @@ async function assertDepsRequirable(appDir) {
       continue;
     }
     // 包里没有时 Node 会一路往上找，打包目录在仓库底下，就找到仓库自己那份了
-    if (path.relative(appDir, resolved).startsWith("..")) {
+    const relative = path.relative(appDir, fs.realpathSync(resolved));
+    if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
       bad.push(`${n}：包里没有，找到的是包外面的 ${resolved}`);
       continue;
     }

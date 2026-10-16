@@ -1618,7 +1618,15 @@ function clipForReview(v, max) {
  */
 function isPersistableRule(ruleKey) {
   const k = String(ruleKey || "");
-  return !!k && !/^(danger|write|code):/.test(k);
+  return !!k && !/^(danger|write|code|chrome):/.test(k);
+}
+
+/** 按钮文字只收几个已知的键、每个最多 30 字：卡片是拿它直接画的 */
+function cleanLabels(v) {
+  if (!v || typeof v !== "object") return null;
+  const out = {};
+  for (const k of ["once", "session", "deny"]) if (typeof v[k] === "string" && v[k].trim()) out[k] = v[k].trim().slice(0, 30);
+  return Object.keys(out).length ? out : null;
 }
 
 /**
@@ -1627,7 +1635,7 @@ function isPersistableRule(ruleKey) {
  *   没有归属就等于谁登录了都能看，还能替别人点「允许」。
  *   IM / 定时任务这类没有登录态的后台跑法留空，只有平台管理员看得见。
  */
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal = null, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "", sessionId = "", blacklist = false } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal = null, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "", sessionId = "", blacklist = false, labels = null, onScope = null } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   // 只算一次：列表、通知、计时器三处必须是同一个时刻，否则审批卡倒数到 0 了人还能点
   const deadline = Date.now() + Math.max(5000, timeoutMs);
@@ -1664,9 +1672,13 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal = null, ru
       sessionId: String(sessionId || ""),
       // 碰了文件黑名单的卡：多人共用时谁也批不了（见 resolveApproval）
       blacklist: !!blacklist,
+      // 按钮上写什么（{ once, session, deny }）：动 Chrome 那类卡的「这次任务里这个网站都允许」跟命令的「本会话」不是一回事
+      labels: cleanLabels(labels),
+      // 点了 session/always 由发起方自己记（只记在它那一趟任务上），不进全局的本会话放行
+      onScope: typeof onScope === "function" ? onScope : null,
       resolve: finish,
     });
-    emitApproval({ type: "open", entry: { ...approvals.get(id), resolve: undefined } });
+    emitApproval({ type: "open", entry: { ...approvals.get(id), resolve: undefined, onScope: undefined } });
   });
 }
 /**
@@ -1678,7 +1690,7 @@ function listApprovals(scopeTo) {
   const all = [...approvals.values()];
   const mine = scopeTo == null ? all : all.filter((e) => e.owner && e.owner === scopeTo);
   // persistable：这条能不能「一直允许」。不能的就别摆那个按钮，点了也写不进去
-  return mine.map(({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId }) => ({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId, persistable: isPersistableRule(ruleKey) }));
+  return mine.map(({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId, labels }) => ({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId, labels, persistable: isPersistableRule(ruleKey) }));
 }
 /**
  * @param [scope] once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）
@@ -1697,7 +1709,10 @@ function resolveApproval(id, allow, scope = "once", scopeTo) {
     return { ok: false, forbidden: true, error: "这条碰了文件黑名单，多人共用时不能批，已按拒绝处理" };
   }
   const key = e.ruleKey;
-  if (allow && key && (scope === "session" || scope === "always")) addSessionAllow(key);
+  if (allow && key && (scope === "session" || scope === "always")) {
+    if (e.onScope) { try { e.onScope(scope); } catch {} }
+    else addSessionAllow(key);
+  }
   e.resolve(!!allow);
   return { ok: true, ruleKey: key, scope };
 }

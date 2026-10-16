@@ -48,17 +48,9 @@ const SKILL_CONTEXT_WARNING = /Skill descriptions were shortened to fit the skil
 // 续跑时模型和会话录下的不一样，Codex 发一条 error item 提醒，随后照常把这一轮跑完——不是失败
 const RESUME_MODEL_WARNING = /This session was recorded with model .* but is resuming with/i;
 
-/**
- * 这条会话上一轮实际用的模型（从 CODEX_HOME/sessions 下的 rollout 文件里读最后一个 model 字段）。
- *
- * 为什么续跑要钉住它：用户任务做到一半在设置里换了模型，下一轮带着新 -m 去 resume，
- * Codex 会报「recorded with model X but is resuming with Y」，而且提示缓存是跟模型走的——
- * 实测换模型那一轮 4.3 万输入只命中 1.8 万缓存，又慢又贵。不传 -m 也不行：它会落到
- * 自己的默认型号，而不是会话原来那个。所以新模型只对新任务生效，进行中的任务沿用原来的。
- */
-function recordedModel(home, threadId) {
+/** CODEX_HOME/sessions 下这条线程的 rollout 文件，没有就是空串 */
+function rolloutFile(home, threadId) {
   if (!home || !threadId || !/^[\w-]+$/.test(threadId)) return "";
-  const root = path.join(home, "sessions");
   const find = (dir, depth) => {
     let names = [];
     try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return ""; }
@@ -70,7 +62,42 @@ function recordedModel(home, threadId) {
     }
     return "";
   };
-  const file = find(root, 0);
+  return find(path.join(home, "sessions"), 0);
+}
+
+/**
+ * 接着本机导入的那条 Codex 会话聊：本项目拉起的 codex 用的是隔离运行窝，里面没有这条线程，
+ * `codex exec resume` 会说找不到。把原文件复制一份进来（照原来的 年/月/日 摆），之后续写的都是这份副本，
+ * 原文件只读、一个字节不动。已经有了就不再复制。
+ */
+function stageRollout(home, threadId, src) {
+  if (!home || !src || !/^[\w-]+$/.test(String(threadId || ""))) return false;
+  const base = path.basename(String(src));
+  if (!/^rollout-.+\.jsonl$/.test(base) || !base.endsWith(threadId + ".jsonl")) return false;
+  if (rolloutFile(home, threadId)) return true;
+  const m = /^rollout-(\d{4})-(\d{2})-(\d{2})/.exec(base);
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const ymd = m ? [m[1], m[2], m[3]] : [String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate())];
+  const dir = path.join(home, "sessions", ...ymd);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    // 不用硬链接：两个名字指着同一份数据，续写副本就等于改了原文件
+    fs.copyFileSync(src, path.join(dir, base), fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+    return true;
+  } catch (e) { return !!(e && e.code === "EEXIST"); }
+}
+
+/**
+ * 这条会话上一轮实际用的模型（从 CODEX_HOME/sessions 下的 rollout 文件里读最后一个 model 字段）。
+ *
+ * 为什么续跑要钉住它：用户任务做到一半在设置里换了模型，下一轮带着新 -m 去 resume，
+ * Codex 会报「recorded with model X but is resuming with Y」，而且提示缓存是跟模型走的——
+ * 实测换模型那一轮 4.3 万输入只命中 1.8 万缓存，又慢又贵。不传 -m 也不行：它会落到
+ * 自己的默认型号，而不是会话原来那个。所以新模型只对新任务生效，进行中的任务沿用原来的。
+ */
+function recordedModel(home, threadId) {
+  const file = rolloutFile(home, threadId);
   if (!file) return "";
   try {
     // 只读尾部：长会话的 rollout 能有几十 MB，最后一个 model 字段一定在最近那几轮里
@@ -612,6 +639,7 @@ async function run({
   systemPrompt = "",
   onWrite = null,
   imagePollMs = 2000,
+  seedRollout = "",
 }) {
   // 闸在上游已经核过；这里再挡一次，护的是绕过 agent 直接调 run() 的那些入口（测试连接、目标拆解）
   const bad = gate.modelArg(extraArgs, ID);
@@ -630,6 +658,8 @@ async function run({
   const isolated = openWorkBuddyCodexHome({ ...process.env, ...(env || {}) });
   let effectiveModel = pinned;
   const available = await accountModels(exe, isolated.env);
+  // 接着本机导入的会话聊：先把原来那份 rollout 复制进隔离运行窝，resume 才找得到它
+  if (resumeId && seedRollout) stageRollout(isolated.env.CODEX_HOME, resumeId, seedRollout);
   if (resumeId) {
     // 续跑沿用会话原来的型号（理由见 recordedModel），但只在它仍是属主放行的型号时：
     // 属主收紧了列表，进行中的任务也得换到放行的那个上，不能靠续跑留在旧型号
@@ -827,7 +857,7 @@ module.exports = {
   detect, run, explain, forget,
   // 只给测试：换掉问最新版的那一下（测试一律不联网）、清缓存、直接测几个纯函数
   _internals: {
-    installOf, latestVersion, closeName, explainModel,
+    installOf, latestVersion, closeName, explainModel, stageRollout, rolloutFile,
     setFetchLatest(fn) { const old = fetchLatest; fetchLatest = fn; return old; },
     clearLatest() { latestCache.clear(); },
   },

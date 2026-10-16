@@ -68,7 +68,7 @@ function putObject(root, content) {
 
 function readObject(root, hash) {
   if (!hash || !/^[0-9a-f]{64}$/.test(hash)) return null;
-  try { return fs.readFileSync(objPath(root, hash)); } catch { return null; }
+  try { const b = fs.readFileSync(objPath(root, hash)); return sha(b) === hash ? b : null; } catch { return null; }
 }
 
 function readLedger(root) {
@@ -94,7 +94,7 @@ const lastGc = new Map(); // root → 上次清理时间；一小时最多一次
  * 记一次改动。before / after 传内容（字符串或 Buffer），不存在传 null。
  * 返回账本条目（含 id），文件在工作目录之外或存不下时返回 null——调用方照常干活，只是这步退不回去。
  */
-function record(root, { session = "", call = "", tool = "", abs, rel, before, after }) {
+function record(root, { session = "", call = "", tool = "", abs, rel, before, after, review }) {
   try {
     const r = path.resolve(root);
     const relPath = abs ? relOf(r, abs) : String(rel || "").replace(/\\/g, "/");
@@ -113,6 +113,7 @@ function record(root, { session = "", call = "", tool = "", abs, rel, before, af
       before: b,
       after: a,
       size: after == null ? 0 : Buffer.byteLength(after),
+      ...(review ? { review } : {}),
     };
     appendLedger(r, entry);
     const t = lastGc.get(r) || 0;

@@ -13,6 +13,8 @@ async function renderHubMcp(box) {
     fetch("/api/mcp/catalog").then(r => r.json()).catch(() => ({ items: [], categories: [], tools: {} })),
   ]);
   if (seq !== box._seq) return; // 字敲得快，后发的那趟先回来了：旧的这趟别把新结果盖掉
+  if (data.error) { box.innerHTML = `<div class="hub-empty">${esc(data.error)}</div>`; return; }
+  if (!Array.isArray(data.servers)) data.servers = [];
   box.dataset.shown = "mcp";
   const list = data.servers
     .map((sv, i) => ({ sv, i }))
@@ -27,6 +29,7 @@ async function renderHubMcp(box) {
   const ownServers = () => data.servers.filter(sv => !sv.plugin).map(keep);
   const save = async (servers) => {
     const msg = box.querySelector("#mcp-msg");
+    const add = box.querySelector("#mcp-add"); if (add) add.disabled = true;
     if (msg) msg.textContent = "连接中…（npx 首次要下载包，最长约 1 分钟）";
     // base_names：这页打开时认识的那几台。页面开着的这会儿 agent 或手改 config.json 又加了的，
     // 这张表里没有，后端就原样留着——不带的话整表替换，等于替用户把它们删了
@@ -34,13 +37,15 @@ async function renderHubMcp(box) {
     // base_revs：打开时每台的版本号。这会儿别处把某台换了（对话里覆盖、手改），页上那份就是旧的，
     // 后端认得出来、留新的——不带的话旧地址会配着新 Key 存回去
     const base_revs = Object.fromEntries(data.servers.filter(sv => !sv.plugin && sv.rev).map(sv => [sv.name, sv.rev]));
-    const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers, base_names, base_revs }) });
+    const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers, base_names, base_revs }) }).catch(() => null);
+    if (!resp) { if (add) add.disabled = false; toast("连接器保存失败，请检查网络后重试", "circle-x"); return false; }
     const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) toast((d.error || "保存失败"), "circle-x");
+    if (!resp.ok) { if (add) add.disabled = false; toast((d.error || "保存失败"), "circle-x"); return false; }
     // 体检结果只提醒不拦（后端也不拦）。挂在 hubState 上而不是弹 toast：
     // 这几条要对着卡片一条条看，toast 三秒就没了，等于没说。
     hubState.mcpAdvice = resp.ok ? (d.advice || null) : hubState.mcpAdvice;
     renderHubBody();
+    return d;
   };
   // 死因里带着进程最后几行 stderr，两三百字是常事：当标签胶囊放只会裁出中间一截。
   // 换成自己的块，先显三行（卡片在网格里，一条长错误会把整行撑高），展开看全文。
@@ -60,7 +65,7 @@ async function renderHubMcp(box) {
   const configured = new Set(data.servers.map(sv => sv.name));
   const items = cat.items || [];
   const tools = cat.tools || {};
-  const presets = hubState.mine ? [] : items.filter(it => hubMatch(hubState.q, it.name, it.label, it.desc, it.category));
+  const presets = hubState.mine ? [] : items.filter(it => (!hubState.mcpCategory || it.category === hubState.mcpCategory) && hubMatch(hubState.q, it.name, it.label, it.desc, it.category));
   const keyCount = it => Object.keys(it.env || {}).length + Object.keys(it.headers || {}).length;
   const missingTool = it => it.needs && !tools[it.needs] ? it.needs : "";
   const presetCard = it => {
@@ -86,9 +91,10 @@ async function renderHubMcp(box) {
       <input type="checkbox" id="mcp-intranet" style="margin:2px 0 0"${cat.intranet ? " checked" : ""}>
       <span>内网模式：境外连接器标出并排到最后（不删），GitHub 装技能直接提示，不干等超时</span>
     </label>`;
-  const presetSec = !po || !presets.length ? "" : `
+  const presetSec = !po || hubState.mine || !items.length ? "" : `
     <div class="hub-sec-title" style="margin-top:22px">推荐连接器
-      <span class="sub">点「接入」自动填好命令，需要 Key 的补上即可</span></div>
+      <span class="sub">点「接入」自动填好命令，需要 Key 的补上即可</span>
+      <select id="mcp-category" aria-label="连接器分类"><option value="">全部分类</option>${(cat.categories || []).map((c) => `<option${hubState.mcpCategory === c ? " selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
     ${!tools.uvx && presets.some(it => it.needs === "uvx") ? '<div class="hub-desc">本机没找到 uvx：标着 uvx 的连接器要先装 uv（macOS 装法：brew install uv）</div>' : ""}
     ${!tools.npx && presets.some(it => it.needs && it.needs !== "uvx") ? '<div class="hub-desc">本机没找到 npx：先装 Node.js（自带 npx）再来接本地连接器</div>' : ""}
     ${(cat.notes || []).map(n => `<div class="hub-desc">${esc(n)}</div>`).join("")}
@@ -110,30 +116,38 @@ async function renderHubMcp(box) {
   box.innerHTML = `${adviceBox}
     <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
       <span class="sub">MCP 外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
+    ${data.total_tools > 80 ? '<div class="hub-desc">工具较多，关闭暂时不用的连接器或工具，可以减少每次任务携带的说明。</div>' : ""}
+    ${po && data.import_available ? '<button type="button" class="btn-plain" id="mcp-import-local">导入本机连接器</button>' : ""}
     <div class="card-grid">
       ${po ? `<div class="ex-card add" id="mcp-open-add">${ic("plus")}添加连接器</div>` : ""}
       ${list.map(({ sv, i }) => `
         <div class="ex-card mcp-server-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag" title="来自插件 ${esc(sv.plugin)}">来自插件 ${esc(shortName(sv.plugin))}</span>` : ""}
-          <div class="hd"><div class="av${sv.connected ? "" : " bad"}">${ic(sv.connected ? "plug" : "triangle-alert")}</div>
-            <div class="nm"><span>${esc(sv.name)}</span><span class="al ${sv.connected ? "ok" : "bad"}">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
+          <div class="hd"><div class="av${sv.connected || sv.enabled === false ? "" : " bad"}">${ic(sv.connected || sv.enabled === false ? "plug" : "triangle-alert")}</div>
+            <div class="nm"><span>${esc(sv.name)}</span><span class="al ${sv.enabled === false ? "" : sv.connected ? "ok" : "bad"}">${sv.enabled === false ? "已关闭" : sv.connected ? `已连接 · ${(sv.tools || []).length} 个工具` : sv.auth_bad ? "授权已失效" : "连接失败"}</span></div></div>
           <div class="ds mcp-server-command" title="${esc(isRemote(sv) ? sv.url : [sv.command, ...(sv.args || [])].join(" "))}">${isRemote(sv)
             ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
             : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" ")) + (sv.args_hidden ? `<span style="opacity:.7">（${sv.args_hidden} 个启动参数只有平台管理员看得到）</span>` : "") + ((sv.env_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.env_keys.length} 个环境变量：${esc(sv.env_keys.join("、"))}）</span>` : "")}</div>
-          ${sv.connected
+          ${sv.enabled === false ? '<div class="hub-desc">已关闭，需要时可重新打开。</div>' : sv.connected
             ? `<div class="tg">${(sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")}</div>`
             : mcpErrBlock(sv.error)}
-          <div class="ops">${!po ? "" : sv.plugin
-            ? '<button disabled title="这条是插件声明的，要去「插件」页卸载整个插件">插件提供</button>'
-            : '<button class="mcp-del">删除</button>'}</div>
+          <div class="ops">${!po ? "" : `<label class="mcp-switch"><input type="checkbox" class="mcp-toggle" aria-label="${esc(sv.name)}"${sv.enabled !== false ? " checked" : ""}>启用</label>
+            <button type="button" class="mcp-reconnect"${sv.enabled === false ? " disabled" : ""}>重新连接</button>
+            <button type="button" class="mcp-policy">工具权限</button>
+            ${sv.oauth && sv.oauth.available && (sv.auth_bad || sv.oauth.authorized || !sv.connected) ? `<button type="button" class="mcp-oauth">${sv.oauth.authorized ? "重新授权 OAuth" : "OAuth 授权"}</button>` : ""}
+            ${!sv.plugin && ((sv.env_keys || []).length || (sv.header_keys || []).length) ? '<button type="button" class="mcp-edit-keys">修改凭据</button>' : ""}
+            ${sv.plugin ? '<button disabled title="这条是插件声明的，要去「插件」页卸载整个插件">插件提供</button>' : '<button class="mcp-del">删除</button>'}`}</div>
         </div>`).join("")}
       ${list.length ? "" : `<div class="hub-empty">${hubState.mine ? "没有已连接的连接器" : (po
         ? "还没有连接器，从下面的推荐里挑一个点「接入」"
         : "这台服务器还没接外部系统。接连接器要填 API Key，归平台管理员，需要什么跟他说一声")}</div>`}
     </div>
-    ${!po ? "" : `<div class="ex-editor" id="mcp-add-form" style="display:none;margin-top:14px">
-      <div class="hub-sec-title">添加连接器
+    ${!po ? "" : `<dialog class="mcp-dialog" id="mcp-add-dialog" aria-labelledby="mcp-add-title"><div class="ex-editor" id="mcp-add-form" style="display:none">
+      <div class="hub-sec-title" id="mcp-add-title">添加连接器
         <span class="sub">本地进程走 stdio；托管在别人服务器上的走 Streamable HTTP，填地址就行</span></div>
+      <div id="mcp-preset-keys" hidden></div>
+      <details class="mcp-paste"><summary>粘贴现成配置</summary><textarea id="mcp-json" rows="4" aria-label="连接器 JSON 配置" placeholder='{"mcpServers":{"example":{"command":"npx","args":[]}}}'></textarea><button type="button" class="btn-plain" id="mcp-load-config">读取配置</button><select id="mcp-paste-pick" aria-label="选择要接入的连接器" hidden></select></details>
+      <details id="mcp-config-details" open><summary>连接配置</summary>
       <div class="row" style="gap:14px">
         <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="stdio" checked>本地命令（stdio）</label>
         <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="http">远程地址（Streamable HTTP）</label>
@@ -145,15 +159,23 @@ async function renderHubMcp(box) {
         <div class="mcp-f-http" style="flex:2 1 320px;display:none"><label>请求头（可选，每行 Key: Value）</label><input id="mcp-headers" placeholder="Authorization: Bearer 你的令牌"></div></div>
       <div class="row"><div class="mcp-f-stdio" style="flex:1 1 100%"><label>环境变量 <span class="lh">API Key 之类放这里，每行一个 KEY=值，不需要就空着</span></label>
         <textarea id="mcp-env" rows="2" placeholder="BRAVE_API_KEY=你的 Key"></textarea></div></div>
+      </details>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn-brand" id="mcp-add">添加并连接</button>
         <button id="mcp-cancel" style="padding:6px 14px">取消</button>
         <a id="mcp-docs" href="#" target="_blank" rel="noopener" style="display:none;font-size:13px">去哪拿 Key${ic("arrow-right")}</a>
         <span class="ab-empty" id="mcp-msg"></span></div>
-    </div>`}` + intranetSec + presetSec;
+    </div></dialog>`}` + intranetSec + presetSec;
   const form = box.querySelector("#mcp-add-form");
   if (!po) return; // 下面全是写的那条路：表单、接入、删除，成员一颗都没画，也就没什么可绑
-  const openForm = () => { form.style.display = ""; form.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
-  box.querySelector("#mcp-open-add").onclick = openForm;
+  const dialog = box.querySelector("#mcp-add-dialog");
+  let pastedServers = [];
+  const closeForm = () => { dialog.close(); form.style.display = "none"; form.querySelectorAll('textarea, input:not([type="radio"])').forEach((f) => { f.value = ""; }); form.dataset.needEnv = ""; form.dataset.needHdr = ""; pastedServers = []; };
+  const openForm = () => { form.style.display = ""; if (!dialog.open) dialog.showModal(); form.querySelector("#mcp-name").focus(); };
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeForm(); });
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) closeForm(); });
+  box.querySelector("#mcp-open-add").onclick = () => {
+    const keys = box.querySelector("#mcp-preset-keys"); keys.hidden = true; keys.innerHTML = ""; form.dataset.needEnv = ""; form.dataset.needHdr = ""; box.querySelector("#mcp-config-details").open = true; openForm();
+  };
   const intranetBox = box.querySelector("#mcp-intranet");
   if (intranetBox) intranetBox.onchange = async () => {
     intranetBox.disabled = true;
@@ -172,9 +194,33 @@ async function renderHubMcp(box) {
     }
     renderHubBody(); // 目录得重算：哪些标出来、怎么排，全跟着这个开关变
   };
-  box.querySelector("#mcp-cancel").onclick = () => { form.style.display = "none"; };
+  box.querySelector("#mcp-cancel").onclick = closeForm;
+  const category = box.querySelector("#mcp-category");
+  if (category) category.onchange = () => { hubState.mcpCategory = category.value; renderHubBody(); };
+  const importLocal = box.querySelector("#mcp-import-local");
+  if (importLocal) importLocal.onclick = () => mcpImportLocal(() => renderHubBody());
   box.querySelectorAll(".ex-card[data-mi]").forEach(card => {
     const sv = data.servers[+card.dataset.mi];
+    const toggle = card.querySelector(".mcp-toggle");
+    if (toggle) toggle.onchange = async () => {
+      toggle.disabled = true;
+      const d = await mcpPost("/api/mcp/toggle", { name: sv.name, enabled: toggle.checked });
+      if (!d.ok) { toggle.checked = !toggle.checked; toggle.disabled = false; toast(d.error || "保存失败", "circle-x"); return; }
+      renderHubBody();
+    };
+    const reconnect = card.querySelector(".mcp-reconnect");
+    if (reconnect) reconnect.onclick = async () => {
+      reconnect.disabled = true; reconnect.textContent = "连接中…";
+      const d = await mcpPost("/api/mcp/reconnect", { name: sv.name });
+      if (!d.ok || !d.connected) toast(d.error || "连接失败", "circle-x");
+      renderHubBody();
+    };
+    const policy = card.querySelector(".mcp-policy");
+    if (policy) policy.onclick = () => mcpToolPolicy(sv, () => renderHubBody());
+    const oauth = card.querySelector(".mcp-oauth");
+    if (oauth) oauth.onclick = () => openMcpOAuth(card, sv, () => renderHubBody());
+    const editKeys = card.querySelector(".mcp-edit-keys");
+    if (editKeys) editKeys.onclick = () => mcpEditCredentials(sv, () => renderHubBody());
     const errBox = card.querySelector(".mcp-server-error"), more = card.querySelector(".mcp-err-more");
     // 整块都可以点，不止那颗按钮——三行红字看着就像个能展开的东西，点哪儿都该有反应
     if (errBox && more) {
@@ -201,32 +247,63 @@ async function renderHubMcp(box) {
     box.querySelectorAll(".mcp-f-http").forEach(el => el.style.display = http ? "" : "none");
   };
   box.querySelectorAll('input[name="mcp-kind"]').forEach(r => r.onchange = syncKind);
+  const fillConfig = (it) => {
+    const remote = !!it.url && !it.command;
+    box.querySelector(`input[name="mcp-kind"][value="${remote ? "http" : "stdio"}"]`).checked = true;
+    syncKind();
+    box.querySelector("#mcp-name").value = it.name || "";
+    box.querySelector("#mcp-cmd").value = it.command || "";
+    box.querySelector("#mcp-args").value = (it.args || []).map((arg) => /\s|["'\\]/.test(String(arg)) ? JSON.stringify(String(arg)) : String(arg)).join(" ");
+    box.querySelector("#mcp-url").value = it.url || "";
+    box.querySelector("#mcp-headers").value = Object.entries(it.headers || {}).map(([key, value]) => `${key}: ${value}`).join("\n");
+    box.querySelector("#mcp-env").value = Object.entries(it.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
+  };
+  const pastePick = box.querySelector("#mcp-paste-pick");
+  pastePick.onchange = () => fillConfig(pastedServers[Number(pastePick.value)]);
+  box.querySelector("#mcp-load-config").onclick = () => {
+    try {
+      const raw = JSON.parse(box.querySelector("#mcp-json").value);
+      pastedServers = raw && raw.mcpServers && typeof raw.mcpServers === "object" ? Object.entries(raw.mcpServers).map(([name, entry]) => ({ ...entry, name })) : Array.isArray(raw && raw.servers) ? raw.servers : raw && raw.name ? [raw] : [];
+      if (!pastedServers.length || pastedServers.some((s) => !s || typeof s.name !== "string" || (!s.command && !s.url))) throw new Error("配置需要包含名称和命令或地址");
+      pastePick.innerHTML = pastedServers.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join(""); pastePick.hidden = pastedServers.length < 2;
+      fillConfig(pastedServers[0]);
+      form.dataset.needEnv = ""; form.dataset.needHdr = ""; box.querySelector("#mcp-preset-keys").hidden = true; box.querySelector("#mcp-preset-keys").innerHTML = ""; box.querySelector("#mcp-config-details").open = true;
+      box.querySelector("#mcp-msg").textContent = "配置已读取，检查后再连接";
+    } catch (e) { toast(e instanceof SyntaxError ? "JSON 格式不正确，请检查配置" : e.message, "circle-x"); }
+  };
   // 「接入」：把预设填进表单，缺 Key 的把光标停在 Key 上，不缺的直接可以点「添加并连接」
   box.querySelectorAll(".ex-card[data-pi] .mcp-use").forEach(b => b.onclick = () => {
     const it = items[+b.closest(".ex-card").dataset.pi];
     if (!it) return;
     const http = it.kind === "http";
-    box.querySelector(`input[name="mcp-kind"][value="${http ? "http" : "stdio"}"]`).checked = true;
-    syncKind();
-    box.querySelector("#mcp-name").value = it.name;
-    box.querySelector("#mcp-cmd").value = it.command || "";
-    box.querySelector("#mcp-args").value = (it.args || []).join(" ");
-    box.querySelector("#mcp-url").value = it.url || "";
-    box.querySelector("#mcp-headers").value = Object.entries(it.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n");
-    box.querySelector("#mcp-env").value = Object.entries(it.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+    fillConfig(it);
     // 值为空的就是必填：添加时校验，别让一个注定连不上的配置进 config
     const needEnv = Object.keys(it.env || {}).filter(k => !String(it.env[k]).trim());
     const needHdr = Object.keys(it.headers || {}).filter(k => !String(it.headers[k]).replace(/^Bearer\s*/i, "").trim());
     form.dataset.needEnv = needEnv.join(",");
     form.dataset.needHdr = needHdr.join(",");
+    const keyBox = box.querySelector("#mcp-preset-keys");
+    keyBox.hidden = false;
+    keyBox.innerHTML = [...needEnv.map((key) => ["env", key]), ...needHdr.map((key) => ["headers", key])].map(([kind, key]) => `<label class="mcp-key-field"><span>${esc(key)}</span><input type="password" autocomplete="new-password" data-kind="${kind}" data-preset-key="${esc(key)}" placeholder="填写凭据"></label>`).join("") || '<p class="hub-desc">无需填写凭据，检查连接配置后即可接入。</p>';
+    box.querySelector("#mcp-config-details").open = false;
     const docs = box.querySelector("#mcp-docs");
     docs.href = it.docs || "#"; docs.style.display = it.docs ? "" : "none";
     const need = needEnv.concat(needHdr);
     box.querySelector("#mcp-msg").textContent = need.length ? `还差 ${need.join("、")} 没填，填好点「添加并连接」` : "启动命令已填好，点「添加并连接」就能用";
     openForm();
-    (need.length ? box.querySelector(http ? "#mcp-headers" : "#mcp-env") : box.querySelector("#mcp-add")).focus();
+    (need.length ? keyBox.querySelector("input") : box.querySelector("#mcp-add")).focus();
   });
   box.querySelector("#mcp-add").onclick = () => {
+    box.querySelectorAll("input[data-preset-key]").forEach((f) => {
+      if (!f.value) return;
+      const header = f.dataset.kind === "headers", key = f.dataset.presetKey;
+      const textarea = box.querySelector(header ? "#mcp-headers" : "#mcp-env");
+      const lines = textarea.value.split("\n"), at = lines.findIndex((line) => line.split(header ? ":" : "=")[0].trim() === key);
+      const prefix = header && at >= 0 && /^\s*Bearer\s*/i.test(lines[at].slice(lines[at].indexOf(":") + 1)) && !/^Bearer\s+/i.test(f.value) ? "Bearer " : "";
+      const value = `${key}${header ? ": " : "="}${prefix}${f.value}`;
+      if (at >= 0) lines[at] = value; else lines.push(value);
+      textarea.value = lines.join("\n");
+    });
     const name = box.querySelector("#mcp-name").value.trim();
     if (!name) return toast("名称必填", "circle-x");
     if (kindOf() === "http") {
@@ -243,7 +320,9 @@ async function renderHubMcp(box) {
       return save(ownServers().concat([{ name, url, headers }]));
     }
     const cmd = box.querySelector("#mcp-cmd").value.trim();
-    const args = box.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
+    let args;
+    try { args = mcpParseArgs(box.querySelector("#mcp-args").value); }
+    catch (e) { return toast(e.message, "circle-x"); }
     if (!cmd) return toast("本地连接器要填命令", "circle-x");
     // 「KEY=值」按第一个等号切，值里带等号（base64）也不会被切坏；没写值的行直接不要
     const env = {};
@@ -257,6 +336,100 @@ async function renderHubMcp(box) {
     if (missing.length) return toast(`还差 ${missing.join("、")} 没填`, "circle-x");
     save(ownServers().concat([{ name, command: cmd, args, env }]));
   };
+}
+
+function mcpParseArgs(text) {
+  const value = String(text || "").trim();
+  if (value.startsWith("[")) {
+    let args;
+    try { args = JSON.parse(value); } catch { throw new Error("参数 JSON 格式不正确"); }
+    if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) throw new Error("参数列表只支持字符串");
+    return args;
+  }
+  const args = []; let quote = "", word = "", started = false;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i], next = value[i + 1];
+    if (quote) {
+      if (c === quote) quote = "";
+      else if (c === "\\" && quote === '"' && (next === '"' || next === "\\")) { word += next; i++; }
+      else word += c;
+    } else if (/\s/.test(c)) {
+      if (started) { args.push(word); word = ""; started = false; }
+    } else if (c === '"' || c === "'") { quote = c; started = true; }
+    else if (c === "\\" && next && /[\s"'\\]/.test(next)) { word += next; i++; started = true; }
+    else { word += c; started = true; }
+  }
+  if (quote) throw new Error("参数里的引号没有闭合");
+  if (started) args.push(word);
+  return args;
+}
+
+async function mcpPost(url, body) {
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await r.json().catch(() => ({}));
+    return r.ok ? data : { ok: false, error: data.error || `HTTP ${r.status}` };
+  } catch { return { ok: false, error: "请求失败，请检查网络后重试" }; }
+}
+
+function mcpActionDialog(title, content, submit, label) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "mcp-dialog";
+  dialog.setAttribute("aria-label", title);
+  dialog.innerHTML = `<div class="mcp-dialog-body"><h2>${esc(title)}</h2><div class="mcp-dialog-content">${content}</div><p class="mcp-dialog-error" role="alert"></p><div class="mcp-dialog-actions"><button type="button" class="btn-plain" data-close>取消</button><button type="button" class="btn-brand" data-submit>${esc(label || "保存")}</button></div></div>`;
+  const close = () => dialog.close();
+  dialog.querySelector("[data-close]").onclick = close;
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) close(); });
+  dialog.addEventListener("close", () => { dialog.querySelectorAll("input, textarea").forEach((f) => { f.value = ""; }); dialog.remove(); }, { once: true });
+  dialog.querySelector("[data-submit]").onclick = async () => {
+    const button = dialog.querySelector("[data-submit]"); button.disabled = true;
+    try { if (await submit(dialog)) close(); }
+    catch (e) { dialog.querySelector(".mcp-dialog-error").textContent = e.message || "保存失败"; }
+    finally { button.disabled = false; }
+  };
+  document.body.appendChild(dialog); dialog.showModal();
+  return dialog;
+}
+
+function mcpEditCredentials(server, refresh) {
+  const fields = [["env", server.env_keys || []], ["headers", server.header_keys || []]];
+  mcpActionDialog("修改凭据 · " + server.name, `<p>留空保持原值，已保存的凭据不会回传到页面。</p>${fields.map(([kind, keys]) => keys.map((key) => `<label class="mcp-key-field"><span>${esc(key)}</span><input type="password" autocomplete="new-password" data-kind="${kind}" data-key="${esc(key)}" placeholder="留空保持原值"></label>`).join("")).join("")}`, async (dialog) => {
+    const env_patch = {}, headers_patch = {};
+    dialog.querySelectorAll("input[data-key]").forEach((f) => { if (f.value) (f.dataset.kind === "env" ? env_patch : headers_patch)[f.dataset.key] = f.value; });
+    if (!Object.keys(env_patch).length && !Object.keys(headers_patch).length) return true;
+    const data = await mcpPost("/api/mcp/credentials", { name: server.name, rev: server.rev, env_patch, headers_patch });
+    if (!data.ok) throw new Error(data.error || "保存失败");
+    toast(data.connected ? "凭据已更新，连接成功" : "凭据已保存，请查看连接状态", data.connected ? "circle-check" : "circle-alert");
+    refresh(); return true;
+  });
+}
+
+function mcpToolPolicy(server, refresh) {
+  const policy = server.policy || { tools: {} };
+  const choices = (value, inherit) => [["", inherit || "跟随安全档位"], ["allow", "直接用"], ["ask", "先问我"], ["deny", "不让用"]].map(([key, label]) => `<option value="${key}"${value === key ? " selected" : ""}>${esc(label)}</option>`).join("");
+  const names = [...new Set([...(server.tools || []).map((t) => t.name), ...Object.keys(policy.tools || {})])];
+  mcpActionDialog("工具权限 · " + server.name, `<p>先问我会在执行前请求批准；不让用的工具不会交给模型。</p><label class="mcp-key-field"><span>默认权限</span><select data-default>${choices(policy.default || "")}</select></label>${names.map((name) => `<label class="mcp-key-field"><span title="${esc((server.tools || []).find((t) => t.name === name)?.description || "")}">${esc(name)}</span><select data-tool="${esc(name)}">${choices((policy.tools || {})[name] || "", "继承默认权限")}</select></label>`).join("")}`, async (dialog) => {
+    const tools = Object.fromEntries([...dialog.querySelectorAll("[data-tool]")].map((s) => [s.dataset.tool, s.value]));
+    const data = await mcpPost("/api/mcp/policy", { server: server.name, default: dialog.querySelector("[data-default]").value, tools });
+    if (!data.ok) throw new Error(data.error || "保存失败");
+    refresh(); return true;
+  });
+}
+
+async function mcpImportLocal(refresh) {
+  let data;
+  try { const r = await fetch("/api/mcp/import"); data = await r.json(); if (!r.ok) throw new Error(data.error); }
+  catch (e) { toast(e.message || "读取失败", "circle-x"); return; }
+  const items = data.items || [];
+  if (!items.length) { toast("没有找到可导入的连接器", "circle-alert"); return; }
+  mcpActionDialog("导入本机连接器", `<p>只读取连接器配置，不读取登录文件。已有同名连接器会跳过。</p>${items.map((item, i) => `<label class="mcp-import-row"><input type="checkbox" data-pick="${i}"${item.exists ? " disabled" : ""}><span><strong>${esc(item.name)}</strong><small>${esc(item.source_label)}${item.exists ? " · " + esc("已接入") : ""}</small></span></label>`).join("")}`, async (dialog) => {
+    const picks = [...dialog.querySelectorAll("input[data-pick]:checked")].map((f) => { const item = items[Number(f.dataset.pick)]; return { source: item.source, name: item.name, as: item.as }; });
+    if (!picks.length) throw new Error("先勾选要导入的连接器");
+    const result = await mcpPost("/api/mcp/import", { picks });
+    if (!result.ok) throw new Error(result.error || "导入失败");
+    toast(I18N.tr("导入完成") + ` · ${(result.imported || []).length} / ${picks.length}`, "circle-check");
+    refresh(); return true;
+  }, "导入并连接");
 }
 
 // ================= 参考模板库（照着抄的提示词，点一下填进输入框） =================
@@ -679,6 +852,7 @@ const SETTING_CATS = [
   ["ops", "运行状况", "bar-chart"],
   ["data", "数据", "database"],
   ["im", "助理设置", "smartphone"],
+  ["browser", "浏览器", "globe"],
   ["about", "关于", "info"],
 ];
 /**
@@ -723,6 +897,7 @@ async function renderSettings(active) {
   else if (active === "security") drawn = renderSecurityPane(pane, s);
   else if (active === "shortcuts") drawn = renderShortcutsPane(pane, s);
   else if (active === "im") drawn = renderImPane(pane, s);
+  else if (active === "browser") drawn = renderBrowserPane(pane);
   else drawn = renderAboutPane(pane);
   if (keepTop) {
     pane.scrollTop = keepTop; // 同步画完的这就够了

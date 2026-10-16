@@ -1113,7 +1113,16 @@ function testDocLinkGate() {
   } catch {}
   const dead = [];
   let checked = 0;
-  const anchorsOf = (file) => new Set([...fs.readFileSync(file, "utf8").matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((m) => slugify(m[1])));
+  const anchorsIn = (source) => {
+    const text = stripCode(source);
+    return new Set([
+      ...[...text.matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((m) => slugify(m[1])),
+      ...[...text.matchAll(/<a\b[^>]*\b(?:id|name)=["']([^"']+)["'][^>]*>/gi)].map((m) => m[1].toLowerCase()),
+    ]);
+  };
+  const anchorsOf = (file) => anchorsIn(fs.readFileSync(file, "utf8"));
+  assert(anchorsIn('<a id="quick-start"></a>').has("quick-start"), "显式 HTML 锚点也可跳转");
+  assert(!anchorsIn('```html\n<a id="example-only"></a>\n```').has("example-only"), "代码示例里的锚点不能冒充实际目标");
   for (const f of files) {
     const t = fs.readFileSync(f, "utf8");
     const anchors = anchorsOf(f);
@@ -2204,7 +2213,7 @@ function testCtxMeterWiring() {
   const paths = [
     ["点开一条历史对话", A2.indexOf("async function openSession("), A2.indexOf('document.getElementById("new-task").onclick')],
     ["跟一趟终端里起的任务", A2.indexOf("async function openCliLive(row) {"), A2.indexOf("es.onmessage", A2.indexOf("async function openCliLive(row) {"))],
-    ["开新任务", A2.indexOf('document.getElementById("new-task").onclick'), A2.indexOf("renderHistory();\nrenderLaneTabs();")],
+    ["开新任务", A2.indexOf('document.getElementById("new-task").onclick'), A2.indexOf("renderLaneTabs();", A2.indexOf('document.getElementById("new-task").onclick'))],
   ];
   for (const [what, a, b] of paths) {
     assert(a > 0 && b > a, `app-02.js 里「${what}」那段切不出来（改名/挪窝了？），这一条在空转，别让它悄悄变绿`);
@@ -4323,7 +4332,7 @@ function testAgentPromptDrift() {
   // agent.js 自己接住的那几个不在 TOOL_DEFS 里，但确实是工具
   const LOCAL = ["use_skill", "ask_user", "delegate_to_expert", "delegate_to_team",
     "feishu_doc_create", "notify_user", "schedule_task", "list_schedules", "send_email"];
-  const real = new Set(TOOL_DEFS.map((t) => t.name).concat(LOCAL));
+  const real = new Set(TOOL_DEFS.map((t) => t.name).concat(LOCAL, [...require(path.join(__dirname, "..", "src/tools/chrome")).CHROME_TOOL_NAMES]));
   // 长得像工具名、其实是参数名/配置键/例子文件名的，列在这儿。名单短是好事：
   // 短到一眼能看完，才说明"下划线命名 = 工具名"这个判据还成立
   const NOT_TOOLS = new Set(["old_text", "new_text", "start_line", "end_line", "with_timestamps",
@@ -6642,7 +6651,7 @@ async function testScheduleRunTrace() {
     recorder.forget = (ids) => forgotten.push(...ids);
 
     const sched = createScheduler({ runtime, recorder, storePath });
-    const t = sched.add({ name: "每天日报", cron: "0 9 * * *", task: "写今天的日报" });
+    const t = sched.add({ name: "每天日报", cron: "0 9 * * *", task: "写今天的日报", source_session_id: "chat-origin" });
 
     await sched.runOne(t, "手动");
     assert(seen[0] && typeof seen[0].emit === "function" && seen[0].sessionId,
@@ -6651,6 +6660,8 @@ async function testScheduleRunTrace() {
     const r1 = sched.runs(10)[0];
     assert.strictEqual(r1.session_id, "s_fake_1",
       "★运行记录上没挂 session_id★ 前端那条「看执行过程」就没有 id 可点，等于这一趟又白录了");
+    assert.strictEqual(r1.source_session_id, "chat-origin",
+      "★对话里创建的排期没保留来源★ 跑完就无法把结果送回创建它的那段对话");
     assert.deepStrictEqual({ ok: closed[0].ok, events: closed[0].events }, { ok: true, events: 2 },
       "跑成功这条路没正常收尾（或者事件没进录像）：" + JSON.stringify(closed[0]));
 
@@ -6746,8 +6757,9 @@ async function testScheduleRunTrace() {
     const { up, port, why } = await boot.wait();
     assert(up, "真 server.js 没起来，这条测试作废：" + why);
 
-    const made = await call(port, "POST", "/api/schedules", { name: "五分钟后叫我", cron: "0 9 * * *", task: "写一份 定时产物.md" });
+    const made = await call(port, "POST", "/api/schedules", { name: "五分钟后叫我", cron: "0 9 * * *", task: "写一份 定时产物.md", source_session_id: "forged-session" });
     assert(made.code === 200 && made.json && made.json.id, "建不了定时任务（HTTP " + made.code + "）：" + made.body.slice(0, 200));
+    assert(!Object.hasOwn(made.json, "source_session_id"), "来源会话字段不应回给客户端：" + JSON.stringify(made.json));
 
     const fired = await call(port, "POST", `/api/schedules/${made.json.id}/run`, {});
     assert(fired.code === 200, "手动触发失败（HTTP " + fired.code + "）：" + fired.body.slice(0, 300));
@@ -6758,6 +6770,8 @@ async function testScheduleRunTrace() {
     assert(run.session_id,
       "★真跑一趟之后，运行记录上还是没有 session_id★ 界面上那条「看执行过程」画不出来，" +
       "用户看到的就还是那一行结果——这正是他抱怨的那个样子。这一条：" + JSON.stringify(run).slice(0, 300));
+    assert(run.source_linked === false && !Object.hasOwn(run, "source_session_id"),
+      "独立排期应标明无来源，但不能把内部来源会话 ID 暴露到 API：" + JSON.stringify(run).slice(0, 300));
 
     const sess = await call(port, "GET", "/api/session/" + encodeURIComponent(run.session_id));
     assert(sess.code === 200 && sess.json, "拿 session_id 去开会话开不开（HTTP " + sess.code + "）：" + sess.body.slice(0, 200));
@@ -7978,6 +7992,155 @@ async function testSessionPin() {
   } finally {
     try { child.kill("SIGKILL"); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
+ * 侧栏 ⋮ 菜单里「改名」「移到项目」的服务端那半。
+ * 盯的几条：只有本人能改；名字去掉多余空白、不许空、不许太长；挪只能挪进自己项目清单里有的；
+ * 都不改「最后动过」的时间（不然改个名它在列表里就跳到最前）；不存在的回 404，也不在盘上凭空造一个空壳。
+ * 再起一趟真任务：跑着的时候人亲手改了名，首轮跑完的标题润色不许把它盖掉——
+ * 反向对照是同一套假模型下没改过名的那条，照常换成模型起的标题（证明润色这条路在这儿是真走到了的）。
+ */
+async function testSessionRenameMove() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-rename-"));
+  const dir = path.join(home, "data", "sessions");
+  fs.mkdirSync(dir, { recursive: true });
+  const 甲 = path.join(home, "projects", "甲"), 乙 = path.join(home, "projects", "乙");
+  for (const d of [甲, 乙]) fs.mkdirSync(d, { recursive: true });
+  const old = "2026-01-01T00:00:00.000Z";
+  const sess = (id, o) => fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify({
+    id, user: "e2e", project: "甲", updated_at: old, history: [], transcript: [{ type: "user", at: old, text: "hi" }], ...o }));
+  sess("s_mine", { title: "原来的名字" });
+  sess("s_bob", { title: "同事的", user: "bob", project: "默认项目" });
+
+  // 假模型：带工具的那一趟（干活）卡在闸门上，等测试那头改完名再放行；不带工具的（起标题）当场回
+  let gate = null, entered = null;
+  const reset = () => {
+    let open; gate = new Promise((r) => (open = r)); gate.open = open;
+    entered = new Promise((r) => (reset.hit = r));
+  };
+  reset();
+  const llm = http.createServer((req, res) => {
+    let raw = ""; req.on("data", (c) => (raw += c));
+    req.on("end", async () => {
+      if (!req.url.includes("/chat/completions")) { res.writeHead(404); return res.end("{}"); }
+      let b = {}; try { b = JSON.parse(raw); } catch {}
+      const send = (o) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ...o, usage: { prompt_tokens: 9, completion_tokens: 3 } })); };
+      const main = Array.isArray(b.tools) && b.tools.length;
+      if (main) { reset.hit(); await gate; }
+      send({ choices: [{ message: { role: "assistant", content: main ? "写好了" : "模型起的标题" }, finish_reason: "stop" }] });
+    });
+  });
+  await new Promise((r) => llm.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${llm.address().port}/v1`;
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.example.json"), "utf8"));
+  cfg.provider = "openai";
+  cfg.openai = { base_url: base, api_key: "k", model: "mock", stream: false };
+  cfg.models = [{ name: "假模型", provider: "openai", base_url: base, api_key: "k", model: "mock", stream: false }];
+  cfg.active_model = "假模型";
+  cfg.agent = { ...(cfg.agent || {}), max_steps: 3, tool_timeout_ms: 8000, llm_timeout_ms: 20000 };
+  cfg.mcp_servers = [];
+  cfg.projects = [{ name: "甲", dir: 甲 }, { name: "乙", dir: 乙 }];
+  cfg.active_project = "甲";
+  cfg.workspace_dir = 甲;
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg, null, 2));
+
+  const tok = { e2e: "e2e" + crypto.randomBytes(12).toString("hex"), bob: "bob" + crypto.randomBytes(12).toString("hex") };
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [
+      { username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() },
+      { username: "bob", salt: "x", hash: "x", role: "member", credits: 0, created_at: Date.now() },
+    ],
+    tokens: { [tok.e2e]: { user: "e2e", at: Date.now() }, [tok.bob]: { user: "bob", at: Date.now() } },
+  }));
+  const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const call = (who, port, method, p, body) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const rq = http.request({ host: "127.0.0.1", port, path: p, method, timeout: 30000, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      Cookie: "openworkbuddy_token=" + tok[who],
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    rq.on("timeout", () => { rq.destroy(); resolve({ code: -1, body: "超时没回话" }); });
+    rq.on("error", (e) => resolve({ code: 0, body: e.message }));
+    if (data) rq.write(data);
+    rq.end();
+  });
+  const onDisk = (id) => JSON.parse(fs.readFileSync(path.join(dir, id + ".json"), "utf8"));
+  let passed = false;
+  try {
+    const { up, port, why } = await boot.wait();
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+    const rowOf = async (id) => (((await call("e2e", port, "GET", "/api/sessions")).json || {}).sessions || []).find((r) => r.id === id);
+
+    // ---- 改名 ----
+    const t1 = await call("e2e", port, "POST", "/api/session/s_mine/title", { title: "  季度  合同\n复核  " });
+    assert(t1.code === 200 && t1.json && t1.json.title === "季度 合同 复核", "本人改自己的任务名没成（HTTP " + t1.code + "）：" + t1.body.slice(0, 200));
+    assert(onDisk("s_mine").title === "季度 合同 复核" && onDisk("s_mine").title_manual === true, "改名没落盘，或没记下这是人亲手起的：" + JSON.stringify({ title: onDisk("s_mine").title, manual: onDisk("s_mine").title_manual }));
+    assert.strictEqual(onDisk("s_mine").updated_at, old, "★改名改了「最后动过」的时间★ 改个名它在列表里就跳到最前");
+    const r1 = await rowOf("s_mine");
+    assert(r1 && r1.title === "季度 合同 复核", "侧栏列表里还是旧名字：" + JSON.stringify(r1));
+    const empty = await call("e2e", port, "POST", "/api/session/s_mine/title", { title: " \n " });
+    assert(empty.code === 400 && onDisk("s_mine").title === "季度 合同 复核", "空名字该回 400 且不动原名（HTTP " + empty.code + "）：" + empty.body.slice(0, 200));
+    const long = await call("e2e", port, "POST", "/api/session/s_mine/title", { title: "长".repeat(51) });
+    assert(long.code === 400 && onDisk("s_mine").title === "季度 合同 复核", "51 个字的名字该回 400（HTTP " + long.code + "）");
+    const fifty = await call("e2e", port, "POST", "/api/session/s_mine/title", { title: "长".repeat(50) });
+    assert(fifty.code === 200, "50 个字正好在线上，该收（HTTP " + fifty.code + "）：" + fifty.body.slice(0, 200));
+    await call("e2e", port, "POST", "/api/session/s_mine/title", { title: "季度 合同 复核" });
+    const tAdmin = await call("e2e", port, "POST", "/api/session/s_bob/title", { title: "替他改" });
+    assert(tAdmin.code === 403 && onDisk("s_bob").title === "同事的", "★管理员替同事改了任务名★（HTTP " + tAdmin.code + "）：" + tAdmin.body.slice(0, 200));
+    const tBob = await call("bob", port, "POST", "/api/session/s_mine/title", { title: "我来改" });
+    assert(tBob.code === 403 && onDisk("s_mine").title === "季度 合同 复核", "★成员改了别人的任务名★（HTTP " + tBob.code + "）：" + tBob.body.slice(0, 200));
+    const tGone = await call("e2e", port, "POST", "/api/session/s_nope/title", { title: "随便" });
+    assert(tGone.code === 404 && !fs.existsSync(path.join(dir, "s_nope.json")), "不存在的任务该回 404、且不在盘上造空壳（HTTP " + tGone.code + "）");
+
+    // ---- 移到项目 ----
+    const m1 = await call("e2e", port, "POST", "/api/session/s_mine/project", { project: "乙" });
+    assert(m1.code === 200 && m1.json && m1.json.project === "乙" && onDisk("s_mine").project === "乙", "本人把任务挪到乙没成（HTTP " + m1.code + "）：" + m1.body.slice(0, 200));
+    assert.strictEqual(onDisk("s_mine").updated_at, old, "★挪项目改了「最后动过」的时间★");
+    const r2 = await rowOf("s_mine");
+    assert(r2 && r2.project === "乙", "侧栏列表里还记着旧项目：" + JSON.stringify(r2));
+    const mBad = await call("e2e", port, "POST", "/api/session/s_mine/project", { project: "丙" });
+    assert(mBad.code === 400 && onDisk("s_mine").project === "乙", "挪进一个没有的项目该回 400（HTTP " + mBad.code + "）：" + mBad.body.slice(0, 200));
+    const mAdmin = await call("e2e", port, "POST", "/api/session/s_bob/project", { project: "甲" });
+    assert(mAdmin.code === 403 && onDisk("s_bob").project === "默认项目", "★管理员替同事挪了任务★（HTTP " + mAdmin.code + "）");
+    // 成员用的是自己那份项目清单：管理员那边的「甲」他挪不进去，自己的「默认项目」挪得进去
+    const mBobX = await call("bob", port, "POST", "/api/session/s_bob/project", { project: "甲" });
+    assert(mBobX.code === 400 && onDisk("s_bob").project === "默认项目", "★成员把任务挪进了别人清单里的项目★（HTTP " + mBobX.code + "）：" + mBobX.body.slice(0, 200));
+    const mBob = await call("bob", port, "POST", "/api/session/s_bob/project", { project: "默认项目" });
+    assert(mBob.code === 200, "成员挪进自己清单里的项目该成（HTTP " + mBob.code + "）：" + mBob.body.slice(0, 200));
+    const mGone = await call("e2e", port, "POST", "/api/session/s_nope/project", { project: "甲" });
+    assert(mGone.code === 404 && !fs.existsSync(path.join(dir, "s_nope.json")), "挪一条不存在的任务该回 404（HTTP " + mGone.code + "）");
+
+    // ---- 跑着的时候改了名：首轮的标题润色不盖它 ----
+    const run1 = call("e2e", port, "POST", "/api/chat", { sessionId: "s_run1", message: "帮我把这周的周报写了", mode: "craft", lang: "zh" });
+    const hit = await Promise.race([entered, new Promise((r) => setTimeout(() => r("timeout"), 20000))]);
+    assert(hit !== "timeout", "这一趟迟迟没走到模型那一步：" + boot.log.slice(-300));
+    const tRun = await call("e2e", port, "POST", "/api/session/s_run1/title", { title: "我自己起的" });
+    assert(tRun.code === 200, "跑着的任务改名没成（HTTP " + tRun.code + "）：" + tRun.body.slice(0, 200));
+    gate.open();
+    const done1 = await run1;
+    assert(done1.code === 200 && /"type":"done"/.test(done1.body), "这一趟没跑完：" + done1.code + " " + done1.body.slice(0, 300));
+    assert(!/"type":"title"/.test(done1.body), "★人改过名了，跑完还往页面上推了一个模型起的标题★");
+    assert.strictEqual(onDisk("s_run1").title, "我自己起的", "★首轮跑完的标题润色把人亲手起的名字盖掉了★");
+    // 反向对照：同一套假模型、没改过名的那条，照常换成模型起的标题
+    reset(); gate.open();
+    const done2 = await call("e2e", port, "POST", "/api/chat", { sessionId: "s_run2", message: "帮我把下周的计划列一下", mode: "craft", lang: "zh" });
+    assert(done2.code === 200 && /"type":"title"/.test(done2.body) && onDisk("s_run2").title === "模型起的标题",
+      "反向对照没成立：没改过名的那条也没换成模型起的标题，上面那条「不盖」证明不了什么：" + JSON.stringify(onDisk("s_run2").title));
+    console.log("  ✓ 侧栏改名、移到项目：只有本人能改 · 名字去空白不许空不许超 50 字 · 只挪进自己清单里的项目 · 不改最后动过的时间 · 不存在回 404 不造空壳 · 跑着改的名不被润色盖掉（含反向对照）");
+    passed = true;
+  } finally {
+    try { gate.open(); } catch {}
+    try { boot.child.kill(); } catch {}
+    llm.close();
+    await dropTempHome(home, passed, boot.child);
   }
 }
 
@@ -10260,6 +10423,7 @@ testCanvasEdgeVersion();
   await testLibraryOutputsTruth();
   await testLibraryTurnAnchor();
   await testSessionPin();
+  await testSessionRenameMove();
   await testPortCollision();
   testShellI18n();
   await testSessionSearchLive();
@@ -15135,7 +15299,7 @@ function testLookPrefsStatic() {
   const rows = [...cats.matchAll(/\["([a-z]+)", "([^"]+)", "([^"]+)"\]/g)];
   // 这个数字是故意钉死的：加一页设置就得回来改一次，顺手确认新页也接了线、图标也真存在。
   // 13 → 14 是「运行状况」那页进来的（日志/告警/指标那条线）；14 → 15 是「地图」（行程卡的高德 Key，以前埋在联网搜索页最底下没人找得到）。
-  assert(rows.length === 15 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
+  assert(rows.length === 16 && rows.some((m) => m[1] === "browser") && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
   // 第三格从 emoji 换成图标名之后，多了一种新的翻车方式：忘了套 ic() 就直接把 "palette" 这几个字母印在目录上。
   // 这事只有人打开设置页才看得见，所以两头都钉死：名字得是 sprite 里真有的 symbol，画的时候得走 ic()。
   const { iconNames } = require(modPath("icons"));
@@ -15202,8 +15366,8 @@ function testLookPrefsStatic() {
   // 上手那节必须提一句外观在哪改：字号和主题是最先被嫌弃的两样，翻文档才找得到就等于没有。
   // 按小标题切片再查，比 [\s\S]* 一路跨到下一节严——不然写在别的节里也能蒙混过关
   const readmeRun = (fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
-    .split(/^## 三分钟跑起来\s*$/m)[1] || "").split(/^## /m)[0];
-  assert(/外观/.test(readmeRun), "README「三分钟跑起来」一节没提外观设置");
+    .split(/^## (?:三分钟跑起来|快速开始：交付第一份周报)\s*$/m)[1] || "").split(/^## /m)[0];
+  assert(/外观/.test(readmeRun), "README 快速开始一节没提外观设置");
   console.log("✅ 外观偏好静态闸（目录含外观页·头像菜单直达·存储 try+内存兜底·字号 4 档联动·5 皮肤×浅暗令牌齐全·密度≥5 处·字体三选·旧主题子菜单已清）");
 }
 function testUiNoRawMarkdown() {
@@ -17061,7 +17225,7 @@ async function testRunOwnership() {
 
   // /api/chat 的这道检查必须赶在 SSE 头之前：头一发出去，403 的正文就顶着
   // text/event-stream 的壳过去，前端拿到的是一个「连上了但什么都不发」的流
-  const chat = routeOf('app.post("/api/chat", async (req, res)');
+  const chat = routeOf('app.post("/api/chat",');
   const iGuard = chat.indexOf("sessionAllowed(user, getSession(sessionId))");
   const iSse = chat.indexOf('res.setHeader("Content-Type", "text/event-stream');
   assert.ok(iGuard > 0, "POST /api/chat 没查会话归属 → 拿到别人的会话 id 就能接着他的上下文继续跑，还写进他的历史");
@@ -17223,15 +17387,17 @@ async function testSessionIndex() {
     const lanesMod = require(modPath("lanes"));
     // account 只被「老会话算谁的」用到：这台机器上第一个注册的人（平台管理员）
     const account = { defaultUser: () => ({ username: "boss" }) };
-    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes", "account",
-      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir, lanesMod, account);
+    // 「产出过几个文件」按检索那边同一个口径数（session-search.js 的 filesOf），注真模块
+    const sessSearchMod = require(modPath("session-search"));
+    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes", "account", "sessSearch",
+      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache, sessFilesTodo };")(fs, path, store, live, dir, lanesMod, account, sessSearchMod);
 
     const put = (id, o) => fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(Object.assign({
       title: "任务 " + id, user: "boss", transcript: [{ role: "user" }], updated_at: "2026-09-01T00:00:00.000Z",
     }, o)));
 
     put("s_1", { title: "老板的季度汇总", updated_at: "2026-09-03T00:00:00.000Z" });
-    put("s_2", { title: "老板的落地页", updated_at: "2026-09-05T00:00:00.000Z", project: "客户 A" });
+    put("s_2", { title: "老板的落地页", updated_at: "2026-09-05T00:00:00.000Z", project: "客户 A", engine: "codex" });
     put("s_3", { title: "同事的周报", user: "staff", updated_at: "2026-09-04T00:00:00.000Z" });
     put("s_4", { title: "升级前的老会话", user: undefined, updated_at: "2026-09-02T00:00:00.000Z" }); // 没记归属
     put("s_5", { title: "还没说过话", transcript: [] });
@@ -17244,6 +17410,7 @@ async function testSessionIndex() {
       "清单不对（该按更新时间倒序，坏文件/空对话/.bak 都不该进来）：" + JSON.stringify(rows.map((r) => r.id)));
     assert.strictEqual(rows[0].turns, 1, "轮数没带上，侧栏分不出「点开就有东西」和「空壳」");
     assert.strictEqual(rows[0].project, "客户 A", "项目名没带上，前端按项目过滤会把它归错组");
+    assert.strictEqual(rows[0].engine, "codex", "任务最后选用的引擎没带给顶栏环境标记");
     // 工作线：如实报「记过的那条」，没记过的一个字不编。
     // 老会话没记过 lane，服务端就交白卷，回落到哪条线是前端的事（lanes.DEFAULT_LANE = 办公）。
     // 服务端要是自作主张替它填一条，两个前端版本的口径一对不上，整批历史就会「凭空少一半」。
@@ -17256,6 +17423,18 @@ async function testSessionIndex() {
     assert.strictEqual(laneRows.find((r) => r.id === "s_9").lane, "office", "大小写/空格没归一，侧栏会当成另一条线而整条不显示");
     assert.strictEqual(laneRows.find((r) => r.id === "s_10").lane, undefined, "认不出来的线名被原样放行了");
     for (const id of ["s_8", "s_9", "s_10"]) fs.rmSync(path.join(dir, id + ".json"));
+
+    // 产出过几个文件：同名改写算一个，只数记录里那几批变更（回放存的就是裁过的那份）
+    const filesEv = (...names) => ({ type: "files", changed: names, files: names.map((name) => ({ name })), partial: true });
+    put("s_11", { title: "做了两份报告", updated_at: "2026-09-06T00:00:00.000Z", transcript: [
+      { type: "user", text: "做报告" },
+      { type: "assistant", events: [filesEv("报告.docx"), filesEv("报告.docx", "图表.png")] },
+      { type: "assistant", events: [filesEv("报告.docx")] },
+    ] });
+    const fileRows = build().listSessionsOnDisk();
+    assert.strictEqual(fileRows.find((r) => r.id === "s_11").files, 2, "产出文件数不对（同名改写该只算一个）：" + fileRows.find((r) => r.id === "s_11").files);
+    assert.strictEqual(fileRows.find((r) => r.id === "s_1").files, 0, "只聊了几句的会话被报成产出过文件");
+    fs.rmSync(path.join(dir, "s_11.json"));
 
     // ★ 两句报障在这儿正面撞上：一句是「升级完历史全没了」，一句是「新建的 demo 账号
     // 怎么一打开就有一堆聊天记录」。把没记归属的老会话认到平台管理员（这台机器上第一个
@@ -17334,6 +17513,25 @@ async function testSessionIndex() {
     assert.strictEqual(sessReads, 0, "有索引还是把 " + sessReads + " 个会话文件重读了一遍（" + readNames.join("、")
       + "）——这节省下的正是那 300ms");
 
+    // 升级前落盘的索引：行里没有 files。照样直接用、这一趟不回去读，后台再一条条补上
+    {
+      const raw = JSON.parse(fs.readFileSync(idxFile, "utf8"));
+      for (const hit of Object.values(raw.rows)) if (hit && hit.row) delete hit.row.files;
+      fs.writeFileSync(idxFile, JSON.stringify(raw));
+      const Mold = build();
+      sessReads = 0; readNames.length = 0;
+      const oldRows = Mold.listSessionsOnDisk();
+      assert.deepStrictEqual(oldRows.map((r) => r.id), afterBoot.map((r) => r.id), "老索引（没有文件数）拼出来的清单变了");
+      assert.strictEqual(sessReads, 0, "★老索引缺文件数就当场把会话重读了一遍★（" + readNames.join("、") + "）——打开应用那一下会卡住");
+      assert.ok(Mold.sessFilesTodo.size > 0, "老索引缺文件数，却没排进后台去补——这些行永远不会有文件图标");
+      const until = Date.now() + 10000;
+      while (Mold.sessFilesTodo.size && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
+      assert.strictEqual(Mold.sessFilesTodo.size, 0, "后台补文件数 10 秒都没补完");
+      assert.ok(Mold.listSessionsOnDisk().every((r) => typeof r.files === "number"), "后台补完了，清单里还有行没有文件数");
+      await new Promise((r) => setTimeout(r, 2200)); // 它攒 2 秒写一次索引：放干净，别跟下面那几份抢着写
+    }
+
     // 盘上的会话被改了：mtime 对不上就必须回去读原文件，不许吃旧索引
     put("s_3", { title: "同事的周报（背着服务器改的）", user: "staff", updated_at: "2026-09-08T00:00:00.000Z" });
     const t3 = Date.now() / 1000 + 20;
@@ -17389,7 +17587,7 @@ async function testSessionIndex() {
     assert.ok(/locked: true/.test(projRoute) && /projects: \[\]/.test(projRoute),
       "/api/projects 没对没有全局工作目录的人如实回「你这儿没有项目这回事」——前端只好按一个对不上的名字过滤，历史又会空");
 
-    console.log("✅ 任务历史权威清单：按磁盘给（倒序·坏文件/空对话/.bak 不进）· 自己的都在、没记归属的老会话认到管理员名下（新账号侧栏是干净的）· 比 sessionAllowed 窄 · mtime 增量缓存跟着改和删 · 内存优先 · 归属不回传 · 假项目不许回来");
+    console.log("✅ 任务历史权威清单：按磁盘给（倒序·坏文件/空对话/.bak 不进）· 自己的都在、没记归属的老会话认到管理员名下（新账号侧栏是干净的）· 比 sessionAllowed 窄 · mtime 增量缓存跟着改和删 · 产出文件数同名只算一个、老索引缺的后台补不卡打开 · 内存优先 · 归属不回传 · 假项目不许回来");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

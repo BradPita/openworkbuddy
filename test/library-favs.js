@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 资料库收藏（lib-favs.js + src/server/routes/library.js 的 /api/library/favorite(s)）和资料库列表上顺带多出来的字段：
+ * 资料库收藏、侧栏文件置顶（src/server/routes/library.js 的 /api/library/favorite(s)、/api/pins/files）和资料库列表字段：
  *
  *   ① 收藏 / 取消：来回点，状态对；取消一个本来没收藏的不写盘；重复收藏不改「收藏于」
  *   ② 20 下并发：20 个不同文件一起收藏一条不丢；同一个文件连点 20 下，最后的状态就是最后那一下
@@ -76,6 +76,19 @@ async function quietErrors(fn) {
 }
 
 (async () => {
+  await section("文件类型：服务端筛选与浏览器分组一致", async () => {
+    const kinds = require(mod("lib-kinds"));
+    const source = fs.readFileSync(path.join(ROOT, "public", "js", "app-04.js"), "utf8");
+    const block = source.slice(source.indexOf("const LIB_KINDS ="), source.indexOf("function libKindOk("));
+    const browserKinds = require("vm").runInNewContext(block + "\nLIB_KINDS");
+    const cases = [["a.PDF", {}, "pdf"], ["a.docx", {}, "doc"], ["a.ods", {}, "sheet"], ["a.pptx", {}, "slide"], ["a.html", { deck: true }, "slide"], ["a.html", {}, "web"], ["a.HEIC", {}, "img"], ["a.opus", {}, "media"], ["a.bin", {}, ""]];
+    for (const [name, meta, expected] of cases) {
+      for (const [key, , fn] of browserKinds.filter((x) => x[0] !== "all")) {
+        eq(kinds.kindOk(key, name, meta), fn(name, meta), `${name} 的 ${key} 筛选前后端一致`);
+        eq(fn(name, meta), key === expected, `${name} 归 ${expected || "其他"}`);
+      }
+    }
+  });
   // ---------------------------------------------------------------------------------------------
   // 单元：lib-favs.js
   // ---------------------------------------------------------------------------------------------
@@ -352,6 +365,62 @@ async function quietErrors(fn) {
   const outputs = async (q = "") => (await call("GET", "/api/library/outputs" + q, tokA)).json || {};
 
   if (up) {
+    await section("接口：合并文件清单按来源和类型筛选，分页不漏文件", async () => {
+      const first = await call("GET", "/api/library/all?from=lib&limit=3", tokA);
+      eq(first.code, 200, "合并清单可读取");
+      eq(first.json.items.length, 3, "只返回请求的一页");
+      ok(first.json.total > 3 && first.json.items.every((f) => f.src === "lib"), "来源过滤先于分页");
+      const second = (await call("GET", "/api/library/all?from=lib&limit=3&offset=3", tokA)).json;
+      ok(!second.items.some((f) => first.json.items.some((a) => a.path === f.path)), "第二页不重复第一页");
+      const last = (await call("GET", "/api/library/all?from=lib&limit=3&offset=9999", tokA)).json;
+      ok(last.items.length > 0 && last.offset < last.total, "翻过末尾时回到最后一页");
+      const images = (await call("GET", "/api/library/all?from=ws&kind=img", tokA)).json;
+      sameSet(images.items.map((f) => f.path), ["产出/图.png"], "只看工作区图像");
+      const decks = (await call("GET", "/api/library/all?kind=slide", tokA)).json;
+      sameSet(decks.items.map((f) => f.path), ["幻灯/index.html", "幻灯/第二页.HTM"], "网页幻灯片归演示，普通网页不混入");
+      const bob = (await call("GET", "/api/library/all", tokB)).json;
+      sameSet(bob.items.map((f) => f.path), ["乙的笔记.md"], "成员的合并清单只包含自己的资料和工作区");
+      ok(!JSON.stringify(first.json).includes(HOME), "接口不返回本机绝对路径");
+    });
+    await section("接口：最近打开的文件只在请求人的根里查状态", async () => {
+      const result = await call("POST", "/api/library/stat", tokA, { items: [
+        { id: "ok", src: "lib", path: "说明.txt" },
+        { id: "missing", src: "lib", path: "不存在.md" },
+        { id: "outside", src: "lib", path: "../外面/秘密.md" },
+        { id: "link", src: "lib", path: "外链.md" },
+        { id: "__proto__", src: "lib", path: "说明.txt" },
+      ] });
+      eq(result.code, 200, "批量文件状态可读取");
+      ok(result.json.items.ok.size > 0 && !!result.json.items.ok.mtime, "存在的文件带大小和修改时间");
+      eq(result.json.items.missing.missing, true, "缺失文件显式标记");
+      eq(result.json.items.outside.skip, "denied", "拒绝目录穿越");
+      eq(result.json.items.link.skip, "denied", "拒绝指向根外的软链接");
+      ok(Object.hasOwn(result.json.items, "__proto__"), "特殊 ID 是普通响应键");
+      const bob = await call("POST", "/api/library/stat", tokB, { items: [{ id: "other", src: "lib", path: "说明.txt" }] });
+      eq(bob.json.items.other.missing, true, "成员查不到别人的资料");
+      eq((await call("POST", "/api/library/stat", tokA, { items: Array(61).fill({ id: "x", src: "lib", path: "说明.txt" }) })).code, 400, "单次查询有数量上限");
+    });
+    await section("接口：文件置顶按账号和工作区隔离", async () => {
+      const tree = await call("GET", "/api/files/tree", tokA);
+      const rootKey = tree.json && tree.json.root;
+      ok(/^[a-f0-9]{8}$/.test(rootKey || ""), "工作区接口只返回 8 位指纹，不返回目录路径", tree.json);
+      const pin = await call("POST", "/api/pins/files", tokA, { key: "ws:产出/周报.md", pinned: true, root: rootKey });
+      ok(pin.code === 200 && pin.json && pin.json.ok && pin.json.root === rootKey, "置顶当前工作区文件成功并回项目指纹", pin);
+      const mine = await call("GET", "/api/pins/files", tokA);
+      const row = (mine.json && mine.json.files || []).find((x) => x.key === "ws:产出/周报.md" && x.root === rootKey);
+      ok(row && row.missing === false && row.name === "周报.md", "清单按原工作区解析并返回文件名、类型所需元数据", mine.json);
+      const other = await call("GET", "/api/pins/files", tokB);
+      ok(other.json && Array.isArray(other.json.files) && other.json.files.length === 0, "另一个账号看不到这条置顶", other.json);
+      ok(!fs.readFileSync(path.join(LIB, ".pins.json"), "utf8").includes(WS), "清单盘上不含本机工作区绝对路径");
+      fs.rmSync(path.join(WS, "产出", "周报.md"));
+      const missing = await call("GET", "/api/pins/files", tokA);
+      ok((missing.json.files || []).some((x) => x.key === "ws:产出/周报.md" && x.root === rootKey && x.missing), "文件删除后仍列出 missing 项，可从侧栏清理");
+      const off = await call("POST", "/api/pins/files", tokA, { key: "ws:产出/周报.md", pinned: false, root: rootKey });
+      ok(off.code === 200 && !(await call("GET", "/api/pins/files", tokA)).json.files.some((x) => x.key === "ws:产出/周报.md"), "原文件已缺失仍可取消置顶");
+      put(WS, "产出/周报.md", "# 周报\n");
+      const bad = await call("POST", "/api/pins/files", tokA, { key: "ws:../外面/秘密.md", pinned: true, root: rootKey });
+      ok(bad.code === 400, "越界路径不能置顶");
+    });
     await section("接口：收藏 / 取消 / 列表", async () => {
       const r = await fav(tokA, "lib", "报告/周报.md", true);
       eq(r.code, 200, "POST /api/library/favorite → 200");

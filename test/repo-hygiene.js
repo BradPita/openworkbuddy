@@ -878,7 +878,7 @@ console.log("\n【13】自有 JS 文件开头都带 SPDX 版权头，协议写�
     if (lines[0] && lines[0].startsWith("#!")) at = 1;
     if (lines[at] && /^\/\/\s*@ts-(check|nocheck)\b/.test(lines[at])) at++;
     const m = /^\/\/ SPDX-License-Identifier: (\S+)$/.exec(lines[at] || "");
-    return { id: m && m[1], notice: /^\/\/ Copyright \(c\) 2026 开发者猫叔 \(DeveloperCatUncle\)/.test(lines[at + 1] || "") };
+    return { id: m && m[1], notice: /^\/\/ Copyright \(c\) 2026 (?:开发者猫叔 \(DeveloperCatUncle\)|OpenWorkBuddy Contributors)(?:$| ·)/.test(lines[at + 1] || "") };
   };
   const files = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" }).split("\0")
     .filter((f) => /\.(js|cjs|mjs)$/.test(f) && fs.existsSync(path.join(ROOT, f)));
@@ -890,6 +890,7 @@ console.log("\n【13】自有 JS 文件开头都带 SPDX 版权头，协议写�
   ok(files.length > 200, `扫了 ${files.length} 个跟踪中的 js（少于 200 说明 git ls-files 坏了）`);
   ok(bad.length === 0, "每个都有 SPDX 头和版权行，协议标对", bad.slice(0, 15).join("\n") + (bad.length > 15 ? `\n…还有 ${bad.length - 15} 个` : ""));
   // 反向对照
+  ok(headOf("// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0\n// Copyright (c) 2026 OpenWorkBuddy Contributors\n").notice, "通用贡献者版权头有效，无需写入个人身份");
   const NC = "// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0\n// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · x\n";
   ok(headOf("#!/usr/bin/env node\n// @ts-check\n" + NC + "x").id === "PolyForm-Noncommercial-1.0.0", "  └ 反向对照：shebang 和 @ts-check 后面的头认得出");
   ok(!headOf("const a = 1;\n" + NC).id, "  └ 反向对照：头不在开头的不算");
