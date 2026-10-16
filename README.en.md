@@ -3,7 +3,7 @@
 <p align="center"><b>A local-first AI office workbench that turns your material into files you can open and edit.</b><br>
 For people who prepare reports, decks, spreadsheets and documents, and teams that need self-hosting.<br>
 Choose your model, inspect execution, and review the delivered files.</p>
-<p align="center"><a href="#quick-start"><b>▶ Get your first weekly report</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> · <a href="https://catcatuncle.github.io/openworkbuddy/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
+<p align="center"><a href="#quick-start"><b>▶ Make a project update deck</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> · <a href="https://catcatuncle.github.io/openworkbuddy/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
 <p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="Published release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial license"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="Bookmark the project"></a></p>
 <p align="center"><sub>Free for personal non-commercial use, schools and non-profits. Company and personal commercial use require a <a href="COMMERCIAL-LICENSE.md">commercial license</a>. Model and media services have their own costs.</sub></p>
 <p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy workflow: submit a task, inspect execution and open delivered files"><br><sub>Workflow demonstration. Measure first success with the task below.</sub></p>
@@ -12,27 +12,28 @@ Choose your model, inspect execution, and review the delivered files.</p>
 
 <a id="quick-start"></a>
 <a id="run-it-in-three-minutes"></a>
-## Quick start: deliver your first weekly report
+## Quick start: make a project update deck
 
-**Prerequisites:** a computer that can run the app and a usable model provider, installed local model, or authenticated local CLI. API use requires your own key. This first task produces HTML; it needs no image/video model, messaging channel, or extra connector.
+**Prerequisites:** a computer that can run the app and a usable model provider, installed local model, or authenticated local CLI. API use requires your own key. This example uses text and simple shapes; it needs no image/video model, messaging channel, or extra connector. Have PowerPoint, WPS or LibreOffice available to open and check the downloaded deck.
 
 1. **Install and launch.** Choose the macOS / Windows package for your architecture from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases): Windows installer `*-win-setup.exe`, portable `*-win-x64-portable.exe` / `*-win-arm64-portable.exe`, or macOS `.dmg`. On Linux, use source below or [Docker deployment](docs/部署.md).
 2. **Connect a model.** Register on first launch. In Settings → Models, enter the provider, exact model ID, API URL and key, then test the connection. An installed local CLI can also be selected under Settings → Agent.
-3. **Copy the task and open the result.** Select Craft mode and paste the task below. When it finishes, open `first-report.html` in the results panel and check all three sections. Then ask: “Turn the next-week plan into a checklist.”
+3. **Copy the task and open the result.** Select Craft mode and paste the task below. Preview or download `project-update.pptx` from the results panel, open it in presentation software and check all four slides. Then ask: “Turn the next-week plan on slide 4 into a two-column table. Keep the other slides unchanged.”
 
 ```text
-Turn these notes into a one-page weekly report saved as first-report.html.
-Project: Example website
-Completed this week: Published the product page; fixed the mobile menu.
-In progress: Adding the user guide.
-Next week: Finish the English version; collect 5 trial-user feedback responses.
-Requirements: English, with sections “Completed this week”, “In progress”,
-and “Next week”; a single HTML file with embedded styles and no external
-resources. Keep the supplied facts; do not invent metrics. Confirm the file
-exists and provide an openable file in the results panel.
+Make a 4-slide project update deck saved as project-update.pptx.
+Audience: project lead. Project: Example website launch.
+Slide 1 | Cover: Example website launch — project update.
+Slide 2 | Completed this week: Published the product page; fixed the mobile menu.
+Slide 3 | Current progress: Adding the user guide.
+Slide 4 | Next week: Finish the English version; collect 5 trial-user feedback responses.
+Requirements: 16:9, English, clean business style; editable text,
+one main point per slide, readable presentation fonts and no overflowing text.
+Keep the supplied facts; do not invent metrics. Confirm the file exists
+and provide an openable file in the results panel.
 ```
 
-**Success means:** a nonempty `first-report.html` exists on disk; its preview includes the three sections and supplied facts; the follow-up changes the same file. A chat reply or successful installation alone does not satisfy this task. Copyable task files: [English](examples/quick-start/task.en.md) / [中文](examples/quick-start/task.md).
+**Success means:** a nonempty `project-update.pptx` exists on disk and opens in PowerPoint, WPS or LibreOffice; all four slides match the supplied facts, text is editable and nothing overflows; the follow-up updates slide 4 in the same file. A chat reply or successful installation alone does not satisfy this task. Copyable task files: [English](examples/quick-start/task.en.md) / [中文](examples/quick-start/task.md).
 
 **Timing:** start when installation begins and stop when the first file opens and passes review. Record download, startup, model setup and task wait separately. Three minutes is a design target; actual time depends on network, model readiness and execution. No measured first-success rate has been published yet.
 
@@ -59,7 +60,7 @@ After the server starts, open <http://localhost:3800> and continue with steps 2�
 | The server port is in use | macOS / Linux: `PORT=3801 npm start`; Windows cmd: `set PORT=3801 && npm start`; open the new port |
 | Model testing or the task returns an upstream error | Check the API URL, model ID, key and provider quota; see [model setup](docs/配置模型.md) |
 | The task waits for an answer or approval | Review the question or approval card above the input, or open the inbox |
-| The reply says “done” but the file is missing | Check the active project and results folder; ask it to check `first-report.html`. Do not count this attempt as a success |
+| The reply says “done” but the file is missing | Check the active project and results folder; ask it to check `project-update.pptx`. Do not count this attempt as a success |
 
 Next, try the [core scenarios](#you-say-it-it-hands-you-the-file) or read the [user guide](https://catcatuncle.github.io/openworkbuddy/guides/user.html). Star to bookmark the project; use **Watch → Custom → Releases** for release notifications.
 
@@ -270,7 +271,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Oct 16** English UI tests catch untranslated text while preserving user content; the website includes bilingual user and developer guides
 
 - **Oct 16** Owners can create and revoke organization-only read-only task links; sharing settings stay in the page and are hidden in single-user mode
-- **Oct 16** Quick start now leads to an openable report, with a copyable task, review criteria, troubleshooting and explicit gaps in adoption metrics
+- **Oct 16** Quick start now leads to an editable project update deck, with a copyable task, review criteria, troubleshooting and explicit gaps in adoption metrics
 - **Oct 15** Execution plans stay in the conversation as collapsible lists. Updates preserve expansion and keyboard focus, and the list scrolls with your messages
 - **Oct 15** Pin tasks to a Pinned group at the top of the history; pins follow you to other computers
 - **Oct 15** Accept in Self-evolve no longer reloads the page; Self-evolve and Agents open without a multi-second wait

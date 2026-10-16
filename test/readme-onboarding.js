@@ -12,15 +12,19 @@ for (const [file, label, why, commercial] of [["README.md", "## 快速开始："
  assert.ok(text.indexOf('href="#quick-start"') < start);
  const quick = text.slice(start, text.indexOf(why));
  assert.ok(!brokenStrong.test(quick), file + ": a punctuation-ended bold label must not touch the following word");
- assert.ok(quick.includes("first-report.html")); assert.ok(quick.includes("npm ci\nnpm start")); assert.ok(quick.includes("localhost:3800")); assert.ok(quick.includes("Node.js 18+"));
+ assert.ok(quick.includes("project-update.pptx")); assert.ok(quick.includes("npm ci\nnpm start")); assert.ok(quick.includes("localhost:3800")); assert.ok(quick.includes("Node.js 18+"));
+ assert.ok(quick.includes("16:9") && quick.includes("PowerPoint") && quick.includes("LibreOffice"));
+ const prompt = quick.match(/```text\n([\s\S]*?)\n```/);
+ assert.ok(prompt, file + ": a copyable presentation task is required");
+ assert.equal(prompt[1] + "\n", read(file === "README.md" ? "examples/quick-start/task.md" : "examples/quick-start/task.en.md"), file + ": README and downloadable task must match");
  assert.ok(quick.includes("Craft")); assert.ok(quick.includes("examples/quick-start/"));
  assert.match(text, /utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result/);
  assert.ok(!text.includes('width="120"')); assert.ok(text.includes('src="docs/images/demo.gif"'));
  count++; console.log("✓ " + file + ": clear first task, prerequisites, verified-output criteria and early start link");
 }
 assert.ok(brokenStrong.test("**计时方式：**从开始安装") && !brokenStrong.test("**计时方式**：从开始安装"), "Bold label rendering guard must detect the broken form and accept the rendered form");
-for (const [file, sections] of [["examples/quick-start/task.md", ["本周完成", "进行中", "下周计划"]], ["examples/quick-start/task.en.md", ["Completed this week", "In progress", "Next week"]]]) {
- const text = read(file); assert.ok(text.includes("first-report.html")); assert.ok(sections.every((section) => text.includes(section)));
+for (const [file, sections] of [["examples/quick-start/task.md", ["封面", "本周完成", "当前进展", "下周计划"]], ["examples/quick-start/task.en.md", ["Cover", "Completed this week", "Current progress", "Next week"]]]) {
+ const text = read(file); assert.ok(text.includes("project-update.pptx")); assert.ok(sections.every((section) => text.includes(section)));
 }
 assert.deepEqual(read("docs/adoption-metrics.csv").trim().split("\n").length, 1);
 const metrics = read("docs/采用与反馈.md"); assert.ok(metrics.includes("缺失") && metrics.includes("分母") && metrics.includes("No first-success time or rate has been published")); count++; console.log("✓ Metrics define success, denominators and missing observations; the template contains no fabricated data");

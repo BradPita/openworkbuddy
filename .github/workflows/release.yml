@@ -183,8 +183,8 @@ jobs:
             - **Windows SmartScreen**：核对来源后选择 **更多信息 → 仍要运行**。组织设备还可能受管理员策略限制。
               After checking the source, use **More info → Run anyway**. Managed devices may have additional restrictions.
 
-            装完后注册账号，在「设置 → 模型」配置可用的模型，再完成 [第一份周报](https://github.com/CatCatUncle/openworkbuddy#quick-start)。模型服务可能收费；不附带 API Key。
-            After registering, connect a model in Settings → Models and complete the [first report task](https://github.com/CatCatUncle/openworkbuddy/blob/main/README.en.md#quick-start). Model providers may charge for usage; no API key is included.
+            装完后注册账号，在「设置 → 模型」配置可用的模型，再完成 [第一份项目汇报 PPT](https://github.com/CatCatUncle/openworkbuddy#quick-start)。模型服务可能收费；不附带 API Key。
+            After registering, connect a model in Settings → Models and complete the [first project update deck](https://github.com/CatCatUncle/openworkbuddy/blob/main/README.en.md#quick-start). Model providers may charge for usage; no API key is included.
 
             ### 排查与升级 / Troubleshooting and upgrades
 

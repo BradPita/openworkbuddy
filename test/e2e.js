@@ -15370,7 +15370,7 @@ function testLookPrefsStatic() {
   // 上手那节必须提一句外观在哪改：字号和主题是最先被嫌弃的两样，翻文档才找得到就等于没有。
   // 按小标题切片再查，比 [\s\S]* 一路跨到下一节严——不然写在别的节里也能蒙混过关
   const readmeRun = (fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
-    .split(/^## (?:三分钟跑起来|快速开始：交付第一份周报)\s*$/m)[1] || "").split(/^## /m)[0];
+    .split(/^## (?:三分钟跑起来|快速开始：做一份项目汇报 PPT)\s*$/m)[1] || "").split(/^## /m)[0];
   assert(/外观/.test(readmeRun), "README 快速开始一节没提外观设置");
   console.log("✅ 外观偏好静态闸（目录含外观页·头像菜单直达·存储 try+内存兜底·字号 4 档联动·5 皮肤×浅暗令牌齐全·密度≥5 处·字体三选·旧主题子菜单已清）");
 }

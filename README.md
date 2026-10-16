@@ -3,7 +3,7 @@
 <p align="center"><b>本机优先的 AI 办公工作台，把你的资料和要求变成可打开、可修改的文件。</b><br>
 给经常做周报、PPT、表格和文档的人，也给需要自托管的团队。<br>
 使用你选择的模型，查看执行过程，在成果区核对交付文件。</p>
-<p align="center"><a href="#quick-start"><b>▶ 交付第一份周报</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a> · <a href="https://catcatuncle.github.io/openworkbuddy/zh/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">项目网站</a> · <a href="#文档">文档</a> · <a href="README.en.md">English</a></p>
+<p align="center"><a href="#quick-start"><b>▶ 做一份项目汇报 PPT</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a> · <a href="https://catcatuncle.github.io/openworkbuddy/zh/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">项目网站</a> · <a href="#文档">文档</a> · <a href="README.en.md">English</a></p>
 <p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="正式发布版本"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial 许可证"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="收藏项目"></a></p>
 <p align="center"><sub>个人非商用、学校和公益机构免费；公司及个人商用须获 <a href="COMMERCIAL-LICENSE.md">商业授权</a>。模型与媒体服务的费用由所选服务商决定。</sub></p>
 <p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy 操作演示：输入任务、查看执行过程、打开成果文件"><br><sub>界面流程演示；首次成功耗时按下面的任务实测。</sub></p>
@@ -12,26 +12,27 @@
 
 <a id="quick-start"></a>
 <a id="三分钟跑起来"></a>
-## 快速开始：交付第一份周报
+## 快速开始：做一份项目汇报 PPT
 
-**前置条件**：一台能运行应用的电脑，以及一个可用的模型服务、已安装的本地模型或已登录的本机 CLI。用 API 时需要自己的 Key；第一条任务只生成 HTML，不需要生图、视频、消息渠道或额外连接器。
+**前置条件**：一台能运行应用的电脑，以及一个可用的模型服务、已安装的本地模型或已登录的本机 CLI。用 API 时需要自己的 Key。本例用文字和简洁图形生成 PPT，不需要生图、视频、消息渠道或额外连接器；准备 PowerPoint、WPS 或 LibreOffice，方便下载后打开检查。
 
 1. **安装并启动。** macOS / Windows 在 [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) 选择适合芯片的安装包：Windows 安装版 `*-win-setup.exe`，免安装版 `*-win-x64-portable.exe` / `*-win-arm64-portable.exe`；macOS 用 `.dmg`。Linux 用下方源码方式或 [Docker 部署](docs/部署.md)。
 2. **连接模型。** 首次启动注册账号；在「设置 → 模型」选择服务商、填写准确型号和 API 地址、添加 Key，再测试连接。已有本机 CLI 的用户也可在「设置 → 智能体」选择它。
-3. **复制任务，打开结果。** 选择 Craft 执行模式，粘贴下面的任务。完成后在「成果文件」点击 `first-report.html`，核对三段内容，再试一句“把下周计划改成复选清单”。
+3. **复制任务，打开结果。** 选择 Craft 执行模式，粘贴下面的任务。完成后在「成果文件」预览或下载 `project-update.pptx`，用演示软件打开核对四页内容，再试一句“把第 4 页的下周计划改成两列表格，保留其他页”。
 
 ```text
-请把下面的本周记录做成一页周报，保存为 first-report.html。
-项目：示例网站
-本周完成：上线产品页；修复移动端菜单。
-进行中：补充用户指南。
-下周计划：完成英文版；收集 5 条试用反馈。
-要求：中文，分“本周完成 / 进行中 / 下周计划”三段；
-单文件 HTML，样式内嵌，不引用外链资源；保留原始事实，不补造数据。
+请做一份 4 页的项目汇报 PPT，保存为 project-update.pptx。
+汇报对象：项目负责人。项目：示例网站上线。
+第 1 页｜封面：示例网站上线——项目进展汇报。
+第 2 页｜本周完成：上线产品页；修复移动端菜单。
+第 3 页｜当前进展：正在补充用户指南。
+第 4 页｜下周计划：完成英文版；收集 5 条试用反馈。
+要求：16:9、中文、简洁商务风；正文使用可编辑文本，
+每页一个重点、字号适合投屏、无文字溢出；保留原始事实，不补造数据。
 写完确认文件存在，并在成果区提供可打开的文件。
 ```
 
-**成功标准**：磁盘上有非空的 `first-report.html`；预览中三段都在、事项与输入一致；第二次要求能更新同一份文件。看到聊天回复或“安装完成”，都还未达到这次任务的成功标准。可复制的任务文件：[中文](examples/quick-start/task.md) / [English](examples/quick-start/task.en.md)。
+**成功标准**：磁盘上有非空的 `project-update.pptx`；PowerPoint、WPS 或 LibreOffice 能打开，四页内容与输入一致、文字可编辑、排版无溢出；第二次要求能更新同一份文件的第 4 页。看到聊天回复或“安装完成”，都还未达到这次任务的成功标准。可复制的任务文件：[中文](examples/quick-start/task.md) / [English](examples/quick-start/task.en.md)。
 
 **计时方式**：从开始安装计到首次打开且核对通过，分别记录下载、启动、模型配置和任务等待。“三分钟”是优化目标，实际时间取决于网络、模型准备情况和任务执行，当前没有发布实测成功率。
 
@@ -58,7 +59,7 @@ npm start
 | 服务启动报端口占用 | macOS / Linux 用 `PORT=3801 npm start`；Windows cmd 用 `set PORT=3801 && npm start`，打开新端口 |
 | 测试连接失败，或任务报上游错误 | 核对服务商的 API 地址、型号、Key 和额度，见 [模型配置](docs/配置模型.md) |
 | 任务在等批准或答复 | 查看输入框上方的审批卡或收件箱，处理后继续 |
-| 回复说完成但找不到文件 | 确认当前项目，在成果区和工作目录核对文件；让助理检查 `first-report.html`，不要直接把这次计作成功 |
+| 回复说完成但找不到文件 | 确认当前项目，在成果区和工作目录核对文件；让助理检查 `project-update.pptx`，不要直接把这次计作成功 |
 
 跑通后再试 [核心场景](#你说一句它交给你)，或阅读 [用户指南](https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html)。觉得有用可以 Star 收藏；要收到新版本通知，设置 **Watch → Custom → Releases**。
 
@@ -271,7 +272,7 @@ flowchart TB
 - **10-16** 英文界面新增漏翻检查，用户原文不翻译；官网提供中英文用户和开发者指南
 
 - **10-16** 任务可生成组织内只读链接，本人随时撤回；分享设置在页面里，单人模式隐藏
-- **10-16** 快速开始提前，附可复制的周报任务、文件核对标准和故障排查；采用指标标明缺失
+- **10-16** 快速开始提前，附可复制的 PPT 任务、文件核对标准和故障排查；采用指标标明缺失
 - **10-15** 执行计划在页面内折叠展开，随对话滚动；更新进度时保留展开状态和焦点
 - **10-15** 顶栏新增收件箱：待审批和待答复优先，接着是出错、运行中和未读任务；独立定时任务的完成结果也会出现，点开可看完整执行过程
 - **10-15** 定时任务按创建方式归还结果：在对话里安排的任务把结论写回原对话，独立安排的任务留在收件箱；会话关联只在服务端保存，不通过列表接口暴露
