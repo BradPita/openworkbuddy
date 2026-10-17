@@ -167,6 +167,8 @@ const seedSession = (dir, id, mtimeSec, title) => {
 async function run() {
   const env = await setup();
   try {
+    const quietWins = await env.run(["普通回答", "--quiet", "--verbose", "--no-mcp"]);
+    ok(quietWins.code === 0 && quietWins.out === "做完了。\n" && quietWins.err === "", "--quiet 优先于 --verbose，stdout 保持干净最终答案", quietWins.err);
     console.log("\n— ① 开着不关的 stdin —");
     {
       const r = await env.run(["说一句", "--no-mcp"], { stdin: "open", ms: 20000 });

@@ -33,6 +33,7 @@ require("./src/platform/boot-check").enforce({ rootDir: __dirname });
 const cliArgs = require("./src/cli/cli-args");
 const parsed = cliArgs.parse(process.argv.slice(2));
 const opts = parsed.opts;
+if (opts.quiet) opts.verbose = false;
 const words = parsed.words;
 
 // ---------- 帮助 / 版本 ----------

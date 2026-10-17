@@ -1891,10 +1891,10 @@ async function testCliMode() {
   const CLI = entry("cli");
   // 这里不能用 spawnSync：它把本进程的事件循环整个堵住，上面那个假接口就永远轮不到
   // accept 连接，子进程一头等到超时——测试会以「模型没响应」的样子失败，跟被测代码无关。
-  const run = (args, input = "") => new Promise((resolve) => {
+  const run = (args, input = "", verbose = true) => new Promise((resolve) => {
     const env = { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" };
     delete env.FORCE_COLOR; // 外面开着 FORCE_COLOR 的话子进程会往管道里塞转义序列
-    const ps = spawn(process.execPath, [CLI, ...args], { env });
+    const ps = spawn(process.execPath, [CLI, ...(verbose ? ["--verbose"] : []), ...args], { env });
     let stdout = "", stderr = "";
     ps.stdout.on("data", (d) => (stdout += d));
     ps.stderr.on("data", (d) => (stderr += d));
@@ -1913,6 +1913,10 @@ async function testCliMode() {
     assert(r1.stdout.includes("答案是四十二"), "模型的回答没走 stdout：" + JSON.stringify(r1.stdout));
     assert(!/第 \d+ 步|工作目录|会话 cli_/.test(r1.stdout), "进度混进了 stdout，重定向出来的答案会被污染：" + JSON.stringify(r1.stdout));
     assert(/会话 cli_/.test(r1.stderr), "stderr 上没有会话/模型那行开场信息");
+    const compact = await run(["--no-mcp", "简洁显示COMPACT标记"], "", false);
+    assert.strictEqual(compact.status, 0);
+    assert(compact.stdout.includes("答案是四十二"), "简洁显示丢了最终答案");
+    assert(!/会话 cli_|共消耗|第 \d+ 步/.test(compact.stderr), "简洁显示仍在刷内部诊断：" + compact.stderr);
 
     // 1）不串台
     const r2 = await run(["--no-mcp", "第二条任务BRAVO标记"]);
