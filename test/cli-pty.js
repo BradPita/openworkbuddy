@@ -45,7 +45,7 @@ const { BRIDGE, havePty } = require("./lib/pty");
  * 在 pty 里起一趟 openworkbuddy。模型是本地假的：reply(messages) 说这一轮吐什么
  * （[工具名, 参数] 的数组，或者一句收工的话），可以是 async 的——想让它「想」多久由测试说了算。
  */
-async function ptyRun({ args, reply, env: more }, drive) {
+async function ptyRun({ args, reply, env: more, compact = false, prepare }, drive) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pty-"));
   const ws = path.join(home, "ws");
   fs.mkdirSync(ws);
@@ -88,9 +88,10 @@ async function ptyRun({ args, reply, env: more }, drive) {
   cfg.mcp_servers = [];
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg));
 
-  const env = { ...process.env, OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_CLI_LIVE: "1", NO_COLOR: "1", TERM: "xterm-256color", ...(more || {}) };
+  const extra = prepare ? prepare(home, ws) || {} : {};
+  const env = { ...process.env, OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_CLI_LIVE: "1", NO_COLOR: "1", TERM: "xterm-256color", ...extra, ...(more || {}) };
   delete env.FORCE_COLOR;
-  const kid = spawn("python3", ["-c", BRIDGE, process.execPath, entry("cli"), ...args, "-C", ws, "--no-mcp"], { env, stdio: ["pipe", "pipe", "pipe"] });
+  const kid = spawn("python3", ["-c", BRIDGE, process.execPath, entry("cli"), ...args, "-C", ws, "--no-mcp", ...(compact ? [] : ["--verbose"])], { env, stdio: ["pipe", "pipe", "pipe"] });
   let out = "";
   let exited = null;
   kid.stdout.setEncoding("utf8");
@@ -696,7 +697,64 @@ async function run() {
     assert.ok(t13 && t13.exited() === 0, "正常退出");
   }
 
-  console.log("cli-pty：通过");
+  // Compact mode: host opening, details on demand, blank input and follow-ups.
+  if (process.platform !== "win32") {
+    await ptyRun({ args: [], compact: true,
+      prepare: (home) => {
+        const bin = path.join(home, "bin"); fs.mkdirSync(bin);
+        const marker = path.join(home, "opened.json");
+        const fake = `#!/usr/bin/env node\nrequire('fs').writeFileSync(process.env.OWB_OPEN_MARK, JSON.stringify(process.argv.slice(2)));\n`;
+        for (const name of ["open", "xdg-open"]) fs.writeFileSync(path.join(bin, name), fake, { mode: 0o755 });
+        return { PATH: bin + path.delimiter + process.env.PATH, OWB_OPEN_MARK: marker };
+      },
+      reply: (msgs) => toolsDone(msgs) ? "页面已写好。" : { text: "内部准备过程不刷屏", tools: [["write_file", { path: "index.html", content: "<!doctype html><title>PTY_PAGE_MARK</title>" }]] },
+    }, async (t) => {
+      await t.until(/openworkbuddy> /, "简洁模式提示符");
+      await t.type("写一个网页\r");
+      const end = await t.until(/成果：/, "本轮真实成果");
+      await t.until(/openworkbuddy> /, "成果后的提示符", end);
+      const before = t.users.length;
+      assert.ok(!t.out().includes("内部准备过程不刷屏") && !t.out().includes("共消耗"));
+      const mark = t.out().length;
+      await t.type("给我打开啊\r");
+      await t.until(/已交给本机程序打开/, "自然语言真的走本机打开", mark);
+      const opened = JSON.parse(fs.readFileSync(path.join(t.home, "opened.json"), "utf8"));
+      assert.strictEqual(opened[0], fs.realpathSync(path.join(t.ws, "index.html")));
+      assert.strictEqual(t.users.length, before, "打开文件不再调用模型");
+      const details = t.out().length;
+      await t.type("/details\r");
+      await t.until(/Write\(index.html\)/, "按需查看刚才的工具输出", details);
+      await t.type("/verbose on\r");
+      await t.until(/详细输出已开启/, "切换详细模式");
+      await t.type("/verbose off\r");
+      await t.until(/简洁输出已开启/, "切回简洁模式");
+      await t.type("/new\r");
+      const next = t.out().length;
+      await t.type("给我打开啊\r");
+      await t.until(/还没有可打开的成果/, "新会话不能打开上一条会话的文件", next);
+      await t.type("/exit\r");
+    });
+    let release;
+    const held = new Promise(r => { release = r; });
+    await ptyRun({ args: [], compact: true,
+      reply: async (_msgs, n) => { if (!n) { await held; return "第一轮完成。"; } return "补充要求已执行。"; },
+    }, async (t) => {
+      await t.until(/openworkbuddy> /, "输入提示符");
+      await t.type("开始任务\r");
+      await t.waitFor(() => t.users.length === 1, "模型已开始处理");
+      t.send("\r\r \r"); await sleep(250);
+      assert.ok(!t.out().includes("已排入补充要求"), "空回车不能冒充补充要求");
+      await t.type("把标题改成测试\r");
+      await t.until(/已排入补充要求/, "补充要求有回执");
+      release();
+      await t.until(/补充要求已执行/, "当前轮结束后真实执行补充要求");
+      assert.strictEqual(t.users.length, 2);
+      assert.ok(t.users[1].includes("把标题改成测试"));
+      await t.type("/exit\r");
+    });
+  }
+
+  console.log("cli-pty：通过（含简洁模式、打开成果和补充要求）");
 }
 
 module.exports = { run };

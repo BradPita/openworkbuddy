@@ -25,7 +25,7 @@ const { spawn } = require("child_process");
  * calls[i] 也可以是 { text, tools }：这一轮先说一段话再调工具（tools 省掉就是只说话、收尾）。
  * 默认只回 stderr（进度和工具行都在那儿）；withOut 为真时回 { err, out }，out 是正文
  */
-async function cliRun(calls, withOut) {
+async function cliRun(calls, withOut, verbose = true) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-toolview-"));
   const ws = path.join(home, "ws");
   fs.mkdirSync(ws);
@@ -55,7 +55,7 @@ async function cliRun(calls, withOut) {
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg));
   try {
     return await new Promise((resolve, reject) => {
-      const kid = spawn(process.execPath, [entry("cli"), "干活", "-C", ws, "--no-mcp"], {
+      const kid = spawn(process.execPath, [entry("cli"), "干活", "-C", ws, "--no-mcp", ...(verbose ? ["--verbose"] : [])], {
         env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
       });
       let err = "", out = "";
@@ -156,7 +156,54 @@ async function run() {
     assert.ok(/^  └ /.test(lines[lines.indexOf(asks[0]) + 1]), "下面紧跟着结果\n" + err);
   }
 
-  console.log("cli-toolview：通过");
+  // Compact mode keeps final answers and failures, without dumping internal work.
+  {
+    const r = await cliRun([
+      { text: "内部准备过程不应显示", tools: [["run_shell", { command: "echo INTERNAL_OUTPUT_MARK" }]] },
+      { text: "最终结果：已完成。" },
+    ], true, false);
+    assert.strictEqual(r.out.trim(), "最终结果：已完成。");
+    assert.ok(!r.err.includes("INTERNAL_OUTPUT_MARK") && !r.err.includes("共消耗"));
+    assert.ok(/1 次工具调用/.test(r.err));
+    assert.ok(!r.err.includes("a.txt"), "本轮没改的旧文件不冒充成果");
+    const failed = await cliRun([[["run_shell", { command: "exit 7" }]]], true, false);
+    assert.ok(/exit code 7/.test(failed.err), "简洁显示不吞工具失败");
+    const made = await cliRun([[["write_file", { path: "new.txt", content: "result" }]]], true, false);
+    assert.ok(/1\. new.txt/.test(made.err) && !made.err.includes("a.txt"));
+  }
+  {
+    const surface = require(mod("cli-surface"));
+    for (const text of ["给我打开啊", "你直接给我打开啊", "打开刚才的网站", "请打开这个网页", "open it", "open index.html", "打开 子目录/index.html"])
+      assert.ok(surface.openRequest(text), `识别明确打开指令：${text}`);
+    for (const text of ["怎么打开网页？", "不要打开", "你做一个网站吧", "请检查 open index.html 是否安全", "open https://example.com", "打开全部文件", "Can you explain how to open it?"])
+      assert.strictEqual(surface.openRequest(text), null, `不误执行：${text}`);
+    assert.deepStrictEqual(surface.currentFiles(["old", "new", "new", "gone"], [{ name: "new" }, { name: "old" }]), ["old", "new"]);
+    assert.strictEqual(surface.recentTarget(["out/index.html", "out/style.css"]), "out/index.html");
+    assert.strictEqual(surface.recentTarget(["one.html", "two.html"]), "");
+    for (const t of ["做一个网站，完成后直接打开", "写一个网页然后打开它", "Build a page and open it"])
+      assert.ok(surface.openAfterTask(t));
+    for (const t of ["做个介绍怎么打开网页的页面", "完成后不要打开", "只写文件", "Do not open it"])
+      assert.ok(!surface.openAfterTask(t));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cli-open-"));
+    try {
+      const root = path.join(dir, "workspace"); fs.mkdirSync(root);
+      const file = path.join(root, "index.html"); fs.writeFileSync(file, "<!doctype html><title>test</title>");
+      const calls = [];
+      const result = surface.openFile(root, "index.html", { platform: "darwin", run: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; } });
+      assert.ok(result.ok);
+      assert.deepStrictEqual(calls, [{ cmd: "open", args: [fs.realpathSync(file)] }]);
+      const failure = surface.openFile(root, "index.html", { platform: "linux", run: () => ({ error: new Error("missing opener"), status: null }) });
+      assert.ok(!failure.ok && failure.path === fs.realpathSync(file) && failure.error === "missing opener");
+      const outer = path.join(dir, "outside.txt"); fs.writeFileSync(outer, "outside");
+      assert.throws(() => surface.openFile(root, "../outside.txt"), /当前工作目录/);
+      if (process.platform !== "win32") {
+        fs.symlinkSync(outer, path.join(root, "outside.txt"));
+        assert.throws(() => surface.openFile(root, "outside.txt"), /当前工作目录/);
+      }
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  console.log("cli-toolview：通过（详细输出、简洁输出及本机打开）");
 }
 
 module.exports = { run };

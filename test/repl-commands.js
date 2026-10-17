@@ -232,6 +232,9 @@ console.log("\n⑨ 输入闸门 makeInbox");
   m.type("再跑一件事"); m.tick();
   eq(m.box.queued, 1, "★不忙了就回到任务队列★ 不然插话通道会把正经任务也吃掉");
   eq(m.log.interject.length, 1, "这一条没重复算成插话");
+  m.box.setBusy(true);
+  m.type(""); m.tick(); m.type("   ", 300); m.tick();
+  eq(m.log.interject.length, 1, "空行和空白不生成插话");
 
   // 没人来取的时候先排队，绝不丢
   const q = fakeInbox();
@@ -1040,7 +1043,7 @@ console.log("\n㉑ 文档里的命令表");
   const missing = R.COMMANDS.map((c) => c.name).filter((n) => !new RegExp("\\|\\s*`/" + n + "[ `]").test(doc));
   ok(missing.length === 0, "★每条命令在文档表格里都有一行★ 文档少一条 = 这个功能对外等于不存在", missing);
   const CN = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
-    "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十", "二十一", "二十二"];
+    "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十", "二十一", "二十二", "二十三"];
   const said = (doc.match(/([零一二三四五六七八九十]+)条内置命令/) || [])[1] || "";
   ok(said === CN[R.COMMANDS.length], `文档说的条数对得上（现在 ${R.COMMANDS.length} 条）`, { said, want: CN[R.COMMANDS.length] });
   // 反向对照：这条不是永远绿

@@ -66,6 +66,7 @@ const TABLE = Object.freeze({
   "cli-attach": "src/cli/cli-attach.js",
   "cli-live": "src/core/obs/cli-live.js",
   "cli-toolview": "src/cli/cli-toolview.js",
+  "cli-surface": "src/cli/cli-surface.js",
   "cmd-risk": "src/core/safety/cmd-risk.js",
   "code-tools": "src/agent/code-tools.js",
   "config-lint": "src/core/config/config-lint.js",

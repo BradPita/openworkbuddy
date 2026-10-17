@@ -57,6 +57,7 @@ const FLAGS = [
   { long: "append-system", type: "str", key: "appendSystem", arg: "<文字>", desc: "给这一次追加一段规矩，比如「只用 TypeScript」" },
   { long: "json", type: "bool", key: "json", value: true, desc: "事件按 NDJSON 输出到 stdout，给脚本用" },
   { long: "quiet", short: "q", type: "bool", key: "quiet", value: true, desc: "只输出最终答案，不打进度" },
+  { long: "verbose", type: "bool", key: "verbose", value: true, desc: "显示工具输出、启动诊断和完整用量（默认简洁显示）" },
   { long: "raw", type: "bool", key: "raw", value: true, desc: "答案原样输出 Markdown，不在终端里渲染" },
   { long: "no-mcp", type: "bool", key: "mcp", value: false, desc: "跳过 MCP 连接器，启动更快" },
   { long: "ask-remote", type: "bool", key: "askRemote", value: true, desc: "没人坐在终端前也允许 agent 提问，答案从手机上给" },

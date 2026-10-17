@@ -44,7 +44,12 @@ if (opts.version) { console.log(`OpenWorkBuddy ${require("./package.json").versi
 // 一律改走 stderr，不然 `| jq` 读到半行中文就整条管道炸了；-q 下这些杂讯也一起闭嘴。
 {
   const util = require("util");
-  const toErr = (...a) => { if (!opts.quiet) process.stderr.write(util.format(...a) + "\n"); };
+  const toErr = (...a) => {
+    if (opts.quiet) return;
+    const text = util.format(...a);
+    if (!opts.verbose && /^\[(?:MCP|agent)\]/.test(text)) return;
+    process.stderr.write(text + "\n");
+  };
   console.log = toErr;
   console.info = toErr;
 }
@@ -71,6 +76,7 @@ const cliApprove = require("./src/cli/cli-approve"); // 危险操作求批准时
 const security = require("./src/core/safety/security"); // 审批是它发起的；命令行订它的钩子才知道有人正等着点头
 const cliLive = require("./src/core/obs/cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const termImage = require("./src/cli/term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
+const cliSurface = require("./src/cli/cli-surface");
 const replKit = require("./src/cli/repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
 const { cols } = require("./src/util/text-width"); // 中文占两列：原地重画那一行要算得出它多宽
 const account = require("./src/domains/account/account");
@@ -117,11 +123,12 @@ const inkRaw = (s) => { tickSettle(); inkSeq++; process.stderr.write(s); };
 // 人在输入行上打着字、审批单摆着，一律不画——宁可不走字，也不能把别的行擦了
 // 「思考中」那行打头的 · 会转（✢✳✶✻✽，跟 Claude Code 一样）：秒数一秒才跳一下，人盯着一行一秒不动的字，
 // 前两秒根本分不出是在想还是卡了。转的只有这一个字符、行长不变，所以不算噪音；工具那行不转，照旧一秒一画
-const tick = { render: null, t0: 0, seq: -1, cols: 0, tokens: 0, stop: "Ctrl+C", drawn: false, tailed: false, anim: false, frame: 0, lastSec: -1 };
+const tick = { render: null, t0: 0, seq: -1, cols: 0, tokens: 0, stop: "Ctrl+C", drawn: false, tailed: false, anim: false, frame: 0, lastSec: -1, ephemeral: false };
 /** 输入行上有没有人在打字（交互模式装上）。有的话那行就是他的字，别往上画 */
 let typingNow = () => false;
 /** 刚印完一行，从这会儿开始计时。render(可用列数, 打头那个字) 给画好的那行，放不下给 null；anim=打头那个字转不转 */
 function tickArm(render, fits, anim) {
+  tick.ephemeral = false;
   tick.render = fits ? render : null;
   tick.t0 = Date.now();
   tick.seq = inkSeq;
@@ -156,6 +163,13 @@ function tickDraw() {
 }
 /** 定格：「Esc 停」那截只在跑着的时候有意义，留在翻上去的记录里就是句过期的话；转着的那个字落回 · */
 function tickSettle() {
+  if (tick.ephemeral && tick.render && tick.seq === inkSeq && !typingNow()) {
+    process.stderr.write("\r\x1b[2K");
+    tick.render = null;
+    tick.drawn = false;
+    tick.ephemeral = false;
+    return;
+  }
   if (!tick.drawn) return;
   tick.drawn = false;
   if (!typingNow()) tickPaint(tick.tailed ? { secs: (Date.now() - tick.t0) / 1000 } : { bare: true });
@@ -164,6 +178,18 @@ function tickSettle() {
 function tickPause() {
   tickSettle();
   tick.render = null;
+}
+
+/** The compact display owns one temporary line; it never rewrites user input. */
+function compactProgress(text) {
+  if (opts.verbose || opts.quiet || opts.json || wfp.st || !process.stderr.isTTY || typingNow() || keyGrab) return;
+  tickSettle();
+  const head = toolView.clip(String(text).replace(/[\x00-\x1f\x7f]/g, " "), termWidth());
+  inkSeq++;
+  process.stderr.write(dim(head));
+  tickArm((room, glyph) => toolView.clip((glyph || "·") + " " + head.replace(/^[·●]\s*/, ""), room), true, true);
+  tick.ephemeral = true;
+  tick.drawn = true;
 }
 
 // ---------- workflow 面板 ----------
@@ -860,6 +886,7 @@ function toolTickLine(ev, label, room, paint) {
  */
 const MD_BREAKS = new Set(["step_start", "parallel", "tool_use", "tool_result", "ask_user", "expert_start", "expert_done",
   "team_start", "team_done", "limit", "failover", "compact", "trim", "auto_continue", "sleep", "todos", "milestones"]);
+const seenNotices = new Set();
 
 function makeEmit(state) {
   const flushMd = () => {
@@ -880,6 +907,55 @@ function makeEmit(state) {
       if (ev.type === "usage") state.usage = ev;
       if (ev.type === "files") { state.files = ev.files || state.files; noteChanged(state, ev.changed); }
       return;
+    }
+    // Keep diagnostics available on demand while the normal transcript stays short.
+    if (state.details && state.details.length < 600 && ["tool_use", "tool_result", "status"].includes(ev.type)) {
+      const detail = {};
+      for (const key of ["type", "id", "name", "input_preview", "purpose", "title", "preview", "outcome", "isError", "diff", "text", "notice", "depth"])
+        if (ev[key] !== undefined) detail[key] = typeof ev[key] === "string" ? ev[key].slice(0, key === "diff" ? 16000 : 8000) : ev[key];
+      const size = Buffer.byteLength(JSON.stringify(detail));
+      if (state.detailBytes + size <= 1024 * 1024) { state.details.push(detail); state.detailBytes += size; }
+    }
+    if (!opts.verbose) {
+      if (ev.type === "text" && !ev.depth) {
+        const text = callout.strip(ev.delta);
+        state.finalParts.push(text);
+        if (/^\s*>\s*\[!(?:warn|wait|ok|stop)\]/m.test(ev.delta || "")) prog(yellow("\n" + text.trim() + "\n"));
+        else if (ev.phase !== "commentary") state.pendingText += text;
+        return;
+      }
+      if (ev.type === "step_start") {
+        if (!ev.depth) compactProgress("· 正在处理…");
+        return;
+      }
+      if (ev.type === "tool_use") {
+        state.pendingText = ""; // Text followed by a tool call was a progress update.
+        if (!state.calls) state.calls = new Map();
+        if (ev.id) state.calls.set(ev.id, ev);
+        state.toolCount++;
+        compactProgress(toolView.callLine(ev, { width: termWidth() }));
+        return;
+      }
+      if (ev.type === "tool_result") {
+        const call = ev.id && state.calls ? state.calls.get(ev.id) : null;
+        if (ev.id && state.calls) state.calls.delete(ev.id);
+        if (ev.isError) {
+          state.failedTools++;
+          prog("\n" + toolView.callLine(call || ev, { width: termWidth(), paint: toolPaint }) + "\n" +
+            toolView.resultLines({ ...ev, name: ev.name || (call && call.name) }, { width: termWidth(), paint: toolPaint, max: 2 }).join("\n") + "\n");
+        }
+        compactProgress("· 正在处理…");
+        return;
+      }
+      if (ev.type === "status") {
+        if (ev.model) state.model = ev.model;
+        if (ev.notice && !seenNotices.has(ev.text)) {
+          seenNotices.add(ev.text);
+          prog(yellow(`\n· ${ev.text}\n`));
+        } else if (!ev.notice && !ev.depth) compactProgress(ev.starting ? "· 正在连接执行引擎…" : "· 正在处理…");
+        return;
+      }
+      if (["parallel", "tool_progress", "expert_start", "expert_done", "team_start", "team_done", "trim", "todos", "milestones"].includes(ev.type)) return;
     }
     // 结果到了先撤进度：下面一印东西那行就定格，定格的样子该是「● Render(a.html) · 1m20s」，不停在半截的数上
     if (ev.type === "tool_result" && state.toolProg && state.toolProg.id === ev.id) state.toolProg = null;
@@ -1028,6 +1104,7 @@ function printSummary(state) {
       files: (state.files || []).map((f) => f.name), workspace: getWorkspaceDir() });
     return;
   }
+  if (!opts.verbose && state.pendingText) answer(state.md ? state.md.write(state.pendingText) : state.pendingText);
   // 收尾补一个换行让文本文件规规矩矩地结束；正文自己已经以换行收尾就别再补一个
   if (state.md) {
     // 渲染器里可能还压着半行（等一个配对的 ** 没等到就结束了），这一下把它吐干净。
@@ -1035,17 +1112,23 @@ function printSummary(state) {
     answer(state.md.end());
     if (!state.finalParts.length) answer("\n");
   } else if (!/\n$/.test(state.finalParts.join(""))) answer("\n");
-  if (state.usage) {
+  if (state.usage && opts.verbose) {
     const u = state.usage;
     const secs = Math.round((u.elapsed_ms || 0) / 1000);
     prog(dim(`\n✧ 共消耗 ${(u.prompt + u.completion).toLocaleString()} tokens（输入 ${u.prompt.toLocaleString()} / 输出 ${u.completion.toLocaleString()}）· ${u.calls} 次调用 · ${secs}s · ${u.provider}（${u.model}）\n`));
   }
+  if (!opts.verbose && state.toolCount) {
+    const secs = Math.round(((state.usage && state.usage.elapsed_ms) || 0) / 1000);
+    prog(dim(`\n${state.failedTools ? "·" : "✓"} ${state.toolCount} 次工具调用${state.failedTools ? ` · ${state.failedTools} 次失败` : ""}${secs ? ` · ${secs}s` : ""} · ${state.interactive ? "/details 看过程" : "--verbose 展开过程"}\n`));
+  }
   if (state.credits && state.credits.spent > 0) {
     prog(dim(`✦ 本次扣 ${state.credits.spent} 积分 · 余额 ${state.credits.balance.toLocaleString()}\n`));
   }
-  if (state.files && state.files.length) {
-    lastFiles = state.files.slice(-8).map((f) => f.name);
-    prog(dim(`▪ 工作目录 ${getWorkspaceDir()}：`) + dim(lastFiles.join("、")) + "\n");
+  const made = cliSurface.currentFiles(state.changed, state.files);
+  if (made.length) {
+    lastFiles = made.slice(-8);
+    lastFilesSession = sessionId;
+    prog(dim("成果：") + lastFiles.map((n, i) => `${i + 1}. ${n}`).join("  ") + dim("  · /open 1 打开") + "\n");
   }
 }
 
@@ -1096,6 +1179,47 @@ function noteChanged(state, changed) {
  * @type {string[]}
  */
 let lastFiles = [];
+let lastFilesSession = "";
+function recentCliFiles() {
+  if (sess.cliFilesRoot && sess.cliFilesRoot !== getWorkspaceDir()) return [];
+  return lastFilesSession === sessionId && lastFiles.length ? lastFiles : Array.isArray(sess.cliFiles) ? sess.cliFiles.filter(n => typeof n === "string") : [];
+}
+
+function openCliFile(arg, recent = false, report = true) {
+  const dir = getWorkspaceDir();
+  let name = String(arg || "").trim();
+  const files = recentCliFiles();
+  if (recent) name = cliSurface.recentTarget(files);
+  else if (/^\d+$/.test(name)) name = files[Number(name) - 1] || "";
+  if (!name) {
+    const message = files.length ? "有多个成果，请用 /open 序号 指定：\n" + files.map((f, i) => `  ${i + 1}. ${f}`).join("\n") : "这条会话还没有可打开的成果；请用 /open 文件路径 指定。";
+    if (report) prog(yellow(message + "\n"));
+    return { ok: false, message };
+  }
+  try {
+    const result = cliSurface.openFile(dir, name);
+    const message = result.ok ? `已交给本机程序打开：${path.relative(fs.realpathSync(dir), result.path)}` : `本机程序未能打开（${result.error}）：${result.path}`;
+    if (report) prog((result.ok ? dim : yellow)(message + "\n"));
+    return { ...result, message };
+  } catch (e) {
+    const message = `打不开 ${name}：${e.message}`;
+    if (report) prog(yellow(message + "\n"));
+    return { ok: false, message };
+  }
+}
+
+function naturalOpen(text) {
+  const request = cliSurface.openRequest(text);
+  if (!request || opts.json) return null;
+  reloadSessIfChanged();
+  const result = openCliFile(request.target === "recent" ? "" : request.target, request.target === "recent", false);
+  answer(result.message + "\n");
+  sess.history.push({ role: "user", content: text }, { role: "assistant", text: result.message });
+  sess.transcript.push({ type: "user", text, at: new Date().toISOString() },
+    { type: "assistant", events: [{ type: "text", delta: result.message }], at: new Date().toISOString() });
+  saveSess();
+  return result.ok ? "ok" : "error";
+}
 /** 终端出图能力探一次就够，一场里不会变 */
 let imgCapCache = null;
 const imgCap = () => (imgCapCache || (imgCapCache = termImage.detect(process.env, !!process.stderr.isTTY)));
@@ -1561,6 +1685,8 @@ function makeAskUser(readLine, pick) {
  * 用户从此在一个他没听说过的地方干活。withWorkspace 是有边界的，出了这个函数自动还原。
  */
 async function runOnce(runtime, text, mode, interactive, shown) {
+  const openedLocally = naturalOpen(shown || text);
+  if (openedLocally) return openedLocally;
   const wt = require("./src/agent/worktree");
   let opened = null;
   let STORE = "";
@@ -1660,15 +1786,16 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
     }
   }
   sess.history.push({ role: "user", content: text });
-  if (!sess.title) sess.title = asked.slice(0, 24);
+  const greeting = /^(?:你好|您好|嗨|哈[喽啰]|hello|hi|hey)[！!。.?？\s]*$/i.test(asked.trim());
+  if (!sess.title && !greeting) sess.title = asked.slice(0, 24);
   // 在终端里起的活儿归「工程」线。网页/手机上切到那个标签就能看见这条会话——
   // 这是两条线里唯一一条服务端替人填的：它确实是从命令行进来的，不是猜的。
   sess.lane = "cli";
   const hadDir = sess.dir;
-  const runDir = chatDirHere(asked);
+  const runDir = !sess.dir && greeting ? null : chatDirHere(asked);
   moveStrays(text, runDir);
-  if (runDir && runDir !== hadDir) prog(dim(`（这条会话的成果放在 ${runDir}/）\n`)); // 新起的那格说一声，往后每趟不再重复
-  const state = { streamed: false, usage: null, files: null, changed: [], finalParts: [], error: null, md: newMdRenderer() };
+  if (opts.verbose && runDir && runDir !== hadDir) prog(dim(`（这条会话的成果放在 ${runDir}/）\n`));
+  const state = { streamed: false, usage: null, files: null, changed: [], finalParts: [], error: null, md: newMdRenderer(), pendingText: "", details: [], detailBytes: 0, toolCount: 0, failedTools: 0, interactive: !!interactive, session: sessionId };
   lastRun = state; // workflow 那头要知道这一步写过什么、错在哪
   // 挂到实时目录上：网页端的「工程」标签就是靠它知道这台机器的终端里此刻在干什么
   const live = cliLive.announce({
@@ -1771,7 +1898,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
       baseDir: runDir || undefined, // 相对路径读写、脚本 cwd、产物落点全在这条会话的那格
       // 工作目录（往上到 git 根）的 AGENTS.md / CLAUDE.md 先带上——/init 写的就是它，以前命令行一个字都不读。
       // 进行中的目标注进任务上下文：agent 每一轮都对着验收标准干活，不跑偏
-      projectContext: [projectMemo.memoContext(getWorkspaceDir()), goalKit.contextFor(sess.goal), opts.appendSystem].filter(Boolean).join("\n\n") || undefined,
+      projectContext: [projectMemo.memoContext(getWorkspaceDir()), goalKit.contextFor(sess.goal), cliSurface.promptBlock(), opts.appendSystem].filter(Boolean).join("\n\n") || undefined,
       maxSteps: opts.maxSteps || undefined, // --max-steps：只管这一次
       emit: makeEmit(state),
       mode: modes.agentMode(mode), // goal 在外面那层循环里，agent 只认识 ask/plan/craft
@@ -1865,6 +1992,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
   if (finalText) events.push({ type: "text", delta: finalText });
   if (state.usage) events.push(state.usage);
   sess.transcript.push({ type: "assistant", events, at: new Date().toISOString() });
+  sess.cliDetails = state.details;
   saveSess();
   // 记账：与 Web 端同一本账（data/usage/<年-月>.jsonl，按月分片、一笔一行只追加；见 usage-store.js）
   if (owner && state.usage && state.usage.calls > 0) {
@@ -1872,6 +2000,12 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
     state.credits = { spent, balance: owner.credits };
   }
   printSummary(state);
+  if (cliSurface.currentFiles(state.changed, state.files).length) {
+    sess.cliFiles = lastFiles;
+    sess.cliFilesRoot = getWorkspaceDir();
+    saveSess();
+    if (!state.error && !aborted && !opts.json && cliSurface.openAfterTask(asked)) openCliFile("", true);
+  }
   // 图在最后：用量、积分、产出清单都打完了再贴，顺序反过来的话图会把那几行顶到屏幕外面
   hintOutputs(state.changed, await drawOutputs(state.changed), !!interactive);
   return aborted ? "aborted" : state.error ? "error" : "ok";
@@ -2144,9 +2278,10 @@ function splitFiles(text) {
     // 在界面上关掉的那几台，命令行里也别连——同一份 config，两边看见的工具表就该是同一份
     mcpManager.setDisabled(config.mcp_disabled || []);
     const on = config.mcp_servers.filter((x) => !mcpManager.disabled.has(x.name));
-    prog(dim(`连接 MCP（${on.length} 个${on.length < config.mcp_servers.length ? `，另有 ${config.mcp_servers.length - on.length} 个已关` : ""}，--no-mcp 可跳过）… `));
+    if (opts.verbose) prog(dim(`连接 MCP（${on.length} 个，--no-mcp 可跳过）… `));
+    else compactProgress("· 正在连接工具…");
     await mcpManager.startAll(config.mcp_servers);
-    prog(dim(`${mcpManager.toolDefs().length} 个工具\n`));
+    prog(dim(opts.verbose ? `连接器 ${mcpManager.clients.size}/${on.length} · ${mcpManager.toolDefs().length} 个工具\n` : `连接器配置 ${on.length} 项 · /mcp 查看可用性\n`));
   }
   const runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
   const engineId = (config.agent || {}).engine || "builtin";
@@ -2159,7 +2294,8 @@ function splitFiles(text) {
   // 这是 e2e 里钉死的设计，不是漏洞——但一个打了 --perm full 就走开的人，得先在这行里看见它。
   const permLine = permNow() === security.DEFAULT_MODE ? ""
     : ` · 权限 ${security.PERMISSION_MODES[permNow()].label}${permNow() === "full" ? yellow("（连删除也不问了）") : ""}`;
-  prog(dim(`${who} · 模式 ${modes.modeLabel(opts.mode)}${permLine} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
+  prog(bold(`OpenWorkBuddy ${require("./package.json").version}`) + dim(` · ${who} · ${modes.modeLabel(opts.mode)}${permLine}\n`));
+  prog(dim(`目录 ${getWorkspaceDir()}${opts.verbose ? ` · 会话 ${sessionId}` : ""}\n`));
   if (allowLabels.length) {
     // 放行名单是内置 agent 这一个进程里的；本机引擎（claude -p / codex）按它自己那套权限开关走，不认这张表
     prog(dim(`预先放行：${allowLabels.join("、")}${engineBackend ? yellow(`（${engineBackend.label} 不认 --allow，它按自己的权限开关走）`) : ""}\n`));
@@ -2290,12 +2426,13 @@ function splitFiles(text) {
   let shellKid = null;
   const inbox = repl.makeInbox({
     onInterject: (text) => {
+      if (!text.trim()) return;
       // 它正等着一个答案：这一行是回答，不是插话。不先认这一条的话，
       // 人明明回答了，agent 却在那儿干等到超时，然后按「没人回应」自己定
       if (pendingAsk) { const f = pendingAsk; pendingAsk = null; f(text); return; }
       // 任务跑着的时候敲的字是「插话」，不是下一条任务
       termInterject.push(text);
-      prog(yellow(`\n  » 记下了，下一步带给它：${text.replace(/\n/g, " ").slice(0, 60)}\n`));
+      prog(dim(`\n已排入补充要求：${text.replace(/\n/g, " ").slice(0, 60)}\n`));
     },
     onMerged: (n, blocks) => {
       // 粘进来的 N 行，readline 一行一条记进了历史。合成一条之后把多出来的退掉，
@@ -2901,6 +3038,27 @@ function splitFiles(text) {
 
   const runReplCommand = async (v) => {
     if (v.name === "help") { prog(repl.helpText({ custom: custom.list })); return; }
+    if (v.name === "verbose") {
+      opts.verbose = v.arg ? v.arg === "on" : !opts.verbose;
+      prog(dim(opts.verbose ? "详细输出已开启；/verbose off 收起。\n" : "简洁输出已开启；/details 可查看上一轮过程。\n"));
+      return;
+    }
+    if (v.name === "details") {
+      const details = lastRun && lastRun.session === sessionId ? lastRun.details : sess.cliDetails;
+      if (!Array.isArray(details) || !details.length) { prog(dim("上一轮没有工具调用或诊断。\n")); return; }
+      const calls = new Map();
+      for (const ev of details) {
+        if (ev.type === "tool_use") { if (ev.id) calls.set(ev.id, ev); }
+        else if (ev.type === "tool_result") {
+          prog(toolView.callLine(calls.get(ev.id) || ev, { width: termWidth(), paint: toolPaint }) + "\n" + toolView.resultLines(ev, { width: termWidth(), paint: toolPaint, max: 12 }).join("\n") + "\n");
+          calls.delete(ev.id);
+          if (ev.diff) prog(paintDiff(ev.diff, 80) + "\n");
+        } else if (ev.type === "status") prog(dim(`· ${ev.text}\n`));
+      }
+      for (const ev of calls.values()) prog(toolView.callLine(ev, { width: termWidth(), paint: toolPaint }) + dim(" · 未收到结果\n"));
+      prog(dim("过程保留最多 600 条、1 MiB；--json 可记录完整事件流。\n"));
+      return;
+    }
     if (v.name === "review") {
       // diff 在这儿取好塞进去，审查按只看不动跑：审哪一份由人定，不让模型去猜 git 参数
       const rv = require("./src/cli/review");
@@ -3042,8 +3200,10 @@ function splitFiles(text) {
     }
     if (v.name === "mcp") {
       const st = mcpManager.status();
+      const unavailable = cfgEngine() === "builtin" ? new Set() : new Set(require("./src/engines/bridge").forwardable(config.mcp_servers || [], config.mcp_disabled || []).skipped);
       const rows = [
-        ...(st.connected || []).map((c) => ({ name: c.name + (c.plugin ? `（${c.plugin}）` : ""), ok: true, tools: c.tools })),
+        ...(st.connected || []).map((c) => ({ name: c.name + (c.plugin ? `（${c.plugin}）` : ""), ok: !unavailable.has(c.name), tools: c.tools,
+          ...(unavailable.has(c.name) ? { why: "当前本机引擎不支持此连接器传输；切换内置模型可用" } : {}) })),
         ...(st.failures || []).map((x) => ({ name: x.name + (x.plugin ? `（${x.plugin}）` : ""), ok: false, why: x.error || x.raw || "没接上" })),
       ];
       prog(repl.mcpText(rows));
@@ -3201,6 +3361,7 @@ function splitFiles(text) {
       return;
     }
     if (v.name === "open") {
+      if (v.arg) { openCliFile(v.arg); return; }
       const dir = getWorkspaceDir();
       let names = [];
       try { names = fs.readdirSync(dir).filter((f) => !f.startsWith(".")); } catch {}
@@ -3266,7 +3427,7 @@ function splitFiles(text) {
     }
   };
 
-  prog(bold("OpenWorkBuddy CLI 交互模式") + dim("　/help 看命令 · 文件拖进来就带上 · 粘进来的多行回车才发 · Esc 停当前这趟\n"));
+  prog(dim("/help 命令 · /model 换模型 · /open 打开成果 · Esc 停止\n"));
   let last = "ok";
   rl.prompt();
   for (;;) {
@@ -3280,6 +3441,11 @@ function splitFiles(text) {
     }
     if (v.kind === "unknown") { prog(yellow(repl.unknownText(v))); rl.prompt(); continue; }
     if (v.kind === "bad-arg") { prog(yellow(repl.badArgText(v))); rl.prompt(); continue; }
+    if (v.kind === "task" && cliSurface.openRequest(v.text) && !pending.length && !shellNotes.length) {
+      naturalOpen(v.text);
+      rl.prompt();
+      continue;
+    }
     if (v.kind === "shell") {
       const r = await runShell(v.cmd);
       if (r.error) prog(red(`没跑起来：${r.error}\n`));
@@ -3329,6 +3495,18 @@ function splitFiles(text) {
     const notes = shellNotes.splice(0);
     // 拼了 !命令 输出的时候，会话里显示的还是人自己打的那句（shown），模型那边收到的是全的
     last = await runOnce(runtime, repl.withShellNotes(这句, notes), 这趟模式, true, notes.length ? 这句 : undefined);
+    // An external engine cannot consume mid-turn input. Deliver any unconsumed
+    // supplement in a new turn on the same session instead of silently losing it.
+    while (last === "ok" && termInterject.length) {
+      const more = termInterject.splice(0).filter(t => t.trim()).join("\n");
+      if (!more) continue;
+      prog(dim("继续处理补充要求…\n"));
+      last = await runOnce(runtime, more, 这趟模式, true);
+    }
+    if (last !== "ok" && termInterject.length) {
+      const more = termInterject.splice(0).filter(t => t.trim()).join(" / ");
+      if (more) prog(yellow(`补充要求尚未执行，请重新发送：${more}\n`));
+    }
     inbox.setBusy(false);
     quitArmed = 0;
     // Plan 出完计划：摆「开干 / 接着改」让人挑，别让他自己去想下一步该敲什么

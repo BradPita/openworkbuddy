@@ -228,6 +228,8 @@ Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin
 
 `openworkbuddy` shares **one** set of config, skills, memory, connectors and sessions with the desktop app — start something in the terminal and you can watch it and chime in from your phone; stop halfway on the desktop and `openworkbuddy resume` picks it up.
 
+The default display keeps one progress line, the final answer and files actually changed in the current turn. Use `/details` for tool output, `/usage` for token usage, and `/verbose on` for detailed activity. Say “open it” after creating a page to open the session's result with a local application, or use `/open 1` and `/open subdirectory/index.html`.
+
 ```bash
 npm link # once: install the global command (or just run `node cli.js …`)
 
@@ -265,6 +267,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
 - **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate
 - **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal
 - **Oct 16** Preview region annotations and line comments enter editable revision drafts; individual change blocks can be reverted and restored

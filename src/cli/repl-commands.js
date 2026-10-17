@@ -42,6 +42,8 @@ const COMMANDS = [
   { name: "resume", aliases: ["r"], arg: "[序号或会话id]", desc: "接着之前那段往下聊；不给值就弹选择器，↑↓ 挑、打字搜" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
   { name: "status", aliases: ["cost", "usage"], desc: "模式、底层引擎、工作目录、这个会话跑了几轮、一共花了多少 token" },
+  { name: "verbose", arg: "[on|off]", choices: ["on", "off"], desc: "切换详细输出；默认只显示当前进度和结果" },
+  { name: "details", desc: "查看上一轮的工具调用、输出和诊断，不调用模型" },
   { name: "init", paid: true, desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
   { name: "compact", paid: true, desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
   { name: "review", paid: true, arg: "[基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的，给了就审这条分支从分叉起改的" },
@@ -847,6 +849,7 @@ function makeInbox(opt) {
   const queue = [];
 
   const hand = (text) => {
+    if (!String(text).trim()) return;
     if (busy) { onInterject(text); return; }
     if (waiter) { const w = waiter; waiter = null; w(text); return; }
     queue.push(text); // 上一条还在跑就排队，绝不丢
