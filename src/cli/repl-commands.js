@@ -849,7 +849,7 @@ function makeInbox(opt) {
   const queue = [];
 
   const hand = (text) => {
-    if (!String(text).trim()) return;
+    if (busy && !String(text).trim()) return;
     if (busy) { onInterject(text); return; }
     if (waiter) { const w = waiter; waiter = null; w(text); return; }
     queue.push(text); // 上一条还在跑就排队，绝不丢

@@ -235,6 +235,9 @@ console.log("\n⑨ 输入闸门 makeInbox");
   m.box.setBusy(true);
   m.type(""); m.tick(); m.type("   ", 300); m.tick();
   eq(m.log.interject.length, 1, "空行和空白不生成插话");
+  const blank = fakeInbox();
+  blank.type(""); blank.tick();
+  eq(await 限时(blank.box.next()), "", "空闲回车仍交给输入循环恢复提示符");
 
   // 没人来取的时候先排队，绝不丢
   const q = fakeInbox();

@@ -710,6 +710,9 @@ async function run() {
       reply: (msgs) => toolsDone(msgs) ? "页面已写好。" : { text: "内部准备过程不刷屏", tools: [["write_file", { path: "index.html", content: "<!doctype html><title>PTY_PAGE_MARK</title>" }]] },
     }, async (t) => {
       await t.until(/openworkbuddy> /, "简洁模式提示符");
+      const empty = t.out().length;
+      t.send("\r");
+      await t.until(/openworkbuddy> /, "空闲回车后提示符回来", empty);
       await t.type("写一个网页\r");
       const end = await t.until(/成果：/, "本轮真实成果");
       await t.until(/openworkbuddy> /, "成果后的提示符", end);
