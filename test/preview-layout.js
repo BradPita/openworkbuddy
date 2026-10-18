@@ -354,6 +354,12 @@ app.whenReady().then(async () => {
   // 而且英文句子比中文长，换行数不同、面板高度就不同。钉住它，量出来的数才是同一把尺子
   await win.webContents.executeJavaScript('I18N.setLang("zh")');
   const at = (n) => win.webContents.executeJavaScript(probe(n));
+  const frameDocumentState = async (name) => {
+    const frame = win.webContents.mainFrame.frames.find((f) => {
+      try { return decodeURIComponent(f.url).includes(name); } catch { return f.url.includes(name); }
+    });
+    return frame ? frame.executeJavaScript(`({scrollH: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0), clientH: innerHeight})`) : null;
+  };
 
   // 居中判据写成一句：上下留白差不超过 10px，且确实留出了一大块（不是贴着边）。
   // 只判「差值小」不行 —— 一块正好铺满面板的内容上下留白都是 0，差值也是 0。
@@ -409,12 +415,13 @@ app.whenReady().then(async () => {
   }
   {
     const r = await at("长报告.html");
-    ok(topAligned(r), "网页是文章，从第一行读起", `上${r.gapTop}`);
-    ok(r.scrollH > r.clientH + 1, "长网页滚得到底", `${r.scrollH} > ${r.clientH}`);
+    const doc = await frameDocumentState("长报告.html");
+    ok(topAligned(r), "网页视口从页面顶部开始", `上${r.gapTop}`);
+    ok(doc && doc.scrollH > doc.clientH + 1, "长网页在 iframe 内可滚动到底", doc);
   }
   {
     const r = await at("短结论.html");
-    ok(topAligned(r), "短网页也贴顶——它仍然是文章，不是一张图", `上${r.gapTop}`);
+    ok(r.h / r.panelH >= 0.98, "短网页也获得完整视口高度", `${r.h} / ${r.panelH}`);
   }
   {
     const r = await at("长日志.txt");
@@ -499,9 +506,11 @@ app.whenReady().then(async () => {
     return {
       sandbox: fr.getAttribute("sandbox"), src: fr.getAttribute("src"), cd,
       w: parseFloat(fr.style.width) || 0, h: parseFloat(fr.style.height) || 0, tf: fr.style.transform || "",
+      rectW: Math.round(fr.getBoundingClientRect().width), rectH: Math.round(fr.getBoundingClientRect().height),
       wrapH: Math.round(wrap.getBoundingClientRect().height), avail: wrap.clientWidth,
       panelH: document.getElementById("pv-body").clientHeight,
       scrolling: fr.getAttribute("scrolling"), zoomHidden: !!(wrap.querySelector(".pv-zoom") || {}).hidden,
+      zoomText: (wrap.querySelector(".pv-zoom") || {}).textContent || "",
       fits: __fits.slice(),
     };
   })()`);
@@ -519,16 +528,28 @@ app.whenReady().then(async () => {
     ok(r && r.sandbox === "allow-scripts allow-popups", "★网页预览的框带 sandbox，只给脚本和弹窗，不给 allow-same-origin★", r && r.sandbox);
     ok(r && r.cd === "null", "外面读不到框里的文档（contentDocument 是 null）——同源时这里读得到，页面也就读得到外面", r && r.cd);
     ok(r && /[?&]fit=1(&|$)/.test(r.src), "请求带 fit=1，让服务端把报尺寸那段脚本挂上", r && r.src);
-    ok(before && !/scale/.test(before.tf) && before.w === before.avail,
-      "报上来之前不瞎猜：框先按可用宽度、不缩放摆着", before && { w: before.w, avail: before.avail, tf: before.tf });
+    ok(before && before.rectH >= before.panelH - 2,
+      "报上来之前网页视口已铺满整个预览面板", before && { rectH: before.rectH, panelH: before.panelH });
     const fromFrame = r ? r.fits.filter((f) => f.fromFrame) : [];
     const lastFit = fromFrame[fromFrame.length - 1];
     ok(lastFit && lastFit.w === 1200 && lastFit.h === 1600, "★页面自己用 postMessage 报上来 1200×1600★", r && r.fits);
-    const sc = r ? scaleOf(r.tf) : 1;
-    ok(r && r.w === 1200 && Math.abs(sc - r.avail / 1200) < 0.01,
-      "按报上来的宽度整页缩到可用宽度（不缩就只看得见左上角一块）", r && { w: r.w, tf: r.tf, avail: r.avail });
-    ok(r && Math.abs(r.wrapH - Math.ceil(1600 * sc)) <= 2, "外层撑到缩放后的高度，整张卡片滚得到底", r && { wrapH: r.wrapH, want: Math.ceil(1600 * sc) });
-    ok(r && !r.zoomHidden, "比框宽的页面才摆「适应宽度 / 实际大小」那颗切换钮", r && r.zoomHidden);
+    ok(r && r.rectW === r.avail && r.rectH >= r.panelH - 2 && !r.tf,
+      "默认使用完整面板视口，不把交互网页压成缩略图", r && { rectW: r.rectW, rectH: r.rectH, avail: r.avail, panelH: r.panelH, tf: r.tf });
+    ok(r && !r.zoomHidden && r.zoomText === "整页适配", "尺寸上报后提供可选的整页适配按钮", r && { hidden: r.zoomHidden, text: r.zoomText });
+
+    await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-zoom").click()');
+    await new Promise((r2) => setTimeout(r2, 500));
+    const fitted = await frameState();
+    const sc = fitted ? scaleOf(fitted.tf) : 1;
+    ok(fitted && fitted.w === 1200 && Math.abs(sc - fitted.avail / 1200) < 0.01,
+      "手动选择整页适配后按页面宽度缩放", fitted && { w: fitted.w, tf: fitted.tf, avail: fitted.avail });
+    ok(fitted && Math.abs(fitted.wrapH - Math.ceil(1600 * sc)) <= 2, "整页适配时外层高度与缩放后页面一致", fitted && { wrapH: fitted.wrapH, want: Math.ceil(1600 * sc) });
+    await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-zoom").click()');
+    await new Promise((r2) => setTimeout(r2, 300));
+    await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-zoom").click()');
+    await new Promise((r2) => setTimeout(r2, 300));
+    const restored = await frameState();
+    ok(restored && restored.rectH >= restored.panelH - 2 && !restored.tf, "再次点击恢复铺满面板的交互视口", restored && { rectH: restored.rectH, panelH: restored.panelH, tf: restored.tf });
 
     // 应用自己还会发一个 HEAD 问这份文件在不在（pvProbeGone），常常比框的导航先到；框的导航是 GET 那一条
     const nav = seen.find((x) => /^\/api\/files\/view\/宽卡片\.html/.test(x.url) && x.method === "GET");
@@ -536,18 +557,18 @@ app.whenReady().then(async () => {
     const pv = seen.find((x) => /^\/pv\/[0-9a-f]+\/宽卡片\.html\?fit=1$/.test(x.url));
     ok(pv && pv.status === 200, "跳过去的是 /pv/<令牌>/宽卡片.html?fit=1，服务端照发", pv || seen.map((x) => x.url));
 
-    // 这张卡一缩放就把面板撑出滚动条，可用宽度会变一次。把框设成 1200 之后页面会按 1200 的视口再报一次，
-    // 那一次要是被当成「跟着视口排的页面、宽度过期了」去归位，就是归位→放宽→归位的死循环，框一直在闪
-    const n1 = r ? r.fits.filter((f) => f.fromFrame).length : -1;
+    await new Promise((r3) => setTimeout(r3, 800));
+    const stableStart = await frameState();
+    const n1 = stableStart ? stableStart.fits.filter((f) => f.fromFrame).length : -1;
     await new Promise((r3) => setTimeout(r3, 800));
     const r3 = await frameState();
     const n2 = r3 ? r3.fits.filter((f) => f.fromFrame).length : -2;
-    ok(n1 <= 12 && n2 === n1 && r3.w === 1200 && r3.tf === r.tf, "★写死宽度的卡片报几次就停，不在归位和放宽之间来回打转★", { n1, n2, w: r3 && r3.w });
+    ok(n1 <= 12 && n2 === n1 && r3.rectH >= r3.panelH - 2 && r3.tf === "", "★默认视口稳定，不在归位和放宽之间来回打转★", { n1, n2, h: r3 && r3.rectH });
     // 冒充：主窗口自己发一条 {__wbFit:1}，不许把框撑成那样
     await win.webContents.executeJavaScript(`postMessage({ __wbFit: 1, w: 4000, h: 30 }, "*"); 0`);
     await new Promise((r2) => setTimeout(r2, 300));
     const r2 = await frameState();
-    ok(r2 && r2.w === 1200 && r2.h === 1600, "★别的窗口冒充报尺寸，一律不认（只认这个框自己发的）★", r2 && { w: r2.w, h: r2.h });
+    ok(r2 && r2.rectH >= r2.panelH - 2, "★别的窗口冒充报尺寸不能改变预览视口★", r2 && { rectH: r2.rectH, panelH: r2.panelH });
   }
 
   {
@@ -586,8 +607,8 @@ app.whenReady().then(async () => {
   {
     const { after: r } = await open("自带CSP.html", 2500);
     ok(r && r.fits.filter((f) => f.fromFrame).length === 0, "页面自带 CSP 挡了内联脚本，确实一条尺寸都报不上来", r && r.fits);
-    ok(r && r.scrolling === null && Math.abs(r.h - r.panelH) <= 2 && !/scale/.test(r.tf),
-      "报不上来就退回「占满面板、框里自己滚」，不缩在 150px 的默认框里", r && { h: r.h, panelH: r.panelH, scrolling: r.scrolling, tf: r.tf });
+    ok(r && r.scrolling === null && r.rectH >= r.panelH - 2 && !/scale/.test(r.tf),
+      "报不上尺寸仍占满面板，框里可自行滚动", r && { rectH: r.rectH, panelH: r.panelH, scrolling: r.scrolling, tf: r.tf });
     ok(r && r.zoomHidden, "退回之后不摆缩放钮（没有尺寸可切）", r && r.zoomHidden);
   }
 
@@ -596,9 +617,9 @@ app.whenReady().then(async () => {
     await new Promise((r) => setTimeout(r, 1000));
     const b = await frameState();
     const n = (s) => (s ? s.fits.filter((f) => f.fromFrame).length : -1);
-    ok(a && b && n(b) === n(a) && b.w === a.w && n(b) <= 12,
-      "★width:100vw 的通栏页（永远比视口宽一截）报几次就停，框不会一路放宽下去★", a && b && { n1: n(a), n2: n(b), w1: a.w, w2: b.w, avail: b.avail });
-    ok(b && b.w <= b.avail + 40, "放宽也有个头：最后的框宽只比可用宽度多出几次 8px", b && { w: b.w, avail: b.avail });
+    ok(a && b && n(b) === n(a) && b.rectH === a.rectH && n(b) <= 12,
+      "★width:100vw 的通栏网页不会导致视口尺寸循环★", a && b && { n1: n(a), n2: n(b), h1: a.rectH, h2: b.rectH });
+    ok(b && b.rectW === b.avail, "通栏网页的 iframe 仍严格填满面板宽度", b && { rectW: b.rectW, avail: b.avail });
   }
 
   {

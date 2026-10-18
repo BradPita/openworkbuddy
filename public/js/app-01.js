@@ -4717,7 +4717,7 @@ function bindPvCode(body, truncHtml) {
  *   - 只认这个框自己发来的消息。别的窗口冒充报一个尺寸，不许把框撑成那样。
  *   - 页面里的图片是后到的，图一到高度就变。报尺寸那段脚本在 load 之后还会补报两次。
  */
-function fitPreviewFrame(host) {
+function fitPreviewFrame(host, opts = {}) {
   // 同一块地方上一张框挂的监听当场撤掉。以前 window 上的 message 监听要等下一条消息来了、
   // 发现框已经不在了才自己摘，ResizeObserver 要等下一次尺寸变化——等不来就一直攥着旧 iframe 和整套闭包。
   // 收面板（closePreview）也走这个开关
@@ -4729,7 +4729,8 @@ function fitPreviewFrame(host) {
   if (!fr) return;
   // 页面加载完多久还没报尺寸就算报不上来。报尺寸的脚本在 load 时一定会报一次，1.5 秒是给慢机器留的余量
   const WAIT_MS = 1500;
-  let real = false; // false = 适应宽度（默认），true = 实际大小
+  let mode = opts.fill ? "fill" : "fit";
+  let real = false; // fit 模式下：false = 适应宽度，true = 实际大小
   let last = null;  // 上一次报上来的 {w,h}，切换缩放比时直接复用，不用重新量
   let lastReportAt = 0;
   let loads = 0;
@@ -4739,6 +4740,27 @@ function fitPreviewFrame(host) {
   let grows = 0;     // 归位之后，框已经放宽过、页面又报得更宽的次数（封顶用，见 onMsg）
 
   const availOf = () => wrap.clientWidth || host.clientWidth || 0;
+
+  const paintZoom = (w, scale) => {
+    if (!zoomBtn) return;
+    zoomBtn.hidden = mode === "fill" ? !last : !(last && last.w > availOf() + 1);
+    zoomBtn.textContent = mode === "fill" ? "整页适配" : real ? "实际大小 · 点此填满面板" : `适应宽度 · ${Math.round(scale * 100)}%`;
+    zoomBtn.title = mode === "fill" ? "按页面宽度缩小，适合查看整张静态页面" : real ? "切回填满面板的网页视口" : "切换到原始大小，查看页面细节";
+  };
+
+  const fillPanel = () => {
+    mode = "fill";
+    real = false;
+    fell = false;
+    fr.style.width = "";
+    fr.style.height = "";
+    fr.style.transform = "";
+    fr.removeAttribute("scrolling");
+    wrap.style.height = "";
+    wrap.style.overflowX = "hidden";
+    laidAt = availOf();
+    paintZoom(last && last.w, 1);
+  };
 
   const layout = (w, h) => {
     const avail = availOf();
@@ -4753,12 +4775,7 @@ function fitPreviewFrame(host) {
     // 外层撑到缩放后的实际占位，页面才滚得到底（transform 不改变布局占位，得自己给）
     wrap.style.height = Math.ceil(h * scale) + "px";
     wrap.style.overflowX = real && w > avail ? "auto" : "hidden";
-    if (zoomBtn) {
-      // 本来就装得下的页面不摆这颗按钮：没得可切的开关只会让人以为哪里不对
-      zoomBtn.hidden = !(w > avail + 1);
-      zoomBtn.textContent = real ? "实际大小 · 点这里适应宽度" : `适应宽度 · ${Math.round(scale * 100)}%`;
-      zoomBtn.title = real ? "现在是 1:1，点一下缩回整页" : "现在是整页缩放，点一下按原始尺寸看细节";
-    }
+    paintZoom(w, scale);
   };
 
   // 归位：把 iframe 放回"可用宽度、不缩放"，页面按这个视口重新排一次，报上来的才是它真实要多宽
@@ -4794,6 +4811,11 @@ function fitPreviewFrame(host) {
     // 卡在「适应宽度 · 98%」这种半缩放里。旧的不认，页面按新宽度重排后自己会再报
     const v = Number(e.data.v) || 0;
     const w = Number(e.data.w) || 0;
+    const h = Number(e.data.h) || 0;
+    if (mode === "fill") {
+      if (w > 0 && h > 0) { last = { w, h }; paintZoom(w, 1); }
+      return;
+    }
     const cur = parseFloat(fr.style.width) || 0;
     if (v && cur && Math.abs(v - cur) > 1) return;
     // 页面在归位宽度下量出来没比那个宽度宽（跟着视口排的那种），可用宽度却已经变了——
@@ -4801,7 +4823,6 @@ function fitPreviewFrame(host) {
     // 比的是归位宽度 baseW，不是 v：按报数把框设成页面宽之后页面会再报一次，那次 v 就等于 w，
     // 拿 v 比会把写死 1200 宽的卡片也当成跟着视口排的，归位、放宽、再归位，来回打转
     if (v && baseW && w <= baseW + 1 && Math.abs(availOf() - baseW) > 1) { reset(); return; }
-    const h = Number(e.data.h) || 0;
     // 框已经按报数放宽过（v 不是归位宽度），页面却报得比框还宽：多半是 body 带外边距又写了 width:100vw 的通栏，
     // 视口多宽它就比视口宽一截。照单放宽→页面再报更宽→再放宽，框会一路宽到几千像素、消息来回刷个不停。
     // 这种报数只许再放宽两次（真有后到的宽内容也够用），之后宽度不动、只认高度
@@ -4810,26 +4831,37 @@ function fitPreviewFrame(host) {
   };
   window.addEventListener("message", onMsg, { signal: ac.signal });
 
-  if (zoomBtn) zoomBtn.onclick = () => { real = !real; if (last) layout(last.w, last.h); };
+  if (zoomBtn) zoomBtn.onclick = () => {
+    if (mode === "fill") {
+      if (!last) return;
+      mode = "fit";
+      real = false;
+      reset();
+      layout(last.w, last.h);
+    } else if (real) fillPanel();
+    else { real = true; if (last) layout(last.w, last.h); }
+  };
   fr.addEventListener("load", () => {
     // 第一次 load 之前宽度已经是归位的，不用再动（动了就是白闪一下）。
     // 之后的 load 是框里点链接换了一页：新页面得按可用宽度重新排、重新报
-    if (loads++) reset();
+    if (loads++ && mode === "fit") reset();
     const at = Date.now();
     // 报尺寸的脚本在 load 前后各报一次；load 之前一小会儿报过的也算这一页的
-    setTimeout(() => { if (fr.isConnected && lastReportAt < at - 800) fallback(); }, WAIT_MS);
+    setTimeout(() => { if (mode === "fit" && fr.isConnected && lastReportAt < at - 800) fallback(); }, WAIT_MS);
   });
   // 预览栏本身可以拖宽，宽度一变就得重新算
   if (window.ResizeObserver) {
     const ro = new ResizeObserver(() => {
       if (!fr.isConnected) return ac.abort();
-      if (fell) fallback();
-      else if (availOf() !== laidAt) reset();
+      if (mode === "fit") {
+        if (fell) fallback();
+        else if (availOf() !== laidAt) reset();
+      }
     });
     ro.observe(host);
     ac.signal.addEventListener("abort", () => ro.disconnect(), { once: true });
   }
-  reset();
+  if (mode === "fill") fillPanel(); else reset();
 }
 
 /**
@@ -4892,7 +4924,12 @@ async function previewFile(name, root, opts) {
   body.classList.toggle("pv-full", kind === "pdf");
   if (kind === "pdf") {
     body.innerHTML = `<iframe class="pv-pdf" src="${url}" title="${esc(name)}"></iframe>`;
-  } else if (kind === "iframe" || kind === "svg") {
+  } else if (kind === "iframe") {
+    // HTML 是网页，不是静态长图：给它完整面板视口，让 100vh、画布和工具栏按可用高度布局。
+    // 需要缩小整页时再用右上角按钮切换。
+    body.innerHTML = `<div class="pv-fit pv-live"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" title="${esc(name)}"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
+    fitPreviewFrame(body, { fill: true });
+  } else if (kind === "svg") {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字。
     // pv-fit-mid 只给 SVG：图装得下就摆正中间，装不下（长流程图）自动退回贴顶接着滚。
     // 网页不给——文章必须从第一行读起。
@@ -4900,7 +4937,7 @@ async function previewFile(name, root, opts) {
     // 服务端对这类响应另回一条 CSP sandbox，直接在新标签页打开也一样隔离。
     // 页面里的 localStorage / Cookie 因此用不了，这是故意的。
     // fit=1 让服务端在页面尾巴挂上报尺寸的脚本（外面读不到 contentDocument 了，只能等它自己报）
-    body.innerHTML = `<div class="pv-fit${kind === "svg" ? " pv-fit-mid" : ""}"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
+    body.innerHTML = `<div class="pv-fit pv-fit-mid"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
     fitPreviewFrame(body);
     // 页面没到之前白框一块，看着像坏了。2026-09-28 实测：6 个对话同时在跑时连接被占满，
     // 这个框排队排了半分钟，点了没反应。load 之前先写一句「在载」，load 了就拿掉
