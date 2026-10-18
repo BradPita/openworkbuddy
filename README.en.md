@@ -410,8 +410,6 @@ An independent open-source project, not affiliated with Tencent or its WorkBuddy
 
 ## Acknowledgements
 
-Credit to the [linux.do](https://linux.do/) community.
-
 ## Contributors
 
 Thanks to everyone who has changed something here. Want to join them: [CONTRIBUTING.md](CONTRIBUTING.md).
