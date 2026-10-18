@@ -5325,11 +5325,11 @@ async function renderDeployBar() {
   if (!pvCurrent || !/\.html?$/i.test(pvCurrent)) { bar.style.display = "none"; return; }
   bar.style.display = "";
   if (!previewSrv.running) {
-    bar.innerHTML = `<span>这是网页，要本地起服务预览吗？（相对路径和 fetch 才正常）</span>
-      <button class="primary" id="pv-serve">本地部署预览</button>`;
+    bar.innerHTML = `<span>当前是隔离预览：数据只临时保存在本页，关闭后会清除。要保留网页数据，请本地部署后打开。</span>
+      <button class="primary" id="pv-serve">本地部署并打开</button>`;
     bar.querySelector("#pv-serve").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "启动中…";
-      previewSrv = await startPreview(false); // 默认只听本机，要给手机看再单独放开
+      previewSrv = await startPreview(false, pvCurrent); // 默认只听本机，并直接打开当前网页；要给手机看再单独放开
       if (!previewSrv.running) { toast(previewSrv.error || "本地预览服务启动失败"); } // 服务端回了原因就照它说
       renderDeployBar();
     };

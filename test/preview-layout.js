@@ -629,7 +629,7 @@ app.whenReady().then(async () => {
       localStorage.item = 42; sessionStorage.setItem("score", "separate");
       const properties = localStorage.item === "42" && Object.keys(localStorage).includes("item") && localStorage.key(0) === "score" && localStorage.hasOwnProperty("item") && localStorage instanceof Storage;
       delete localStorage.item; const removed = localStorage.getItem("item") === null;
-      let quota = false;try {localStorage.setItem("large", "x".repeat(2 * 1024 * 1024));}catch(e){quota=e.name==="QuotaExceededError";}
+      let quota = false;try {localStorage.setItem("large", "x".repeat(9 * 1024 * 1024));}catch(e){quota=e.name==="QuotaExceededError";}
       return {properties,removed,quota,atomic:localStorage.getItem("score")==="1"&&localStorage.getItem("large")===null,separate:sessionStorage.getItem("score")==="separate"};
     })()`);
     ok(Object.values(storage).every(Boolean), "临时存储支持属性与标准方法、会话隔离和配额原子性", storage);

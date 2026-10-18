@@ -5,7 +5,10 @@
 const OWBPreviewRuntime = (() => {
   function memoryStorage() {
     const values = new Map();
-    const limit = 2 * 1024 * 1024;
+    // Inventory and dashboard pages often serialize their whole database on each save.
+    // 2 MiB was too small for a realistic page and surfaced as a misleading storage-full error.
+    // Keep a bounded per-document quota because this is temporary, untrusted preview storage.
+    const limit = 8 * 1024 * 1024;
     let bytes = 0;
     const methods = Object.create(typeof Storage === "function" ? Storage.prototype : Object.prototype);
     const setItem = (key, value) => {

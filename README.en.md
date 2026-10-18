@@ -62,6 +62,8 @@ After the server starts, open <http://localhost:3800> and continue with steps 2�
 | The task waits for an answer or approval | Review the question or approval card above the input, or open the inbox |
 | The reply says “done” but the file is missing | Check the active project and results folder; ask it to check `project-update.pptx`. Do not count this attempt as a success |
 
+HTML embedded previews use isolated temporary storage (up to 8 MiB each for `localStorage` and `sessionStorage`, cleared when closed). For a web app that must keep records, choose **Deploy locally and open** above the preview. It starts a loopback-only server and opens the current page in your browser, where storage survives page refreshes. Keep using the page's own export/backup feature for important data.
+
 Next, try the [core scenarios](#you-say-it-it-hands-you-the-file) or read the [user guide](https://catcatuncle.github.io/openworkbuddy/guides/user.html). Star to bookmark the project; use **Watch → Custom → Releases** for release notifications.
 
 Adjust font size, theme and density from the profile menu → Appearance.
@@ -267,6 +269,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 19** Temporary `localStorage` and `sessionStorage` allow 8 MiB each and clear on close. Choose **Deploy locally and open** to keep app data across refreshes.
 - **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 - **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
 - **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate

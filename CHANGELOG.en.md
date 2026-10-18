@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 19** Increase isolated HTML preview `localStorage` and `sessionStorage` limits to 8 MiB each and clarify that they clear on close; **Deploy locally and open** starts the local server and opens the current page in one action, so app data persists across refreshes
 - **Oct 19** HTML previews now use the full side-panel viewport, so interactive canvases and page scrolling are no longer shrunk to fit. After dimensions are reported, you can switch to fit-to-page; SVG and other static previews keep their existing fit behavior
 - **Oct 17** Give the CLI a terminal-specific interaction: one progress line and final results by default, `/details` and `--verbose` for tool output and diagnostics, `/usage` for usage; ignore blank interjections, execute unconsumed follow-ups in the same session, list only current changes, and open recent results with a local application while preserving approvals, errors and pipe protocols
 - **Oct 16** Fix unresponsive games and buttons in HTML previews: install isolated temporary storage before page scripts initialize; workspace and library previews retain their separation from application credentials and data
