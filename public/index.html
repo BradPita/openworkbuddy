@@ -1148,6 +1148,10 @@
   .pv-fit { position: relative; width: 100%; overflow: hidden; background: #fff; border-radius: var(--radius-md); }
   .pv-fit > iframe { display: block; width: 100%; height: 100%; border: none; background: #fff; transform-origin: 0 0; }
   #pv-body > .pv-fit { flex: 1 1 auto; min-width: 0; align-self: flex-start; border-radius: 0; }
+  /* 交互网页按真正的浏览器视口运行，填满右侧面板；长内容由网页自己的滚动条处理。
+     静态网页需要看整页时，可用右上角按钮切回按宽度适配。 */
+  #pv-body > .pv-fit.pv-live { flex: 1 1 auto; min-width: 0; min-height: 0; height: 100%; align-self: stretch; }
+  #pv-body > .pv-fit.pv-live > iframe { width: 100%; height: 100%; }
   .pv-zoom { position: absolute; top: 10px; right: 10px; z-index: 2; border: 1px solid var(--owb-border); background: var(--owb-bg); color: var(--owb-text-2); border-radius: var(--radius-md); padding: 3px 10px; font-size: 12px; line-height: 1.6; cursor: pointer; opacity: .6; transition: opacity var(--owb-t-fast) var(--owb-ease); }
   .pv-zoom:hover { opacity: 1; border-color: var(--owb-brand-text); color: var(--owb-text); }
   .pv-zoom[hidden] { display: none; }

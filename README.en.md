@@ -267,6 +267,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 - **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
 - **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate
 - **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal
