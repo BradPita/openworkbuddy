@@ -408,8 +408,6 @@ An independent open-source project, not affiliated with Tencent or its WorkBuddy
  <sub>Pass it to one colleague who hand-builds decks, weekly reports and meeting notes — worth more than a hundred impressions.</sub>
 </p>
 
-## Acknowledgements
-
 ## Contributors
 
 Thanks to everyone who has changed something here. Want to join them: [CONTRIBUTING.md](CONTRIBUTING.md).
