@@ -246,46 +246,15 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 `sessions` / `resume` / `engines` / `doctor` / `pair`（扫码把手机连上来）/ `worktree`，以及 `--mode` `--perm` `-C` `-f` `--json` 等全部参数 → **[命令行用法](docs/命令行用法.md)**
 
-## 它是怎么搭的
-
-```mermaid
-flowchart TB
- subgraph Clients["入口"]
- Desktop["桌面端 / 浏览器"]
- CLI["openworkbuddy CLI"]
- IM["飞书 / 微信等 IM"]
- end
-
- subgraph Hosts["应用宿主"]
- WebHost["server.js<br/>Express API"]
- CliHost["cli.js<br/>终端交互"]
- ImHost["IM 桥接"]
- Schedule["定时调度器"]
- end
-
- Desktop --> WebHost
- CLI --> CliHost
- IM --> ImHost
- WebHost --> Runtime["Agent Runtime<br/>createAgentRuntime · runTask"]
- CliHost --> Runtime
- ImHost --> Runtime
- WebHost --> Schedule
- Schedule --> Runtime
-
- Runtime <--> Models["模型与引擎<br/>云端 LLM · Ollama<br/>Codex · Claude Code"]
- Runtime --> Gates["安全检查与审批<br/>core/safety · agent/gates"]
- Gates --> Tools["工具与扩展<br/>内置工具 · MCP<br/>Skills · 专家"]
- Runtime <--> Context["会话与项目上下文<br/>历史 · 工作区 · 记忆"]
- Runtime --> Deliver["交付文件<br/>画布 · 预览"]
- Runtime --> Trace["执行 Trace<br/>模型 · 工具 · 耗时 · Token"]
- Trace -. 可选上报 .-> Langfuse["Langfuse"]
-```
+\1<p align="center">
+ <img src="docs/images/architecture.svg" width="1120" alt="OpenWorkBuddy 技术架构：桌面端、CLI 和 IM 通过各自宿主进入 Agent Runtime，由 Runtime 协调模型、安全审批、工具、项目上下文、成果交付与执行追踪">
+</p>
 
 入口分别在 `server.js`、`cli.js`、`src/im/`；Agent 在 `src/agent/agent.js`，工具在 `src/agent/tools.js` 与 `src/tools/`。会话、配置和用量记在本机 `data/`，任务文件写入项目工作区。代码分层 → [代码架构](docs/代码架构.md)；任务流程 → [实现细节](docs/实现细节.md)
 
 ## 最新动态
 
-- **10-19** 技术架构图按真实入口与调用关系重画，节点换行显示，避免文字截断
+- **10-19** 技术架构图按实际调用关系重画，改用可缩放 SVG，保证节点文字完整显示
 - **10-19** 任务标题显示创建日期并可直接改名；成果预览显示任务名、日期和文件名。Goal 模式到单轮 100 步时检查未完成项后有限续跑。Codex CLI 沙箱拒绝会说明它不会生成后台审批卡
 - **10-19** 网页内嵌预览临时存储上限增至 64 MiB；关闭预览后清除
 - **10-19** 网页预览默认铺满右侧面板，交互画布按真实视口运行；需要查看整页时可手动切换适配

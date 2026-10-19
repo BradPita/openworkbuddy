@@ -245,46 +245,15 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 
 `sessions` / `resume` / `engines` / `doctor` / `pair` (QR-pair your phone) / `worktree`, plus `--mode` `--perm` `-C` `-f` `--json` and the rest → **[命令行用法](docs/命令行用法.md)** (Chinese)
 
-## How it's put together
-
-```mermaid
-flowchart TB
- subgraph Clients["Entry points"]
- Desktop["Desktop app / browser"]
- CLI["openworkbuddy CLI"]
- IM["Feishu / WeChat and other IM"]
- end
-
- subgraph Hosts["Application hosts"]
- WebHost["server.js<br/>Express API"]
- CliHost["cli.js<br/>terminal REPL"]
- ImHost["IM bridge"]
- Schedule["Scheduler"]
- end
-
- Desktop --> WebHost
- CLI --> CliHost
- IM --> ImHost
- WebHost --> Runtime["Agent runtime<br/>createAgentRuntime · runTask"]
- CliHost --> Runtime
- ImHost --> Runtime
- WebHost --> Schedule
- Schedule --> Runtime
-
- Runtime <--> Models["Models and engines<br/>Cloud LLM · Ollama<br/>Codex · Claude Code"]
- Runtime --> Gates["Security checks and approvals<br/>core/safety · agent/gates"]
- Gates --> Tools["Tools and extensions<br/>built-ins · MCP<br/>Skills · experts"]
- Runtime <--> Context["Session and project context<br/>history · workspace · memory"]
- Runtime --> Deliver["Deliverables<br/>canvas · preview"]
- Runtime --> Trace["Execution trace<br/>model · tools · latency · tokens"]
- Trace -. optional export .-> Langfuse["Langfuse"]
-```
+\1<p align="center">
+ <img src="docs/images/architecture.en.svg" width="1120" alt="OpenWorkBuddy architecture: desktop, CLI and IM clients enter through their hosts into the Agent Runtime, which coordinates models, safety, tools, project context, deliverables and traces">
+</p>
 
 Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent/agent.js`, with tools in `src/agent/tools.js` and `src/tools/`. Sessions, config and usage are stored locally under `data/`; task files go to the project workspace. See [code architecture](docs/代码架构.md) for layers and [implementation details](docs/实现细节.md) for a task walkthrough (both Chinese).
 
 ## What's new
 
-- **Oct 19** Rework the architecture diagram to match real entry points and runtime calls; wrap node labels to prevent clipping
+- **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
 - **Oct 19** Task titles show their creation date and can be renamed directly; previews identify the task, date and file. Goal mode checks unmet work and continues in bounded rounds after each 100-step run. Codex CLI sandbox blocks now explain that no background approval card is created
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
 - **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page

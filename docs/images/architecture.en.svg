@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1050" role="img" aria-labelledby="title desc">
+  <title id="title">OpenWorkBuddy architecture</title>
+  <desc id="desc">Clients and application hosts call the Agent Runtime, which coordinates models, safety and approvals, tools, project context, deliverables and execution traces.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#65708a"/></marker>
+    <style>
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#20263a}.bg{fill:#f8f9ff}.band{fill:#f0f2ff;stroke:#d9def3;stroke-width:2}.node{fill:#fff;stroke:#8570ef;stroke-width:2;rx:14}.runtime{fill:#ece9ff;stroke:#6952df;stroke-width:3;rx:18}.line{fill:none;stroke:#65708a;stroke-width:2.5;marker-end:url(#arrow)}.dashed{fill:none;stroke:#8b93a7;stroke-width:2.5;stroke-dasharray:8 7;marker-end:url(#arrow)}.section{font-size:20px;font-weight:700;fill:#59627b;letter-spacing:1px}.head{font-size:23px;font-weight:700}.sub{font-size:17px;fill:#606982}.runtimeHead{font-size:29px;font-weight:750}.runtimeSub{font-size:18px;fill:#535c78}.note{font-size:17px;fill:#525d78}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1400" height="1050" rx="20"/>
+  <rect class="band" x="38" y="32" width="1324" height="145" rx="18"/><text class="section" x="64" y="65">Entry points</text>
+  <rect class="node" x="80" y="87" width="350" height="66"/><rect class="node" x="525" y="87" width="350" height="66"/><rect class="node" x="970" y="87" width="350" height="66"/>
+  <text class="head" x="255" y="128" text-anchor="middle">Desktop app / browser</text><text class="head" x="700" y="128" text-anchor="middle">openworkbuddy CLI</text><text class="head" x="1145" y="128" text-anchor="middle">Feishu / WeChat / other IM</text>
+  <rect class="band" x="38" y="207" width="1324" height="166" rx="18"/><text class="section" x="64" y="240">Application hosts</text>
+  <rect class="node" x="55" y="263" width="290" height="82"/><rect class="node" x="385" y="263" width="290" height="82"/><rect class="node" x="715" y="263" width="290" height="82"/><rect class="node" x="1045" y="263" width="300" height="82"/>
+  <text class="head" x="200" y="297" text-anchor="middle">Web service</text><text class="sub" x="200" y="326" text-anchor="middle">server.js · Express API</text>
+  <text class="head" x="530" y="297" text-anchor="middle">CLI interaction</text><text class="sub" x="530" y="326" text-anchor="middle">cli.js · terminal REPL</text>
+  <text class="head" x="860" y="297" text-anchor="middle">IM bridge</text><text class="sub" x="860" y="326" text-anchor="middle">Message and task forwarding</text>
+  <text class="head" x="1195" y="297" text-anchor="middle">Scheduler</text><text class="sub" x="1195" y="326" text-anchor="middle">Registered and triggered by web host</text>
+  <path class="line" d="M255 153 V224 H200 V263"/><path class="line" d="M700 153 V263"/><path class="line" d="M1145 153 V224 H860 V263"/>
+  <path class="line" d="M345 305 H370 V395 H540"/><path class="line" d="M530 345 V395 H620"/><path class="line" d="M860 345 V395 H780"/><path class="line" d="M1195 345 V395 H860"/>
+  <rect class="runtime" x="420" y="395" width="560" height="116"/><text class="runtimeHead" x="700" y="444" text-anchor="middle">Agent Runtime</text><text class="runtimeSub" x="700" y="477" text-anchor="middle">src/agent/agent.js · createAgentRuntime · runTask</text>
+  <text class="section" x="64" y="572">Runtime modules</text>
+  <path class="line" d="M700 511 V592 H156 V625"/><path class="line" d="M700 511 V592 H426 V625"/><path class="line" d="M700 511 V625"/><path class="line" d="M700 511 V592 H974 V625"/><path class="line" d="M700 511 V592 H1244 V625"/>
+  <rect class="node" x="38" y="625" width="236" height="132"/><rect class="node" x="308" y="625" width="236" height="132"/><rect class="node" x="578" y="625" width="244" height="132"/><rect class="node" x="856" y="625" width="236" height="132"/><rect class="node" x="1126" y="625" width="236" height="132"/>
+  <text class="head" x="156" y="670" text-anchor="middle">Models and engines</text><text class="sub" x="156" y="704" text-anchor="middle">Cloud LLM · Ollama</text><text class="sub" x="156" y="730" text-anchor="middle">Codex · Claude Code</text>
+  <text class="head" x="426" y="670" text-anchor="middle">Safety and approval</text><text class="sub" x="426" y="704" text-anchor="middle">core/safety · agent/gates</text><text class="sub" x="426" y="730" text-anchor="middle">Tools run after approval</text>
+  <text class="head" x="700" y="660" text-anchor="middle">Session and project</text><text class="head" x="700" y="686" text-anchor="middle">context</text><text class="sub" x="700" y="717" text-anchor="middle">History · workspace · memory</text><text class="sub" x="700" y="740" text-anchor="middle">Local data/ and project folder</text>
+  <text class="head" x="974" y="670" text-anchor="middle">Deliverables</text><text class="sub" x="974" y="704" text-anchor="middle">Workspace files · canvas</text><text class="sub" x="974" y="730" text-anchor="middle">Preview and export</text>
+  <text class="head" x="1244" y="670" text-anchor="middle">Execution trace</text><text class="sub" x="1244" y="704" text-anchor="middle">Model · tools · latency</text><text class="sub" x="1244" y="730" text-anchor="middle">Token usage</text>
+  <path class="line" d="M426 757 V795"/><rect class="node" x="308" y="795" width="236" height="98"/><text class="head" x="426" y="835" text-anchor="middle">Tools and extensions</text><text class="sub" x="426" y="866" text-anchor="middle">Built-ins · MCP · Skills · experts</text>
+  <path class="dashed" d="M1244 757 V840 H1080"/><rect class="node" x="790" y="812" width="290" height="70"/><text class="head" x="935" y="856" text-anchor="middle">Optional: Langfuse export</text>
+  <text class="note" x="700" y="963" text-anchor="middle">The Agent Runtime coordinates tasks; modules reflect the implementation's actual entry points and calls.</text>
+</svg>
