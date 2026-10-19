@@ -256,7 +256,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 ## What's new
 
 - **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
-- **Oct 19** Task titles show their creation date and can be renamed directly; previews identify the task, date and file. Goal mode checks unmet work and continues in bounded rounds after each 100-step run. Codex CLI sandbox blocks now explain that no background approval card is created
+- **Oct 19** Rename tasks and identify dated previews; Goal checks unmet work and resumes in bounded rounds after 100 steps; CLI sandbox denials explain approval limits
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
 - **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 - **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
