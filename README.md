@@ -257,34 +257,35 @@ flowchart TB
  end
 
  subgraph Hosts["应用宿主"]
- WebHost["server.js · Express API"]
- CliHost["cli.js · 终端交互"]
- ImHost["src/im · IM 桥接"]
+ WebHost["server.js<br/>Express API"]
+ CliHost["cli.js<br/>终端交互"]
+ ImHost["IM 桥接"]
  Schedule["定时调度器"]
  end
 
  Desktop --> WebHost
  CLI --> CliHost
  IM --> ImHost
- WebHost --> Runtime["src/agent/agent.js · createAgentRuntime / runTask"]
+ WebHost --> Runtime["Agent Runtime<br/>createAgentRuntime · runTask"]
  CliHost --> Runtime
  ImHost --> Runtime
  WebHost --> Schedule
  Schedule --> Runtime
 
- Runtime <--> Models["模型与执行引擎\n云端 LLM · Ollama · Codex / Claude Code"]
- Runtime --> Gates["安全检查与审批\nsrc/core/safety · src/agent/gates"]
- Gates --> Tools["工具与扩展\nsrc/agent/tools.js · src/tools · MCP · Skills · 专家"]
- Runtime <--> Context["会话与项目上下文\n历史 · 工作区文件 · 记忆"]
- Runtime --> Deliver["交付\n工作区文件 · 画布与预览"]
- Runtime --> Trace["执行 Trace\n模型 · 工具 · 耗时 · Token"]
+ Runtime <--> Models["模型与引擎<br/>云端 LLM · Ollama<br/>Codex · Claude Code"]
+ Runtime --> Gates["安全检查与审批<br/>core/safety · agent/gates"]
+ Gates --> Tools["工具与扩展<br/>内置工具 · MCP<br/>Skills · 专家"]
+ Runtime <--> Context["会话与项目上下文<br/>历史 · 工作区 · 记忆"]
+ Runtime --> Deliver["交付文件<br/>画布 · 预览"]
+ Runtime --> Trace["执行 Trace<br/>模型 · 工具 · 耗时 · Token"]
  Trace -. 可选上报 .-> Langfuse["Langfuse"]
 ```
 
-会话、配置和用量记在本机 `data/`，任务文件写入项目工作区。代码分层与依赖方向 → [代码架构](docs/代码架构.md)；单次任务细节 → [实现细节](docs/实现细节.md)
+入口分别在 `server.js`、`cli.js`、`src/im/`；Agent 在 `src/agent/agent.js`，工具在 `src/agent/tools.js` 与 `src/tools/`。会话、配置和用量记在本机 `data/`，任务文件写入项目工作区。代码分层 → [代码架构](docs/代码架构.md)；任务流程 → [实现细节](docs/实现细节.md)
 
 ## 最新动态
 
+- **10-19** 技术架构图按真实入口与调用关系重画，节点换行显示，避免文字截断
 - **10-19** 任务标题显示创建日期并可直接改名；成果预览显示任务名、日期和文件名。Goal 模式到单轮 100 步时检查未完成项后有限续跑。Codex CLI 沙箱拒绝会说明它不会生成后台审批卡
 - **10-19** 网页内嵌预览临时存储上限增至 64 MiB；关闭预览后清除
 - **10-19** 网页预览默认铺满右侧面板，交互画布按真实视口运行；需要查看整页时可手动切换适配

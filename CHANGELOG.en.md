@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 19** Fix the release CI list so it runs the Goal step-resume suite; add the missing test copyright line; redraw the architecture diagram around actual hosts, runtime, security gates and delivery paths
 - **Oct 19** Show each task's creation date beside its title, add a direct rename button, and label previews from the active task as “task name · date / filename.” Keep stored directory paths stable so old links continue to work. Goal mode now checks unmet criteria and resumes in bounded rounds after a per-run 100-step cap. Explain that Codex CLI sandbox blocks do not create background approval cards
 - **Oct 19** Increase isolated HTML preview temporary `localStorage` and `sessionStorage` limits to 64 MiB each; they clear when the preview closes. Locally deployed pages use the browser's native storage quota, so keep using the page's export/backup feature for important data.
 - **Oct 19** HTML previews now use the full side-panel viewport, so interactive canvases and page scrolling are no longer shrunk to fit. After dimensions are reported, you can switch to fit-to-page; SVG and other static previews keep their existing fit behavior
