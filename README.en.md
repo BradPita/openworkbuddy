@@ -248,11 +248,22 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 ## How it's put together
 
 ```mermaid
-flowchart LR
- Entry["Desktop · CLI · IM"] --> Runtime["Local runtime"] --> Agent["Agent"] --> Output["Files"]
-```
+flowchart TB
+ subgraph Entry["Your devices"]
+ Desktop["Desktop / Web"]
+ CLI["openworkbuddy CLI"]
+ IM["Feishu / WeChat and other remote entries"]
+ end
 
-The Agent uses **models, Skills / MCP tools, project files and memory** as needed. Run traces stay local by default; Langfuse is optional.
+ Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
+ Runtime --> Agent["Agent orchestration\nplanning · tool calls · file acceptance"]
+ Agent <--> Models["Model routing\ncloud LLM / Ollama / Claude Code / Codex"]
+ Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
+ Agent <--> Workspace["Local workspace\nfiles · assets · project context · memory"]
+ Agent --> Canvas["Executable infinite canvas\nscript · characters · shots · assets · timeline"]
+ Agent --> Trace["Local trace\nmodel · tools · latency · tokens · I/O"]
+ Trace -. optional .-> Langfuse["Langfuse"]
+```
 
 The diagram doubles as a reading order: start at `server.js`, then see how `src/agent/agent.js` orchestrates models and tools. Details → [实现细节](docs/实现细节.md), code layering → [代码架构](docs/代码架构.md) (both Chinese)
 
@@ -262,6 +273,10 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
 - **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 - **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
+
+<details>
+<summary>Earlier updates (Oct 16 and older)</summary>
+
 - **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate
 - **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal
 - **Oct 16** Preview region annotations and line comments enter editable revision drafts; individual change blocks can be reverted and restored
@@ -284,7 +299,9 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Oct 10** Members, auditors and branch-org accounts can create multiple projects too: each gets its own folder inside their own working folder, and earlier outputs stay in the default project
 - **Oct 10** Drag from a canvas card's port onto another card to link them; cards that can't take the link turn red and say why. "+" adds a card that's already linked, and titles and prompts can be edited right on the card
 
-Older entries → **[Changelog](CHANGELOG.en.md)**.
+</details>
+
+Full history → **[Changelog](CHANGELOG.en.md)**.
 
 ## ⚠️ This agent has a shell
 
