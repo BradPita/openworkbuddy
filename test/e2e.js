@@ -16141,7 +16141,13 @@ async function testUpdaterVersions() {
 
   // 两种安装方式给的话必须不一样，且都得说人话
   const src = U.howToUpdate("source");
-  assert(/git pull/.test(src) && /不用重装/.test(src), "源码安装没说清「不用重装」：" + src);
+  assert(/只查询 GitHub 发布版本，不会拉取源码/.test(src), "源码版检查更新没有说明它只查版本、不会拉取代码：" + src);
+  assert(/git status --short/.test(src) && /git pull --ff-only && npm install/.test(src), "源码安装没有先检查状态并使用只快进更新：" + src);
+  assert(/工作区干净/.test(src) && /本地改动或分叉/.test(src) && /保留旧目录/.test(src), "源码安装没保护未提交改动与分叉：" + src);
+  assert(/不要在里面 pull、reset 或覆盖/.test(src) && /另建干净源码副本/.test(src), "源码安装没有建议隔离更新：" + src);
+  assert(/OPENWORKBUDDY_HOME 指回旧目录/.test(src) && /确认会话和成果都在/.test(src), "源码安装没有守住现有会话与成果数据根：" + src);
+  const sourceHelpEn = require("../public/js/i18n").tr(src, "en");
+  assert(!/[\u3400-\u9fff]/.test(sourceHelpEn) && /GitHub Releases/.test(sourceHelpEn), "源码安全更新提示在英文界面仍显示中文：" + sourceHelpEn);
   assert(/dmg/.test(U.howToUpdate("app", "darwin")), "macOS 装包版没说下 dmg");
   assert(/setup\.exe/.test(U.howToUpdate("app", "win32")), "Windows 装包版没说下 setup.exe");
   for (const p of ["darwin", "win32"]) {

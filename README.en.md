@@ -255,6 +255,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 20** Source updates check Git state first; keep modified or divergent checkouts intact to protect sessions and deliverables
 - **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
 - **Oct 19** Rename tasks and identify dated previews; Goal checks unmet work and resumes in bounded rounds after 100 steps; CLI sandbox denials explain approval limits
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.

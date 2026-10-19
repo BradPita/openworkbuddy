@@ -3345,6 +3345,8 @@
   // 外部引擎开跑前那道闸（engines/gate.js、server.js）的话：引擎名和型号夹在中间。引擎名（本机 Codex…）再查一次词典
   const engName = (s) => { const k = String(s).trim(); return Object.prototype.hasOwnProperty.call(DICT.en, k) ? DICT.en[k] : k; };
   PATTERNS.en.push(
+    [/^你是从源码跑的：检查更新只查询 GitHub 发布版本，不会拉取源码。先退出应用，在项目目录运行 git status --short。只有工作区干净且分支可快进时，才执行 git pull --ff-only && npm install 后重启。若有本地改动或分叉，保留旧目录，不要在里面 pull、reset 或覆盖；另建干净源码副本，并在启动时将 OPENWORKBUDDY_HOME 指回旧目录。确认会话和成果都在后，再整理旧改动。$/,
+      "This app runs from source. Check for updates only reads GitHub Releases; it does not sync source code. Quit the app and run git status --short in the project directory. Run git pull --ff-only && npm install, then restart, only if the working tree is clean and the branch can fast-forward. If you have local changes or diverged history, keep the old directory and don't pull, reset, or overwrite it. Create a clean source copy and set OPENWORKBUDDY_HOME to the old data directory when launching it. Sort out the old changes only after confirming your sessions and deliverables are present."],
     [/^放行的型号：(.+)$/, "Allowed models: $1"],
     [/^(.+?) ?要平台管理员打开才能用，也可以在 设置 → 智能体 → 底层引擎 切回内置引擎。$/, (m) => `${engName(m[1].trim())} needs the platform admin to turn it on. Or switch back to the built-in engine in Settings → Agent → Engine.`],
     [/^(.+?) ?的附加参数里有换型号的「(.+)」，到 config\.json 的 (\S+) 里删掉它。$/, (m) => `${engName(m[1])}'s extra arguments switch the model (“${m[2]}”). Remove it from ${m[3]} in config.json.`],
