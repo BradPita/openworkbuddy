@@ -249,23 +249,38 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 
 ```mermaid
 flowchart TB
- subgraph Entry["Your devices"]
- Desktop["Desktop / Web"]
+ subgraph Clients["Entry points"]
+ Desktop["Desktop app / browser"]
  CLI["openworkbuddy CLI"]
- IM["Feishu / WeChat and other remote entries"]
+ IM["Feishu / WeChat and other IM"]
  end
 
- Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
- Runtime --> Agent["Agent orchestration\nplanning · tool calls · file acceptance"]
- Agent <--> Models["Model routing\ncloud LLM / Ollama / Claude Code / Codex"]
- Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
- Agent <--> Workspace["Local workspace\nfiles · assets · project context · memory"]
- Agent --> Canvas["Executable infinite canvas\nscript · characters · shots · assets · timeline"]
- Agent --> Trace["Local trace\nmodel · tools · latency · tokens · I/O"]
- Trace -. optional .-> Langfuse["Langfuse"]
+ subgraph Hosts["Application hosts"]
+ WebHost["server.js · Express API"]
+ CliHost["cli.js · terminal REPL"]
+ ImHost["src/im · IM bridge"]
+ Schedule["Scheduler"]
+ end
+
+ Desktop --> WebHost
+ CLI --> CliHost
+ IM --> ImHost
+ WebHost --> Runtime["src/agent/agent.js · createAgentRuntime / runTask"]
+ CliHost --> Runtime
+ ImHost --> Runtime
+ WebHost --> Schedule
+ Schedule --> Runtime
+
+ Runtime <--> Models["Models and execution engines\ncloud LLM · Ollama · Codex / Claude Code"]
+ Runtime --> Gates["Security checks and approvals\nsrc/core/safety · src/agent/gates"]
+ Gates --> Tools["Tools and extensions\nsrc/agent/tools.js · src/tools · MCP · Skills · experts"]
+ Runtime <--> Context["Session and project context\nhistory · workspace files · memory"]
+ Runtime --> Deliver["Delivery\nworkspace files · canvas and preview"]
+ Runtime --> Trace["Execution trace\nmodel · tools · latency · tokens"]
+ Trace -. optional export .-> Langfuse["Langfuse"]
 ```
 
-The diagram doubles as a reading order: start at `server.js`, then see how `src/agent/agent.js` orchestrates models and tools. Details → [实现细节](docs/实现细节.md), code layering → [代码架构](docs/代码架构.md) (both Chinese)
+Sessions, config and usage are stored locally under `data/`; task files go to the project workspace. See [code architecture](docs/代码架构.md) for layers and dependencies, and [implementation details](docs/实现细节.md) for a task walkthrough (both Chinese).
 
 ## What's new
 

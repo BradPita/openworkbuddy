@@ -250,23 +250,38 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 ```mermaid
 flowchart TB
- subgraph Entry["你的设备"]
- Desktop["桌面端 / Web"]
+ subgraph Clients["入口"]
+ Desktop["桌面端 / 浏览器"]
  CLI["openworkbuddy CLI"]
- IM["飞书 / 微信等远程入口"]
+ IM["飞书 / 微信等 IM"]
  end
 
- Entry --> Runtime["OpenWorkBuddy 本地运行时\n会话 · 权限 · 项目 · API"]
- Runtime --> Agent["Agent 编排\n规划 · 工具调用 · 文件验收"]
- Agent <--> Models["模型路由\n云端 LLM / Ollama / Claude Code / Codex"]
- Agent <--> Capabilities["能力层\nMarkdown Skills · 专家 · MCP · Plugins"]
- Agent <--> Workspace["本机工作区\n文件 · 素材 · 项目上下文 · 记忆"]
- Agent --> Canvas["可执行无限画布\n剧本 · 角色 · 镜头 · 素材 · 时间线"]
- Agent --> Trace["本地 Trace\n模型 · 工具 · 耗时 · Token · 输入输出"]
- Trace -. 可选 .-> Langfuse["Langfuse"]
+ subgraph Hosts["应用宿主"]
+ WebHost["server.js · Express API"]
+ CliHost["cli.js · 终端交互"]
+ ImHost["src/im · IM 桥接"]
+ Schedule["定时调度器"]
+ end
+
+ Desktop --> WebHost
+ CLI --> CliHost
+ IM --> ImHost
+ WebHost --> Runtime["src/agent/agent.js · createAgentRuntime / runTask"]
+ CliHost --> Runtime
+ ImHost --> Runtime
+ WebHost --> Schedule
+ Schedule --> Runtime
+
+ Runtime <--> Models["模型与执行引擎\n云端 LLM · Ollama · Codex / Claude Code"]
+ Runtime --> Gates["安全检查与审批\nsrc/core/safety · src/agent/gates"]
+ Gates --> Tools["工具与扩展\nsrc/agent/tools.js · src/tools · MCP · Skills · 专家"]
+ Runtime <--> Context["会话与项目上下文\n历史 · 工作区文件 · 记忆"]
+ Runtime --> Deliver["交付\n工作区文件 · 画布与预览"]
+ Runtime --> Trace["执行 Trace\n模型 · 工具 · 耗时 · Token"]
+ Trace -. 可选上报 .-> Langfuse["Langfuse"]
 ```
 
-这张图也是读代码的路线：从 `server.js` 进去，再看 `src/agent/agent.js` 怎么编排模型和工具。细节 → [实现细节](docs/实现细节.md)，代码怎么分层 → [代码架构](docs/代码架构.md)
+会话、配置和用量记在本机 `data/`，任务文件写入项目工作区。代码分层与依赖方向 → [代码架构](docs/代码架构.md)；单次任务细节 → [实现细节](docs/实现细节.md)
 
 ## 最新动态
 
