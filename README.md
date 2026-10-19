@@ -249,27 +249,17 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 ## 它是怎么搭的
 
 ```mermaid
-flowchart TB
- subgraph Entry["你的设备"]
- Desktop["桌面端 / Web"]
- CLI["openworkbuddy CLI"]
- IM["飞书 / 微信等远程入口"]
- end
-
- Entry --> Runtime["OpenWorkBuddy 本地运行时\n会话 · 权限 · 项目 · API"]
- Runtime --> Agent["Agent 编排\n规划 · 工具调用 · 文件验收"]
- Agent <--> Models["模型路由\n云端 LLM / Ollama / Claude Code / Codex"]
- Agent <--> Capabilities["能力层\nMarkdown Skills · 专家 · MCP · Plugins"]
- Agent <--> Workspace["本机工作区\n文件 · 素材 · 项目上下文 · 记忆"]
- Agent --> Canvas["可执行无限画布\n剧本 · 角色 · 镜头 · 素材 · 时间线"]
- Agent --> Trace["本地 Trace\n模型 · 工具 · 耗时 · Token · 输入输出"]
- Trace -. 可选 .-> Langfuse["Langfuse"]
+flowchart LR
+ Entry["桌面端 · CLI · IM"] --> Runtime["本地运行时"] --> Agent["Agent"] --> Output["成果文件"]
 ```
+
+Agent 按需使用**模型、Skills / MCP 工具、项目文件与记忆**。执行记录默认留在本机；Langfuse 可选。
 
 这张图也是读代码的路线：从 `server.js` 进去，再看 `src/agent/agent.js` 怎么编排模型和工具。细节 → [实现细节](docs/实现细节.md)，代码怎么分层 → [代码架构](docs/代码架构.md)
 
 ## 最新动态
 
+- **10-19** 任务标题显示创建日期并可直接改名；成果预览显示任务名、日期和文件名。Goal 模式到单轮 100 步时检查未完成项后有限续跑。Codex CLI 沙箱拒绝会说明它不会生成后台审批卡
 - **10-19** 网页内嵌预览临时存储上限增至 64 MiB；关闭预览后清除
 - **10-19** 网页预览默认铺满右侧面板，交互画布按真实视口运行；需要查看整页时可手动切换适配
 - **10-17** CLI 默认简洁显示，过程与用量按需查看；修复空插话、旧文件重复列出和补充要求丢失，支持直接打开本会话成果

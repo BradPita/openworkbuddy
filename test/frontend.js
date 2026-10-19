@@ -170,6 +170,11 @@ const P0 = APP02X.indexOf("// ---------------- 文件预览 ----------------");
 const P1 = APP02X.indexOf("// ---- 本地部署预览");
 if (P0 < 0 || P1 <= P0) throw new Error("app-01.js 里的文件预览段找不到了（段标题被改过？），前端测试没法定位真源码");
 const PREVIEW_SRC = APP02X.slice(P0, P1);
+const DEPLOY_SRC = APP02X.slice(P1);
+if (!/网页默认在应用内预览/.test(DEPLOY_SRC) || !/才手动启动本机预览服务/.test(DEPLOY_SRC))
+  throw new Error("网页预览说明必须明确保留应用内默认预览、本机服务按需手动启动");
+if (!/bar\.querySelector\("#pv-serve"\)\.onclick\s*=\s*async/.test(DEPLOY_SRC))
+  throw new Error("本机预览服务必须由用户点击按钮启动，不能随打开文件自动部署");
 
 // 路径助手（dirOf / fpath / joinRel / mdImg）。预览段现在直接依赖它们——
 // 成果按会话分了子文件夹，整条路径要是被当成一个参数编码，斜杠成 %2F，
@@ -4024,8 +4029,8 @@ const ENGINE_I18N_CASES = [
   ["本项目工具没能挂给引擎（spawn ENOENT），这次只能用 CLI 自带的工具", "），这次只能用 CLI 自带的工具"],
   ["这几个连接器走网址，本机引擎挂不上：notion、figma", "这几个连接器走网址，本机引擎挂不上："],
   ["安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。"],
-  ["安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意）——它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。"],
-  ["按你的安全设置，本机 CLI 不许自己跑这些命令：sudo、rm（这条路没有审批通道，只能直接禁）。", "（这条路没有审批通道，只能直接禁）。"],
+  ["安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意），所以不会生成后台审批卡；它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。"],
+  ["按你的安全设置，本机 CLI 不许自己跑这些命令：sudo、rm（这条路没有审批通道，不会生成后台放行卡，只能直接禁）。", "（这条路没有审批通道，不会生成后台放行卡，只能直接禁）。"],
   ["这一趟是计划模式，本机 CLI 按只读跑；引擎设置里手填的档位 bypassPermissions、沙箱 danger-full-access、全局连接器、附加参数 --yolo / --full-auto这次不用", "本机 CLI 按只读跑；引擎设置里手填的"],
   ["这一趟是问答模式，本机 CLI 按只读跑；引擎设置里手填的全局连接器这次不用", "这次不用"],
   ["引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的"],
@@ -4112,6 +4117,9 @@ const HIST_I18N_CASES = [
   ["标为未读", "Mark as unread"],
   ["标为已读", "Mark as read"],
   ["改名…", "Rename…"],
+  ["重命名任务", "Rename task"],
+  ["重命名当前任务", "Rename current task"],
+  ["任务创建日期", "Task creation date"],
   ["移到项目…", "Move to project…"],
   ["移到哪个项目", "Move to project"],
   ["改个名字", "Rename task"],
@@ -4136,11 +4144,18 @@ function testHistI18n() {
   const root = path.join(__dirname, "..");
   const jsDir = path.join(root, "public", "js");
   const app02 = fs.readFileSync(path.join(jsDir, "app-02.js"), "utf8");
+  const app01 = fs.readFileSync(path.join(jsDir, "app-01.js"), "utf8");
+  const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
+  const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
+  ok("当前任务标题旁有直接重命名按钮", /id="session-rename"[^>]*hidden/.test(html) && /sessionRenameButton\.addEventListener\("click"/.test(app02), "没有找到直接入口");
+  ok("当前任务标题旁显示固定创建日期", /id="session-date"/.test(html) && /date\.textContent = `\$\{d\.getFullYear\(\)\}-/.test(app02), "任务日期标签没有接入");
+  ok("旧会话日期取首条消息或存量时间兜底", /created_at: firstUserAt \|\| s\.created_at \|\| s\.updated_at/.test(server), "服务端没有提供兼容旧会话的创建日期");
+  ok("预览对应当前任务成果时用任务名、日期和文件名显示", /activeTask\.dir/.test(app01) && /activeTask\.title/.test(app01) && /normalizedName\.slice\(taskPrefix\.length\)/.test(app01), "预览标题没有关联会话名与成果目录");
   // 源码里真这么拼：措辞改了这边当场红，词典跟着改
   for (const frag of ["\"已置顶\"", "`置顶「${t}」`", "`取消置顶「${t}」`", "`${d.getMonth() + 1}月${d.getDate()}日`", "`产出过 ${s.files} 个文件`", "`${on ? \"没置顶上\" : \"没取消掉\"}：${err}`"]) {
     ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");
   }
-  for (const frag of ['title="更多操作"', "`更多操作「${t}」`", "}」的操作`", '"在新窗口打开"', '"标为未读"', '"标为已读"', '"改名…"', '"移到项目…"', ">移到哪个项目<",
+  for (const frag of ['title="更多操作"', "`更多操作「${t}」`", "}」的操作`", '"在新窗口打开"', '"标为未读"', '"标为已读"', '"改名…"', '"重命名当前任务"', '"任务创建日期"', '"移到项目…"', ">移到哪个项目<",
     'title: "改个名字"', 'ok: "改好"', "`最多 ${HIST_TITLE_MAX} 个字`", "`名字没改成：${err}`", "`没挪成：${err}`", "`已移到「${project}」，之前的文件还在原处`",
     '"<span>拖到这里置顶</span>"', 'toast("下回直接把任务拖进「已置顶」也行"']) {
     ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");

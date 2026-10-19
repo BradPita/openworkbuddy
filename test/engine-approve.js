@@ -918,7 +918,7 @@ async function waitFor(fn, ms = 5000) {
     const TIP = "想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」";
     ok(g0.note === `按你的安全设置，本机 Claude Code 这一趟不跑：${LIST}。${TIP}。`, "claude 没开审批：运行页说这一趟不跑哪些、勾哪颗能改成先问", g0.note);
     const plain = security.engineGuard(sec());
-    ok(plain.note === `按你的安全设置，本机 CLI 不许自己跑这些命令：${LIST}（这条路没有审批通道，只能直接禁）。`, "codex（真没有审批通道）：照旧这么说", plain.note);
+    ok(plain.note === `按你的安全设置，本机 CLI 不许自己跑这些命令：${LIST}（这条路没有审批通道，不会生成后台放行卡，只能直接禁）。`, "codex（真没有审批通道）：明确说不会生成后台放行卡", plain.note);
     const askN = security.engineGuard(sec({ permission_mode: "ask" }), { canAsk: true }).note;
     ok(askN === `安全档位是「每步都问」，本机 Claude Code 这一趟没开审批，要写文件或跑命令会被直接拒。${TIP}。`, "每步都问档、claude 没开审批：照实说会被直接拒、勾哪颗", askN);
     security.setMultiUser(() => true);

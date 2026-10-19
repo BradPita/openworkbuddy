@@ -3741,6 +3741,9 @@
     "标为未读": "Mark as unread",
     "标为已读": "Mark as read",
     "改名…": "Rename…",
+    "重命名任务": "Rename task",
+    "重命名当前任务": "Rename current task",
+    "任务创建日期": "Task creation date",
     "移到项目…": "Move to project…",
     "移到哪个项目": "Move to project",
     "改个名字": "Rename task",
@@ -3787,8 +3790,8 @@
     "全自动": "Full auto",
     "安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。":
       "Safety level is “Look only”: the local CLI runs read-only this time, with no file writes and no commands.",
-    "安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意）——它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。":
-      "Safety level is “Ask every step”, but the local CLI has no approval channel (it's non-interactive, so nobody can click Allow). Any file write or command it tries is refused. To let it act, switch to “Edit files for me”.",
+    "安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意），所以不会生成后台审批卡；它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。":
+      "Safety level is “Ask every step”, but the local CLI has no approval channel (it's non-interactive, so nobody can click Allow), so no background approval card will appear. Any file write or command it tries is refused. To let it act, switch to “Edit files for me”.",
     "引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的":
       "The engine's previous session is gone, so the chat history is sent over again to start a new one",
   })) if (!(zh in DICT.en)) DICT.en[zh] = en;
@@ -3800,8 +3803,8 @@
   PATTERNS.en.push(
     [/^本项目工具没能挂给引擎（(.+)），这次只能用 CLI 自带的工具$/, "Couldn't attach this project's tools to the engine ($1), so only the CLI's own tools are available this time"],
     [/^这几个连接器走网址，本机引擎挂不上：(.+)$/, (m) => `These connectors work over a URL, which the local engine can't attach: ${zhList(m[1])}`],
-    [/^按你的安全设置，本机 CLI 不许自己跑这些命令：(.+)（这条路没有审批通道，只能直接禁）。$/,
-      (m) => `Per your safety settings, the local CLI may not run these commands on its own: ${zhList(m[1])} (there's no approval channel here, so they're blocked outright).`],
+    [/^按你的安全设置，本机 CLI 不许自己跑这些命令：(.+)（这条路没有审批通道，不会生成后台放行卡，只能直接禁）。$/,
+      (m) => `Per your safety settings, the local CLI may not run these commands on its own: ${zhList(m[1])} (this path has no approval channel, so no background approval card will appear; the commands are blocked).`],
     [/^这一趟是(计划|问答)模式，本机 CLI 按只读跑；引擎设置里手填的(.+)这次不用$/,
       (m) => `This run is in ${m[1] === "计划" ? "Plan" : "Ask"} mode, so the local CLI runs read-only. Skipped this time from your engine settings: ${m[2].split("、").map(offEn).join(", ")}`],
     [/^Codex 生成的图已放进对话目录：(.+)$/, (m) => `Images Codex generated are now in this chat's folder: ${zhList(m[1])}`],

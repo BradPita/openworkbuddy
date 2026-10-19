@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
+const path = require("path");
 /**
  * 命令行参数：一张声明表，解析和帮助都从它长出来。
  *
@@ -136,6 +137,11 @@ function looksLikeProse(tok) {
 
 function problem(code, message, hint) {
   return { code, message, hint: hint || "" };
+}
+
+/** 命令行默认在启动目录工作；`-C` 只覆盖当前调用，不读写持久工作目录设置。 */
+function startupWorkspace(explicit, cwd = process.cwd()) {
+  return path.resolve(cwd || process.cwd(), explicit || ".");
 }
 
 /** 下一个词能不能当值用：它自己是个选项的话就不能，不然会把人的 --json 吃掉 */
@@ -427,4 +433,4 @@ function problemText(problems) {
   return problems.map((p) => `${p.message}${p.hint ? "\n  " + p.hint : ""}`).join("\n") + "\n";
 }
 
-module.exports = { FLAGS, SUBS, DEFAULTS, parse, helpText, problemText, completionScript, nearestFlag, nearestSub, looksLikeProse, editDistance };
+module.exports = { FLAGS, SUBS, DEFAULTS, parse, helpText, problemText, completionScript, nearestFlag, nearestSub, looksLikeProse, editDistance, startupWorkspace };

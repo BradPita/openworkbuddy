@@ -660,7 +660,7 @@ if (sub === "doctor") {
       paths: require("./src/platform/paths"),
       config,
       engines: require("./src/engines"),
-      workspaceDir: opts.workspace || config.workspace_dir || getWorkspaceDir(),
+      workspaceDir: cliArgs.startupWorkspace(opts.workspace, process.cwd()),
       bootCheck: require("./src/platform/boot-check"),
     });
     process.stdout.write(doctor.render(items, (t, lv) => (paint[lv] || ((x) => x))(t)));
@@ -671,8 +671,8 @@ if (sub === "doctor") {
 }
 /** 设置里挑的那个底层引擎。命令行没有登录态，取不到个人偏好，读的就是这份全局配置 */
 const cfgEngine = () => String((config.agent || {}).engine || "builtin").trim() || "builtin";
-// -C 优先于配置：命令行是「这一次」的意思，不该把配置文件改掉
-const wantWorkspace = opts.workspace || config.workspace_dir;
+// -C 优先于启动目录：它只覆盖这次调用，不改持久设置
+const wantWorkspace = cliArgs.startupWorkspace(opts.workspace, process.cwd());
 if (wantWorkspace) {
   try { setWorkspaceDir(wantWorkspace); }
   catch (e) {
@@ -1952,15 +1952,22 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
       saveSess();
       break;
     }
-    // 这轮是被超时/上限硬切断的：同样的条件再跑一轮大概率原样再撞，别把用户的时间和钱烧在死循环里
-    if (roundStopped) {
+    // 单次步数上限是 Goal 的分段边界：核对完进度后，只带未达成项进入下一轮。
+    // 超时、手动停止等其它硬终止继续暂停，避免盲目重跑。
+    const continueStepLimitedGoal = goalKit.canContinueAfterStepLimit({
+      goalMode: modes.isGoalMode(mode), active: sess.goal.status === "active",
+      stopReason: roundStopped, aborted: ctrl.signal.aborted,
+    });
+    if (roundStopped && !continueStepLimitedGoal) {
       sess.goal.paused = `这轮任务被强制收尾（${roundStopped}），暂停自动补跑`;
       prog(yellow(`  暂停：${sess.goal.paused}；解决后说一句「继续」接着冲\n`));
       live.event({ type: "goal", goal: sess.goal });
       saveSess();
       break;
     }
-    const fb = goalKit.feedbackFor(sess.goal);
+    const fb = goalKit.feedbackFor(sess.goal) + (continueStepLimitedGoal
+      ? `\n\n【目标续跑】上一轮用完了单次步数预算；已核对完成项，只继续补上面列出的未达标项。`
+      : "");
     sess.history.push({ role: "user", content: fb });
     prog(dim(`\n  » 第 ${sess.goal.round + 1} 轮：只补没达成的那几项\n`));
    }

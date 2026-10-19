@@ -259,6 +259,10 @@
   .topbar button.title { flex: 1; min-width: 0; min-height: 44px; margin: 0 12px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
   .topbar button.title:disabled { cursor: default; }
   .topbar button.title:not(:disabled)::after { content: ""; display: inline-block; margin: 0 0 2px 7px; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); opacity: .55; }
+  .topbar #session-rename { flex: 0 0 auto; width: 30px; height: 30px; margin-left: -8px; }
+  .topbar #session-rename[hidden] { display: none; }
+  .topbar .session-date { flex: 0 0 auto; color: var(--owb-text-3); font-size: 11px; white-space: nowrap; margin-right: 8px; }
+  .topbar .session-date[hidden] { display: none; }
   .session-context { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; color: var(--owb-text-3); font-size: 11px; }
   .session-context[hidden] { display: none; }
   .session-context .state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--owb-text-3); }
@@ -3157,6 +3161,8 @@
   <div class="topbar">
     <button id="toggle-side" class="icon-btn" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
     <button type="button" class="title" id="session-title" aria-haspopup="menu" aria-expanded="false" disabled>新任务</button>
+    <button type="button" class="icon-btn" id="session-rename" title="重命名任务" aria-label="重命名当前任务" hidden><svg class="i" aria-hidden="true"><use href="#i-pencil"></use></svg></button>
+    <span class="session-date" id="session-date" hidden></span>
     <span class="session-context" id="session-context" hidden><span class="state-dot" id="session-context-dot"></span><span id="session-context-text"></span></span>
     <div class="right"><div class="inbox-wrap"><button type="button" class="icon-btn" id="inbox-toggle" title="收件箱" aria-label="收件箱" aria-expanded="false" aria-controls="attention-inbox"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span id="inbox-count" hidden></span></button><div id="attention-inbox" role="region" aria-label="收件箱" hidden></div></div><button id="toggle-files" title="查看这个任务的文件"><svg class="i" aria-hidden="true"><use href="#i-file"></use></svg> <span id="session-file-count">文件</span></button></div>
   </div>

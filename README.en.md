@@ -248,27 +248,17 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 ## How it's put together
 
 ```mermaid
-flowchart TB
- subgraph Entry["Your devices"]
- Desktop["Desktop / Web"]
- CLI["openworkbuddy CLI"]
- IM["Feishu / WeChat and other remote entries"]
- end
-
- Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
- Runtime --> Agent["Agent orchestration\nplanning · tool calls · file acceptance"]
- Agent <--> Models["Model routing\ncloud LLM / Ollama / Claude Code / Codex"]
- Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
- Agent <--> Workspace["Local workspace\nfiles · assets · project context · memory"]
- Agent --> Canvas["Executable infinite canvas\nscript · characters · shots · assets · timeline"]
- Agent --> Trace["Local trace\nmodel · tools · latency · tokens · I/O"]
- Trace -. optional .-> Langfuse["Langfuse"]
+flowchart LR
+ Entry["Desktop · CLI · IM"] --> Runtime["Local runtime"] --> Agent["Agent"] --> Output["Files"]
 ```
+
+The Agent uses **models, Skills / MCP tools, project files and memory** as needed. Run traces stay local by default; Langfuse is optional.
 
 The diagram doubles as a reading order: start at `server.js`, then see how `src/agent/agent.js` orchestrates models and tools. Details → [实现细节](docs/实现细节.md), code layering → [代码架构](docs/代码架构.md) (both Chinese)
 
 ## What's new
 
+- **Oct 19** Task titles show their creation date and can be renamed directly; previews identify the task, date and file. Goal mode checks unmet work and continues in bounded rounds after each 100-step run. Codex CLI sandbox blocks now explain that no background approval card is created
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
 - **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 - **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications

@@ -5070,7 +5070,21 @@ async function previewFile(name, root, opts) {
   pvPanel.classList.add("show");
   unloadPreview(); // 上一份（网页/音视频）先停掉再换，别在后台接着跑到被垃圾回收
   document.getElementById("pv-body").innerHTML = pvNotice("loader-circle", "正在打开…");
-  document.getElementById("pv-name").textContent = name;
+  const pvName = document.getElementById("pv-name");
+  const activeTask = typeof sessionId !== "undefined" && typeof sessions !== "undefined" && sessionId
+    ? sessions.find((s) => s.id === sessionId) : null;
+  const taskDir = activeTask && String(activeTask.dir || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedName = String(name).replace(/\\/g, "/");
+  const taskPrefix = taskDir ? taskDir + "/" : "";
+  if (taskPrefix && normalizedName.startsWith(taskPrefix) && activeTask.created_at) {
+    const created = new Date(activeTask.created_at);
+    const stamp = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
+    pvName.textContent = `${stripSceneTag(activeTask.title) || "任务"} · ${stamp} / ${normalizedName.slice(taskPrefix.length)}`;
+    pvName.title = name;
+  } else {
+    pvName.textContent = name;
+    pvName.title = name;
+  }
   document.getElementById("pv-dl").href = withRoot("/api/files/download/" + fpath(name), pvRoot);
   document.getElementById("pv-dl").style.display = ""; // 上一件「已经不在了」时收起来的，换了文件放回来
   const body = document.getElementById("pv-body");
@@ -5325,8 +5339,8 @@ async function renderDeployBar() {
   if (!pvCurrent || !/\.html?$/i.test(pvCurrent)) { bar.style.display = "none"; return; }
   bar.style.display = "";
   if (!previewSrv.running) {
-    bar.innerHTML = `<span>当前是隔离预览：数据只临时保存在本页，关闭后会清除。要保留网页数据，请本地部署后打开。</span>
-      <button class="primary" id="pv-serve">本地部署并打开</button>`;
+    bar.innerHTML = `<span>网页默认在应用内预览。只有需要相对路径、fetch 或长期保存网页数据时，才手动启动本机预览服务。</span>
+      <button class="primary" id="pv-serve">手动在浏览器打开</button>`;
     bar.querySelector("#pv-serve").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "启动中…";
       previewSrv = await startPreview(false, pvCurrent); // 默认只听本机，并直接打开当前网页；要给手机看再单独放开

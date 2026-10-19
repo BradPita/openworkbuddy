@@ -1444,6 +1444,8 @@ function syncSessionHeader() {
   const sharePanel = document.getElementById("session-share-panel");
   if (sharePanel && sharePanel.dataset.sid !== sessionId) sharePanel.remove();
   const title = document.getElementById("session-title");
+  const rename = document.getElementById("session-rename");
+  const date = document.getElementById("session-date");
   const context = document.getElementById("session-context");
   const contextText = document.getElementById("session-context-text");
   const dot = document.getElementById("session-context-dot");
@@ -1451,6 +1453,20 @@ function syncSessionHeader() {
   const fileBtn = document.getElementById("toggle-files");
   if (!title) return;
   const s = sessionId && sessions.find((x) => x.id === sessionId);
+  if (rename) {
+    rename.hidden = !s;
+    rename.disabled = !s;
+    if (s) rename.setAttribute("aria-label", `${I18N.t("重命名当前任务")}「${stripSceneTag(s.title) || "任务"}」`);
+  }
+  if (date) {
+    const ms = s && Date.parse(s.created_at || "");
+    date.hidden = !Number.isFinite(ms) || !ms;
+    if (!date.hidden) {
+      const d = new Date(ms);
+      date.textContent = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      date.title = I18N.t("任务创建日期");
+    } else date.textContent = "";
+  }
   title.disabled = !s;
   title.setAttribute("aria-expanded", histMenu && histMenu.at && histMenu.at.keepAnchor ? "true" : "false");
   if (s) {
@@ -1656,6 +1672,10 @@ function onHistMenuClick(e) {
   else if (act === "del") deleteSessionRow(sid);
 }
 const sessionTitleButton = document.getElementById("session-title");
+const sessionRenameButton = document.getElementById("session-rename");
+if (sessionRenameButton) sessionRenameButton.addEventListener("click", () => {
+  if (sessionId) renameSessionRow(sessionId);
+});
 if (sessionTitleButton) {
   sessionTitleButton.addEventListener("click", () => {
     const s = sessionId && sessions.find((x) => x.id === sessionId);

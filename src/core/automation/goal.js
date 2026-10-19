@@ -26,6 +26,11 @@ const so = require("../judge/systemone");
 /** 自动补跑的轮数上限。用满了不是悄悄停，是在卡上写清楚为什么停、还差几项（见 server.js / cli.js 的循环） */
 const GOAL_MAX_ROUNDS = 3;
 
+/** A Goal round that only stopped at its per-run step cap may safely resume with the unmet criteria. */
+function canContinueAfterStepLimit({ goalMode, active, stopReason, aborted } = {}) {
+  return !!goalMode && !!active && !aborted && /^已达最大步数(?:\b|（)/.test(String(stopReason || ""));
+}
+
 /** 摘录给验收员看的成果文件类型。二进制没法看开头，看了也判不出东西 */
 const TEXT_EXT = /\.(html?|js|mjs|css|md|txt|json|py|ts|jsx|tsx|csv|svg)$/i;
 
@@ -281,4 +286,4 @@ function createGoalEngine({ workspaceDir, maxRounds = GOAL_MAX_ROUNDS, decide = 
   };
 }
 
-module.exports = { createGoalEngine, parseJsonLoose, GOAL_MAX_ROUNDS };
+module.exports = { createGoalEngine, parseJsonLoose, GOAL_MAX_ROUNDS, canContinueAfterStepLimit };

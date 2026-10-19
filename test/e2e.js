@@ -1886,15 +1886,16 @@ async function testCliMode() {
     openai: { base_url: `http://127.0.0.1:${port}/v1`, api_key: "k", model: "mock", stream: false },
     agent: { max_steps: 3, tool_timeout_ms: 5000, llm_timeout_ms: 20000 },
     mcp_servers: [],
-    workspace_dir: path.join(home, "workspace"),
+    // 配置里故意留一个不同的旧工作目录：CLI 应以启动目录为准。
+    workspace_dir: path.join(home, "configured-workspace"),
   }));
   const CLI = entry("cli");
   // 这里不能用 spawnSync：它把本进程的事件循环整个堵住，上面那个假接口就永远轮不到
   // accept 连接，子进程一头等到超时——测试会以「模型没响应」的样子失败，跟被测代码无关。
-  const run = (args, input = "", verbose = true) => new Promise((resolve) => {
+  const run = (args, input = "", verbose = true, cwd = path.join(home, "workspace")) => new Promise((resolve) => {
     const env = { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" };
     delete env.FORCE_COLOR; // 外面开着 FORCE_COLOR 的话子进程会往管道里塞转义序列
-    const ps = spawn(process.execPath, [CLI, ...(verbose ? ["--verbose"] : []), ...args], { env });
+    const ps = spawn(process.execPath, [CLI, ...(verbose ? ["--verbose"] : []), ...args], { env, cwd });
     let stdout = "", stderr = "";
     ps.stdout.on("data", (d) => (stdout += d));
     ps.stderr.on("data", (d) => (stderr += d));

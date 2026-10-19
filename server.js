@@ -1004,7 +1004,15 @@ function listSessionsOnDisk() {
       try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
       const hit = sessMetaCache.get(n);
       if (hit && hit.mtime === mtime) {
-        if (hit.row) { rows.push(hit.row); if (typeof hit.row.files !== "number") sessFilesTodo.add(n); }
+        if (hit.row) {
+          // 老版本的 .index 尚未记创建时间：用索引里已有的稳定时间补齐，不为侧栏首次打开重读整份会话。
+          if (!hit.row.created_at) {
+            hit.row.created_at = new Date(Number(hit.row.at) || mtime).toISOString();
+            sessIndexDirty = true;
+          }
+          rows.push(hit.row);
+          if (typeof hit.row.files !== "number") sessFilesTodo.add(n);
+        }
         continue;
       }
       const data = store.readJson(path.join(SESS_DIR, n), null);
@@ -1063,9 +1071,14 @@ function sessionRow(id, s) {
   // 定时任务跑出来的那段会话也不进侧栏：一天几十条 cron 会把真正的对话整个挤下去。
   // 它们有自己的正经去处——自动化 → 运行记录，那边每条记录都挂着「看执行过程」直接开这一段。
   if (s.kind === "schedule") return null;
+  const firstUserAt = (s.transcript || []).find((t) => t && t.type === "user" && t.at)?.at;
   return {
     id,
     title: s.title || "未命名任务",
+    dir: s.dir || "",
+    // 固定展示创建日期，让任务在自动改标题、继续执行后仍有稳定的「名称 · 日期」标识。
+    // 旧会话没有首条消息时间时退回更新时间，避免侧栏出现空日期。
+    created_at: firstUserAt || s.created_at || s.updated_at || "",
     user: s.user || "",
     project: s.project || "",
     at: Date.parse(s.updated_at || "") || 0,
@@ -8111,6 +8124,10 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
   // scoreRules 按"规则生效以来"开窗打分，只要这个会话今天被打开过，它里面规则生效**之前**的
   // 失败就全算进"生效之后"，规则越有效越会被判「没起作用」并建议下架。
   const turnAt = new Date().toISOString();
+  if (!sess.created_at) {
+    const firstUserAt = (sess.transcript || []).find((t) => t && t.type === "user" && t.at)?.at;
+    sess.created_at = firstUserAt || turnAt;
+  }
   sess.transcript.push({ type: "user", text: message, ...(shownText ? { shown: shownText } : {}), mode, at: turnAt });
   const asstEvents = [];
   sess.transcript.push({ type: "assistant", events: asstEvents, at: turnAt });
@@ -8331,8 +8348,13 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
         autosaveSession(sessionId, 0);
         break;
       }
-      // 这轮是被超时/上限硬切断的：同样的条件再跑一轮大概率原样再撞，别把用户的时间和钱烧在死循环里
-      if (roundStopped) {
+      // 运行时间、手动停止等硬终止仍要暂停。单次步数上限只是分段边界：Goal 已经核对过进度，
+      // 还没达标就带着未完成项进入下一轮；总轮数仍由 GOAL_MAX_ROUNDS 限住。
+      const continueStepLimitedGoal = goalKit.canContinueAfterStepLimit({
+        goalMode, active: sess.goal.status === "active", stopReason: roundStopped,
+        aborted: runState.ctrl.signal.aborted,
+      });
+      if (roundStopped && !continueStepLimitedGoal) {
         sess.goal.paused = `这轮任务被强制收尾（${roundStopped}），暂停自动补跑`;
         send({ type: "goal", goal: sess.goal });
         autosaveSession(sessionId, 0);
@@ -8340,7 +8362,9 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
         break;
       }
       // 没达标 → 把未达成项作为下一轮指令，接着冲（进回放记录，回放时能看懂为什么又跑了一轮）
-      const fb = goalKit.feedbackFor(sess.goal);
+      const fb = goalKit.feedbackFor(sess.goal) + (continueStepLimitedGoal
+        ? `\n\n【目标续跑】上一轮用完了单次步数预算；已核对完成项，只继续补上面列出的未达标项。`
+        : "");
       sess.history.push({ role: "user", content: fb });
       emitFn({ type: "interject", text: fb });
     }
