@@ -245,7 +245,7 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 
 `sessions` / `resume` / `engines` / `doctor` / `pair` (QR-pair your phone) / `worktree`, plus `--mode` `--perm` `-C` `-f` `--json` and the rest → **[命令行用法](docs/命令行用法.md)** (Chinese)
 
-\1<p align="center">
+<p align="center">
  <img src="docs/images/architecture.en.svg" width="1120" alt="OpenWorkBuddy architecture: desktop, CLI and IM clients enter through their hosts into the Agent Runtime, which coordinates models, safety, tools, project context, deliverables and traces">
 </p>
 

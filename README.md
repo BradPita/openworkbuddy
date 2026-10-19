@@ -246,7 +246,7 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 `sessions` / `resume` / `engines` / `doctor` / `pair`（扫码把手机连上来）/ `worktree`，以及 `--mode` `--perm` `-C` `-f` `--json` 等全部参数 → **[命令行用法](docs/命令行用法.md)**
 
-\1<p align="center">
+<p align="center">
  <img src="docs/images/architecture.svg" width="1120" alt="OpenWorkBuddy 技术架构：桌面端、CLI 和 IM 通过各自宿主进入 Agent Runtime，由 Runtime 协调模型、安全审批、工具、项目上下文、成果交付与执行追踪">
 </p>
 
