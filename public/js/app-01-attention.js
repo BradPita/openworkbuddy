@@ -70,7 +70,7 @@ function attnCount(map) {
 
 // ---------- 下面碰页面 ----------
 
-// sid -> { asks: Map(题号 -> { src, approval, text }), error, unseen }
+// sid -> { asks: Map(题号 -> { src, approval, text }), error, unseen, manual }（manual = 这笔未读是人在行菜单里亲手标的）
 // src 是这道题从哪条路报上来的：agent = 本机任务的事件流，cli = 终端那几趟，approval = 安全中心的审批。
 // 各路只对账自己那一份，一路的轮询回来不许把另一路报的题冲掉。
 // 不属于任何会话的审批（IM、定时任务那边起的）记在 "" 底下：不亮哪一行，但算进标题的数。
@@ -81,7 +81,7 @@ const attnGone = new Set();
 
 function attnOf(sid, create) {
   let st = sessionAttn.get(sid);
-  if (!st && create) { st = { asks: new Map(), error: false, unseen: false }; sessionAttn.set(sid, st); }
+  if (!st && create) { st = { asks: new Map(), error: false, unseen: false, manual: false }; sessionAttn.set(sid, st); }
   return st || null;
 }
 function attnTidy(sid) {
@@ -91,6 +91,7 @@ function attnTidy(sid) {
 function attnChanged() {
   renderHistory();
   syncTitleCount();
+  syncAttentionInbox();
 }
 /** 界面文案之外的字（系统通知）不经过 DOM 自动翻译，得自己翻 */
 function attnT(zh) {
@@ -158,14 +159,41 @@ function attnFlag(sid, flag) {
   st[flag] = true;
   attnChanged();
 }
-/** 人点开了这条（或者切回了窗口）：出错、跑完这两笔就算看过了。题不算——题得答了才算 */
-function attnSeen(sid) {
+/** 人点开了这条（或者切回了窗口）：出错、跑完这两笔就算看过了。题不算——题得答了才算。
+ *  auto = 只是切回了窗口：人在行菜单里亲手标的「未读」（manual）不算看过，得真点开这一条 */
+function attnSeen(sid, auto) {
   const st = sessionAttn.get(sid);
-  if (!st || (!st.error && !st.unseen)) return;
+  if (!st) return;
+  const keep = !!(auto && st.manual);
+  if (!st.error && (!st.unseen || keep)) return;
   st.error = false;
-  st.unseen = false;
+  if (!keep) {
+    st.unseen = false;
+    if (st.manual) attnUnreadClear(sid);
+    st.manual = false;
+  }
   attnTidy(sid);
   attnChanged();
+}
+/** 亲手标的未读记在侧栏那份本地列表上（app-02 toggleUnread），看过了一起擦掉 */
+function attnUnreadClear(sid) {
+  const s = sessions.find((x) => x.id === sid);
+  if (!s || !s.unread) return;
+  delete s.unread;
+  saveSessions();
+}
+/** 刷新页面以后，亲手标过未读的那几条接着亮：账本只在内存里，那一笔从本地列表上认回来 */
+function attnRestoreUnread() {
+  let n = 0;
+  for (const s of sessions) {
+    if (!s.unread || attnGone.has(s.id)) continue;
+    const st = attnOf(s.id, true);
+    if (st.unseen && st.manual) continue;
+    st.unseen = true;
+    st.manual = true;
+    n++;
+  }
+  if (n) attnChanged();
 }
 /** 会话删掉了：它名下的账一起清，不然标题上的数永远下不去 */
 function attnForget(sid) {
@@ -222,12 +250,121 @@ function attnDotHtml(sid, cliLive) {
   const k = attnPick(st, cliLive || runningSessions.has(sid));
   if (k === "running") return cliLive ? '<span class="hrun" title="正在跑"></span>' : '<span class="hrun" title="任务运行中"></span>';
   if (!k) return "";
-  let tip = k === "error" ? "出错了，点开看看" : "跑完了，还没看";
+  let tip = k === "error" ? "出错了，点开看看" : (st.manual ? "标成了未读，回头再看" : "跑完了，还没看");
   if (k === "ask") {
     const a = st.asks.values().next().value;
     tip = (a.approval ? "在等你批准：" : "在等你回答：") + (String(a.text || "").slice(0, 60) || (a.approval ? "危险操作" : "一个岔路"));
   }
   return `<span class="hdot ${k}" title="${esc(tip)}"></span>`;
+}
+
+/** 顶栏收件箱复用侧栏同一份状态账；只列当前账号能打开的任务，不拷贝结果正文或文件路径。 */
+let scheduleInboxRows = [];
+let scheduleInboxById = new Map();
+function readScheduleInboxSeen() {
+  try { return new Set(JSON.parse(localStorage.getItem("owb-schedule-inbox-seen") || "[]")); } catch { return new Set(); }
+}
+async function loadScheduleInbox() {
+  try {
+    const response = await fetch("/api/schedules/runs?limit=100");
+    if (!response.ok) return;
+    const runs = await response.json();
+    const seen = readScheduleInboxSeen();
+    scheduleInboxById = new Map();
+    scheduleInboxRows = (Array.isArray(runs) ? runs : [])
+      .filter((run) => run && run.ended_at && !run.source_linked && run.session_id && !seen.has(run.id))
+      .slice(0, 50)
+      .map((run) => {
+        scheduleInboxById.set(run.id, run);
+        return { id: `__schedule__:${run.id}`, title: run.name || "定时任务", state: "unseen", status: run.ok ? "定时任务已完成" : "定时任务出错", cli: false, at: Date.parse(run.ended_at) || 0 };
+      });
+    syncAttentionInbox();
+  } catch { /* 运行记录接口暂时不可用时，不影响普通任务收件箱 */ }
+}
+function attentionInboxRows() {
+  const rows = new Map();
+  const add = (id, title, cli) => {
+    if (!id || attnGone.has(id)) return;
+    const st = sessionAttn.get(id);
+    const state = attnPick(st, cli || runningSessions.has(id));
+    if (!state) return;
+    const status = state === "ask" ? (st.asks.values().next().value.approval ? "待审批" : "待回答")
+      : state === "error" ? "出错了" : state === "running" ? "运行中" : "未读";
+    rows.set(id, { id, title: stripSceneTag(title || attnName(id)) || "任务", state, status, cli: !!cli, at: (sessions.find((s) => s.id === id) || {}).at || 0 });
+  };
+  for (const s of sessions) add(s.id, s.title, false);
+  for (const r of cliLiveRows) add(r.id, r.title, true);
+  // 有运行态但列表尚未刷新回来的会话仍放进来，点击后 openAttn 会尝试恢复它。
+  for (const id of runningSessions) if (!rows.has(id)) add(id, "任务", false);
+  const loose = sessionAttn.get("");
+  if (loose && loose.asks.size) {
+    const approval = [...loose.asks.values()].some((a) => a.approval);
+    rows.set("__approval__", { id: "__approval__", title: "安全审批", state: "ask", status: approval ? "待审批" : "待回答", cli: false, at: Date.now() });
+  }
+  for (const row of scheduleInboxRows) rows.set(row.id, row);
+  const rank = { ask: 0, error: 1, running: 2, unseen: 3 };
+  return [...rows.values()].sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at);
+}
+function syncAttentionInbox() {
+  if (typeof document === "undefined" || typeof document.getElementById !== "function") return;
+  const button = document.getElementById("inbox-toggle"), panel = document.getElementById("attention-inbox"), badge = document.getElementById("inbox-count");
+  if (!button || !panel || !badge) return;
+  const rows = attentionInboxRows();
+  badge.hidden = !rows.length;
+  badge.textContent = rows.length > 99 ? "99+" : String(rows.length);
+  button.setAttribute("aria-label", rows.length ? `${attnT("收件箱")} · ${rows.length} ${attnT("待看")}` : attnT("收件箱"));
+  const focusedId = panel.contains(document.activeElement) && document.activeElement.dataset ? document.activeElement.dataset.inboxId : "";
+  panel.innerHTML = `<div class="inbox-head"><span>${esc(attnT("收件箱"))}</span><span style="color:var(--owb-text-3);font-size:11px;font-weight:400">${rows.length} ${esc(attnT("条"))}</span></div>`
+    + (rows.length ? rows.map((r) => `<button type="button" class="inbox-row" data-inbox-id="${esc(r.id)}" data-state="${r.state}"><span class="i-dot" aria-hidden="true"></span><span class="i-copy"><span class="i-title">${esc(r.title === "安全审批" ? attnT(r.title) : r.title)}</span><span class="i-status">${esc(attnT(r.status))}</span></span></button>`).join("")
+      : `<div class="inbox-empty">${esc(attnT("没有待处理的任务"))}</div>`);
+  if (focusedId) panel.querySelector(`[data-inbox-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
+}
+
+const inboxToggle = typeof document !== "undefined" ? document.getElementById?.("inbox-toggle") : null;
+const inboxPanel = typeof document !== "undefined" ? document.getElementById?.("attention-inbox") : null;
+if (typeof document !== "undefined" && inboxToggle && inboxPanel) {
+  inboxToggle.addEventListener("click", () => {
+    const open = inboxPanel.hidden;
+    inboxPanel.hidden = !open;
+    inboxToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) { loadScheduleInbox(); syncAttentionInbox(); }
+  });
+  inboxPanel.addEventListener("click", (event) => {
+    const row = event.target.closest("[data-inbox-id]");
+    if (!row) return;
+    inboxPanel.hidden = true;
+    inboxToggle.setAttribute("aria-expanded", "false");
+    if (row.dataset.inboxId.startsWith("__schedule__:")) {
+      const runId = row.dataset.inboxId.slice("__schedule__:".length);
+      const run = scheduleInboxById.get(runId);
+      if (run) {
+        const seen = readScheduleInboxSeen(); seen.add(runId);
+        try { localStorage.setItem("owb-schedule-inbox-seen", JSON.stringify([...seen].slice(-500))); } catch {}
+        loadScheduleInbox();
+        if (run.session_id) openSession(run.session_id);
+      }
+      return;
+    }
+    if (row.dataset.inboxId === "__approval__") {
+      const bar = document.getElementById("approval-bar");
+      if (bar) { bar.scrollIntoView({ block: "center", behavior: "smooth" }); bar.querySelector("button")?.focus({ preventScroll: true }); }
+      return;
+    }
+    openAttn(row.dataset.inboxId);
+  });
+  loadScheduleInbox();
+  document.addEventListener("pointerdown", (event) => {
+    if (!inboxPanel.hidden && !event.target.closest(".inbox-wrap")) {
+      inboxPanel.hidden = true;
+      inboxToggle.setAttribute("aria-expanded", "false");
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || inboxPanel.hidden || imeKey(event)) return;
+    inboxPanel.hidden = true;
+    inboxToggle.setAttribute("aria-expanded", "false");
+    inboxToggle.focus();
+  });
 }
 
 /**

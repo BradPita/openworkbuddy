@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
+const path = require("path");
 /**
  * 命令行参数：一张声明表，解析和帮助都从它长出来。
  *
@@ -57,6 +58,7 @@ const FLAGS = [
   { long: "append-system", type: "str", key: "appendSystem", arg: "<文字>", desc: "给这一次追加一段规矩，比如「只用 TypeScript」" },
   { long: "json", type: "bool", key: "json", value: true, desc: "事件按 NDJSON 输出到 stdout，给脚本用" },
   { long: "quiet", short: "q", type: "bool", key: "quiet", value: true, desc: "只输出最终答案，不打进度" },
+  { long: "verbose", type: "bool", key: "verbose", value: true, desc: "显示工具输出、启动诊断和完整用量（默认简洁显示）" },
   { long: "raw", type: "bool", key: "raw", value: true, desc: "答案原样输出 Markdown，不在终端里渲染" },
   { long: "no-mcp", type: "bool", key: "mcp", value: false, desc: "跳过 MCP 连接器，启动更快" },
   { long: "ask-remote", type: "bool", key: "askRemote", value: true, desc: "没人坐在终端前也允许 agent 提问，答案从手机上给" },
@@ -135,6 +137,11 @@ function looksLikeProse(tok) {
 
 function problem(code, message, hint) {
   return { code, message, hint: hint || "" };
+}
+
+/** 命令行默认在启动目录工作；`-C` 只覆盖当前调用，不读写持久工作目录设置。 */
+function startupWorkspace(explicit, cwd = process.cwd()) {
+  return path.resolve(cwd || process.cwd(), explicit || ".");
 }
 
 /** 下一个词能不能当值用：它自己是个选项的话就不能，不然会把人的 --json 吃掉 */
@@ -426,4 +433,4 @@ function problemText(problems) {
   return problems.map((p) => `${p.message}${p.hint ? "\n  " + p.hint : ""}`).join("\n") + "\n";
 }
 
-module.exports = { FLAGS, SUBS, DEFAULTS, parse, helpText, problemText, completionScript, nearestFlag, nearestSub, looksLikeProse, editDistance };
+module.exports = { FLAGS, SUBS, DEFAULTS, parse, helpText, problemText, completionScript, nearestFlag, nearestSub, looksLikeProse, editDistance, startupWorkspace };

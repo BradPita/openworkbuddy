@@ -45,14 +45,13 @@ const ITEMS = [
     ["@supabase/mcp-server-supabase@latest", "--read-only"], { reach: "intl", selfHost: "官方云要翻墙；自托管 Supabase 可以，但它本身是国外组件，私有化项目慎选", env: { SUPABASE_ACCESS_TOKEN: "" }, docs: "https://supabase.com/dashboard/account/tokens" }),
   std("stripe", "Stripe", "credit-card", "查客户、订单、发票，建支付链接", "文件与开发",
     ["@stripe/mcp", "--tools=all"], { reach: "intl", env: { STRIPE_SECRET_KEY: "" }, docs: "https://dashboard.stripe.com/apikeys" }),
-  // 下面几条用 mcp-remote 转一手：它们只认 OAuth，不收静态 Token，而 http 直连这边只会照搬 headers。
-  // 第一次连会弹浏览器让你点同意，之后 Token 存在本机，不用填 Key。
-  std("linear", "Linear", "list-checks", "看 issue、建任务、改状态和负责人；首次连接弹浏览器授权，不用填 Key", "文件与开发",
-    ["mcp-remote", "https://mcp.linear.app/mcp"], { reach: "intl", docs: "https://linear.app/docs/mcp" }),
-  std("sentry", "Sentry", "bug", "查线上报错、看堆栈和影响面、翻某个 issue 的来龙去脉；首次连接弹浏览器授权", "文件与开发",
-    ["mcp-remote", "https://mcp.sentry.dev/mcp"], { reach: "intl", docs: "https://docs.sentry.io/product/sentry-mcp/" }),
-  std("vercel", "Vercel", "rocket", "查项目和部署、翻构建日志、看域名绑定；首次连接弹浏览器授权", "文件与开发",
-    ["mcp-remote", "https://mcp.vercel.com"], { reach: "intl", docs: "https://vercel.com/docs/mcp/vercel-mcp" }),
+  // Streamable HTTP 预设使用工作台原生 OAuth；用户点击授权后在服务商页面确认。
+  http("linear", "Linear", "list-checks", "看 issue、建任务、改状态和负责人；点击连接器授权，在浏览器确认，无需填 Key", "文件与开发",
+    "https://mcp.linear.app/mcp", { reach: "intl", docs: "https://linear.app/docs/mcp" }),
+  http("sentry", "Sentry", "bug", "查线上报错、看堆栈和影响面、翻某个 issue 的来龙去脉；点击连接器授权，在浏览器确认", "文件与开发",
+    "https://mcp.sentry.dev/mcp", { reach: "intl", docs: "https://docs.sentry.io/product/sentry-mcp/" }),
+  http("vercel", "Vercel", "rocket", "查项目和部署、翻构建日志、看域名绑定；点击连接器授权，在浏览器确认", "文件与开发",
+    "https://mcp.vercel.com", { reach: "intl", docs: "https://vercel.com/docs/mcp/vercel-mcp" }),
   // ---- 搜索与网页 ----
   uvx("fetch", "抓网页", "globe", "把任意网址抓下来转成 Markdown（要装 uv）", "搜索与网页",
     ["mcp-server-fetch"], { reach: "local", docs: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch" }),
@@ -100,13 +99,13 @@ const ITEMS = [
     ["@negokaz/excel-mcp-server"], { reach: "local", docs: "https://github.com/negokaz/excel-mcp-server" }),
   std("figma", "Figma", "palette", "读设计稿的图层、间距、颜色和切图，照着做页面不用来回问设计", "协作与文档",
     ["figma-developer-mcp", "--stdio"], { reach: "intl", env: { FIGMA_API_KEY: "" }, docs: "https://www.figma.com/developers/api#access-tokens" }),
-  std("atlassian", "Jira / Confluence", "clipboard-list", "查需求和缺陷、建 issue、读写 Confluence 页面；首次连接弹浏览器授权", "协作与文档",
+  std("atlassian", "Jira / Confluence", "clipboard-list", "查需求和缺陷、建 issue、读写 Confluence 页面；首次连接在浏览器确认授权", "协作与文档",
     ["mcp-remote", "https://mcp.atlassian.com/v1/sse"], { reach: "intl", docs: "https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/" }),
   std("airtable", "Airtable", "table", "读写多维表格：查记录、建字段、批量更新", "协作与文档",
     ["airtable-mcp-server"], { reach: "intl", env: { AIRTABLE_API_KEY: "" }, docs: "https://airtable.com/create/tokens" }),
-  std("asana", "Asana", "circle-check", "查项目和任务、建任务、改负责人和截止日；首次连接弹浏览器授权", "协作与文档",
+  std("asana", "Asana", "circle-check", "查项目和任务、建任务、改负责人和截止日；首次连接在浏览器确认授权", "协作与文档",
     ["mcp-remote", "https://mcp.asana.com/sse"], { reach: "intl", docs: "https://developers.asana.com/docs/using-asanas-mcp-server" }),
-  std("canva", "Canva", "image", "翻自己的设计稿、按模板出图、导出成品；首次连接弹浏览器授权", "协作与文档",
+  std("canva", "Canva", "image", "翻自己的设计稿、按模板出图、导出成品；首次连接在浏览器确认授权", "协作与文档",
     ["mcp-remote", "https://mcp.canva.com/mcp"], { reach: "intl", docs: "https://www.canva.dev/docs/apps/mcp-server/" }),
   // ---- 地图与出行 ----
   std("amap", "高德地图", "map", "地理编码、周边搜索、路线规划、天气", "地图与出行",

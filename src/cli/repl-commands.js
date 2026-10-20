@@ -42,6 +42,8 @@ const COMMANDS = [
   { name: "resume", aliases: ["r"], arg: "[序号或会话id]", desc: "接着之前那段往下聊；不给值就弹选择器，↑↓ 挑、打字搜" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
   { name: "status", aliases: ["cost", "usage"], desc: "模式、底层引擎、工作目录、这个会话跑了几轮、一共花了多少 token" },
+  { name: "verbose", arg: "[on|off]", choices: ["on", "off"], desc: "切换详细输出；默认只显示当前进度和结果" },
+  { name: "details", desc: "查看上一轮的工具调用、输出和诊断，不调用模型" },
   { name: "init", paid: true, desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
   { name: "compact", paid: true, desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
   { name: "review", paid: true, arg: "[基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的，给了就审这条分支从分叉起改的" },
@@ -114,7 +116,7 @@ function parse(line, opt) {
   // 第一个判的是 raw 而不是 body——body 已经修过边了，那个空格只在原文里还看得见
   if (/^[ \t]/.test(raw)) return { kind: "task", text: body };
   if (body.startsWith("//")) return { kind: "task", text: body.slice(1).trim() };
-  // !git status：自己跑一条命令看一眼，不花钱、不等模型（Claude Code / Codex 都是这个写法）。
+  // !git status：自己跑一条命令看一眼，不花钱、不等模型。
   // 跑完的输出由 cli.js 记下来，跟着下一句话带给模型。光一个 ! 没东西可跑，当普通的话发；
   // 真想发一句 ! 开头的话就写 !!，跟 // 一个路数（全角的 ！ 本来就不算，中文感叹不会误触）
   if (body.startsWith("!!")) return { kind: "task", text: body.slice(1).trim() };
@@ -847,6 +849,7 @@ function makeInbox(opt) {
   const queue = [];
 
   const hand = (text) => {
+    if (busy && !String(text).trim()) return;
     if (busy) { onInterject(text); return; }
     if (waiter) { const w = waiter; waiter = null; w(text); return; }
     queue.push(text); // 上一条还在跑就排队，绝不丢

@@ -1,6 +1,6 @@
 {
   "name": "openworkbuddy",
-  "version": "0.14.1",
+  "version": "0.16.3",
   "description": "OpenWorkBuddy — AI Agent 办公工作台（自然语言下任务，AI 自主规划执行，交付 PPT/Word/Excel 等成果文件）",
   "type": "commonjs",
   "main": "electron-main.js",
@@ -51,10 +51,7 @@
     "openworkbuddy": "./cli.js"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
-  "author": {
-    "name": "CatCatUncle",
-    "email": "257534836+CatCatUncle@users.noreply.github.com"
-  },
+  "author": "OpenWorkBuddy Contributors",
   "homepage": "https://github.com/CatCatUncle/openworkbuddy",
   "repository": {
     "type": "git",

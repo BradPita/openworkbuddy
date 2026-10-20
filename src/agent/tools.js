@@ -4604,6 +4604,43 @@ async function executeToolCore(name, input, opts = {}) {
         if (isFile) return { content: await searchFiles(path.dirname(root), { ...q, only: root, relBase }), isError: false };
         return { content: await searchFiles(root, { ...q, relBase }), isError: false };
       }
+      case "chrome_tabs": case "chrome_open": case "chrome_read": case "chrome_click":
+      case "chrome_type": case "chrome_scroll": case "chrome_wait": {
+        // 用户自己那个 Chrome（扩展连进来的那条线）。每步审批、只找本人配的那个、网页内容当不可信数据，都在 tools/chrome.js 里；
+        // 这里只递三样它自己拿不到的：网络闸、截图落点、审批等多久
+        const navOpts = netOpts(opts);
+        return await require("../tools/chrome").run(name, input, {
+          owner: bgOwner(opts),
+          sessionId: opts.sessionId || "",
+          stopSignal: opts.stopSignal || null,
+          taskLabel: opts.taskLabel || "",
+          readOnly: security.permissionMode(sec) === "plan",
+          waitMs: Math.min((sec.approval_timeout_s || 120) * 1000, opts.deadline ? Math.max(5000, opts.deadline - Date.now() - 10000) : Infinity),
+          requestApproval: security.requestApproval,
+          audit: security.audit,
+          checkUrl: async (u) => {
+            const org = hostAllowed(null, u);
+            if (!org.ok) return { ok: false, why: netBlocked(u, org.why).content };
+            const g = await netGuard.checkUrl(sec, u, navOpts);
+            if (!g.allowed) {
+              security.audit("网络拦截", String(u), "拦截");
+              return { ok: false, why: `网络访问被安全中心拦截：${g.reason}` };
+            }
+            security.audit("网络访问", `用户的 Chrome：${u}`, "放行");
+            return { ok: true };
+          },
+          saveShot: async (buf, ext) => {
+            // 给模型自己看的，放 .tmp/ 不进成果区（跟 chrome_cdp 自查截图一个规矩）
+            const rel = `.tmp/chrome-${Date.now()}.${ext === "png" ? "png" : "jpg"}`;
+            const blocked = await passGate(security.checkWrite(sec, rel), "写截图", rel, { force: true });
+            if (blocked) return { error: blocked.content };
+            const p = resolveWrite(rel);
+            fs.mkdirSync(path.dirname(p), { recursive: true });
+            fs.writeFileSync(p, buf);
+            return { rel };
+          },
+        });
+      }
       case "chrome_cdp": {
         const action = String(input.action || "list_tabs");
         if (action === "navigate" && !/^https?:\/\//i.test(String(input.url || ""))) {

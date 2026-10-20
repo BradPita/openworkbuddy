@@ -61,7 +61,12 @@ function nodeLauncher() {
  * @param {boolean} [o.readOnly] 问答 / 计划那一趟：只借读的工具，桥那头再拦一道，用户的连接器一个不挂
  *                               （连接器能干什么这边判断不了，只读这一趟就不冒这个险）
  */
-function buildServers({ home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false }) {
+function buildServers(o) {
+  return serverTable(o).servers;
+}
+
+/** 同上，另回一张「CLI 里的名字 ↔ 连接器页上的名字」对照（按工具设的权限要按连接器页上的名字认） */
+function serverTable({ home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false }) {
   const lib = library || {};
   const { command, env: nodeEnv } = nodeLauncher();
   const servers = {
@@ -86,10 +91,13 @@ function buildServers({ home, root = "", baseDir = "", user = "", run = "", tool
     },
   };
   const taken = new Set([SERVER_NAME]);
+  const origin = [];
   for (const s of readOnly ? [] : forwardable(extraServers, disabled).keep) {
-    servers[cliName(s.name, taken)] = { command: s.command, args: s.args || [], ...(s.env ? { env: s.env } : {}), ...(s.cwd ? { cwd: s.cwd } : {}) };
+    const cli = cliName(s.name, taken);
+    servers[cli] = { command: s.command, args: s.args || [], ...(s.env ? { env: s.env } : {}), ...(s.cwd ? { cwd: s.cwd } : {}) };
+    origin.push({ cli, name: String(s.name) });
   }
-  return servers;
+  return { servers, origin };
 }
 
 /**
@@ -176,8 +184,11 @@ function writeMcpConfig(servers) {
   };
 }
 
-/** codex 那边不吃配置文件，只吃一串 `-c` 覆盖 */
-function codexArgs(servers) {
+/**
+ * codex 那边不吃配置文件，只吃一串 `-c` 覆盖。
+ * gate：connector-policy.plan 的结果，按工具开关的那几台写 enabled_tools / disabled_tools
+ */
+function codexArgs(servers, gate = null) {
   const out = [];
   for (const [name, s] of Object.entries(servers)) {
     out.push("-c", `mcp_servers.${name}.command=${JSON.stringify(s.command)}`);
@@ -192,6 +203,10 @@ function codexArgs(servers) {
     // codex exec 的审批策略是 never：要审批的 MCP 工具不会问人，直接判拒绝，
     // 模型看得见工具却一次也调不成。跟 Claude Code 那边 --allowed-tools mcp__<name> 对齐，整台放行。
     out.push("-c", `mcp_servers.${name}.default_tools_approval_mode="approve"`);
+    // 连接器页上设了不让用 / 先问我的（codex 问不了人，先问我也按不让用办），整台放行之前先摘掉
+    const has = (/** @type {any} */ m) => !!gate && Object.prototype.hasOwnProperty.call(m, name);
+    if (has(gate && gate.enabledTools)) out.push("-c", `mcp_servers.${name}.enabled_tools=${JSON.stringify(gate.enabledTools[name])}`);
+    if (has(gate && gate.disabledTools)) out.push("-c", `mcp_servers.${name}.disabled_tools=${JSON.stringify(gate.disabledTools[name])}`);
     // 生图、出视频动辄几分钟，codex 默认的工具超时一到就判失败——钱已经花了，图却没交到手里
     if (name === SERVER_NAME) out.push("-c", `mcp_servers.${name}.tool_timeout_sec=900`);
   }
@@ -227,9 +242,8 @@ function writeShim(server) {
  * skipped：开着、但这次没转过去的连接器名（走网址的），调用方在运行页上说一句
  * @returns {{runOpts:object, names:string[], toolCount:number, skipped:string[], cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false, approve = false, relayFile = "", approveFile = "" } = {}) {
-  const servers = buildServers({ home, root, baseDir, user, run, tools, library, extraServers, disabled, readOnly });
-  const names = Object.keys(servers);
+function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false, approve = false, relayFile = "", approveFile = "", connectorPolicy = null } = {}) {
+  const { servers, origin } = serverTable({ home, root, baseDir, user, run, tools, library, extraServers, disabled, readOnly });
   // 只读那一趟本来就一个不挂，不算「没转过去」
   const skipped = readOnly ? [] : forwardable(extraServers, disabled).skipped;
   // 跟 buildServers 写进环境变量的是同一份：提示词里列的、owb list 打出来的、MCP 挂上的，三处一致
@@ -248,6 +262,11 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   if (ap) servers[SERVER_NAME].env.OPENWORKBUDDY_BRIDGE_APPROVE = "1";
   // 审批交回主进程（摆卡等人点，见 engines/tool-relay.js 的 approve）：同样只给 MCP 那台，owb 脚本里没有
   if (ap && approveFile) servers[SERVER_NAME].env[APPROVE_ENV] = approveFile;
+  // 连接器页上给工具设的权限（engines/connector-policy.js）：没法照办的那几台这次不挂，问不了人的先问我按不让用办。
+  // 不给 connectorPolicy 的老调用方照旧整台放行
+  const gate = connectorPolicy ? require("./connector-policy").plan(origin, { ...connectorPolicy, engine: engineId === "codex" ? "codex" : "claude-code", askHuman: ap && !!approveFile }) : null;
+  if (gate) for (const d of gate.drop) delete servers[d.cli];
+  const names = Object.keys(servers);
   // 两边都以 MCP 为主（见文件头）；命令行脚本只是后备
   const shimIsPrimary = false;
   // 脚本目录挂到子进程 PATH 最前面，模型敲裸 `owb` 就能调到——带绝对路径的写法会被两个
@@ -260,12 +279,13 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   // 在那个沙箱里 owb 不跑的（tool-bridge.js 的 sandboxBlock）：提示词照这份点名，别让它先撞一次
   const shimBlocked = shimSandboxed && shim.bin ? lent.filter((n) => SANDBOX_BLOCKED[n]) : [];
   // engine：提示词按它教看图（claude 用 Read、codex 用 view_image）
-  const common = { engine: engineId, readOnly, approve: ap, askHuman: ap && !!approveFile, relay: !!relayFile, names, skipped, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
+  const common = { engine: engineId, readOnly, approve: ap, askHuman: ap && !!approveFile, relay: !!relayFile, names, skipped, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked,
+    mcpRules: gate ? gate.rules : null, mcpDropped: gate ? gate.drop : [], mcpUnavailable: gate ? gate.unavailable : [] };
   if (engineId === "codex") {
     return {
       // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。
       // remember / save_skill 走 MCP，MCP 服务器在沙箱外，用不着这个口子
-      runOpts: { mcpArgs: codexArgs(servers), env: shimEnv, shimBin: shim.bin },
+      runOpts: { mcpArgs: codexArgs(servers, gate), env: shimEnv, shimBin: shim.bin },
       ...common,
       cleanup: shim.cleanup,
     };
@@ -275,11 +295,12 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   // 模型要多久它自己定；属主自己设过的不动
   const bashEnv = shim.bin && !process.env.BASH_MAX_TIMEOUT_MS ? { BASH_MAX_TIMEOUT_MS: String(TOOL_TIMEOUT_MS) } : {};
   return {
-    runOpts: { mcpConfigPath: w.path, mcpServerNames: names, env: { ...shimEnv, ...bashEnv }, shimBin: shim.bin,
+    runOpts: { mcpConfigPath: w.path, mcpServerNames: gate ? [SERVER_NAME, ...gate.allowServers] : names, env: { ...shimEnv, ...bashEnv }, shimBin: shim.bin,
+      ...(gate ? { mcpAllow: gate.allow, mcpAsk: gate.ask, mcpDeny: gate.deny } : {}),
       ...(ap ? { permissionPromptTool: `mcp__${SERVER_NAME}__${require("./approve").TOOL}` } : {}) },
     ...common,
     cleanup: () => { w.cleanup(); shim.cleanup(); },
   };
 }
 
-module.exports = { SERVER_NAME, BRIDGE_ENTRY, CWD_ENTRY, TOOL_TIMEOUT_MS, buildServers, forwardable, cliName, writeMcpConfig, writeShim, codexArgs, nodeLauncher, attach };
+module.exports = { SERVER_NAME, BRIDGE_ENTRY, CWD_ENTRY, TOOL_TIMEOUT_MS, buildServers, serverTable, forwardable, cliName, writeMcpConfig, writeShim, codexArgs, nodeLauncher, attach };

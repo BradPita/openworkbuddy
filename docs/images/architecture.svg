@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1050" role="img" aria-labelledby="title desc">
+  <title id="title">OpenWorkBuddy 技术架构</title>
+  <desc id="desc">入口与应用宿主调用 Agent Runtime；Runtime 协调模型、安全审批、工具、项目上下文、成果交付和执行追踪。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#65708a"/></marker>
+    <style>
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#20263a}
+      .bg{fill:#f8f9ff}.band{fill:#f0f2ff;stroke:#d9def3;stroke-width:2}.node{fill:#fff;stroke:#8570ef;stroke-width:2;rx:14}.runtime{fill:#ece9ff;stroke:#6952df;stroke-width:3;rx:18}
+      .line{fill:none;stroke:#65708a;stroke-width:2.5;marker-end:url(#arrow)}.dashed{fill:none;stroke:#8b93a7;stroke-width:2.5;stroke-dasharray:8 7;marker-end:url(#arrow)}
+      .section{font-size:20px;font-weight:700;fill:#59627b;letter-spacing:1px}.head{font-size:23px;font-weight:700}.sub{font-size:17px;fill:#606982}.runtimeHead{font-size:29px;font-weight:750}.runtimeSub{font-size:18px;fill:#535c78}.note{font-size:17px;fill:#525d78}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1400" height="1050" rx="20"/>
+
+  <rect class="band" x="38" y="32" width="1324" height="145" rx="18"/>
+  <text class="section" x="64" y="65">使用入口</text>
+  <rect class="node" x="80" y="87" width="350" height="66"/>
+  <rect class="node" x="525" y="87" width="350" height="66"/>
+  <rect class="node" x="970" y="87" width="350" height="66"/>
+  <text class="head" x="255" y="128" text-anchor="middle">桌面端 / 浏览器</text>
+  <text class="head" x="700" y="128" text-anchor="middle">openworkbuddy CLI</text>
+  <text class="head" x="1145" y="128" text-anchor="middle">飞书 / 微信等 IM</text>
+
+  <rect class="band" x="38" y="207" width="1324" height="166" rx="18"/>
+  <text class="section" x="64" y="240">应用宿主</text>
+  <rect class="node" x="55" y="263" width="290" height="82"/>
+  <rect class="node" x="385" y="263" width="290" height="82"/>
+  <rect class="node" x="715" y="263" width="290" height="82"/>
+  <rect class="node" x="1045" y="263" width="300" height="82"/>
+  <text class="head" x="200" y="297" text-anchor="middle">Web 服务</text><text class="sub" x="200" y="326" text-anchor="middle">server.js · Express API</text>
+  <text class="head" x="530" y="297" text-anchor="middle">CLI 交互</text><text class="sub" x="530" y="326" text-anchor="middle">cli.js · 终端 REPL</text>
+  <text class="head" x="860" y="297" text-anchor="middle">IM 桥接</text><text class="sub" x="860" y="326" text-anchor="middle">消息收发与任务转发</text>
+  <text class="head" x="1195" y="297" text-anchor="middle">定时调度器</text><text class="sub" x="1195" y="326" text-anchor="middle">由 Web 服务注册与触发</text>
+
+  <path class="line" d="M255 153 V224 H200 V263"/>
+  <path class="line" d="M700 153 V263"/>
+  <path class="line" d="M1145 153 V224 H860 V263"/>
+  <path class="line" d="M345 305 H370 V395 H540"/>
+  <path class="line" d="M530 345 V395 H620"/>
+  <path class="line" d="M860 345 V395 H780"/>
+  <path class="line" d="M1195 345 V395 H860"/>
+
+  <rect class="runtime" x="420" y="395" width="560" height="116"/>
+  <text class="runtimeHead" x="700" y="444" text-anchor="middle">Agent Runtime</text>
+  <text class="runtimeSub" x="700" y="477" text-anchor="middle">src/agent/agent.js · createAgentRuntime · runTask</text>
+
+  <text class="section" x="64" y="572">运行时协作模块</text>
+  <path class="line" d="M700 511 V592 H156 V625"/>
+  <path class="line" d="M700 511 V592 H426 V625"/>
+  <path class="line" d="M700 511 V625"/>
+  <path class="line" d="M700 511 V592 H974 V625"/>
+  <path class="line" d="M700 511 V592 H1244 V625"/>
+  <rect class="node" x="38" y="625" width="236" height="132"/>
+  <rect class="node" x="308" y="625" width="236" height="132"/>
+  <rect class="node" x="578" y="625" width="244" height="132"/>
+  <rect class="node" x="856" y="625" width="236" height="132"/>
+  <rect class="node" x="1126" y="625" width="236" height="132"/>
+  <text class="head" x="156" y="670" text-anchor="middle">模型与执行引擎</text><text class="sub" x="156" y="704" text-anchor="middle">云端 LLM · Ollama</text><text class="sub" x="156" y="730" text-anchor="middle">Codex · Claude Code</text>
+  <text class="head" x="426" y="670" text-anchor="middle">安全检查与审批</text><text class="sub" x="426" y="704" text-anchor="middle">core/safety · agent/gates</text><text class="sub" x="426" y="730" text-anchor="middle">批准后调用工具</text>
+  <text class="head" x="700" y="670" text-anchor="middle">会话与项目上下文</text><text class="sub" x="700" y="704" text-anchor="middle">历史 · 工作区 · 记忆</text><text class="sub" x="700" y="730" text-anchor="middle">本机 data/ 与项目目录</text>
+  <text class="head" x="974" y="670" text-anchor="middle">成果交付</text><text class="sub" x="974" y="704" text-anchor="middle">工作区文件 · 画布</text><text class="sub" x="974" y="730" text-anchor="middle">预览与导出</text>
+  <text class="head" x="1244" y="670" text-anchor="middle">执行 Trace</text><text class="sub" x="1244" y="704" text-anchor="middle">模型 · 工具 · 耗时</text><text class="sub" x="1244" y="730" text-anchor="middle">Token 用量</text>
+
+  <path class="line" d="M426 757 V795"/>
+  <rect class="node" x="308" y="795" width="236" height="98"/>
+  <text class="head" x="426" y="835" text-anchor="middle">工具与扩展</text><text class="sub" x="426" y="866" text-anchor="middle">内置工具 · MCP · Skills · 专家</text>
+  <path class="dashed" d="M1244 757 V840 H1080"/>
+  <rect class="node" x="790" y="812" width="290" height="70"/>
+  <text class="head" x="935" y="856" text-anchor="middle">可选：上报 Langfuse</text>
+
+  <text class="note" x="700" y="963" text-anchor="middle">任务由 Agent Runtime 统一编排；模块间交互关系以实际代码入口和调用为准。</text>
+</svg>

@@ -163,12 +163,13 @@ function writeDetail(name, input, abs, rel) {
 
 /**
  * @param {any} req claude 递过来的 {tool_name, input, tool_use_id}
- * @param {{sec: any, readOnly?: boolean, root: string, base?: string, platform?: string, ask?: Ask|null}} ctx
+ * @param {{sec: any, readOnly?: boolean, root: string, base?: string, platform?: string, ask?: Ask|null, mcp?: Record<string, {server: string, default: string, tools: Record<string, string>}>|null}} ctx
  *   sec：config.security 补过默认值；root：工作区根；base：这一趟的工作目录（相对路径按它解析）；
- *   ask：审批交回了主进程才有（摆卡等人点），没有就照规则拒
+ *   ask：审批交回了主进程才有（摆卡等人点），没有就照规则拒；
+ *   mcp：用户连接器的工具按连接器页上的权限怎么办（connector-policy.plan 的 rules），没有就照老样子不认
  * @returns {Promise<{behavior: "allow", updatedInput: any} | {behavior: "deny", message: string}>}
  */
-async function decide(req, { sec, readOnly = false, root, base, platform = process.platform, ask = null }) {
+async function decide(req, { sec, readOnly = false, root, base, platform = process.platform, ask = null, mcp = null }) {
   const name = String((req && req.tool_name) || "");
   const input = req && req.input && typeof req.input === "object" && !Array.isArray(req.input) ? req.input : {};
   const allow = () => /** @type {const} */ ({ behavior: "allow", updatedInput: input });
@@ -194,6 +195,15 @@ async function decide(req, { sec, readOnly = false, root, base, platform = proce
       return { path: r.path, why: `文件访问被安全中心拦截：${r.reason}` };
     };
 
+    // 用户连接器的工具：连接器页上设的直接用 / 先问我 / 不让用。认不出是哪台的落到最后按不认得拒
+    const conn = mcp ? require("./connector-policy").ruleFor(mcp, name) : null;
+    if (conn) {
+      if (conn.policy === "allow") return allow();
+      const text = `连接器 ${conn.server} 的工具 ${conn.tool}\n参数：${require("../core/ext/mcp-policy").previewArgs(input)}`;
+      const v = conn.policy === "ask" ? { action: "ask", rule: "连接器工具要先问", ruleKey: "" } : { action: "deny", rule: "连接器工具设了不让用", seg: conn.tool };
+      const why = await refuse(sec, v, "连接器工具", text, true, ask);
+      return why ? deny(why) : allow();
+    }
     if (READS[name]) {
       for (const p of READS[name](input)) {
         const r = pathRefusal(p);

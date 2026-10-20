@@ -92,6 +92,11 @@ function publicScriptRefs(root = ROOT) {
     // 页面里内联的 <script> 也可能直接调 loadScriptOnce
     for (const s of loadCalls(html)) add(resolvePublic(s, "public"), via);
   }
+  // Inline preview helpers are read by the server and injected into sandboxed documents.
+  try {
+    const server = stripJsComments(fs.readFileSync(path.join(root, "server.js"), "utf8"));
+    for (const m of server.matchAll(/fs\.readFileSync\(\s*appPath\(\s*(["'])(public\/js\/[^"']+\.js)\1\s*\)/g)) add(m[2], "server.js");
+  } catch {}
   for (let i = 0; i < refs.length; i++) {
     const f = refs[i].file;
     if (!f.endsWith(".js")) continue;
@@ -111,7 +116,7 @@ const CANVAS_PART = /^public\/js\/app-07-canvas(?:-[^/]+)?\.js$/;
 // 为什么不按目录扫：目录重整把这些文件散到了 src/ 各层，按目录扫一搬就悄悄扫成零个，
 // 拼出来只剩 server.js，「找不到就跳过」的断言跟着静悄悄变绿。按名字取，少一个当场抛。
 const SERVER_PARTS = Object.freeze([
-  "routes/canvas", "routes/compose", "routes/drama", "routes/geo", "routes/library", "routes/prompt-tpls",
+  "routes/canvas", "routes/chrome", "routes/compose", "routes/drama", "routes/geo", "routes/library", "routes/prompt-tpls", "routes/session-import", "routes/session-shares",
   "compose-jobs", "demo-mask", "demo-timing", "deps-guard", "font-family", "im-reply", "im-accounts", "media-probe",
   "out-decode", "pptx-layout", "task-dirs", "timeline-cards", "timeline-compose", "timeline-subs",
   "web-demo-plan", "web-demo-recorder", "winname", "ws-browse",

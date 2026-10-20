@@ -17,6 +17,9 @@
 /** public/js/i18n.js 顶上 `root.I18N = api`：界面语言切换、按整句翻译文本节点 */
 declare var I18N: any;
 
+/** public/js/preview-runtime.js exposes its shared browser/Node API on globalThis. */
+declare var OWBPreviewRuntime: { inject(html: string, scriptUrl?: string): string; installStorage(): void };
+
 /** public/svgfig.js 末尾 `root.SvgFig = {...}`：回复里的 SVG 图修补、消毒、转 PNG */
 declare var SvgFig: any;
 

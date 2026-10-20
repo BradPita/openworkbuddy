@@ -1,50 +1,84 @@
-<p align="center">
- <img src="build/icon.png" width="120" alt="OpenWorkBuddy">
-</p>
-
+<p align="center"><img src="build/icon.png" width="64" alt="OpenWorkBuddy"></p>
 <h1 align="center">OpenWorkBuddy</h1>
-
-<p align="center">
- <b>An open-source AI office assistant that runs on your own machine.</b><br>
- Ask for something once; it plans, does the work, checks it, and leaves a real<br>
- PPT / Word / Excel / web page on your disk — <b>a file you can open, not a chat log.</b>
-</p>
-
-<p align="center">
- An open-source alternative to Claude Cowork · use the Claude Code or Codex already on your machine as the engine<br>
- <sub><a href="README.md"><b>中文</b></a> · English</sub>
-</p>
-
-<p align="center">
- <a href="#run-it-in-three-minutes"><b>▶&nbsp;Run it in three minutes</b></a>
- &nbsp;·&nbsp; <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a>
- &nbsp;·&nbsp; <a href="docs/功能清单.md">Feature list (zh)</a>
- &nbsp;·&nbsp; <a href="#docs">Docs</a>
- &nbsp;·&nbsp; <a href="#commercial-license--enterprise-services"><b>Commercial license · Services</b></a>
- &nbsp;·&nbsp; <a href="README.md#交流群">Feishu group</a>
- &nbsp;·&nbsp; <a href="CHANGELOG.en.md">Changelog</a>
-</p>
-
-<p align="center">
- <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
- <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
- <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts"></a>
-</p>
-
-<p align="center">
- <b>Free</b> for personal non-commercial use, schools and non-profits. Company use (even internal only) and personal commercial use need a <b>commercial license</b><br>
- Companies may evaluate free for 30 days (not yet in real business use); long-term use requires a license: <a href="mailto:contact@aijentra.com"><b>contact@aijentra.com</b></a><br>
- We also offer <b>enterprise FDE</b> · <b>AI training</b> · <b>AI adoption consulting</b> — <a href="#commercial-license--enterprise-services">how to work with us ↓</a>
-</p>
-
-<p align="center">
- <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy demo: say what you need, the agent does the work and hands you real files">
-</p>
+<p align="center"><b>A local-first AI office workbench that turns your material into files you can open and edit.</b><br>
+For people who prepare reports, decks, spreadsheets and documents, and teams that need self-hosting.<br>
+Choose your model, inspect execution, and review the delivered files.</p>
+<p align="center"><a href="#quick-start"><b>▶ Make a project update deck</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> · <a href="https://catcatuncle.github.io/openworkbuddy/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
+<p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="Published release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial license"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="Bookmark the project"></a></p>
+<p align="center"><sub>Free for personal non-commercial use, schools and non-profits. Company and personal commercial use require a <a href="COMMERCIAL-LICENSE.md">commercial license</a>. Model and media services have their own costs.</sub></p>
+<p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy workflow: submit a task, inspect execution and open delivered files"><br><sub>Workflow demonstration. Measure first success with the task below.</sub></p>
 
 ---
+
+<a id="quick-start"></a>
+<a id="run-it-in-three-minutes"></a>
+## Quick start: make a project update deck
+
+**Prerequisites:** a computer that can run the app and a usable model provider, installed local model, or authenticated local CLI. API use requires your own key. This example uses text and simple shapes; it needs no image/video model, messaging channel, or extra connector. Have PowerPoint, WPS or LibreOffice available to open and check the downloaded deck.
+
+1. **Install and launch.** Choose the macOS / Windows package for your architecture from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases): Windows installer `*-win-setup.exe`, portable `*-win-x64-portable.exe` / `*-win-arm64-portable.exe`, or macOS `.dmg`. On Linux, use source below or [Docker deployment](docs/部署.md).
+2. **Connect a model.** Register on first launch. In Settings → Models, enter the provider, exact model ID, API URL and key, then test the connection. An installed local CLI can also be selected under Settings → Agent.
+3. **Copy the task and open the result.** Select Craft mode and paste the task below. Preview or download `project-update.pptx` from the results panel, open it in presentation software and check all four slides. Then ask: “Turn the next-week plan on slide 4 into a two-column table. Keep the other slides unchanged.”
+
+```text
+Make a 4-slide project update deck saved as project-update.pptx.
+Audience: project lead. Project: Example website launch.
+Slide 1 | Cover: Example website launch — project update.
+Slide 2 | Completed this week: Published the product page; fixed the mobile menu.
+Slide 3 | Current progress: Adding the user guide.
+Slide 4 | Next week: Finish the English version; collect 5 trial-user feedback responses.
+Requirements: 16:9, English, clean business style; editable text,
+one main point per slide, readable presentation fonts and no overflowing text.
+Keep the supplied facts; do not invent metrics. Confirm the file exists
+and provide an openable file in the results panel.
+```
+
+**Success means:** a nonempty `project-update.pptx` exists on disk and opens in PowerPoint, WPS or LibreOffice; all four slides match the supplied facts, text is editable and nothing overflows; the follow-up updates slide 4 in the same file. A chat reply or successful installation alone does not satisfy this task. Copyable task files: [English](examples/quick-start/task.en.md) / [中文](examples/quick-start/task.md).
+
+**Timing:** start when installation begins and stop when the first file opens and passes review. Record download, startup, model setup and task wait separately. Three minutes is a design target; actual time depends on network, model readiness and execution. No measured first-success rate has been published yet.
+
+<details>
+<summary><b>Run from source: Node.js 18+, npm and Git</b></summary>
+
+```bash
+git clone https://github.com/CatCatUncle/openworkbuddy.git
+cd openworkbuddy
+npm ci
+npm start
+```
+
+After the server starts, open <http://localhost:3800> and continue with steps 2–3 above. Use `npm run app` for desktop development. Source runs keep data in the repository data directory by default; installed apps use `~/OpenWorkBuddy`. See [Install and launch](docs/安装与启动.md).
+
+</details>
+
+### If you get stuck
+
+| Where it fails | Next step |
+|---|---|
+| The OS blocks first launch | Follow the OS-specific [launch instructions](docs/安装与启动.md) |
+| `npm ci` fails downloading Electron | Check network access and Node version; see [source troubleshooting](docs/安装与启动.md#启动时容易卡住的几件事) |
+| The server port is in use | macOS / Linux: `PORT=3801 npm start`; Windows cmd: `set PORT=3801 && npm start`; open the new port |
+| Model testing or the task returns an upstream error | Check the API URL, model ID, key and provider quota; see [model setup](docs/配置模型.md) |
+| The task waits for an answer or approval | Review the question or approval card above the input, or open the inbox |
+| The reply says “done” but the file is missing | Check the active project and results folder; ask it to check `project-update.pptx`. Do not count this attempt as a success |
+
+HTML embedded previews use isolated temporary storage (up to 64 MiB each for `localStorage` and `sessionStorage`, cleared when closed). For a web app that must keep records, choose **Deploy locally and open** above the preview. It starts a loopback-only server and opens the current page in your browser, where data survives refreshes under that browser's native storage quota. Keep using the page's own export/backup feature for important data.
+
+Next, try the [core scenarios](#you-say-it-it-hands-you-the-file) or read the [user guide](https://catcatuncle.github.io/openworkbuddy/guides/user.html). Star to bookmark the project; use **Watch → Custom → Releases** for release notifications.
+
+Adjust font size, theme and density from the profile menu → Appearance.
+
+<details open>
+<summary><b>Your OS blocks the first launch</b></summary>
+
+The current macOS packages use ad-hoc signing and are not Apple-notarized. Use installers from this repository's Releases.
+
+- **macOS, “could not be verified”**: if you choose to proceed, dismiss the notice, then open **System Settings → Privacy & Security → Open Anyway** and complete the system confirmation. See [Apple's instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+- **macOS, “is damaged”**: download again first. If it still fails, check the signature and startup log using the [installation guide](docs/安装与启动.md); this is different from an unknown-developer notice.
+- **Windows**: after checking the download source, choose “More info → Run anyway” in SmartScreen.
+- **Nothing happens**: inspect `~/OpenWorkBuddy/logs/boot.log` and the [startup troubleshooting guide](docs/安装与启动.md#双击了没反应).
+
+</details>
 
 ## You say it, it hands you the file
 
@@ -63,37 +97,6 @@
 > [!NOTE]
 > Also: parallel tasks, goal-based acceptance, 👍👎 feedback that feeds self-evolution, two-layer memory, permission tiers, remote control over Feishu / WeChat, a desktop pet… Full list (Chinese): **[功能清单](docs/功能清单.md)**.
 
-## Commercial license · Enterprise services
-
-> [!IMPORTANT]
-> **Free for personal non-commercial use, schools and non-profits. Company use (even internal only) and personal commercial use require a paid commercial license.**
-> Companies may evaluate it free for up to 30 days, as long as it isn't used in real business yet; long-term use requires a license.
-> Email **[contact@aijentra.com](mailto:contact@aijentra.com)** with your company, how you plan to use it and roughly how many users; we'll get back to you soon. Terms: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
-
-| Your situation | License needed? |
-|---|---|
-| Personal non-commercial use (learning, research, hobby projects) | Free |
-| Schools, research institutions, non-profits, government bodies | Free |
-| Company evaluation: up to 30 days, not yet used in real business | Free |
-| A company or team using it in real business, **even internal only** | **Required** |
-| **Personal commercial use**: freelancing, client work, paid products or services | **Required** |
-| SaaS offered to others, bundling into products you sell, client delivery / outsourcing / custom work | **Required** |
-
-A license unlocks no features: there is only this one codebase, with no feature locks, no countdowns and no online license checks. The software sends no usage data to the author or any third party; when it checks for updates, it asks GitHub Releases whether a new version is out (GitHub can see your IP).
-Commercial use without a license can be pursued by the rights holder under civil law, and removing or altering copyright notices without permission may itself infringe — legal basis and court cases in [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果) (Chinese).
-
-Beyond licensing, we take on enterprise AI work:
-
-| Service | What it covers |
-|---|---|
-| **Enterprise FDE (forward-deployed engineering)** | Engineers join your team, wire Agents into real business workflows, and hand over once it runs |
-| **AI training** | In-house training so your team uses AI in everyday work, not just demos |
-| **AI adoption consulting** | Pick the use cases, shape the plan, size the cost; private deployment and industry agents included |
-
-The author is a former big-tech Agent engineer who has delivered AI solutions for cross-border e-commerce, manufacturing, AI startups, private funds, major consumer brands and state-owned enterprises. Based in Shenzhen — visits welcome.
-
-📮 **[contact@aijentra.com](mailto:contact@aijentra.com)**
-
 ## Why this one
 
 <table>
@@ -102,14 +105,14 @@ The author is a former big-tech Agent engineer who has delivered AI solutions fo
 
 <b>📄 The files are real.</b>
 
-Decks, documents, spreadsheets and pages are actually generated — open them from the output panel and check. Claim a file was written when it isn't on disk and the run gets stopped and redone.
+Decks, documents, spreadsheets and pages are actually generated — open them from the output panel and check. Review the output panel and the actual file on disk after delivery.
 
 </td>
 <td width="50%" valign="top">
 
 <b>🔌 Swap models freely; everything stays yours.</b>
 
-DeepSeek / Qwen / GLM / Kimi / OpenRouter / Ollama switch with one click. Already have <b>Claude Code or Codex</b> on this machine? Use it as the engine — no second token bill. Sessions, files and keys never leave your disk; it listens on <code>127.0.0.1</code> by default.
+DeepSeek / Qwen / GLM / Kimi / OpenRouter / Ollama switch with one click. Already have <b>Claude Code or Codex</b> on this machine? Use it as the engine — no second token bill. Settings and workspace files remain under your control; cloud models and remote connectors receive the data needed for the task. It listens on <code>127.0.0.1</code> by default.
 
 </td>
 </tr>
@@ -145,42 +148,6 @@ Free for personal non-commercial use: https://github.com/CatCatUncle/openworkbud
 ```
 
 </details>
-
-## Run it in three minutes
-
-**macOS** (no dialogs at all):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash
-```
-
-**Windows**: grab `-win-setup.exe` from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) (x64 and ARM); on a locked-down machine use the portable `-win-x64-portable.exe`.
-
-**From source** (Node.js 18+, no build step):
-
-```bash
-git clone https://github.com/CatCatUncle/openworkbuddy.git
-cd openworkbuddy && npm install
-npm run app # desktop app; or npm start → http://localhost:3800
-```
-
-Paste a model key, then just say what you want. Your data lives in `~/OpenWorkBuddy` and survives uninstalls. Text size and themes: avatar menu → **Appearance**.
-
-<details open>
-<summary><b>Your OS blocks the first launch</b></summary>
-
-<br>
-
-The signing certificate is still pending, so builds are ad-hoc signed: the OS is blocking an unknown developer, not malware.
-
-- **macOS, "could not be verified"**: click Done → System Settings → Privacy & Security → scroll down → **Open Anyway**. Or drag the .app into Applications and run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`. The old "right-click → Open" trick only works on macOS 14 and earlier.
-- **macOS, "is damaged"**: a cloud drive or unzip tool broke the signature — download again.
-- **Windows**: "More info" → "Run anyway".
-- **Nothing happens**: check `~/OpenWorkBuddy/logs/boot.log` → [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese)
-
-</details>
-
-> ⭐ **Got it running? Hit Star at the top right** so you can find it again in your Stars list; for release alerts, use **Watch → Custom → Releases**.
 
 ## What it looks like
 
@@ -263,6 +230,8 @@ Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin
 
 `openworkbuddy` shares **one** set of config, skills, memory, connectors and sessions with the desktop app — start something in the terminal and you can watch it and chime in from your phone; stop halfway on the desktop and `openworkbuddy resume` picks it up.
 
+The default display keeps one progress line, the final answer and files actually changed in the current turn. Use `/details` for tool output, `/usage` for token usage, and `/verbose on` for detailed activity. Say “open it” after creating a page to open the session's result with a local application, or use `/open 1` and `/open subdirectory/index.html`.
+
 ```bash
 npm link # once: install the global command (or just run `node cli.js …`)
 
@@ -278,28 +247,33 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 
 ## How it's put together
 
-```mermaid
-flowchart TB
- subgraph Entry["Your devices"]
- Desktop["Desktop / Web"]
- CLI["openworkbuddy CLI"]
- IM["Feishu / WeChat and other remote entries"]
- end
+<p align="center">
+ <img src="docs/images/architecture.en.svg" width="1120" alt="OpenWorkBuddy architecture: desktop, CLI and IM clients enter through their hosts into the Agent Runtime, which coordinates models, safety, tools, project context, deliverables and traces">
+</p>
 
- Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
- Runtime --> Agent["Agent orchestration\nplanning · tool calls · file acceptance"]
- Agent <--> Models["Model routing\ncloud LLM / Ollama / Claude Code / Codex"]
- Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
- Agent <--> Workspace["Local workspace\nfiles · assets · project context · memory"]
- Agent --> Canvas["Executable infinite canvas\nscript · characters · shots · assets · timeline"]
- Agent --> Trace["Local trace\nmodel · tools · latency · tokens · I/O"]
- Trace -. optional .-> Langfuse["Langfuse"]
-```
-
-The diagram doubles as a reading order: start at `server.js`, then see how `src/agent/agent.js` orchestrates models and tools. Details → [实现细节](docs/实现细节.md), code layering → [代码架构](docs/代码架构.md) (both Chinese)
+Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent/agent.js`, with tools in `src/agent/tools.js` and `src/tools/`. Sessions, config and usage are stored locally under `data/`; task files go to the project workspace. See [code architecture](docs/代码架构.md) for layers and [implementation details](docs/实现细节.md) for a task walkthrough (both Chinese).
 
 ## What's new
 
+- **Oct 20** Source updates check Git state first; keep modified or divergent checkouts intact to protect sessions and deliverables
+- **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
+- **Oct 19** Rename tasks and identify dated previews; Goal checks unmet work and resumes in bounded rounds after 100 steps; CLI sandbox denials explain approval limits
+- **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
+- **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
+- **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
+
+<details>
+<summary>Earlier updates (Oct 16 and older)</summary>
+
+- **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate
+- **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal
+- **Oct 16** Preview region annotations and line comments enter editable revision drafts; individual change blocks can be reverted and restored
+- **Oct 16** Team tasks use organization models and connectors with separate usage records; browser recordings generate reviewable skill drafts
+- **Oct 16** English UI tests catch untranslated text while preserving user content; the website includes bilingual user and developer guides
+
+- **Oct 16** Owners can create and revoke organization-only read-only task links; sharing settings stay in the page and are hidden in single-user mode
+- **Oct 16** Quick start now leads to an editable project update deck, with a copyable task, review criteria, troubleshooting and explicit gaps in adoption metrics
+- **Oct 15** Execution plans stay in the conversation as collapsible lists. Updates preserve expansion and keyboard focus, and the list scrolls with your messages
 - **Oct 15** Pin tasks to a Pinned group at the top of the history; pins follow you to other computers
 - **Oct 15** Accept in Self-evolve no longer reloads the page; Self-evolve and Agents open without a multi-second wait
 - **Oct 14** Every account can bind its own WeChat, Feishu, QQ, WeCom, Official Account, group bots and email: messages run as you, results go only to you
@@ -313,7 +287,9 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Oct 10** Members, auditors and branch-org accounts can create multiple projects too: each gets its own folder inside their own working folder, and earlier outputs stay in the default project
 - **Oct 10** Drag from a canvas card's port onto another card to link them; cards that can't take the link turn red and say why. "+" adds a card that's already linked, and titles and prompts can be edited right on the card
 
-Older entries → **[Changelog](CHANGELOG.en.md)**.
+</details>
+
+Full history → **[Changelog](CHANGELOG.en.md)**.
 
 ## ⚠️ This agent has a shell
 
@@ -344,7 +320,11 @@ OpenWorkBuddy is an independent open-source project, not affiliated with any of 
 
 ## Docs
 
+First-success testing, timing definitions and missing metrics → [Adoption and feedback](docs/采用与反馈.md#english).
+
 Most docs are in Chinese; the code and comments are the source of truth.
+
+Online guides: **[User guide](https://catcatuncle.github.io/openworkbuddy/guides/user.html)** · **[Developer guide](https://catcatuncle.github.io/openworkbuddy/guides/developer.html)** · [Bilingual project website](https://catcatuncle.github.io/openworkbuddy/)
 
 | Doc | What's in it | Doc | What's in it |
 |---|---|---|---|
@@ -362,9 +342,40 @@ Most docs are in Chinese; the code and comments are the source of truth.
 
 - **[toolward](https://github.com/CatCatUncle/toolward)** — a static safety check for agent skills and MCP connectors: 37 rules in six families, zero runtime dependencies, Node 20.10+. Run `npm i -g toolward` and OpenWorkBuddy picks it up as a second ruler automatically; skip it and nothing changes. Like this project it is PolyForm Noncommercial.
 
+## Commercial license · Enterprise services
+
+> [!IMPORTANT]
+> **Free for personal non-commercial use, schools and non-profits. Company use (even internal only) and personal commercial use require a paid commercial license.**
+> Companies may evaluate it free for up to 30 days, as long as it isn't used in real business yet; long-term use requires a license.
+> **[Contact the maintainer](https://github.com/CatCatUncle)** with your company, how you plan to use it and roughly how many users; we'll get back to you soon. Terms: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+
+| Your situation | License needed? |
+|---|---|
+| Personal non-commercial use (learning, research, hobby projects) | Free |
+| Schools, research institutions, non-profits, government bodies | Free |
+| Company evaluation: up to 30 days, not yet used in real business | Free |
+| A company or team using it in real business, **even internal only** | **Required** |
+| **Personal commercial use**: freelancing, client work, paid products or services | **Required** |
+| SaaS offered to others, bundling into products you sell, client delivery / outsourcing / custom work | **Required** |
+
+A license unlocks no features: there is only this one codebase, with no feature locks, no countdowns and no online license checks. The software sends no usage data to the author or any third party; when it checks for updates, it asks GitHub Releases whether a new version is out (GitHub can see your IP).
+Commercial use without a license can be pursued by the rights holder under civil law, and removing or altering copyright notices without permission may itself infringe — legal basis and court cases in [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果) (Chinese).
+
+Beyond licensing, we take on enterprise AI work:
+
+| Service | What it covers |
+|---|---|
+| **Enterprise FDE (forward-deployed engineering)** | Engineers join your team, wire Agents into real business workflows, and hand over once it runs |
+| **AI training** | In-house training so your team uses AI in everyday work, not just demos |
+| **AI adoption consulting** | Pick the use cases, shape the plan, size the cost; private deployment and industry agents included |
+
+The author is a former big-tech Agent engineer who has delivered AI solutions for cross-border e-commerce, manufacturing, AI startups, private funds, major consumer brands and state-owned enterprises. Based in Shenzhen — visits welcome.
+
+📮 **[contact the maintainer](https://github.com/CatCatUncle)**
+
 ## License
 
-**Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use need a commercial license.** Companies may evaluate free for 30 days. To buy one, email [contact@aijentra.com](mailto:contact@aijentra.com).
+**Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use need a commercial license.** Companies may evaluate free for 30 days. To buy one, [contact the maintainer](https://github.com/CatCatUncle).
 
 [PolyForm Noncommercial 1.0.0](LICENSE); terms and what unlicensed commercial use leads to are in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Deploy configs, scripts and skill templates are also MIT ([the list](COMMERCIAL-LICENSE.md#按-mit-授权的部分)); the name and logo aren't licensed.
 

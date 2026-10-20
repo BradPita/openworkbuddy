@@ -187,6 +187,9 @@ W("探针.html", `<!doctype html><html><head><meta charset="utf-8"></head><body>
 // 页面自己的 CSP 挡掉了内联脚本：服务端挂上去的那段报不上来，前端得自己退回「占满面板、框里自己滚」
 W("自带CSP.html", "<!doctype html><html><head><meta http-equiv='Content-Security-Policy' content=\"script-src 'none'\"></head><body>"
   + Array.from({ length: 80 }, (_, i) => `<p>第 ${i + 1} 段：报不上尺寸的网页。</p>`).join("") + "</body></html>");
+const STORAGE_GAME = '<!doctype html><html><head><meta charset="utf-8"><script>window.initialScore=localStorage.getItem("score");sessionStorage.setItem("round","1");</script></head><body><button id="play">Play</button><output id="score">0</output><script>document.getElementById("play").onclick=function(){var score=Number(localStorage.getItem("score")||0)+1;localStorage.setItem("score",score);document.getElementById("score").textContent=score;};</script></body></html>';
+W("存储游戏.html", STORAGE_GAME);
+W("另一份游戏.html", STORAGE_GAME);
 // min-height:100vh 再加 padding：外面按报上来的高度拉高框、框一高页面又更高——重报要是不看宽度就没个头
 W("满屏.html", "<!doctype html><html><body style='margin:0;padding:20px'><div style='min-height:100vh;background:#eef'>首屏</div></body></html>");
 // 框里跳到同目录另一页：新页面的地址是它自己拼的，不带 fit=1
@@ -534,9 +537,10 @@ app.whenReady().then(async () => {
     const lastFit = fromFrame[fromFrame.length - 1];
     ok(lastFit && lastFit.w === 1200 && lastFit.h === 1600, "★页面自己用 postMessage 报上来 1200×1600★", r && r.fits);
     ok(r && r.rectW === r.avail && r.rectH >= r.panelH - 2 && !r.tf,
-      "默认使用完整面板视口，不把交互网页压成缩略图", r && { rectW: r.rectW, rectH: r.rectH, avail: r.avail, panelH: r.panelH, tf: r.tf });
+      "★默认使用完整面板视口，不把交互网页压成缩略图★", r && { rectW: r.rectW, rectH: r.rectH, avail: r.avail, panelH: r.panelH, tf: r.tf });
     ok(r && !r.zoomHidden && r.zoomText === "整页适配", "尺寸上报后提供可选的整页适配按钮", r && { hidden: r.zoomHidden, text: r.zoomText });
 
+    // 静态宽卡片可以主动切回旧的整页适配；再次点击后恢复真正的面板视口。
     await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-zoom").click()');
     await new Promise((r2) => setTimeout(r2, 500));
     const fitted = await frameState();
@@ -557,6 +561,7 @@ app.whenReady().then(async () => {
     const pv = seen.find((x) => /^\/pv\/[0-9a-f]+\/宽卡片\.html\?fit=1$/.test(x.url));
     ok(pv && pv.status === 200, "跳过去的是 /pv/<令牌>/宽卡片.html?fit=1，服务端照发", pv || seen.map((x) => x.url));
 
+    // 填满面板模式只接收尺寸，不反复改 iframe 尺寸，写死宽度的卡片也不能触发布局循环。
     await new Promise((r3) => setTimeout(r3, 800));
     const stableStart = await frameState();
     const n1 = stableStart ? stableStart.fits.filter((f) => f.fromFrame).length : -1;
@@ -596,12 +601,51 @@ app.whenReady().then(async () => {
       "★框里发出去的 /api 请求到服务端时一个都没带登录 cookie★", fromFrame);
     ok(fromFrame.length >= 3 && fromFrame.every((x) => x.status === 401),
       "服务端对这几条回的是 401（没登录），不是替它办了事", fromFrame.map((x) => x.method + " " + x.url + " " + x.status));
-    ok(/^throw/.test(String(out.ls)), "框里的 localStorage 用不了（预期内：丢了本地存储，换来碰不到应用的那份）", out.ls);
+    ok(out.ls === "ok", "框里的 localStorage 使用独立临时存储，网页初始化不会中断", out.ls);
     ok(/^throw/.test(String(out.parentDoc)), "框里够不到外面的 document", out.parentDoc);
     ok(!String(out.cookie).includes(TOKEN), "框里读不到登录令牌", out.cookie);
     ok(out.img === 120, "★页面里用相对路径引的图照样显示★（sandbox 里的子请求不带 cookie，靠的就是 /pv/<令牌>/）", out.img);
     const img = seen.find((x) => /^\/pv\/[0-9a-f]+\/小图\.png$/.test(x.url));
     ok(img && img.status === 200 && !img.cookie, "那张图走的是 /pv/<令牌>/小图.png，不带 cookie 也取得到", img || seen.map((x) => x.url));
+  }
+
+  {
+    const native = await win.webContents.executeJavaScript('(()=>{const before=localStorage;OWBPreviewRuntime.installStorage();return before===localStorage;})()');
+    ok(native, "原生存储可用时保留原对象，不接管应用存储");
+    await win.webContents.executeJavaScript('localStorage.setItem("preview-private","parent-only")');
+    await open("存储游戏.html", 450);
+    const frame = () => win.webContents.mainFrame.frames.find(f => /\/pv\//.test(f.url));
+    const current = frame();
+    const before = await current.executeJavaScript('({ready:typeof document.getElementById("play").onclick==="function",initial:window.initialScore,session:sessionStorage.getItem("round"),parentSecret:localStorage.getItem("preview-private")})');
+    ok(before.ready && before.initial === null && before.session === "1" && before.parentSecret === null, "页面头部可读写存储并完成按钮初始化，读不到应用的存储", before);
+    const rect = await current.executeJavaScript('(()=>{const r=document.getElementById("play").getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()');
+    const box = await win.webContents.executeJavaScript('(()=>{const f=document.querySelector("#pv-body iframe"),r=f.getBoundingClientRect();return {x:r.left,y:r.top,s:r.width/f.clientWidth}})()');
+    win.webContents.debugger.attach("1.3");
+    for (const type of ["mousePressed", "mouseReleased"]) await win.webContents.debugger.sendCommand("Input.dispatchMouseEvent", { type, x: box.x + rect.x * box.s, y: box.y + rect.y * box.s, button: "left", clickCount: 1 });
+    win.webContents.debugger.detach();
+    const played = await current.executeJavaScript('({score:document.getElementById("score").textContent,saved:localStorage.getItem("score")})');
+    ok(played.score === "1" && played.saved === "1", "预览中的真实鼠标点击触发游戏按钮并保存临时分数", played);
+    const storage = await current.executeJavaScript(`(() => {
+      localStorage.item = 42; sessionStorage.setItem("score", "separate");
+      const properties = localStorage.item === "42" && Object.keys(localStorage).includes("item") && localStorage.key(0) === "score" && localStorage.hasOwnProperty("item") && localStorage instanceof Storage;
+      delete localStorage.item; const removed = localStorage.getItem("item") === null;
+      let nineMiB = false;try {localStorage.setItem("large", "x".repeat(9 * 1024 * 1024));nineMiB=true;}catch(e){}
+      localStorage.removeItem("large");
+      let quota = false;try {localStorage.setItem("too-large", "x".repeat(33 * 1024 * 1024));}catch(e){quota=e.name==="QuotaExceededError";}
+      return {properties,removed,nineMiB,quota,atomic:localStorage.getItem("score")==="1"&&localStorage.getItem("too-large")===null,separate:sessionStorage.getItem("score")==="separate"};
+    })()`);
+    ok(Object.values(storage).every(Boolean), "临时存储支持属性与标准方法、会话隔离和配额原子性", storage);
+    await open("另一份游戏.html", 450);
+    const separate = await frame().executeJavaScript('localStorage.getItem("score")');
+    ok(separate === null, "另一份网页获得新的临时存储，不能读到前一份网页的数据", separate);
+    const blob = await win.webContents.executeJavaScript(`(() => { const frame=document.querySelector("#pv-body iframe");const blob=URL.createObjectURL(new Blob([OWBPreviewRuntime.inject(${JSON.stringify(STORAGE_GAME)},new URL("/js/preview-runtime.js",location.href).href)],{type:"text/html"}));frame.src=blob;return blob;})()`);
+    await new Promise(r => setTimeout(r, 450));
+    const blobFrame = win.webContents.mainFrame.frames.find(f => f.url.startsWith("blob:"));
+    const library = await blobFrame.executeJavaScript('document.getElementById("play").click();({score:localStorage.getItem("score"),origin:self.origin})');
+    ok(library.score === "1" && library.origin === "null", "资料库的 blob 网页也能交互，仍保持独立源", library);
+    await win.webContents.executeJavaScript(`URL.revokeObjectURL(${JSON.stringify(blob)});0`);
+    const parent = await win.webContents.executeJavaScript('localStorage.getItem("preview-private")');
+    ok(parent === "parent-only", "游戏操作与清理不改变应用的本地数据", parent);
   }
 
   {
@@ -626,9 +670,9 @@ app.whenReady().then(async () => {
     const { after: a } = await open("满屏.html", 2000);
     await new Promise((r) => setTimeout(r, 1500));
     const b = await frameState();
-    ok(a && b && a.h === b.h && a.fits.length === b.fits.length,
-      "min-height:100vh 的页面不会越报越高（只有宽度变了才重报）", a && b && { h1: a.h, h2: b.h, n1: a.fits.length, n2: b.fits.length });
-    ok(b && b.fits.length <= 8 && b.h < 3000, "报的次数和最终高度都有个头", b && { n: b.fits.length, h: b.h });
+    ok(a && b && a.rectH === b.rectH && a.fits.length === b.fits.length,
+      "min-height:100vh 的页面不会反复改变预览高度", a && b && { h1: a.rectH, h2: b.rectH, n1: a.fits.length, n2: b.fits.length });
+    ok(b && b.fits.length <= 8 && b.rectH < 3000, "报的次数和视口高度都有上限", b && { n: b.fits.length, h: b.rectH });
   }
 
   {
@@ -636,8 +680,8 @@ app.whenReady().then(async () => {
     const { after: r } = await open("导航起点.html", 2500);
     const hop = seen.find((x) => /^\/pv\/[0-9a-f]+\/导航终点\.html$/.test(x.url));
     ok(hop && hop.status === 200 && !hop.cookie, "框里自己跳到同目录另一页，走的还是那条 /pv/<令牌>/", hop || seen.map((x) => x.url));
-    ok(r && r.w === 1000 && r.h === 1400 && Math.abs(scaleOf(r.tf) - r.avail / 1000) < 0.01,
-      "★跳过去的新页面也报了尺寸、重新缩好了★（服务端认 Sec-Fetch-Dest: iframe 照样挂脚本）", r && { w: r.w, h: r.h, tf: r.tf });
+    ok(r && r.rectW === r.avail && r.rectH >= r.panelH - 2,
+      "★跳转后的页面仍使用完整面板视口★（服务端认 Sec-Fetch-Dest: iframe 照样挂脚本）", r && { w: r.rectW, h: r.rectH, avail: r.avail, panelH: r.panelH });
   }
 
   {

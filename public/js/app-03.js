@@ -533,10 +533,29 @@ async function initAuth() {
     }
   }
   sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
+  attnRestoreUnread();
   renderHistory();
   refreshLanes(); // 登录后服务端才知道你是不是这台机器的主人——终端那条线只对主人可见
   await mergeServerSessions();
+  await openLinkedSession();
   maybeOnboard();
+}
+/** 行菜单「在新窗口打开」带过来的 ?s=会话号：侧栏并好了就打开它，随即从地址栏擦掉，刷新不再跳一次 */
+async function openLinkedSession() {
+  let sid = "";
+  try {
+    const u = new URL(location.href);
+    const shared = u.searchParams.get("shared") || "";
+    if (/^[A-Za-z0-9_-]{43}$/.test(shared)) { location.replace("/shared.html#" + shared); return; }
+    if (!u.searchParams.has("s")) return;
+    sid = u.searchParams.get("s") || "";
+    u.searchParams.delete("s");
+    history.replaceState(null, "", u.pathname + (u.search || "") + u.hash);
+  } catch { return; }
+  if (!/^[\w-]{1,80}$/.test(sid)) return;
+  // 只开自己侧栏里有的：删掉了的、别人的，打开也是一片「没找到」
+  if (!sessions.some((s) => s.id === sid)) { toast("这个任务已经不在了", "circle-x"); return; }
+  await openSession(sid);
 }
 
 /**
@@ -549,10 +568,11 @@ async function initAuth() {
  * 只补不删：本地有、服务端没有的（刚建还没落盘的新任务）原样留着。
  */
 async function mergeServerSessions() {
-  let rows;
+  let rows, filling = false;
   try {
     const d = await fetch("/api/sessions").then(r => r.json());
     rows = Array.isArray(d && d.sessions) ? d.sessions : null;
+    filling = !!(d && d.filling);
   } catch { return; }
   if (!rows) return; // 老版本服务端没这个接口：维持原来的纯本地行为，不清空任何东西
   const byId = new Map(sessions.map(s => [s.id, s]));
@@ -560,20 +580,26 @@ async function mergeServerSessions() {
   for (const r of rows) {
     const local = byId.get(r.id);
     if (local) { // 标题在服务端会被模型润色过，本地那条是发第一句时截的 24 字
-      if (r.title && r.title !== "未命名任务") local.title = r.title;
-      if (!local.at && r.at) local.at = r.at;
-      if (!local.project && r.project) local.project = r.project;
+      const editing = (f) => typeof histEditBusy !== "undefined" && histEditBusy.has(r.id + ":" + f); // 正在存的改名 / 挪项目别被旧值盖回去
+      if (r.title && r.title !== "未命名任务" && !editing("title")) local.title = r.title;
+      // at 是「最后动过的时候」：别的设备上接着聊过，这边也得跟着排上去、归进「今天」
+      if (r.at && !(local.at >= r.at)) local.at = r.at;
+      if (r.project && !editing("project")) local.project = r.project; // 以服务端为准：换台机器挪过项目的也认
       if (r.lane) local.lane = r.lane; // 服务端存的那份为准：终端里起的活儿只有它知道
+      if (r.engine) local.engine = r.engine; // 顶栏按这条任务最后选过的引擎标本机/云端，不跟当前全局设置漂
       if (typeof pinBusy === "undefined" || !pinBusy.has(r.id)) local.pinned_at = r.pinned_at || undefined; // 置顶以服务端为准，换台机器顶的也认；正在改的那条别被旧值盖回去
+      if (typeof r.files === "number") local.files = r.files || undefined;
       continue;
     }
-    sessions.push({ id: r.id, title: r.title, at: r.at, project: r.project || undefined, lane: r.lane || undefined, pinned_at: r.pinned_at || undefined });
+    sessions.push({ id: r.id, title: r.title, at: r.at, project: r.project || undefined, lane: r.lane || undefined, engine: r.engine || undefined, pinned_at: r.pinned_at || undefined, files: r.files || undefined });
     added++;
   }
   sessions.sort((a, b) => (b.at || 0) - (a.at || 0));
   saveSessions();
   renderHistory();
   if (added) console.log(`[历史] 从服务端补回 ${added} 条本机没有的任务`);
+  // 升级上来头一回：老会话产出过几个文件，服务端还在后台补。过几秒再并一次，行上的文件图标就齐了
+  if (filling && (mergeServerSessions._again = (mergeServerSessions._again || 0) + 1) <= 5) setTimeout(mergeServerSessions, 6000);
 }
 initAuth();
 
@@ -1393,6 +1419,7 @@ function openPageView(kind) {
   pageKind = kind;
   inAssistMode = kind === "assist";
   sessionId = null;
+  if (typeof resetTaskBillingScope === "function") resetTaskBillingScope();
   pendingModel = defaultPendingModel();
   // 助理模式的模型选择存在配置里，进页面时读回来。模型已经从列表里删掉了就退回全局默认——
   // 标签跟着一起退，不能标签还写着它、真跑起来却是别的
@@ -2182,13 +2209,20 @@ async function renderAutomRuns(page) {
 const libPrefer = (k, ok, dflt) => { try { const v = localStorage.getItem(k); return ok.includes(v) ? v : dflt; } catch { return dflt; } };
 const libState = {
   pick: null, q: "", dir: "",
+  // 顶上一排页签：rec 推荐（最近打开、修改过的混在一起）/ fav 收藏 / 文件夹 / img 图像 / all 全部。
+  // 「文件夹」底下还有一排：dir 目录 / task 按任务 / ws 工作区——三种翻法看的是同一批东西。
   // ws = 「工作区」：把当前项目的工作目录一层层点进去看，每一层、每一个文件都到得了
-  view: libPrefer("owb_lib_view", ["dir", "task", "ws"], "dir"),
+  view: libPrefer("owb_lib_view", ["rec", "fav", "dir", "task", "ws", "img", "all"], "rec"),
+  // 「文件夹」页签上次停在哪一种翻法：点回来还是它
+  fold: libPrefer("owb_lib_fold", ["dir", "task", "ws"], "dir"),
+  // 来源：lib 我上传的（参考资料）/ ws 做出来的（工作目录里的产出）
+  from: libPrefer("owb_lib_from", ["all", "lib", "ws"], "all"),
   // 工作区那一栏当前在哪一层。不记到本地：下次打开时那个文件夹可能已经没了，从根开始最稳
   wsDir: "",
   // 一层文件太多时先铺多少个；「按任务」里未归属那一段先铺多少个。点「再显示」往上加，换层/换视图归位
-  wsN: 300, orphanN: 300,
-  mode: libPrefer("owb_lib_mode", ["list", "icon", "gallery"], "list"),
+  wsN: 300, orphanN: 300, allN: 300, favN: 300,
+  // 默认网格：先看见长什么样，再看名字
+  mode: libPrefer("owb_lib_mode", ["list", "icon", "gallery"], "icon"),
   group: libPrefer("owb_lib_group", ["none", "kind", "time"], "none"),
   kind: "all",
   // 已经不在工作目录里的产出，默认不摆出来。

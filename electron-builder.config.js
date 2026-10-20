@@ -124,6 +124,8 @@ module.exports = {
     "!eslint.config.js", // 开发期的 lint 配置，运行时一个字节都不读，"*.js" 会把它顺手带进包
     "src/**/*",
     "public/**/*",
+    // Chrome 扩展：设置 → 浏览器 那颗「打开扩展文件夹」从这儿拷一份到数据目录给 Chrome 加载
+    "extension/chrome/**/*",
     "eval/run.js",
     "eval/tasks.js",
     "eval/judge.js",

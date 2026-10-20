@@ -64,6 +64,13 @@ if (!process.env.OPENWORKBUDDY_HOME) {
     process.exit(1);
   }
 }
+// 导入本机会话那块读的是跑测试这个人的 ~/.claude、~/.codex。整轮指到不存在的地方：
+// 哪个套件起了服务、点开了新任务页，都数不到、列不出真会话（session-import 自己另指假目录）
+for (const k of ["OPENWORKBUDDY_IMPORT_CLAUDE_DIR", "OPENWORKBUDDY_IMPORT_CODEX_DIR"]) {
+  if (!process.env[k]) process.env[k] = path.join(os.tmpdir(), "owb-test-no-local-sessions", k.endsWith("CLAUDE_DIR") ? "claude" : "codex");
+}
+// 连接器导入也只读测试的家，不扫描运行测试这台机器的真实凭据文件。
+if (!process.env.OWB_IMPORT_HOME) process.env.OWB_IMPORT_HOME = path.join(process.env.OPENWORKBUDDY_HOME, "connector-import-fixtures");
 if (!ALLOW_REAL_DATA) {
   GUARD_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-test-guard-"));
   ownTmp.push(GUARD_DIR);
@@ -119,6 +126,7 @@ const SUITES = [
   ["decide-tool", "agent 手里的 decide：一批判断一趟问完、拿不准的挑出来、额度按题数算"],
   ["task-doubt", "定时任务跑绿之后再看一眼：只给判据主动让路的那一段挂疑问，不改判"],
   ["continue-gate", "自动续跑之前那道闸：撞上限不等于没干完，先问一句再决定要不要再烧一轮"],
+  ["goal-step-resume", "Goal 模式撞单次步数上限后核对进度并有限续跑"],
   ["cmd-risk", "名单外先判一句：四张名单都没命中、本来一声不吭直接跑的那条，先问撤不撤得回来"],
   ["cmd-gate", "命令闸认命令：包装词连参数剥、引号去掉、bash -c / find -exec 里套着的那条也单独过闸"],
   ["memory-gate", "记之前先判一句：agent 自己想写进长期记忆的那句话，先问下个月还用不用得上"],
@@ -165,6 +173,22 @@ const SUITES = [
   ["office-tools", "办公工具：读 Office 文档 / 资料库取素材 / 推群 / 排期 / 发邮件 / 按环境摘挂工具"],
   ["web-demo", "网页演示录屏：步骤脚本 / 假光标 / 自动放大 / 打码闸门 / 工具接线（没有 Chrome、ffmpeg 就跳过真录那段）"],
   ["cdp", "真浏览器那条线：端口通不通、握手带不带 Origin、evaluate 拿不拿得到值"],
+  ["chrome-link", "浏览器扩展桥接：配对、令牌、账号隔离、审批、停止与断线处理"],
+  ["browser-recording-ui", "录制界面和真实 DOM：输入不留值、选项参数化、停录与技能保存", ELECTRON],
+  ["browser-recording", "浏览器录制技能：显式开始、输入参数化、站点隔离与安全草稿"],
+  ["chrome-ext", "浏览器扩展操作：页面来源校验、元素定位、敏感输入和取消操作"],
+  ["mcp-policy", "连接器工具权限与本机导入：逐工具审批、引擎降级、配置选择与密钥脱敏"],
+  ["oauth-api", "OAuth 真实接口：账号权限、外部浏览器回调、令牌隔离和移除"],
+  ["oauth-ui", "OAuth 界面：主动授权、内联设置、失败重试与本机撤回", ELECTRON],
+  ["ui-language", "英文漏翻闸门：可见文案、属性、用户内容豁免与反向对照", ELECTRON],
+  ["review-ui", "预览圈选与行内审查：定位、草稿、撤销和会话隔离", ELECTRON],
+  ["team-task-api", "团队任务真实执行：共享 API、个人订阅隔离、任务锁定与分账"],
+  ["task-billing", "团队任务：共享凭据模型、并发隔离、分账与未知价目"],
+  ["checkpoint-review", "文件分块回退：独立恢复、撤销、版本冲突和路径隔离"],
+  ["mcp-oauth", "OAuth：PKCE、发现与注册、发起人归属、刷新、撤回和凭据不回显"],
+  ["session-shares", "组织内只读分享：归属、组织隔离、撤回、文件边界与凭据脱敏"],
+  ["share-ui", "只读分享界面：页面内操作、复制与撤回、登录返回和安全展示", ELECTRON],
+  ["readme-onboarding", "README 首次成功路径：双语任务、前置条件、核对标准和缺失指标"],
   ["motion", "HTML 动画出片：虚拟时钟、帧时间表、画幅、ffmpeg 参数、工具接线、批量截图（不开窗口）"],
   ["checkpoints", "文件检查点：改前留底 / 整步回退 / 改前 diff"],
   ["shot-history", "分镜留底：改台词重跑之后，上一版首帧还拿得回来"],
@@ -213,6 +237,7 @@ const SUITES = [
   ["library-ws", "资料库工作区：逐层浏览、全量计数、越界与链接"],
   ["library-cover", "资料库封面与摘录：一次只出一张、租约过期就扔、机器忙就让、坏的记 .fail、越界和别人的一律拒"],
   ["library-favs", "资料库收藏：20 下并发不丢、坏文件留 .bad、没了标 missing、账号互不可见、未归属翻页"],
+  ["library-pins", "侧栏文件置顶：账号隔离、相对路径、并发写、缺失项和坏清单留底"],
   ["motion-render", "HTML 动画出片真渲：同一页渲两次逐帧一致、像素对得上时间轴、不是 2 倍图、颜色通道没反", ELECTRON],
   ["htmlshot-cover", "资料库 HTML 封面：一扇隐藏窗复用、不出网不出声不弹窗、卡死 5 秒放手、拍完不再画、闲 30 秒关窗", ELECTRON],
   ["ql-thumb", "文档缩略图：系统预览出图，卡住杀整组、失败回 null、临时目录不留"],
@@ -228,6 +253,7 @@ const SUITES = [
   ["main-stall", "界面线程卡顿：睡眠不算卡、十秒一行只记活名；缩图三件活、网页截图编 PNG 都不在界面线程上做"],
   ["server-stall", "服务进程多开不卡：会话后台存盘不丢不倒退、每步中止信号收得回来、翻工作目录挪进后台线程且结果逐条一样"],
   ["server-process", "服务端挪进独立进程：两种跑法都能用、主进程不再被对话卡住、崩了重启或退回、退出不留孤儿", ELECTRON],
+  ["session-import", "导入本机 Claude Code / Codex 会话：只读假目录、坏行跳过、工具输出只留预览、成员 403 连条数都没有、导两次不出两份、接着聊走原文件夹和原会话"],
   ["e2e","端到端（含 frontend.js、admin-ui.js）", ELECTRON],
 ];
 
@@ -235,7 +261,7 @@ const SUITES = [
 // 临时家和 trace 账本，照单独跑的样子跑：哪天谁删了那一行，护栏当场拦下判红。
 // 给了的话整轮的临时家会替它兜住，漏洞只在单独跑时现身——写真账本的错还被吞掉，谁也看不见。
 // 前八个是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是它们；后面几个（win-*、engine-bridge、engine-approve、engine-tool-relay、media-apis）是写的时候就自己起临时家的。
-const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "win-paths", "win-tools", "win-env", "engine-bridge", "engine-approve", "engine-tool-relay", "media-apis"]);
+const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "win-paths", "win-tools", "win-env", "engine-bridge", "engine-approve", "engine-tool-relay", "media-apis", "session-import"]);
 const ISOLATION_ENV = ["OPENWORKBUDDY_HOME", "OPENWORKBUDDY_DATA_DIR", "OPENWORKBUDDY_TRACE_FILE"];
 {
   const typo = [...SELF_ISOLATED].filter((n) => !SUITES.some(([s]) => s === n));

@@ -154,8 +154,11 @@ function inline(s, color) {
   t = t.replace(/(^|[^\w_])_(?!\s)([^_\n]+?)(?<!\s)_(?![\w_])/g, (_m, p, x) => p + on("italic") + x + on("italicOff"));
   // 链接：文字加下划线，地址留在后面（终端里地址本身才是能点、能复制的那个）
   // 前面粗体、斜体插进来的转义码也是 ESC [ 开头，那个 [ 不是链接：从它开始配，整段就乱码了
-  t = t.replace(/(?<!\u001b)\[([^\]\n]*)\]\(([^)\s]+)\)/g, (_m, txt, url) =>
-    (txt ? on("under") + txt + on("underOff") + " " : "") + on("dim") + url + on("dimOff"));
+  t = t.replace(/(?<!\u001b)\[([^\]\n]*)\]\(([^)\s]+)\)/g, (_m, txt, url) => {
+    const label = txt.replace(/\u0000C(\d+)\u0000/g, (_x, i) => spans[Number(i)]).replace(/\u001b\[[0-9;]*m/g, "");
+    if (label === url) return on("under") + txt + on("underOff");
+    return (txt ? on("under") + txt + on("underOff") + " " : "") + on("dim") + url + on("dimOff");
+  });
   t = t.replace(/\u0000C(\d+)\u0000/g, (_m, i) => on("cyan") + spans[Number(i)] + on("colorOff"));
   t = t.replace(/\u0000E(\d+)\u0000/g, (_m, i) => esc[Number(i)]);
   return t;

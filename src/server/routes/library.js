@@ -7,7 +7,9 @@
  *   GET  /api/library/cover       封面图本身（按请求人的根重新解析、重算缓存键，对不上就 404）
  *   POST /api/library/excerpts    文本文件的开头几行（只读前 16KB）
  *   POST /api/library/favorite    收藏 / 取消收藏
- *   GET  /api/library/favorites   我收藏过的，文件没了的标 missing
+ *   GET  /api/library/favorites   我收藏过的，文件没了的标 missing；还在的带 size、mtime
+ *   GET  /api/library/all         资料库 + 工作区合成一张清单，新的在前，按类型/来源筛完再分页
+ *   POST /api/library/stat        一批文件此刻还在不在、多大、几时改的（「推荐」里最近打开过的那些要核一遍）
  *
  * 两种来源、一套规矩：src "lib" 是资料库里的相对路径（按 libraryRootOf(请求人) 解析），
  * src "ws" 是工作区里的相对路径（跟 /api/files/view/ 同一条 rootedPath）。
@@ -24,9 +26,15 @@ const express = require("express");
 const { StringDecoder } = require("string_decoder");
 const libCover = require("../../domains/library/lib-cover");
 const libFavs = require("../../domains/library/lib-favs");
+const libPins = require("../../domains/library/lib-pins");
+const libKinds = require("../../domains/library/lib-kinds");
+const wsBrowse = require("../../domains/library/ws-browse");
 
 // 下面这几个由 createLibraryRouter(deps) 填上
-let libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn;
+let libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, workspaceKeyOf;
+/** @type {() => Array<{ name: string, path: string, size: number, mtime: string }>} */
+let libWalk = () => [];
+let appDataDir = "";
 /** @type {ReturnType<typeof libCover.createCoverQueue> | null} */
 let coverQueue = null;
 
@@ -218,21 +226,136 @@ app.post("/api/library/favorite", async (req, res) => {
   }
 });
 
-app.get("/api/library/favorites", (req, res) => {
-  const items = libFavs.listFavs(libraryRootOf(req.user), (src, rel) => {
-    try { return !!libItemResolve(req, src, rel); } catch { return false; }
+/** 侧栏的文件置顶：清单归当前账号，实际路径每次都按当前请求重新解析。 */
+app.get("/api/pins/files", (req, res) => {
+  const files = libPins.listPins(libraryRootOf(req.user), (src, rel, root) => {
+    const pinReq = root ? { ...req, query: { ...(req.query || {}), root } } : req;
+    const r = libItemResolve(pinReq, src, rel);
+    return { size: r.st.size, mtime: r.st.mtime };
   });
+  res.json({ ok: true, files });
+});
+
+app.post("/api/pins/files", async (req, res) => {
+  const body = req.body || {};
+  if (typeof body.key !== "string" || typeof body.pinned !== "boolean") return res.status(400).json({ error: "key 和 pinned 必须填写" });
+  const key = libPins.splitPinKey(body.key);
+  if (!key) return res.status(400).json({ error: "文件路径不合法" });
+  try {
+    let root = "";
+    if (body.pinned) {
+      const pinReq = body.root ? { ...req, body: { ...(req.body || {}), root: body.root } } : req;
+      const resolved = libItemResolve(pinReq, key.src, key.path); // 置顶前确认这仍是当前账号可读的文件
+      root = key.src === "ws" ? workspaceKeyOf(resolved.root) : "";
+    } else if (key.src === "ws") {
+      root = String(body.root || workspaceKeyOf(getWorkspaceDir()));
+    }
+    const pinned_at = await libPins.setPin(libraryRootOf(req.user), key.key, body.pinned, undefined, root);
+    res.json({ ok: true, key: key.key, ...(root ? { root } : {}), pinned_at });
+  } catch (e) {
+    const known = Number(e && e.status) || (e && e.skip === "denied" ? 403 : e && e.skip === "missing" ? 404 : 0);
+    res.status(known || 500).json({ error: known ? e.message : "文件置顶失败，请稍后重试" });
+  }
+});
+
+function itemDeck(req, r) {
+  if (!/\.html?$/i.test(r.rel)) return false;
+  try { libItemResolve(req, r.src, path.posix.join(path.posix.dirname(r.rel), "deck.json")); return true; } catch { return false; }
+}
+
+app.get("/api/library/favorites", (req, res) => {
+  // 判「还在不在」那一趟本来就 stat 过了，顺手把体积和修改时间带回去：
+  // 卡片底下那行「已修改 · 9月24日」要它，不带的话前端得为每一条再问一次
+  /** @type {Map<string, any>} */
+  const seen = new Map();
+  const items = libFavs.listFavs(libraryRootOf(req.user), (src, rel) => {
+    try { const r = libItemResolve(req, src, rel); seen.set(src + ":" + rel, { st: r.st, deck: itemDeck(req, r) }); return true; } catch { return false; }
+  });
+  res.json({ items: items.map((x) => {
+    const meta = seen.get(x.src + ":" + x.path);
+    return meta ? { ...x, size: meta.st.size, mtime: meta.st.mtime.toISOString(), deck: meta.deck } : x;
+  }) });
+});
+
+const ALL_DEFAULT = 300;
+const ALL_MAX = 2000;
+/** 资料库那一支走 server.js 的 libWalk：最深 6 层、最多 4000 个，撞线就照实报 lib_capped */
+const LIB_WALK_CAP = 4000;
+const STAT_MAX_ITEMS = 60;
+
+/** 同一层有 deck.json 的网页是幻灯片。只看名字，不读正文（跟 /api/library/outputs 一个口径） */
+function deckDirsOf(paths) {
+  return new Set(paths.filter((p) => /(^|\/)deck\.json$/.test(p)).map((p) => path.posix.dirname(p)));
+}
+
+/**
+ * 「推荐」「图像」「全部」三个页签的数据。两种来源合成一张清单、新的在前，
+ * 类型和来源在这儿筛完再切页——前端只拿一页（默认 300），几千个文件也不整包往回拉。
+ * 两边各有自己的上限（资料库 4000、工作区 WALK_CAP），撞了就带 *_capped，界面照实说「只列了一部分」。
+ */
+app.get("/api/library/all", (req, res) => {
+  const q = req.query || {};
+  const kind = typeof q.kind === "string" && libKinds.KIND_KEYS.includes(q.kind) ? q.kind : "all";
+  const from = q.from === "lib" || q.from === "ws" ? q.from : "all";
+  const limit = Math.max(1, Math.min(ALL_MAX, parseInt(String(q.limit || ""), 10) || ALL_DEFAULT));
+  let offset = Math.max(0, parseInt(String(q.offset || ""), 10) || 0);
+  const favs = libFavs.favKeys(libraryRootOf(req.user));
+  let lib = [];
+  /** @type {{ files: ReadonlyArray<{ name: string, size: number, mtime: string }>, capped: boolean }} */
+  let ws = { files: [], capped: false };
+  try {
+    if (from !== "ws") lib = libWalk() || [];
+    if (from !== "lib") ws = wsBrowse.walkAllCached(getWorkspaceDir(), { appDataDir });
+  } catch { return res.status(500).json({ error: "文件列表读取失败，请确认目录仍然可访问" }); }
+  const libDecks = deckDirsOf(lib.map((f) => f.path));
+  const wsDecks = deckDirsOf(ws.files.map((f) => f.name));
+  const row = (src, p, f, decks) => {
+    const it = { src, path: p, size: f.size || 0, mtime: f.mtime || "", fav: favs.has(src + ":" + p) };
+    if (decks.size && /\.html?$/i.test(p) && decks.has(path.posix.dirname(p))) it.deck = true;
+    return it;
+  };
+  const all = [
+    ...lib.map((f) => row("lib", f.path, f, libDecks)),
+    ...ws.files.map((f) => row("ws", f.name, f, wsDecks)),
+  ].filter((it) => libKinds.kindOk(kind, it.path, it));
+  all.sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));
+  offset = Math.min(offset, Math.max(0, Math.ceil(all.length / limit) - 1) * limit);
+  res.json({
+    items: all.slice(offset, offset + limit), total: all.length, offset, limit,
+    lib_total: lib.length, ws_total: ws.files.length, lib_capped: lib.length >= LIB_WALK_CAP, ws_capped: !!ws.capped,
+  });
+});
+
+/** 一批文件此刻的样子：还在的给 size、mtime，没了的给 missing:true，不许看的给 skip */
+app.post("/api/library/stat", (req, res) => {
+  const body = req.body || {};
+  if (!Array.isArray(body.items)) return res.status(400).json({ error: "items 要是一个列表" });
+  if (body.items.length > STAT_MAX_ITEMS) return res.status(400).json({ error: `一次最多问 ${STAT_MAX_ITEMS} 个文件` });
+  const items = Object.create(null);
+  for (const it of body.items) {
+    const id = it && (typeof it.id === "string" || typeof it.id === "number") ? String(it.id) : "";
+    if (!id) continue;
+    try {
+      const r = libItemResolve(req, it.src, it.path);
+      items[id] = { size: r.st.size, mtime: r.st.mtime.toISOString(), deck: itemDeck(req, r) };
+    } catch (e) {
+      items[id] = e && e.skip === "missing" ? { missing: true } : { skip: "denied" };
+    }
+  }
   res.json({ items });
 });
 
 /**
  * @param {{ libraryRootOf: Function, rootedPath: Function, rootOfResolved: Function, getWorkspaceDir: Function,
- *           safePathIn: Function, thumbsDir: string, busy: () => boolean }} deps
+ *           safePathIn: Function, thumbsDir: string, busy: () => boolean,
+ *           libWalk?: () => Array<{ name: string, path: string, size: number, mtime: string }>, appDataDir?: string }} deps
  */
 function createLibraryRouter(deps) {
-  ({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn } = deps);
+  ({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, workspaceKeyOf } = deps);
+  if (typeof deps.libWalk === "function") libWalk = deps.libWalk;
+  appDataDir = deps.appDataDir || "";
   coverQueue = libCover.createCoverQueue({ cacheDir: deps.thumbsDir, busy: deps.busy });
   return app;
 }
 
-module.exports = { createLibraryRouter, libFavKeys: libFavs.favKeys, libItemResolve, excerptRead, coverImageUrl, EXCERPT_MAX_ITEMS, EXCERPT_HEAD_BYTES, EXCERPT_MAX_LINES, EXCERPT_MAX_CHARS };
+module.exports = { createLibraryRouter, libFavKeys: libFavs.favKeys, libItemResolve, excerptRead, coverImageUrl, ALL_MAX, STAT_MAX_ITEMS, EXCERPT_MAX_ITEMS, EXCERPT_HEAD_BYTES, EXCERPT_MAX_LINES, EXCERPT_MAX_CHARS };

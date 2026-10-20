@@ -45,6 +45,7 @@ if (typeof require("electron") === "string") {
   process.exit(1);
 }
 const { app: electronApp, BrowserWindow } = require("electron");
+electronApp.setPath("userData", path.join(TMP, "browser-profile"));
 
 // 看门狗，理由同 test/frontend.js：CI 的无头机器上 electron 可能连 whenReady 都不回，
 // 父进程强杀只拿得到一具尸体。这里自己记「ready 没有 / 最后跑完哪一步」，超时先说清楚再退。

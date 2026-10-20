@@ -247,6 +247,24 @@ async function probeSettings(bin) {
 }
 
 /**
+ * 这版 claude 认不认 --fork-session？接着从本机导入的那条会话聊，要靠它分出一根新的，
+ * 原来那份会话记录一个字不动。跟 --add-dir 一样用 --help 探
+ */
+const forkCaps = new Map();
+async function probeFork(bin) {
+  if (forkCaps.has(bin)) return forkCaps.get(bin);
+  const p = probeHelp(bin, "--fork-session");
+  forkCaps.set(bin, p);
+  return p;
+}
+
+/** 上游开跑前先问一声：这台机器上的 claude 能不能分出新会话。找不到 claude 也算不能 */
+async function canFork({ bin } = {}) {
+  const found = await resolveNewest("claude", bin, versionOf);
+  return found.bin ? probeFork(found.bin) : false;
+}
+
+/**
  * 工作目录之外还要让它读哪些地方：真实存在、不是 cwd 本身、去重。
  * 导出是为了让测试不起进程也能验这段逻辑。
  */
@@ -314,8 +332,10 @@ async function run({
   model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, guard = {}, env, extraArgs = [],
   globalMcp = false,
   permissionPromptTool = "",
+  mcpAllow = [], mcpAsk = [], mcpDeny = [],
   thinking: thinkingLevel, addDirs = [],
   onWrite = null,
+  forkSession = false,
 }) {
   // 闸在上游已经核过；这里再挡一次，护的是绕过 agent 直接调 run() 的那些入口（测试连接、目标拆解）。
   // 不传 --model 时 claude 会落到它自己设置里的默认型号，那不是属主选的，所以没钉就不跑
@@ -344,7 +364,15 @@ async function run({
   args.push("--permission-mode", permissionMode || guard.claudeMode || "acceptEdits");
   args.push("--model", pinned);
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
-  if (resumeId) args.push("--resume", resumeId);
+  if (resumeId) {
+    args.push("--resume", resumeId);
+    // 接着本机导入的会话聊：分出一根新的。不认这个选项的老版会静默吞掉，
+    // 那就成了往人家原来的会话记录后面续写，所以宁可不跑
+    if (forkSession) {
+      if (!(await probeFork(exe))) throw new Error("这版本机 Claude Code 不能分出新会话（没有 --fork-session），升级一下再接着聊。");
+      args.push("--fork-session");
+    }
+  }
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   // 工作目录之外的东西——别的对话的产出、资料库、技能正文——-p 模式下默认不许碰：
   // 读一下都是「需要审批」，而这里没人能点同意，对外就是一句「不能读取文件」。
@@ -352,7 +380,8 @@ async function run({
   // 一口气跟一串会把后面的东西也当目录吞掉）。老版 claude 不认这个选项时不发。
   // 几个探测互相不依赖，串行等于白等一趟往返。都带模块级缓存，同一个 bin 只有第一次真去 spawn
   // 「先问」规则（guard.ask，见 security.askingGuard）只有挂上了审批工具才有人答
-  const asks = Array.isArray(guard.ask) ? guard.ask : [];
+  // 连接器页上设成先问我的工具（engines/connector-policy.js 翻好的 mcpAsk）跟命令那套走同一条：问不着就并进不给用
+  const asks = [...(Array.isArray(guard.ask) ? guard.ask : []), ...(Array.isArray(mcpAsk) ? mcpAsk : [])];
   const canAsk = asks.length > 0 && !!mcpConfigPath && !!permissionPromptTool;
   const [addDirOk, thinkingFlag, settingsOk] = await Promise.all([probeAddDir(exe), probeThinking(exe), canAsk ? probeSettings(exe) : false]);
   const dirs = pickAddDirs(addDirs, cwd);
@@ -368,6 +397,8 @@ async function run({
     // 不放行的话工具挂上了也调不动，模型看见一堆用不了的名字反而更糟。
     // 真正危险的动作由本项目自己的安全中心把关（工具是从这台桥回流的）。
     for (const n of mcpServerNames) args.push("--allowed-tools", "mcp__" + n);
+    // 整台不是直接用、但点名设了直接用的那几个工具
+    for (const t of mcpAllow) args.push("--allowed-tools", t);
     // 要审批时先问桥上那个 approve（属主勾了才有，见 engines/approve.js）。只跟着 --mcp-config 走：
     // 指到一台没挂上的服务器，claude 当场退出
     if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
@@ -385,7 +416,7 @@ async function run({
   // 没挂审批、或这版 claude 不认 --settings 时问不着（-p 非交互），并回直接不给用，一条也不漏
   const asking = canAsk && settingsOk;
   if (asking) args.push("--settings", JSON.stringify({ permissions: { ask: asks } }));
-  const deny = asks.length && !asking ? [...(guard.disallow || []), ...asks] : guard.disallow || [];
+  const deny = [...(asks.length && !asking ? [...(guard.disallow || []), ...asks] : guard.disallow || []), ...mcpDeny];
   for (const t of deny) args.push("--disallowed-tools", t);
   // 思考模式：跟 app 设置页那个下拉框同一个档位。auto 什么也不发（今天的行为一个字节不变），
   // 这版 claude 不认 --thinking 时也什么都不发 —— 发了会被静默吞掉，不如明着在界面上说不支持
@@ -512,6 +543,6 @@ module.exports = {
   // 真正的候选由 detect() 从本机 claude 的型号表、--help 和 settings.json 读；这里只留永远有效的别名兜底
   models: ALIAS_FALLBACK,
   thinkingLabel: "扩展思考（claude 只有开/关，低中高都算开）",
-  detect, run, explain, pickAddDirs,
+  detect, run, explain, pickAddDirs, canFork,
   _internals: { catalogModels, modelList, upgradeCommand, settingsModels, claudeDir },
 };

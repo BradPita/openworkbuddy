@@ -66,7 +66,7 @@ function updateCmd(kind, platform = process.platform) {
 
 function howToUpdate(kind, platform = process.platform) {
   if (kind === "source") {
-    return "你是从源码跑的：在项目目录执行 git pull && npm install，重启即可，不用重装。";
+    return "你是从源码跑的：检查更新只查询 GitHub 发布版本，不会拉取源码。先退出应用，在项目目录运行 git status --short。只有工作区干净且分支可快进时，才执行 git pull --ff-only && npm install 后重启。若有本地改动或分叉，保留旧目录，不要在里面 pull、reset 或覆盖；另建干净源码副本，并在启动时将 OPENWORKBUDDY_HOME 指回旧目录。确认会话和成果都在后，再整理旧改动。";
   }
   if (kind === "portable") {
     return "你用的是免安装版：下载新版的 portable.exe 换掉旧的就行。"

@@ -35,6 +35,13 @@ function eq(got, want, name) { ok(Object.is(got, want), name, Object.is(got, wan
 const say = (argv) => A.parse(argv).problems.map((p) => p.message + " " + p.hint).join(" | ");
 const clean = (argv) => A.parse(argv).problems.length === 0;
 
+// CLI 启动位置就是默认工作区；显式 -C 覆盖这一次，不受旧 config.workspace_dir 影响。
+{
+  eq(A.startupWorkspace(null, "/tmp/project-a"), path.resolve("/tmp/project-a"), "CLI 默认工作目录取启动目录");
+  eq(A.startupWorkspace("../project-b", "/tmp/project-a"), path.resolve("/tmp/project-b"), "-C 相对路径相对启动目录解析");
+  eq(A.startupWorkspace("/tmp/project-c", "/tmp/project-a"), path.resolve("/tmp/project-c"), "-C 绝对路径优先于启动目录");
+}
+
 // ── ① 拼错的选项：拦下来，并且猜出他想说什么 ──────────────────────────────
 console.log("\n① 拼错的选项不许被当成任务文本");
 {

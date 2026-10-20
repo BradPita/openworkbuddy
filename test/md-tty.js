@@ -175,6 +175,8 @@ console.log("\n【6】块级：列表、待办、引用、表格、分隔线");
   const link = plain("看[这个页面](https://example.com/a)\n");
   ok(link.includes("这个页面") && link.includes("https://example.com/a"), "链接的文字和地址都要留着——终端里地址才是能点能复制的那个", link);
   ok(!link.includes("](") , "反向对照：Markdown 的链接记号不该还在", link);
+  eq(plain("文件：[index.html](index.html)\n"), "文件：index.html\n", "同名文件链接只显示一次");
+  eq(plain("文件：[`index.html`](index.html)\n"), "文件：index.html\n", "代码形式的同名文件链接也不重复");
 }
 
 console.log("\n【7】颜色：该加的时候加，不该加的时候一个转义都不许有");

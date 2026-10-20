@@ -23,9 +23,13 @@ const migrate = require("./src/server/migrate");
 seedDataDir();
 const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
+const mcpPolicy = require("./src/core/ext/mcp-policy"); // 连接器工具一个个设的权限
+const mcpImport = require("./src/core/ext/mcp-import"); // 从本机别的应用里导连接器
+const { createOAuthManager } = require("./src/core/ext/mcp-oauth");
 const { createLLM, createEmbedder, pingRequest, probeEmbedding, embedCandidates, embedChannels, embedHostable } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
 const { outputFiles, noteUserInput, moveUserInput, isUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, withLibraryDir, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
+const checkpointReview = require("./src/agent/checkpoint-review");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
@@ -33,7 +37,12 @@ const dramaRoutes = require("./src/server/routes/drama"); // 短剧分镜表 + �
 const { createComposeRouter } = require("./src/server/routes/compose"); // 一键合成的两条接口
 const libraryRoutes = require("./src/server/routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./src/server/routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
+const { createSessionImportRouter } = require("./src/server/routes/session-import"); // 导入本机终端里的 Claude Code / Codex 会话
+const sessionImport = require("./src/domains/import/session-import"); // 导进来的会话接着聊：在原来的文件夹里、接原来那根线
 const { createGeoRouter } = require("./src/server/routes/geo"); // 行程卡：查地点、两站间路线、底图瓦片和地点照片
+const { createChromeRouter } = require("./src/server/routes/chrome"); // 设置 → 浏览器：配对码、连没连上、扩展文件夹
+const { createShareStore } = require("./src/domains/account/session-shares");
+const { createSessionSharesRouter } = require("./src/server/routes/session-shares");
 const geoPlaces = require("./src/domains/geo/places"); // 行程卡查地点：设置页要它折算高德上限、存设置时解除当天停用
 const { createComposeJobs } = require("./src/domains/media/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const taskDirs = require("./src/util/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
@@ -51,6 +60,8 @@ const { createStaticCompress: staticCompress } = require("./src/server/static-co
 const { createJsonCompress: jsonCompress } = require("./src/server/json-compress");
 const { thumbFileAsync } = require("./src/platform/render/thumb");
 const org = require("./src/domains/account/org"); // 组织（租户）层：席位、部门、邀请码、审计
+const taskBilling = require("./src/core/billing/task-billing");
+const usageStore = require("./src/core/billing/usage-store");
 const budget = require("./src/core/billing/budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
 const admin = require("./src/domains/account/admin"); // 企业管理后台的接口层 /api/admin/*
 const spaces = require("./src/domains/account/spaces"); // 不止一个账号时，各账号自己的工作目录
@@ -313,6 +324,7 @@ const llm = {
  *  选过的模型已被从列表删掉 → 明确报错，绝不悄悄换成别的模型跑 */
 function llmForSession(sess, fallbackUser) {
   const name = sess && sess.model;
+  if (sess?.billing_scope === "team") { const row = taskBilling.sharedModel(config, name); return createLLM({ ...config, models: [row], active_model: row.name }); }
   // 多人服务器上的成员：只认「管理员共享给他的 + 他自己填 Key 的」那几条（member-models.js）。
   // 管理员和个人桌面版不走这段，跟以前一个字节不差
   const who = modelWho((sess && sess.user) || fallbackUser);
@@ -435,7 +447,8 @@ expertTeams.push(...(expertsMeta.teams || []));
 function saveExperts() {
   store.writeJsonAtomic(EXPERTS_FILE, { ...expertsMeta, experts, teams: expertTeams }, { pretty: true });
 }
-const mcpManager = new McpManager();
+const mcpOAuth = createOAuthManager({ file: dataPath("data", "mcp-oauth.json"), security: () => security.getSecurity(config) });
+const mcpManager = new McpManager({ oauthToken: (cfg, opts) => mcpOAuth.status(cfg).authorized ? mcpOAuth.token(cfg, opts) : null, oauthFetch: mcpOAuth.fetch });
 let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
 let imAccounts = null; // 成员自己绑的通道，跟 imBridge 一起建
 
@@ -990,7 +1003,18 @@ function listSessionsOnDisk() {
       let mtime = 0;
       try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
       const hit = sessMetaCache.get(n);
-      if (hit && hit.mtime === mtime) { if (hit.row) rows.push(hit.row); continue; }
+      if (hit && hit.mtime === mtime) {
+        if (hit.row) {
+          // 老版本的 .index 尚未记创建时间：用索引里已有的稳定时间补齐，不为侧栏首次打开重读整份会话。
+          if (!hit.row.created_at) {
+            hit.row.created_at = new Date(Number(hit.row.at) || mtime).toISOString();
+            sessIndexDirty = true;
+          }
+          rows.push(hit.row);
+          if (typeof hit.row.files !== "number") sessFilesTodo.add(n);
+        }
+        continue;
+      }
       const data = store.readJson(path.join(SESS_DIR, n), null);
       const row = sessionRow(id, data);
       sessMetaCache.set(n, { mtime, row });
@@ -1004,7 +1028,42 @@ function listSessionsOnDisk() {
   for (const k of sessMetaCache.keys()) if (!seen.has(k)) { sessMetaCache.delete(k); sessIndexDirty = true; } // 删掉的会话别赖在缓存里
   rows.sort((a, b) => b.at - a.at);
   saveSessIndex();
+  fillSessFilesLater();
   return rows;
+}
+/** 这条会话前后产出过几个文件（同名改写算一个）。侧栏靠它在行上挂文件图标，顶栏靠它写「N 个文件」 */
+function sessFileCount(s) {
+  return s ? sessSearch.filesOf(s).length : 0;
+}
+// 「产出过几个文件」是后加的字段，升级前落盘的 .index 里没有。那几行照常进侧栏，
+// 由这里在后台一条条回去补，补完下一次拉列表就带上了。不在拉列表那一趟里当场补：
+// 几百条会话整份重读一遍要一两秒，正好卡在打开应用、侧栏还空着的那一下。
+const sessFilesTodo = new Set(); // 文件名
+let sessFilesTimer = null;
+function fillSessFilesLater() {
+  if (sessFilesTimer || !sessFilesTodo.size) return;
+  const later = (ms) => {
+    sessFilesTimer = setTimeout(step, ms);
+    if (sessFilesTimer.unref) sessFilesTimer.unref();
+  };
+  const step = () => {
+    sessFilesTimer = null;
+    const t0 = Date.now();
+    for (const n of sessFilesTodo) {
+      sessFilesTodo.delete(n);
+      const hit = sessMetaCache.get(n);
+      if (!hit || !hit.row || typeof hit.row.files === "number") continue;
+      let mtime = 0;
+      try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
+      if (mtime !== hit.mtime) continue; // 文件又动过：下一趟列表会整份重读它，轮不到这儿
+      hit.row.files = sessFileCount(store.readJson(path.join(SESS_DIR, n), null));
+      sessIndexDirty = true;
+      if (Date.now() - t0 > 30) break; // 一口气最多占 30ms，别卡住正在出字的对话
+    }
+    if (sessFilesTodo.size) later(50);
+    else saveSessIndex();
+  };
+  later(500);
 }
 function sessionRow(id, s) {
   // 一句话都没说过的空壳不进侧栏：点进去还是空的，只会让人以为「历史又乱了」
@@ -1012,9 +1071,14 @@ function sessionRow(id, s) {
   // 定时任务跑出来的那段会话也不进侧栏：一天几十条 cron 会把真正的对话整个挤下去。
   // 它们有自己的正经去处——自动化 → 运行记录，那边每条记录都挂着「看执行过程」直接开这一段。
   if (s.kind === "schedule") return null;
+  const firstUserAt = (s.transcript || []).find((t) => t && t.type === "user" && t.at)?.at;
   return {
     id,
     title: s.title || "未命名任务",
+    dir: s.dir || "",
+    // 固定展示创建日期，让任务在自动改标题、继续执行后仍有稳定的「名称 · 日期」标识。
+    // 旧会话没有首条消息时间时退回更新时间，避免侧栏出现空日期。
+    created_at: firstUserAt || s.created_at || s.updated_at || "",
     user: s.user || "",
     project: s.project || "",
     at: Date.parse(s.updated_at || "") || 0,
@@ -1023,7 +1087,10 @@ function sessionRow(id, s) {
     // 老会话该归到哪条线要看**读它的这个人**现在配的是什么引擎，那是前端拿 /api/lanes 算的事；
     // 在这儿按服务器配置替他填死，多用户下就会把别人的引擎口径安到他头上。
     lane: lanes.normalize(s.lane) || undefined,
+    billing_scope: s.billing_scope === "team" ? "team" : "personal",
+    engine: typeof s.engine === "string" ? s.engine : undefined,
     pinned_at: Number(s.pinned_at) > 0 ? Number(s.pinned_at) : undefined,
+    files: sessFileCount(s),
   };
 }
 /**
@@ -1268,6 +1335,13 @@ app.use(staticCompress([
  */
 app.use(jsonCompress());
 app.use(express.static(appPath("public")));
+// Only a one-use state-bound code is deposited here. The authenticated initiating
+// owner exchanges it from the app; an external browser need not possess its cookie.
+app.get("/api/mcp/oauth/callback", (req, res) => {
+  res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; base-uri 'none'" });
+  try { mcpOAuth.receive(req.query); res.type("html").send('<!doctype html><meta charset="utf-8"><title>OpenWorkBuddy</title><h1>授权回调已收到</h1><p>请返回 OpenWorkBuddy。The authorization response was received. Return to OpenWorkBuddy.</p>'); }
+  catch { res.status(400).type("html").send('<!doctype html><meta charset="utf-8"><title>OpenWorkBuddy</title><h1>授权请求已失效</h1><p>请在连接器页面重新开始。Restart authorization from the Connectors page.</p>'); }
+});
 // JointJS 是短剧画布的开源底座。它从 node_modules 原样提供给前端，
 // 不复制、不改写 vendor 源码；这样开发态、桌面包和离线模式使用的是同一份 MPL-2.0 文件。
 app.get("/vendor/joint/joint.min.js", (_req, res) => {
@@ -1662,7 +1736,17 @@ app.use(dramaRoutes.createDramaRouter({
   getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, unpricedChat, addUsage, toolRunSubdir, toolRunSubdirReady,
   canvasAssetNear: canvasRoutes.canvasAssetNear,
 }));
-app.use(libraryRoutes.createLibraryRouter({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, thumbsDir: path.join(dataPath("data"), "thumbs"), busy: () => activeRuns.size > 0 }));
+app.use(libraryRoutes.createLibraryRouter({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, workspaceKeyOf, thumbsDir: path.join(dataPath("data"), "thumbs"), busy: () => activeRuns.size > 0, libWalk: () => libWalk(), appDataDir: dataPath("data") }));
+// 用户自己的 Chrome：扩展连的那条 WebSocket 在 main() 里挂（src/core/ext/chrome-link.js），这里只是设置页那几个接口。
+// 「打开扩展文件夹」只给桌面版的本机主人：服务器版点了是在服务器上开窗口，没人看得见
+app.use(createChromeRouter({
+  canOpenFolder: (req) => !!(process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE) && (admin.isSoloDesktop() || admin.platformAdmin(req.user)),
+  openFolder: (dir) => openWithSystem(dir),
+  extDir: appPath("extension", "chrome"),
+  copyTo: dataPath("data", "chrome-extension"),
+  packaged: () => require("./src/platform/paths").isPackaged(),
+  desktop: !!process.versions.electron,
+}));
 app.use(createPromptTplsRouter({
   isSolo: admin.isSoloDesktop,
   canEditOrg: (u) => require("./src/domains/account/rbac").can(u, "admin.write"),
@@ -1671,6 +1755,8 @@ app.use(createPromptTplsRouter({
   audit: org.audit,
 }));
 app.use(createGeoRouter({ getConfig: () => config }));
+// 只有这台机器的主人能导（个人桌面版或平台管理员）：~/.claude、~/.codex 是跑服务器的那个系统账号的
+app.use(createSessionImportRouter({ isOwner: isPlatformOwner, importer: sessionImport.createSessionImporter({ sessionFile: sessFile }) }));
 
 // 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
 // 多人服务器上成员给自己的助理另起过名字、换过头像的，看到的是他自己那份（prefs.assistantFor）
@@ -2062,6 +2148,7 @@ app.get("/api/settings", (req, res) => {
     // 成员只看得到共享给他的那几家，外加他自己填 Key 的（own: true，Key 同样不回原文）
     models: memberModels.listFor(config, isPlatformOwner(req) ? { owner: true } : modelWho(req.user)).map((m) => ({
       ...m,
+      team_available: !m.own && memberModels.sharedToMembers(config, m),
       api_key: m.api_key ? "********" : "",
       key_hint: isPlatformOwner(req) ? keyHint(m.api_key) : "",
       has_key: !!m.api_key,
@@ -3212,7 +3299,7 @@ app.post("/api/security/approvals/:id", (req, res) => {
   if (scope === "always" && r.ruleKey && !security.isPersistableRule(r.ruleKey)) {
     scope = "session";
     downgraded = true;
-    reason = "高危命令、写文件、跑代码只能本次运行期间放行，不进永久名单";
+    reason = /^chrome:/.test(r.ruleKey) ? "动你 Chrome 的只在这次任务里放行，不进永久名单" : "高危命令、写文件、跑代码只能本次运行期间放行，不进永久名单";
   }
   if (r.ok && body.allow && scope === "always" && r.ruleKey) {
     const sec = security.getSecurity(config);
@@ -3581,6 +3668,18 @@ const MCP_REV_KEY = require("crypto").randomBytes(16);
 function mcpRev(s) {
   return require("crypto").createHmac("sha256", MCP_REV_KEY).update(cfgFingerprint(s || {})).digest("hex").slice(0, 16);
 }
+/** 「授权没了」的判据：mcp.js 里 whyFailed 翻出来的那句话，401/403 那条固定带着「（401）Key／令牌」 */
+const MCP_AUTH_BAD = /（401）|（403）|Key／令牌/;
+/** 模型这会儿手上的连接器工具有几个：设了不让用的不算（agent.js 摆工具表时也摘掉了） */
+const mcpOffered = () => mcpManager.toolDefs((s, t) => mcpPolicy.offered(config.mcp_tool_policy, s, t)).length;
+/** 从本机别的应用导连接器：只在服务跑在自己电脑上（只绑回环地址、只有一个账号）、由平台管理员来做 */
+const mcpImportAvailable = (req) => admin.servesLoopback() && !admin.multiUser() && isPlatformOwner(req);
+/** 连接器的名字在不在（自配的 + 插件带的）。插件坏了不该让连接器页上的按钮点不动 */
+function mcpFind(name) {
+  let fromPlugins = [];
+  try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch {}
+  return [...(config.mcp_servers || []), ...fromPlugins].find((x) => x && x.name === name) || null;
+}
 app.get("/api/mcp", (req, res) => {
   const full = isPlatformOwner(req);
   const view = (s, plugin) => {
@@ -3608,9 +3707,12 @@ app.get("/api/mcp", (req, res) => {
       error: failure ? failure.error : "",
       // 「授权没了」和「连不上」在界面上是两件事：前者要用户现在就去换 Key，后者多半过会儿自己就好。
       // 判据就是 mcp.js 里 whyFailed 翻出来的那句话——401/403 那条固定带着「（401）Key／令牌」。
-      auth_bad: failure ? /（401）|（403）|Key／令牌/.test(failure.error || "") : false,
+      auth_bad: failure ? MCP_AUTH_BAD.test(failure.error || "") : false,
       connected: !!client,
+      oauth: s.url ? mcpOAuth.status(s) : { available: false, authorized: false },
       tools: client ? client.tools.map((t) => ({ name: t.name, description: (t.description || "").slice(0, 200) })) : [],
+      // 每个工具设的权限（直接用 / 先问我 / 不让用，空 = 跟着安全档位走）：页上照着画，改只有平台管理员能改
+      policy: mcpPolicy.viewOf(config.mcp_tool_policy, s.name),
     };
   };
   // config.json 里配的 + 插件 mcp.json 里声明的，一起列出来，
@@ -3619,7 +3721,12 @@ app.get("/api/mcp", (req, res) => {
   try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让连接器页打不开 */ }
   const servers = (config.mcp_servers || []).map((s) => view(s, ""))
     .concat(fromPlugins.map((s) => view(s, s.plugin)));
-  res.json({ servers, total_tools: mcpManager.toolDefs().length, can_toggle: isPlatformOwner(req) });
+  res.json({
+    servers, total_tools: mcpOffered(), can_toggle: isPlatformOwner(req),
+    // 没设权限的工具跟着这一档走（页上要说清「先问我」在全自动下也问）
+    perm_mode: security.permissionMode(security.getSecurity(config)),
+    import_available: mcpImportAvailable(req),
+  });
 });
 
 /**
@@ -3633,6 +3740,48 @@ app.get("/api/mcp", (req, res) => {
  * 关掉 = 停掉进程 + 从工具表里摘掉。摘掉这一步才是重点：留着定义，模型会先想一个用它的方案、
  * 调一次、吃一条「连不上」、再重想——白烧一轮。这和 toolList 里对 run_shell 的处理是同一个道理。
  */
+function oauthServer(name) {
+  adoptDiskMcp();
+  const all = [...(config.mcp_servers || []), ...pluginsMgr.pluginMcpServers()];
+  return all.find((s) => s.name === name && s.url && !s.command) || null;
+}
+const oauthOwner = (req, res) => { if (isPlatformOwner(req)) return true; res.status(403).json({ error: "连接器授权由平台管理员管理", platform_only: true }); return false; };
+app.post("/api/mcp/oauth/start", async (req, res) => {
+  if (!oauthOwner(req, res)) return;
+  try {
+    const body = req.body || {}, cfg = oauthServer(String(body.name || ""));
+    if (!cfg) return res.status(404).json({ error: "没有可授权的远程连接器" });
+    const origin = req.get("origin") || req.protocol + "://" + req.get("host");
+    const callback = new URL("/api/mcp/oauth/callback", origin).href;
+    if (body.redirect_uri !== callback) return res.status(400).json({ error: "OAuth 回调必须回到当前工作台" });
+    res.set("Cache-Control", "no-store");
+    res.json(await mcpOAuth.begin(cfg, req.user.username, callback, { client_id: body.client_id, client_secret: body.client_secret, client_metadata_url: body.client_metadata_url, scope: body.scope }));
+  } catch (e) { res.status(400).json({ error: mcpScrub(e.message) }); }
+});
+app.post("/api/mcp/oauth/finish", async (req, res) => {
+  if (!oauthOwner(req, res)) return;
+  try {
+    const result = await mcpOAuth.finish(String((req.body || {}).flow_id || ""), req.user.username, (cfg) => oauthServer(cfg.name)?.url === cfg.url);
+    if (!result.ready) return res.json({ ready: false });
+    const cfg = oauthServer(result.cfg.name);
+    if (!cfg || cfg.url !== result.cfg.url) { mcpOAuth.revoke(result.cfg); return res.status(409).json({ error: "连接器已改变，请重新开始授权" }); }
+    await mcpApply(async () => { mcpManager.stop([cfg.name]); await mcpManager.startAll([cfg]); });
+    res.json({ ready: true, connected: mcpManager.clients.has(cfg.name), enabled: !mcpManager.disabled.has(cfg.name), name: cfg.name });
+  } catch (e) { res.status(400).json({ error: mcpScrub(e.message) }); }
+});
+app.post("/api/mcp/oauth/cancel", (req, res) => {
+  if (!oauthOwner(req, res)) return;
+  mcpOAuth.cancel(String((req.body || {}).flow_id || ""), req.user.username); res.json({ ok: true });
+});
+app.post("/api/mcp/oauth/remove", async (req, res) => {
+  if (!oauthOwner(req, res)) return;
+  try {
+    const cfg = oauthServer(String((req.body || {}).name || ""));
+    if (!cfg) return res.status(404).json({ error: "没有这台连接器" });
+    mcpOAuth.revoke(cfg); await mcpApply(async () => { mcpManager.stop([cfg.name]); });
+    res.json({ ok: true });
+  } catch { res.status(400).json({ error: "移除授权失败，请稍后重试" }); }
+});
 app.post("/api/mcp/toggle", async (req, res) => {
   // 连接器是整台机器一份的：一个人关掉，所有人的任务都少一批工具。跟权限档位同一个判据。
   if (!isPlatformOwner(req)) return res.status(403).json({ error: "连接器是整台机器一份的，开关归平台管理员", platform_only: true });
@@ -3662,7 +3811,114 @@ app.post("/api/mcp/toggle", async (req, res) => {
         if (!cfg.plugin) MCP_APPLIED.servers.set(name, cfgFingerprint(cfg));
       }
     });
-    res.json({ ok: true, name, enabled: on, connected: mcpManager.clients.has(name), total_tools: mcpManager.toolDefs().length });
+    res.json({ ok: true, name, enabled: on, connected: mcpManager.clients.has(name), total_tools: mcpOffered() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/** 只重连这一台：Key 刚换过、对方服务刚恢复。别的连接器不动，回它现在的样子 */
+app.post("/api/mcp/reconnect", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "连接器是整台机器一份的，重连归平台管理员", platform_only: true });
+  try {
+    const name = String((req.body || {}).name || "").trim();
+    if (!name) throw new Error("要说明重连哪一台连接器");
+    adoptDiskMcp();
+    const cfg = mcpFind(name);
+    if (!cfg) throw new Error(`没有这台连接器：${name}`);
+    if ((config.mcp_disabled || []).includes(name)) throw new Error("这台关着，先打开再重连");
+    await mcpApply(async () => {
+      mcpManager.setDisabled(config.mcp_disabled || []);
+      mcpManager.stop([name]);
+      await mcpManager.startAll([cfg]);
+      if (MCP_APPLIED && !cfg.plugin) MCP_APPLIED.servers.set(name, cfgFingerprint(cfg));
+    });
+    const c = mcpManager.clients.get(name);
+    const f = mcpManager.failures.find((x) => x.name === name);
+    res.json({
+      ok: true, name, enabled: true, connected: !!c, tool_count: c ? c.tools.length : 0,
+      error: f ? f.error : "", auth_bad: f ? MCP_AUTH_BAD.test(f.error || "") : false, total_tools: mcpOffered(),
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/mcp/credentials", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "连接器凭据归平台管理员管理", platform_only: true });
+  try {
+    adoptDiskMcp();
+    const b = req.body || {};
+    const name = typeof b.name === "string" ? b.name : "";
+    const prev = (config.mcp_servers || []).find((s) => s.name === name);
+    if (!prev) return res.status(404).json({ error: "没有这台连接器" });
+    if (!b.rev || b.rev !== mcpRev(prev)) return res.status(409).json({ error: "连接器已被修改，请刷新后再改凭据" });
+    if (prev.url && mcpOAuth.status(prev).authorized && Object.entries(b.headers_patch || {}).some(([k, v]) => k.toLowerCase() === "authorization" && typeof v === "string" && v.trim())) {
+      return res.status(409).json({ error: "请先移除本机 OAuth 授权，再修改 Authorization 请求头" });
+    }
+    const entry = normalizeMcpServer({ ...prev, env_patch: b.env_patch, headers_patch: b.headers_patch }, 0, new Map([[name, prev]]));
+    const status = await connectorCommit(entry, { expectedRev: b.rev });
+    res.json({ ok: true, ...status });
+  } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
+});
+
+/**
+ * 一台连接器的工具权限：{server, default?, tools?: {工具: 策略}}，策略是 allow / ask / deny，给 "" 就是回到跟着档位走。
+ * 跟开关同一个判据：只有平台管理员能改（成员的任务也在用这台）
+ */
+app.post("/api/mcp/policy", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "连接器工具的权限归平台管理员设", platform_only: true });
+  try {
+    const b = req.body || {};
+    const server = String(b.server || "").trim();
+    if (!mcpFind(server)) throw new Error(`没有这台连接器：${server}`);
+    /** @type {{default?: unknown, tools?: unknown}} */
+    const patch = {};
+    if (Object.prototype.hasOwnProperty.call(b, "default")) patch.default = b.default;
+    if (b.tools && typeof b.tools === "object") patch.tools = b.tools;
+    config.mcp_tool_policy = mcpPolicy.withServer(config.mcp_tool_policy, server, patch);
+    saveConfig();
+    res.json({ ok: true, server, policy: mcpPolicy.viewOf(config.mcp_tool_policy, server), total_tools: mcpOffered() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/**
+ * 从本机别的应用（Claude Desktop、Claude Code、Cursor、Codex）导连接器。
+ * GET 只给候选清单：来源、名字、命令或地址、键名，一个值都不带（见 core/ext/mcp-import.js）；
+ * POST 只递「哪个来源的哪一台」，值由这边自己从文件里取了写进 config，不经过页面。
+ * 多人共用的服务端上不出现：那台机器上的文件不是这个人的
+ */
+app.get("/api/mcp/import", (req, res) => {
+  if (!mcpImportAvailable(req)) return res.status(403).json({ error: "从本机导入只在自己电脑上、由管理员来做", platform_only: true });
+  const taken = [...(config.mcp_servers || []).map((s) => s.name)];
+  try { taken.push(...pluginsMgr.pluginMcpServers().map((s) => s.name)); } catch {}
+  res.json(mcpImport.list({ taken }));
+});
+app.post("/api/mcp/import", async (req, res) => {
+  if (!mcpImportAvailable(req)) return res.status(403).json({ error: "从本机导入只在自己电脑上、由管理员来做", platform_only: true });
+  try {
+    const picks = Array.isArray((req.body || {}).picks) ? req.body.picks.slice(0, 50) : [];
+    if (!picks.length) throw new Error("先勾上要导入的连接器");
+    const imported = [], skipped = [];
+    for (const p of picks) {
+      const label = String((p && (p.as || p.name)) || "");
+      let raw = null;
+      try {
+        raw = mcpImport.pick(String(p.source || ""), String(p.name || ""));
+        const name = String(p.as || mcpImport.safeName(raw.name)).trim();
+        const input = raw.transport === "http" ? { name, url: raw.url, headers: raw.headers } : { name, command: raw.command, args: raw.args, env: raw.env };
+        const { entry, exists } = connectorPrepare(input);
+        if (exists && p.overwrite !== true) { skipped.push({ name, why: "已经有同名的了" }); continue; }
+        imported.push(await connectorCommit(entry));
+      } catch (e) {
+        // 报错原文里可能带着地址（地址里可能有密钥）：换成一个占位再回页面
+        const msg = String((e && e.message) || e);
+        skipped.push({ name: label, why: raw && raw.url ? msg.split(raw.url).join("（地址）") : msg });
+      }
+    }
+    res.json({ ok: true, imported, skipped, total_tools: mcpOffered() });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -3704,6 +3960,15 @@ app.get("/api/tools", (req, res) => {
 
 /** 一条连接器配置规整成后端认的形状；stdio 看 command，远程看 url */
 function normalizeMcpServer(s, i, prevByName = new Map()) {
+  // 「改 Key」只递改了的那几项（env_patch / headers_patch）：值从来不回页面，页上没法整份带回来。
+  // 填了的换掉，空着的保持原值；拷一份再改，别动到 config 里那份
+  const mcpPatch = (base, patch) => {
+    const out = { ...base };
+    if (patch && typeof patch === "object" && !Array.isArray(patch)) {
+      for (const [k, v] of Object.entries(patch)) if (typeof v === "string" && v !== "" && k !== "__proto__") out[String(k)] = v;
+    }
+    return out;
+  };
   const at = `第 ${i + 1} 个连接器`;
   const name = String(s.name || "").trim();
   if (!name) throw new Error(`${at}缺少 name`);
@@ -3718,9 +3983,9 @@ function normalizeMcpServer(s, i, prevByName = new Map()) {
     // 请求头里多半是 Authorization，GET 只回 header_keys 不回值；
     // 前端原样存回来时没带 headers，就沿用原来那份，别把令牌洗没了。
     const prev = prevByName.get(name);
-    const headers = s.headers && typeof s.headers === "object"
+    const headers = mcpPatch(s.headers && typeof s.headers === "object"
       ? Object.fromEntries(Object.entries(s.headers).map(([k, v]) => [String(k), String(v)]))
-      : (prev && prev.headers) || {};
+      : (prev && prev.headers) || {}, s.headers_patch);
     const local = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "::1";
     if (Object.keys(headers).length && u.protocol === "http:" && !local) {
       throw new Error(`${at}带了请求头（多半是令牌）却走明文 http，令牌会在路上被看光——请改成 https`);
@@ -3729,9 +3994,9 @@ function normalizeMcpServer(s, i, prevByName = new Map()) {
   }
   // env 里是 API Key，GET 只回键名；前端原样存回来时不带 env，就沿用原来那份
   const prev = prevByName.get(name);
-  const env = s.env && typeof s.env === "object"
+  const env = mcpPatch(s.env && typeof s.env === "object"
     ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [String(k), String(v)]))
-    : (prev && prev.env) || {};
+    : (prev && prev.env) || {}, s.env_patch);
   for (const k of Object.keys(env)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error(`${at}的环境变量名「${k}」不合法（只能字母、数字、下划线，不能以数字开头）`);
   return { name, transport: "stdio", command, args: Array.isArray(s.args) ? s.args.map(String) : [], env };
 }
@@ -3847,9 +4112,13 @@ function connectorPrepare(input) {
 }
 
 /** 后半段：落盘、只重启这一台，回它现在的状态 */
-function connectorCommit(entry) {
+function connectorCommit(entry, { expectedRev = "" } = {}) {
   return mcpApply(async () => {
     adoptDiskMcp(); // 等审批那会儿外面可能又改过：在最新那张表上替换，别拿旧表盖回去
+    if (expectedRev) {
+      const current = (config.mcp_servers || []).find((s) => s && s.name === entry.name);
+      if (!current || mcpRev(current) !== expectedRev) throw Object.assign(new Error("连接器已被修改，请刷新后再改凭据"), { status: 409 });
+    }
     const list = (config.mcp_servers || []).filter((s) => s && s.name !== entry.name);
     const at = (config.mcp_servers || []).findIndex((s) => s && s.name === entry.name);
     list.splice(at < 0 ? list.length : at, 0, entry); // 覆盖的留在原位，连接器页上不跳位置
@@ -3891,12 +4160,16 @@ app.post("/api/mcp", async (req, res) => {
     const advice = connectorAdvice(next);
 
     config.mcp_servers = next;
+    // 删掉的连接器，它的工具权限别长住：以后来一台同名的不该继承（插件列不出来时不清，免得误删插件那几台的）
+    try { config.mcp_tool_policy = mcpPolicy.prune(config.mcp_tool_policy, [...next.map((s) => s.name), ...pluginsMgr.pluginMcpServers().map((s) => s.name)]); } catch {}
     saveConfig();
     await mcpApply(restartAllMcp);
     res.json({
       ok: true,
-      total_tools: mcpManager.toolDefs().length,
+      total_tools: mcpOffered(),
       connected: [...mcpManager.clients.keys()],
+      // 接入弹窗当场报「已连接 · N 个工具」用
+      tool_counts: Object.fromEntries([...mcpManager.clients].map(([n, c]) => [n, c.tools.length])),
       failures: mcpManager.failures,
       advice, // toolward 的第二意见；没装它就是 null
     });
@@ -7087,6 +7360,8 @@ const PV_FIT_JS = 'var w0=-1;function s(){try{var d=document.documentElement,b=d
   + 'addEventListener("load",s);addEventListener("resize",function(){if(innerWidth!==w0)s();});setTimeout(s,0);setTimeout(s,150);setTimeout(s,700);';
 const PV_FIT_HTML = "<script>(function(){" + PV_FIT_JS + "})()</script>";
 // 太大的网页不挂：挂的话要整份读进内存再发。不挂也看得到，前端等不到尺寸会退回「占满面板、框里自己滚」
+const PV_ANNOTATION_HTML = "<script>" + fs.readFileSync(appPath("public/js/preview-probe.js"), "utf8") + "</script>";
+const previewRuntime = require("./public/js/preview-runtime");
 const PV_FIT_MAX_BYTES = 20 * 1024 * 1024;
 /**
  * 给这次响应挂上自报脚本，挂不上返回 null（调用方照原样 sendFile）。只动这一次响应，盘上的文件一个字节不改。
@@ -7095,7 +7370,7 @@ const PV_FIT_MAX_BYTES = 20 * 1024 * 1024;
  * SVG 是 XML，根元素后面多一个字就整张解析失败，所以得塞进最后那个 </svg> 前面，脚本包 CDATA。
  */
 function withFitReporter(buf, type) {
-  if (/^text\/html\b/i.test(type)) return Buffer.concat([buf, Buffer.from(PV_FIT_HTML)]);
+  if (/^text\/html\b/i.test(type)) return Buffer.concat([Buffer.from(previewRuntime.inject(buf.toString("latin1")), "latin1"), Buffer.from(PV_ANNOTATION_HTML), Buffer.from(PV_FIT_HTML)]);
   if (/^image\/svg\+xml\b/i.test(type)) {
     const s = buf.toString("latin1");
     const at = s.lastIndexOf("</svg");
@@ -7736,7 +8011,19 @@ app.post("/api/tool/estimate", (req, res) => {
   });
 });
 
-app.post("/api/chat", async (req, res) => {
+function taskBillingScope(req, res, next) {
+  const id = String(req.body?.sessionId || ""); if (!id) return next();
+  const session = getSession(id); if (!sessionAllowed(req.user, session)) return res.status(403).json({ error: "这条对话不属于你" });
+  const mode = req.body?.billing_scope ?? session.billing_scope ?? "personal";
+  if (!["personal", "team"].includes(mode)) return res.status(400).json({ error: "任务类型不合法" });
+  if (mode === "team" && (!admin.multiUser() || !req.user)) return res.status(400).json({ error: "团队任务只在组织模式可用" });
+  if (mode !== (session.billing_scope || "personal") && (session.transcript || []).length) return res.status(409).json({ error: "已有记录的任务不能切换费用归属，请新建任务" });
+  if (activeRuns.has(id)) return next();
+  try { if (mode === "team") taskBilling.sharedModel(config, session.model); } catch(e) { return res.status(400).json({ error: e.message }); }
+  session.billing_scope = mode;
+  taskBilling.withTask({ billing_scope: mode, sessionId: id }, next);
+}
+app.post("/api/chat", taskBillingScope, async (req, res) => {
   const { sessionId, message, mode, regen, lang, lane, shown, adopt_uploads } = req.body || {};
   if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
   // shown：用户自己打的那句话。画布这类入口会在 message 前面拼一大段给模型看的操作说明，
@@ -7815,7 +8102,8 @@ app.post("/api/chat", async (req, res) => {
   const laneId = sess.lane;
   // 续跑 id 按引擎分开记（claude 的 id 喂给 codex 只会当场炸）。跟工作线无关——
   // 引擎是用户在设置里挑一次、两条线共用的那个。
-  const laneEngine = engines.currentId(config, { user: user && user.username });
+  const laneEngine = sess.billing_scope === "team" ? "builtin" : engines.currentId(config, { user: user && user.username });
+  sess.engine = laneEngine; // 记最后实际选用的引擎，顶栏看历史任务时别误报成现在的全局设置
   const sessLLM = llmForSession(sess, user); // 本对话生效的模型（含专家子代理、标题、记账）；带上这个人，成员只在他能用的里挑
   if (regen) {
     // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
@@ -7836,6 +8124,10 @@ app.post("/api/chat", async (req, res) => {
   // scoreRules 按"规则生效以来"开窗打分，只要这个会话今天被打开过，它里面规则生效**之前**的
   // 失败就全算进"生效之后"，规则越有效越会被判「没起作用」并建议下架。
   const turnAt = new Date().toISOString();
+  if (!sess.created_at) {
+    const firstUserAt = (sess.transcript || []).find((t) => t && t.type === "user" && t.at)?.at;
+    sess.created_at = firstUserAt || turnAt;
+  }
   sess.transcript.push({ type: "user", text: message, ...(shownText ? { shown: shownText } : {}), mode, at: turnAt });
   const asstEvents = [];
   sess.transcript.push({ type: "assistant", events: asstEvents, at: turnAt });
@@ -7983,6 +8275,9 @@ app.post("/api/chat", async (req, res) => {
       const goalCtx = goalKit.contextFor(sess.goal);
       // 内层：任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
       for (;;) {
+        // 从本机导进来的会话：这一轮在哪个文件夹干活、接不接原来那根线，换了跑法就说一声
+        const imPlan = sessionImport.continuePlan(sess, { engine: laneEngine, owner: isPlatformOwner(req), engineSession: lanes.engineSessionFor(sess, laneEngine) });
+        if (imPlan.notice) emitFn({ type: "status", notice: true, text: imPlan.notice, depth: 0 });
         const r = await runtime.runTask({
           lang: lang === "en" ? "en" : "zh", // 界面语言：英文界面时让 AI 也用英文答，用户不用再在每句话里交代
           taskLabel: sess.title || String(message).slice(0, 24),
@@ -7998,7 +8293,8 @@ app.post("/api/chat", async (req, res) => {
           stopSignal: runState.ctrl.signal,
           // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 openworkbuddy 命令行
           // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
-          engineSession: lanes.engineSessionFor(sess, laneEngine),
+          engineSession: imPlan.engineSession,
+          engineImport: imPlan.engineImport,
           getInterject: () => runState.interject.splice(0),
           // ask_user 工具的等待端：回答从 /api/chat/answer 进来；超时或用户点停止都放行 null
           askUser: ({ askId, timeoutMs }) => new Promise((resolve) => {
@@ -8052,8 +8348,13 @@ app.post("/api/chat", async (req, res) => {
         autosaveSession(sessionId, 0);
         break;
       }
-      // 这轮是被超时/上限硬切断的：同样的条件再跑一轮大概率原样再撞，别把用户的时间和钱烧在死循环里
-      if (roundStopped) {
+      // 运行时间、手动停止等硬终止仍要暂停。单次步数上限只是分段边界：Goal 已经核对过进度，
+      // 还没达标就带着未完成项进入下一轮；总轮数仍由 GOAL_MAX_ROUNDS 限住。
+      const continueStepLimitedGoal = goalKit.canContinueAfterStepLimit({
+        goalMode, active: sess.goal.status === "active", stopReason: roundStopped,
+        aborted: runState.ctrl.signal.aborted,
+      });
+      if (roundStopped && !continueStepLimitedGoal) {
         sess.goal.paused = `这轮任务被强制收尾（${roundStopped}），暂停自动补跑`;
         send({ type: "goal", goal: sess.goal });
         autosaveSession(sessionId, 0);
@@ -8061,7 +8362,9 @@ app.post("/api/chat", async (req, res) => {
         break;
       }
       // 没达标 → 把未达成项作为下一轮指令，接着冲（进回放记录，回放时能看懂为什么又跑了一轮）
-      const fb = goalKit.feedbackFor(sess.goal);
+      const fb = goalKit.feedbackFor(sess.goal) + (continueStepLimitedGoal
+        ? `\n\n【目标续跑】上一轮用完了单次步数预算；已核对完成项，只继续补上面列出的未达标项。`
+        : "");
       sess.history.push({ role: "user", content: fb });
       emitFn({ type: "interject", text: fb });
     }
@@ -8127,7 +8430,8 @@ app.post("/api/chat", async (req, res) => {
   if (titleP) {
     const t = await Promise.race([titleP, new Promise((r) => setTimeout(r, 3000, null))]);
     const clean = t && t.replace(/[\r\n"“”「」『』]/g, "").trim().slice(0, 20);
-    if (clean) { sess.title = clean; send({ type: "title", title: clean }); }
+    // 跑着的时候人已经亲手改过名了：模型概括的不盖人起的
+    if (clean && !sess.title_manual) { sess.title = clean; send({ type: "title", title: clean }); }
   }
   // 这一轮什么都没产出的话，别留一个空文件夹在工作空间里。
   // 空文件夹的来路不止一条：executeTool 拿到 baseDir 就 mkdir（连只读工具也会）、
@@ -8341,7 +8645,8 @@ app.get("/api/sessions", (req, res) => {
   const mine = listSessionsOnDisk().filter((r) => ownSession(req.user, r));
   // 只回最近 300 条，置顶的不论多老都带上：不然顶了半年前那条，过阵子它就从侧栏掉出去了
   const rows = mine.filter((r, i) => i < 300 || r.pinned_at);
-  res.json({ sessions: rows.map(({ user, ...r }) => r) }); // 归属只用来过滤，不回给前端
+  // filling：还有老会话的文件数在后台补，前端过一会儿再拉一次，图标就齐了
+  res.json({ sessions: rows.map(({ user, ...r }) => r), ...(sessFilesTodo.size ? { filling: true } : {}) }); // 归属只用来过滤，不回给前端
 });
 
 // ---------- 任务历史检索 ----------
@@ -8488,7 +8793,7 @@ app.get("/api/session/:id", (req, res) => {
   // root_files：分文件夹以前这条对话摊在根上的产出，「本对话」也摆它们——不然老对话一点开就是「本对话 0」
   // att_spots：换过根以后还留在别的根那格里的附件，按名字给出在哪个根、哪一格（见 attachSpotsOf）
   const perChat = perChatHere();
-  res.json({ transcript: s.transcript, dir: perChat ? sessDirOf(s) : null, root_files: perChat ? rootFilesOf(s) : [], att_dir: s.dir || null, att_spots: attachSpotsOf(s), model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
+  res.json({ billing_scope: s.billing_scope === "team" ? "team" : "personal", transcript: s.transcript, dir: perChat ? sessDirOf(s) : null, root_files: perChat ? rootFilesOf(s) : [], att_dir: s.dir || null, att_spots: attachSpotsOf(s), model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
 });
 
 // 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
@@ -8503,21 +8808,83 @@ app.post("/api/session/:id/goal", (req, res) => {
   res.json({ ok: true, goal: s.goal });
 });
 
-// 侧栏「置顶」：标记记在会话本身上，清缓存、换台机器都还在。只有本人能改——
-// 管理员打得开同组织的会话，可替别人把他侧栏里的东西顶上去不是他的事
-app.post("/api/session/:id/pin", (req, res) => {
-  // getSession 遇到没有的 id 会现建一条空的：先看内存和盘上有没有，别为一颗图钉凭空造出个空壳
+/**
+ * 侧栏行上那几样只改标记的操作（置顶、改名、移到项目）先过这一道：这条在不在、是不是本人的。
+ * getSession 遇到没有的 id 会现建一条空的：先看内存和盘上有没有，别为一颗图钉凭空造出个空壳。
+ * 只有本人能改——管理员打得开同组织的会话，可替别人把他侧栏里的东西顶上去、改名、挪走不是他的事
+ */
+function ownSessionOr404(req, res, notMine) {
   const id = String(req.params.id || "");
-  if (!sessions.has(id) && !fs.existsSync(sessFile(id))) return res.status(404).json({ error: "这个任务已经不在了" });
+  if (!sessions.has(id) && !fs.existsSync(sessFile(id))) { res.status(404).json({ error: "这个任务已经不在了" }); return null; }
   const s = guardSession(req, res);
-  if (!s) return;
+  if (!s) return null;
   const owner = sessionOwner(s);
-  if (req.user && owner && owner !== req.user.username) return res.status(403).json({ error: "只能置顶自己的任务" });
+  if (req.user && owner && owner !== req.user.username) { res.status(403).json({ error: notMine }); return null; }
+  return s;
+}
+// 分享始终要求登录并属于同一组织；链接不会授予修改、提问或启动任务的权限。
+app.use(createSessionSharesRouter({
+  store: createShareStore(dataPath("data", "session-shares.json")),
+  multiUser: () => admin.multiUser(),
+  sessionOf: (id) => sessions.has(id) || fs.existsSync(sessFile(id)) ? getSession(id) : null,
+  ownerOf: sessionOwner,
+  orgOf: org.orgIdOf,
+  memberOf: account.findMember,
+  sanitize: (text) => {
+    const secretValues = [];
+    const visit = (o, depth = 0) => {
+      if (!o || typeof o !== "object" || depth > 12) return;
+      for (const [k, v] of Object.entries(o)) {
+        if (typeof v === "string" && v.length >= 6 && /key|token|password|secret|authorization/i.test(k)) secretValues.push(v);
+        else if (v && typeof v === "object") visit(v, depth + 1);
+      }
+    };
+    visit(config);
+    return mcpOAuth.scrub(require("./src/agent/mcp").scrubText(String(text), { env: Object.fromEntries(secretValues.map((v, i) => [String(i), v])) }, { limit: 0 }));
+  },
+}));
+// 侧栏「置顶」：标记记在会话本身上，清缓存、换台机器都还在
+app.post("/api/session/:id/pin", (req, res) => {
+  const s = ownSessionOr404(req, res, "只能置顶自己的任务");
+  if (!s) return;
   const on = !!(req.body || {}).pinned;
   if (on) s.pinned_at = Number(s.pinned_at) > 0 ? s.pinned_at : Date.now();
   else delete s.pinned_at;
   saveSession(req.params.id, s, { keepTime: true });
   res.json({ ok: true, pinned_at: s.pinned_at || 0 });
+});
+const SESS_TITLE_MAX = 50;
+// 侧栏「改名」：人亲手起的名字记一笔 title_manual，首轮跑完的标题润色就不再盖它
+app.post("/api/session/:id/title", (req, res) => {
+  const s = ownSessionOr404(req, res, "只能改自己任务的名字");
+  if (!s) return;
+  const title = String((req.body || {}).title || "").replace(/\s+/g, " ").trim();
+  if (!title) return res.status(400).json({ error: "名字不能是空的" });
+  if (title.length > SESS_TITLE_MAX) return res.status(400).json({ error: `名字太长了，最多 ${SESS_TITLE_MAX} 个字` });
+  s.title = title;
+  s.title_manual = true;
+  saveSession(req.params.id, s, { keepTime: true });
+  res.json({ ok: true, title });
+});
+/** 这个人的项目清单里有哪几个名字（跟侧栏项目那一排同一份）；没有项目这回事的给 null */
+function projectNamesFor(user) {
+  const scope = projectScope(user);
+  if (scope === "own") { try { return spaces.projectsOf(user.username).projects.map((p) => p.name); } catch { return null; } }
+  if (scope !== "shared") return null;
+  ensureProjects();
+  return (config.projects || []).map((p) => p && p.name).filter(Boolean);
+}
+// 侧栏「移到项目」：只改这条任务归哪个项目，文件留在原来的文件夹里（换过根的对话本来就是这么找回附件的，见 attachSpotsOf）
+app.post("/api/session/:id/project", (req, res) => {
+  const s = ownSessionOr404(req, res, "只能挪自己的任务");
+  if (!s) return;
+  const names = projectNamesFor(req.user);
+  if (!names) return res.status(400).json({ error: "这里没有项目可挪" });
+  const project = String((req.body || {}).project || "").trim();
+  if (!names.includes(project)) return res.status(400).json({ error: "没有这个项目" });
+  s.project = project;
+  saveSession(req.params.id, s, { keepTime: true });
+  res.json({ ok: true, project });
 });
 
 // ---------- 内置评测（界面版）：spawn 子进程跑 eval/run.js ----------
@@ -8731,6 +9098,7 @@ app.post("/api/session/:id/model", (req, res) => {
     if (ownPrefs(req)) prefs.write(req.user, { last_picked_model: "" });
     else if (config.last_picked_model) { config.last_picked_model = ""; saveConfig(); }
   } else {
+    if (s.billing_scope === "team") { try { taskBilling.sharedModel(config, String(name)); } catch(e) { return res.status(400).json({ error: e.message }); } }
     if (!memberModels.find(config, modelWho(req.user), String(name))) {
       return res.status(400).json({ error: `模型「${String(name).replace(/^my:/, "")}」不在你能用的模型里` });
     }
@@ -8749,6 +9117,17 @@ app.post("/api/session/:id/model", (req, res) => {
  * 只认本对话的账（别人对话的检查点拿着 id 也退不了）。跑着的时候不许退——
  * 模型下一步就要在退回去的文件上接着写，两头一起动等于把文件撕成两半。
  */
+app.get("/api/session/:id/checkpoints/:checkpoint/review", (req, res) => {
+  const session = ownSessionOr404(req, res, "只能审查自己的任务"); if (!session) return;
+  try { res.set("Cache-Control", "no-store"); res.json(checkpointReview.review(session.root || getWorkspaceDir(), req.params.id, req.params.checkpoint)); }
+  catch(e) { res.status(e.status || 400).json({ error: e.status ? e.message : "读取改动失败" }); }
+});
+app.post("/api/session/:id/checkpoints/:checkpoint/revert", (req, res) => {
+  const session = ownSessionOr404(req, res, "只能回退自己的任务"); if (!session) return;
+  if (activeRuns.has(req.params.id)) return res.status(409).json({ error: "任务还在跑，先停掉再回退" });
+  try { res.json(checkpointReview.revert(session.root || getWorkspaceDir(), req.params.id, req.params.checkpoint, String(req.body?.hunk || ""), String(req.body?.hash || ""))); }
+  catch(e) { res.status(e.status || 400).json({ error: e.status ? e.message : "回退改动失败" }); }
+});
 app.get("/api/session/:id/checkpoints", (req, res) => {
   if (!guardSession(req, res)) return;
   res.json({ items: checkpoints.list(getWorkspaceDir(), req.params.id) });
@@ -8768,6 +9147,11 @@ app.post("/api/session/:id/rewind", (req, res) => {
  * 整表读、整表存：Key 只回八颗星，原样存回来的按「没改」处理。
  * 平台管理员和个人桌面版用不着这条路：他们直接在渠道里加。
  */
+app.get("/api/my-task-costs", (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "请先登录" });
+  const date = new Date(), month = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+  res.set("Cache-Control", "no-store"); res.json({ month, ...taskBilling.summary(usageStore.read({ from: month + "-01", to: month + "-31" }), org.orgIdOf(req.user), req.user.username) });
+});
 app.get("/api/my-models", (req, res) => {
   if (!ownPrefs(req)) return res.json({ applies: false, allowed: false, items: [] });
   res.json({ applies: true, allowed: memberModels.byokAllowed(config), items: memberModels.publicOwn(prefs.read(req.user)) });
@@ -8884,14 +9268,22 @@ function schedViewer(req) {
   if (!u) return null;
   return { username: u.username, admin: account.canAdmin(u), org: org.orgIdOf(u) };
 }
-app.get("/api/schedules", (req, res) => res.json(scheduler.list(schedViewer(req))));
+function publicScheduleItem(item) {
+  if (!item) return item;
+  const { source_session_id, ...safe } = item;
+  return safe;
+}
+app.get("/api/schedules", (req, res) => res.json(scheduler.list(schedViewer(req)).map(publicScheduleItem)));
 // 运行记录。只看 last_result 的话，昨天跑挂今天跑好就查无此事
-app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300), schedViewer(req))));
+app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300), schedViewer(req)).map(({ source_session_id, ...run }) => ({ ...run, source_linked: !!source_session_id }))));
 app.post("/api/schedules", (req, res) => {
   try {
     const v = schedViewer(req);
     // 归属只认服务端认出来的这个人，body 里传什么都不看——不然「帮别人建一条」就成了免费的甩锅口子
-    res.json(scheduler.add({ ...(req.body || {}), user: v ? v.username : "", org: v ? v.org : "" }));
+    const input = { ...(req.body || {}) };
+    if (input.billing_scope === "team" && !admin.multiUser()) return res.status(400).json({ error: "团队任务只在组织模式可用" });
+    delete input.source_session_id; // 来源只由登录中的 agent 会话写入，客户端不能伪造关联
+    res.json(publicScheduleItem(scheduler.add({ ...input, user: v ? v.username : "", org: v ? v.org : "" })));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -8900,7 +9292,7 @@ app.patch("/api/schedules/:id", (req, res) => {
   try {
     const t = scheduler.update(req.params.id, req.body || {}, schedViewer(req));
     if (!t) return res.status(404).json({ error: "任务不存在" });
-    res.json(t);
+    res.json(publicScheduleItem(t));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -9089,7 +9481,7 @@ function settleRunDir(source, rest, root, dir) {
 function accountedRuntime(baseRuntime, source) {
   return {
     ...baseRuntime,
-    runTask: async (args) => {
+    runTask: async (args) => taskBilling.withTask({ billing_scope: args?.billing_scope, sessionId: args?.sessionId }, async () => {
       // 定时任务报了负责人的，就替他本人跑：记他的账、过他那一档预算、用他那家组织的工作目录和规矩。
       // 没报的（老任务、单机版）照旧退回管理员
       const runner = source === "schedule" && args && args.user
@@ -9130,7 +9522,7 @@ function accountedRuntime(baseRuntime, source) {
       // 助理页是成员自己在用：他用不着的模型不许跑，没点名就用他自己的默认（见 llmForSession）。
       // 定时任务的负责人是成员时同理：管理员没共享的模型不替他跑
       const runAs = caller || (owner ? owner.username : "");
-      const runLLM = want || runAs ? llmForSession({ model: want, user: runAs }) : llm;
+      const runLLM = want || runAs ? llmForSession({ model: want, user: runAs, billing_scope: taskBilling.current().billing_scope }) : llm;
       // 价目闸：跟钱闸一样记在负责人头上，没价目的型号一个 cron 能刷出多少都扣不到预算
       if (owner) {
         const why = unpricedChat(owner, runLLM);
@@ -9165,7 +9557,7 @@ function accountedRuntime(baseRuntime, source) {
           baseDir: runDir,
           projectContext: projectContextOf(projectFor(runner || speaker)),
           ...rest,
-          ...(want ? { llmOverride: runLLM } : {}),
+          ...(want || taskBilling.current().billing_scope === "team" ? { llmOverride: runLLM } : {}),
         }));
       };
       try {
@@ -9180,7 +9572,7 @@ function accountedRuntime(baseRuntime, source) {
         account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source, sessionId: rest.sessionId || "", ...(Array.isArray(r.usageBy) ? { usageBy: r.usageBy } : {}) });
       }
       return r;
-    },
+    }),
   };
 }
 
@@ -9242,6 +9634,7 @@ async function main() {
     sess.title = item.name || String(item.task || "").slice(0, 24);
     sess.user = item.user || "";
     sess.kind = "schedule";
+    sess.billing_scope = item.billing_scope === "team" ? "team" : "personal";
     sess.schedule_id = item.id;
     sess.history = [{ role: "user", content: item.task }];
     const events = [];
@@ -9257,12 +9650,29 @@ async function main() {
     holdSession(sessionId);
     return {
       sessionId,
-      opts: { sessionId, emit: recordingEmit(() => {}, events, sessionId, { pet: false }) },
+      opts: { sessionId, billing_scope: sess.billing_scope, emit: recordingEmit(() => {}, events, sessionId, { pet: false }) },
       done: (ok, text) => {
         // 这一句是给「整趟一个事件都没有」兜底：引擎没吐事件、或者刚开跑就抛了。
         // 回放至少得看得见结论，不能点进去是一片空白。有事件时正文早在 events 里了，不重复贴。
         if (!events.length) events.push({ type: "text", delta: String(text || (ok ? "完成" : "没有输出")) });
         saveSession(sessionId, sess);   // 手里这份为准：哪怕真被清过，写盘也落在对的内容上
+        // AI 在对话里帮用户排的任务，结果写回原对话；独立排期没有来源，会保留在收件箱里。
+        // 只按同一账号认来源，陈旧/被删/归属已变的会话一律跳过，绝不把结果塞进同事的历史。
+        const sourceId = String(item.source_session_id || "");
+        if (sourceId && sourceId !== sessionId && (sessions.has(sourceId) || fs.existsSync(sessFile(sourceId)))) {
+          try {
+            const source = getSession(sourceId);
+            const sameOwner = (source.user || "") === (item.user || "");
+            if (source && sameOwner && source.kind !== "schedule" && Array.isArray(source.transcript) && source.transcript.length) {
+              const outcome = `定时任务「${String(item.name || "").slice(0, 80)}」${ok ? "已完成" : "未完成"}：\n${String(text || (ok ? "完成" : "没有输出")).slice(0, 1200)}\n\n完整执行过程可在「自动化 → 运行记录」查看。`;
+              source.transcript.push({ type: "assistant", events: [{ type: "text", delta: outcome }], at: new Date().toISOString() });
+              source.history = Array.isArray(source.history) ? source.history : [];
+              source.history.push({ role: "assistant", content: outcome });
+              source.updated_at = new Date().toISOString();
+              saveSession(sourceId, source);
+            }
+          } catch (e) { console.warn(`[定时任务] ${item.name} 的结果没能写回来源会话：${e.message}`); }
+        }
         releaseSession(sessionId);
       },
     };
@@ -9478,6 +9888,8 @@ async function main() {
   const { server, bound } = got;
   // 这个口上挂着全部接口和中转站：AI 的联网工具能打到它，就能绕过模型白名单和企业限额，加白也不放
   netGuard.registerOwnPort(bound, "主服务");
+  // 用户自己的 Chrome 扩展从这个口连进来（/browser-link/ws，只认 chrome-extension:// 来的、带令牌的）
+  require("./src/core/ext/chrome-link").attach(server);
   if (host !== "127.0.0.1" && host !== "localhost") {
     console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
   }

@@ -167,6 +167,8 @@ const seedSession = (dir, id, mtimeSec, title) => {
 async function run() {
   const env = await setup();
   try {
+    const quietWins = await env.run(["普通回答", "--quiet", "--verbose", "--no-mcp"]);
+    ok(quietWins.code === 0 && quietWins.out === "做完了。\n" && quietWins.err === "", "--quiet 优先于 --verbose，stdout 保持干净最终答案", quietWins.err);
     console.log("\n— ① 开着不关的 stdin —");
     {
       const r = await env.run(["说一句", "--no-mcp"], { stdin: "open", ms: 20000 });
@@ -394,7 +396,7 @@ async function run() {
   console.log("\n— ⑥ --json 下依赖的 console.log —");
   const menv = await setup({ mcp: true });
   try {
-    const r = await menv.run(["说一句", "--json"]);
+    const r = await menv.run(["说一句", "--json", "--verbose"]);
     const bad = jsonLines(r.out).filter((x) => x.$bad);
     ok(r.code === 0 && !bad.length, "★stdout 里全是 JSON★ 以前「[MCP] 已连接」混在第一行", bad);
     ok(/MCP/.test(r.err), "那句改走 stderr，人照样看得见", r.err.slice(-300));
