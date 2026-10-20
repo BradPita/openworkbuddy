@@ -20,7 +20,7 @@ jobs:
   # e2e 里有 execFileSync("/bin/sh", ...) 和 .app 装机态验证，Windows runner 上过不了，
   # 硬塞进 matrix 会把 Windows 那份包直接打没——而那份恰恰是开发机造不出来、最需要发的。
   test:
-    runs-on: macos-latest
+    runs-on: macos-15-intel # 标准 Intel 机器，避开 ARM64 运行机器容量不足；完整测试仍保留
     timeout-minutes: 40 # 卡住要红，别挂满 6 小时把整次发版拖死（同 test.yml）
     steps:
       # 要完整 git log 的理由同 test.yml：npm test 里有一道闸门拿 git log 核对 README 的日期
@@ -65,7 +65,7 @@ jobs:
       fail-fast: false # 一个平台挂了，另一个平台照样打包上传（能不能进 Release 看 release job 的 if）
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15-intel # 同时打 arm64 / x64 安装包，与测试使用同一系统版本
             script: dist:mac
             artifact: mac
           - os: windows-latest

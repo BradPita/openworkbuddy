@@ -13970,7 +13970,7 @@ function releasePipelineDrift(src) {
   // —— PR / main 的红绿灯。在这条闸门之前，除 e2e 外的套件只在作者本机手敲时才跑过
   if (!tst.trim()) miss.push("没有 .github/workflows/test.yml：PR 和 main 没有任何 CI");
   if (!/pull_request/.test(tst)) miss.push("test.yml 不管 pull_request：外部 PR 无人把关");
-  if (!/macos-latest/.test(tst)) miss.push("test.yml 没在 macOS 上跑全套：e2e 要开真 electron 窗口，只有那台能全覆盖");
+  if (!/macos-15-intel/.test(tst)) miss.push("test.yml 没在固定的 macOS Intel 机器上跑全套：e2e 要开真 electron 窗口");
   // —— checkout 默认只克一个 commit。README「最新动态」的日期核对拿 git log 当底本，
   //    浅克隆下每条动态都会被判成「git 里那天没有提交」：报错指着 README，错却在工作流。
   //    钉死这个值，省得哪天有人把 with: 那两行当冗余删掉。
@@ -14125,7 +14125,7 @@ function testReleasePipeline() {
   // 反向对照：每一处单独退回出问题前的样子，都必须被抓出来
   const bad = [
     ["PR 的 CI 整个没了", { ".github/workflows/test.yml": "" }],
-    ["CI 只在 ubuntu 跑、e2e 没人管", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/macos-latest/g, "ubuntu-latest") }],
+    ["CI 只在 ubuntu 跑、e2e 没人管", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/macos-15-intel/g, "ubuntu-latest") }],
     // 这两条以前写死了套件名（",trace"、"--only icons"），名单一动就变成空替换 →
     // 补丁没打上 → 「居然没红」——闸门失效的是对照本身。改成按位置挖，挖谁都行。
     ["新加的套件忘了补进 CI 名单", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/,[a-z0-9-]+(?=,)/, "") }],
