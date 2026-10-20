@@ -62,7 +62,7 @@ After the server starts, open <http://localhost:3800> and continue with steps 2�
 | The task waits for an answer or approval | Review the question or approval card above the input, or open the inbox |
 | The reply says “done” but the file is missing | Check the active project and results folder; ask it to check `project-update.pptx`. Do not count this attempt as a success |
 
-HTML embedded previews use isolated temporary storage (up to 64 MiB each for `localStorage` and `sessionStorage`, cleared when closed). For a web app that must keep records, choose **Deploy locally and open** above the preview. It starts a loopback-only server and opens the current page in your browser, where data survives refreshes under that browser's native storage quota. Keep using the page's own export/backup feature for important data.
+HTML embedded previews use isolated temporary storage (up to 64 MiB each for `localStorage` and `sessionStorage`, cleared when closed). For a web app that must keep records, choose **Open manually in browser** above the preview. It starts a loopback-only server and opens the current page in your browser, where data survives refreshes under that browser's native storage quota. Keep using the page's own export/backup feature for important data.
 
 Next, try the [core scenarios](#you-say-it-it-hands-you-the-file) or read the [user guide](https://catcatuncle.github.io/openworkbuddy/guides/user.html). Star to bookmark the project; use **Watch → Custom → Releases** for release notifications.
 

@@ -1368,6 +1368,8 @@
       "按名字筛选成果文件": "Filter output files by name",
       "本地部署预览": "Local preview",
       "本地部署并打开": "Deploy locally and open",
+      "手动在浏览器打开": "Open manually in browser",
+      "网页默认在应用内预览。只有需要相对路径、fetch 或长期保存网页数据时，才手动启动本机预览服务。": "Pages preview inside the app by default. Start the local preview server only when the page needs relative paths, fetch requests or persistent storage.",
       "放开给手机看": "Share to phone",
       "在浏览器打开": "Open in browser",
       "预览": "Preview",
