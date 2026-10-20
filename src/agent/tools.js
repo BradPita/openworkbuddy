@@ -28,6 +28,7 @@ const CT = require("./code-tools"); // 写代码那几样：按名找文件、�
 const depsGuard = require("../platform/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
 const { buildChildEnv } = require("../platform/child-env"); // AI 跑的命令/脚本只拿最小环境变量：用户 shell 里的 Key 不跟着下去
 const sandbox = require("../platform/sandbox"); // macOS / Windows 上命令和脚本套系统沙箱：读不到 Key 和账本、改不了应用自己
+const { inlineScriptErrors } = require("../util/html-script-syntax");
 const winname = require("../util/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
@@ -2945,7 +2946,15 @@ async function selfCheck(file, rel, partial = false, sys = {}) {
   if (ext === ".html" || ext === ".htm") {
     const issues = auditHtml(src, path.dirname(file), { partial });
     const errs = issues.filter((x) => x.level === "错");
-    if (errs.length) return bad(`\n注意：页面结构有问题：${errs.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`);
+    // 脚本写错跟标签对不上分开说：浏览器碰上它整段脚本都不跑，再跑 check_page 也还是这一条，该直接去改
+    const js = errs.filter((x) => x.script).map((x) => x.msg);
+    const page = errs.filter((x) => !x.script).map((x) => x.msg);
+    if (errs.length) {
+      return bad(
+        (js.length ? `\n注意：页面里的脚本语法没过，浏览器会跳过出错的那一整段 <script>：${js.join("；")}。用 edit_file 改那几行，别整篇重写。` : "") +
+          (page.length ? `\n注意：页面结构有问题：${page.join("；")}。建议再跑一次 check_page 确认。` : "")
+      );
+    }
     // 「还没收尾」照说一句，但它不是失败：说了模型知道自己在写半截，不至于以为哪里坏了
     const wip = issues.filter((x) => x.level === "提");
     if (wip.length) return ok(`\n（${wip.map((x) => x.msg).join("；")}）`);
@@ -3078,6 +3087,7 @@ function auditHtml(src, baseDir, opts = {}) {
         `把图原样贴回来（gen_diagram 的 id 本来就是随机的，不会撞，不用改名）`
     );
   }
+  for (const msg of inlineScriptErrors(src)) out.push({ level: "错", msg, script: true });
   const text = src.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   if (text.length < 30 && !stillWriting) add("警", "去掉标签后几乎没有正文（可能是内容全靠 JS 生成，也可能就是个空壳）");
   return out;

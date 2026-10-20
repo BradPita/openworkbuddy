@@ -227,6 +227,8 @@
   .side-nav.top { border-top: none; border-bottom: 1px solid var(--owb-border); padding: 0 0 8px; margin: 6px 0 8px; flex: 0 1 auto; min-height: 120px; max-height: 62vh; overflow-y: auto; scrollbar-gutter: stable; }
   .side-nav .item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: var(--radius-md); font-size: 14px; color: var(--owb-text-2); cursor: pointer; }
   .side-nav .item:hover { background: var(--owb-bg-hover); color: var(--owb-text); }
+  /* 主导航使用单行名称，避免副标题和项目列表挤掉任务历史。 */
+  .side-nav.top > .item .sub { display: none; }
   .side-nav .item.active { background: var(--owb-brand-weak); color: var(--owb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--owb-brand); }
   /* 侧栏项排两行：主标题 + 灰色副标题（专家/技能·连接器、自动化/定时任务、更多/资料库·灵感）。
      一行塞不下这些分类，挤成一行会截断成「专家/技能·连…」，看不出这一栏底下到底有什么 */
@@ -245,9 +247,9 @@
   .side-nav .nav-head #proj-add:hover { background: var(--owb-bg-hover); color: var(--owb-text); }
   /* 项目是「项目」那一行的下级，得一眼看出来是下级：缩进一格 + 一条细导轨 + 小一号字。
      以前它跟导航项同为 14px、同一个起始位置，一眼扫过去就是并列的五六行，分不出谁管谁。 */
-  .side-nav #proj-list { position: relative; margin: 2px 0 6px; padding-left: 22px; }
+  .side-nav #proj-list { position: relative; margin: 2px 0 6px; padding-left: 16px; max-height: min(144px, 20vh); overflow-y: auto; overflow-x: hidden; }
   .side-nav #proj-list:empty { display: none; }
-  .side-nav #proj-list::before { content: ""; position: absolute; left: 17px; top: 2px; bottom: 2px; width: 1px; background: var(--owb-border); }
+  .side-nav #proj-list::before { content: none; }
   .side-nav .more-toggle .caret { display: inline-flex; align-items: center; color: var(--owb-text-3); transition: transform var(--owb-t-fast) var(--owb-ease); }
   .side-nav .more-toggle.open .caret { transform: rotate(180deg); }
   .more-box { display: none; padding-left: 8px; }
@@ -256,18 +258,7 @@
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--owb-canvas); }
   .topbar { height: 56px; flex: 0 0 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--owb-border); }
   .topbar .title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .topbar button.title { flex: 1; min-width: 0; min-height: 44px; margin: 0 12px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-  .topbar button.title:disabled { cursor: default; }
-  .topbar button.title:not(:disabled)::after { content: ""; display: inline-block; margin: 0 0 2px 7px; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); opacity: .55; }
-  .topbar #session-rename { flex: 0 0 auto; width: 30px; height: 30px; margin-left: -8px; }
-  .topbar #session-rename[hidden] { display: none; }
-  .topbar .session-date { flex: 0 0 auto; color: var(--owb-text-3); font-size: 11px; white-space: nowrap; margin-right: 8px; }
-  .topbar .session-date[hidden] { display: none; }
-  .session-context { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; color: var(--owb-text-3); font-size: 11px; }
-  .session-context[hidden] { display: none; }
-  .session-context .state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--owb-text-3); }
-  .session-context .state-dot.on { background: var(--owb-ok); box-shadow: 0 0 0 2px color-mix(in srgb, var(--owb-ok) 18%, transparent); }
-  .session-context .state-dot.off { background: var(--owb-err); }
+  .topbar .title { flex: 1; min-width: 0; margin: 0 12px; }
   .topbar .right { display: flex; align-items: center; gap: 10px; }
   .inbox-wrap { position: relative; }
   #inbox-count { position: absolute; top: -3px; right: -4px; min-width: 15px; height: 15px; padding: 0 3px; display: grid; place-items: center; border-radius: var(--radius-full); background: var(--owb-err); color: #fff; font-size: 10px; line-height: 1; }
@@ -275,6 +266,8 @@
   #attention-inbox { position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: min(360px, calc(100vw - 24px)); max-height: min(65vh, 520px); overflow: auto; padding: 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-card); box-shadow: var(--owb-shadow-md); }
   #attention-inbox[hidden] { display: none; }
   .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; font-size: 13px; font-weight: 600; }
+  .inbox-read-all { padding: 4px 0; border: 0; background: transparent; color: var(--owb-brand-text); font: inherit; font-size: 11px; cursor: pointer; }
+  .inbox-read-all:disabled { color: var(--owb-text-3); cursor: default; }
   .inbox-row { display: flex; width: 100%; align-items: flex-start; gap: 10px; padding: 10px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--owb-text); text-align: left; cursor: pointer; }
   .inbox-row:hover, .inbox-row:focus-visible { background: var(--owb-bg-hover); }
   .inbox-row .i-dot { flex: 0 0 8px; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--owb-text-3); }
@@ -282,6 +275,8 @@
   .inbox-row[data-state="error"] .i-dot { background: var(--owb-err); }
   .inbox-row[data-state="running"] .i-dot { background: var(--owb-brand); }
   .inbox-row[data-state="unseen"] .i-dot { background: var(--owb-brand-text); }
+  .inbox-row.is-read .i-dot { background: transparent; }
+  .inbox-row.is-read .i-title { color: var(--owb-text-2); font-weight: 400; }
   .inbox-row .i-copy { min-width: 0; flex: 1; }
   .inbox-row .i-title { display: block; overflow: hidden; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
   .inbox-row .i-status { display: block; margin-top: 3px; color: var(--owb-text-3); font-size: 11px; }
@@ -330,24 +325,6 @@
   .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 720px; }
   .chips button { padding: 9px 18px; border-radius: var(--radius-full); border: 1px solid var(--owb-border); background: var(--owb-bg); font-size: 14px; color: var(--owb-text); cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .chips button:hover { border-color: var(--owb-brand-text); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
-  /* 空态底下那行「发现本机 N 条 … 会话 · 导入」：只有这台机器的主人、而且真有会话时才出来 */
-  .empty-import { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 28px; }
-  .empty-import[hidden] { display: none; }
-  .empty-import button { display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-full); }
-  .empty-import button:hover { border-color: var(--owb-brand-text); }
-  .empty-import .ei-act { color: var(--owb-brand-text); font-weight: 500; }
-  .li-hint { color: var(--owb-text-2); font-size: 13px; margin: 0 0 12px; }
-  .li-head { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 0 2px 8px; border-bottom: 1px solid var(--owb-border); cursor: pointer; }
-  .li-total { margin-left: auto; color: var(--owb-text-3); }
-  .li-list { max-height: 46vh; overflow-y: auto; scrollbar-gutter: stable; }
-  .li-row { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--owb-border); cursor: pointer; }
-  .li-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-  .li-m { flex: none; display: inline-flex; gap: 8px; color: var(--owb-text-3); font-size: 12px; max-width: 40%; overflow: hidden; white-space: nowrap; }
-  .li-empty { padding: 18px 0; text-align: center; color: var(--owb-text-3); font-size: 13px; }
-  .li-more { text-align: center; padding-top: 10px; }
-  .li-more[hidden], .li-foot button[hidden] { display: none; } /* .btn-plain 是 inline-flex，会盖掉 hidden 的默认样式 */
-  .li-foot { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-  .li-status { flex: 1 1 auto; display: inline-flex; flex-wrap: wrap; gap: 0 6px; color: var(--owb-text-2); font-size: 13px; }
   /* 空态最底下那条「整理文件夹 · 腾出空间」。
      刻意没做成第四个场景胶囊：胶囊点下去只是挂一枚「任务类型」标签，还得自己打字；
      这一条点下去直接干活。所以它得长得跟上面那排不一样——单独一行、描边淡。 */
@@ -799,16 +776,13 @@
   .im-row .m { font-size: 12px; color: var(--owb-text-3); margin-bottom: 2px; }
   #send.stop { background: var(--owb-err); font-size: 12px; }
   .hist-item { display: flex; align-items: center; gap: 4px; }
-  .hist-item .ht { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-item .ht { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .hrun { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--owb-brand); animation: hrun-pulse 1.2s ease-in-out infinite; }
   /* 来路图标。以前这条信息占着一整行分组标题（「终端里（openworkbuddy 命令行）」），
      现在缩成行首一个小图标：来路是次要信息，不值得单占一行 */
   .hist-item .hsrc { display: inline-flex; flex: 0 0 auto; align-items: center; color: var(--owb-text-3); }
   .hist-item .hsrc .i { width: 12px; height: 12px; }
   .hist-item:hover .hsrc, .hist-item.active .hsrc { color: var(--owb-text-2); }
-  /* 产出过文件的那几条：标题后面跟一个小文件图标，找「上回出的那份表」时一眼扫得到 */
-  .hist-item .hfile { display: inline-flex; flex: 0 0 auto; align-items: center; color: var(--owb-text-3); }
-  .hist-item .hfile .i { width: 12px; height: 12px; }
   @keyframes hrun-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
   /* 注意力点（app-01-attention.js）：跟「在跑」同一个位置同一个大小，只换颜色、不闪——
      闪的只有正在跑的那颗，等你的这几颗是静止的，一眼就分得出「它在忙」和「它在等你」 */
@@ -817,11 +791,14 @@
   .hist-item .hdot.error { background: var(--owb-err); }
   .hist-item .hdot.unseen { background: var(--owb-brand); }
   /* 每行的「⋯」（app-02 histMoreHtml）：平时藏着，扫过、Tab 到、菜单开着时显形；触屏没有 hover，一直显形 */
-  .hist-item .hmore { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
-  .hist-item:hover .hmore, .hist-item:focus-within .hmore, .hist-item .hmore.on { opacity: 1; pointer-events: auto; }
+  .hist-item .hmore { display: inline-flex; align-items: center; justify-content: center; width: 0; min-width: 0; height: 24px; overflow: hidden; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0; margin-left: -4px; border-radius: var(--radius-xs); flex: none; }
+  .hist-item:hover .hmore, .hist-item:focus-within .hmore, .hist-item .hmore.on { width: 24px; margin-left: 0; opacity: 1; pointer-events: auto; }
   .hist-item .hmore:hover, .hist-item .hmore.on { color: var(--owb-text); }
   .hist-item .hmore .i { width: 13px; height: 13px; display: block; }
-  @media (hover: none), (pointer: coarse) { .hist-item .hmore { opacity: 1; pointer-events: auto; } }
+  .hist-item .hpin { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--owb-text-3); cursor: pointer; }
+  .hist-item .hpin .i { width: 12px; height: 12px; }
+  .hist-item .hpin:hover, .hist-item .hpin.on { color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  @media (hover: none), (pointer: coarse) { .hist-item .hmore { width: 24px; margin-left: 0; opacity: 1; pointer-events: auto; } }
   /* 「⋯」和右键弹出的那张菜单挂在 body 上、按坐标摆（app-02 placeHistMenu）：侧栏的 overflow 裁不到它。
      层级压过头像菜单（60），让着弹窗遮罩（120）和 toast */
   .hmenu { position: fixed; z-index: 70; min-width: 188px; max-width: min(280px, calc(100vw - 16px)); max-height: min(360px, calc(100vh - 16px)); overflow-y: auto; background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-menu); padding: 5px; font-size: 13px; }
@@ -835,22 +812,10 @@
   .hmenu .hm-i[aria-checked="true"] .i { color: var(--owb-brand-text); }
   .hmenu .hm-back .i { transform: rotate(180deg); }
   .hmenu .hm-sec { padding: 6px 8px 3px; font-size: 11px; color: var(--owb-text-3); }
-  /* 在跑那几行的「停」（app-02 histStopHtml）：跟 × 一样平时透明、扫过或 Tab 到才显形；
-     触屏没有 hover，一直显形——不然手机上停不了后台那条。正在停的那一下常亮、不再吃点击 */
-  .hist-item .hstop { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
-  .hist-item:hover .hstop, .hist-item:focus-within .hstop { opacity: 1; pointer-events: auto; }
-  .hist-item .hstop:hover { color: var(--owb-err-text); }
-  .hist-item .hstop .i { width: 11px; height: 11px; display: block; }
-  .hist-item .hstop.is-stopping { opacity: 1; cursor: default; animation: hrun-pulse 1.2s ease-in-out infinite; }
-  @media (hover: none), (pointer: coarse) { .hist-item .hstop { opacity: 1; pointer-events: auto; } }
-  /* 置顶：图钉平时跟 × 一样藏着，顶了的常亮；组标题只在有置顶时才出现 */
-  .hist-item .hpin { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
-  .hist-item:hover .hpin, .hist-item:focus-within .hpin, .hist-item .hpin.on { opacity: 1; pointer-events: auto; }
-  .hist-item .hpin:hover { color: var(--owb-text); }
-  .hist-item .hpin.on { color: var(--owb-text-2); }
+  .hist-item.hfile-pin .hpin { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--owb-text-3); cursor: pointer; }
+  .hist-item.hfile-pin .hpin .i { width: 12px; height: 12px; }
   .hist-item.hfile-pin .ht small { margin-left: 4px; color: var(--owb-err-text); font-size: 10px; }
   .hist-item.hfile-pin.missing { opacity: .68; }
-  .hist-item .hpin .i { width: 12px; height: 12px; display: block; }
   .hist-sec { padding: 8px 10px 2px; font-size: 11px; color: var(--owb-text-3); }
   .hist-sec:first-child { padding-top: 2px; }
   /* 把任务拖进「已置顶」（app-02「把任务拖进已置顶」那段）：拖起来的那行变淡；还没有置顶组时，
@@ -863,7 +828,6 @@
   .hist-pin-drop.over { border-color: var(--owb-brand); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
   #history.drop-pin .hist-sec[data-sec="pin"] { color: var(--owb-brand-text); }
   #history.drop-pin .hist-item.pinned { background: var(--owb-brand-weak); }
-  @media (hover: none), (pointer: coarse) { .hist-item .hpin { opacity: 1; pointer-events: auto; } }
   /* 工程线顶上那一撮：这台机器的终端此刻正在跑的活儿，跟存下来的历史分开列 */
   /* 空态要能换行：它写的是「在终端里跑 openworkbuddy 你的活儿」，一句话比一行宽 */
   .hist-empty { font-size: 12px; line-height: 1.7; color: var(--owb-text-3); padding: 6px 10px; white-space: normal; }
@@ -1007,7 +971,7 @@
   .retry-bar .rb-x { color: var(--owb-text-3); }
   #send { width: 32px; height: 32px; border: none; border-radius: 50%; background: var(--owb-brand-grad); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   #send:disabled { opacity: .45; cursor: not-allowed; }
-  .quick-bar { display: flex; align-items: center; gap: 4px; padding: 8px 6px 0; }
+  .quick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 6px 0; }
   .quick-bar .picker-btn { font-size: 13px; }
   .plan-list { border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 10px 14px; margin: 8px 0; background: var(--owb-bg-side); }
   .plan-list .pl-head { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
@@ -1367,7 +1331,7 @@
   .ap-row .ap-no { background: transparent; color: var(--owb-text-2); border: 1px solid var(--owb-warn); }
   /* ---------- 输入框 @文件 //技能 token 高亮（镜像层） ---------- */
   #input-box { position: relative; }
-  .input-note { margin-top: 5px; color: var(--owb-text-3); font-size: 11px; line-height: 1.4; }
+  .quick-bar .input-note { margin-left: auto; color: var(--owb-text-3); font-size: 11px; line-height: 1.4; white-space: nowrap; }
   /* 镜像层和 textarea 必须共用同一套字号 / 行高 / 折行规则，而且都得是 var，不能写死。
      写死 15px 的后果：设置里把字号调到 16 或 18，只有 textarea 跟着变，底色停在旧尺寸上，
      一个技能名只遮住半个词。折行同理——textarea 走的是 overflow-wrap: break-word，
@@ -1397,22 +1361,25 @@
   /* 账号行是侧栏的页脚，得钉住：以前它紧贴历史最后一条，历史滚到底的时候两段糊在一起，
      分不清哪条是任务、哪条是「我」。加一条分隔线 + 一点上边距就够了。 */
   .user-row { position: relative; display: flex; align-items: center; gap: 6px; margin: 8px 4px 0; padding-top: 8px; border-top: 1px solid var(--owb-border); }
-  .user-row .user-chip { flex: 1; margin: 0; min-width: 0; }
+  .user-row .user-chip { flex: 1; margin: 0; padding: 4px 6px; min-height: 34px; min-width: 0; border: 0; background: transparent; }
+  .user-meta { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+  .user-meta .user-id { color: var(--owb-text-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 这颗故意不并进桥接层那两档：它是带描边的独立键，右边紧挨着 44 高、圆角 10 的用户气泡，
      跟着气泡走（36 / 圆角 10）比跟着别处的无边框图标键走更齐。就近对齐优先于全局统一。 */
-  #gear-btn { flex: none; width: 36px; height: 36px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg); font-size: 15px; cursor: pointer; color: var(--owb-text-2); }
+  #gear-btn { flex: none; margin-left: auto; width: 32px; height: 32px; border: 0; border-radius: var(--radius-md); background: transparent; font-size: 15px; cursor: pointer; color: var(--owb-text-2); }
   #gear-btn:hover { background: var(--owb-bg-hover); }
-  .user-menu { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-menu); padding: 6px; z-index: 60; font-size: 14px; }
+  .user-menu { display: none; position: fixed; width: min(300px, calc(100vw - 24px)); max-height: calc(100dvh - 96px); overflow-y: auto; overscroll-behavior: contain; background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-menu); padding: 6px; z-index: 60; font-size: 14px; }
   .user-menu.show { display: block; }
   .um-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px; border-bottom: 1px solid var(--owb-border); margin-bottom: 4px; cursor: pointer; border-radius: var(--radius-md) var(--radius-md) 0 0; }
   .um-head:hover { background: var(--owb-bg-hover); }
   .um-head .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .um-head .s { font-size: 12px; color: var(--owb-text-3); }
-  .um-i { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md); cursor: pointer; }
+  .um-i { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .um-lang > span:first-child, .um-pet > span:first-child { display: inline-flex; align-items: center; gap: 8px; flex: 1 0 auto; white-space: nowrap; }
   .um-i:hover { background: var(--owb-bg-hover); }
   .um-i .hint { margin-left: auto; font-size: 13px; color: var(--owb-text-3); }
   /* 头像菜单里的语言快切：一行两个胶囊，点即生效，菜单不关 */
-  .um-seg { margin-left: auto; display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: var(--owb-card); }
+  .um-seg { margin-left: auto; display: inline-flex; flex: 0 0 auto; gap: 2px; padding: 2px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: var(--owb-card); }
   .um-seg button { border: 0; background: transparent; color: var(--owb-text-3); font: inherit; font-size: 12px; line-height: 1; padding: 4px 9px; min-width: 34px; border-radius: var(--radius-full); cursor: pointer; transition: background var(--owb-t-fast) var(--owb-ease), color var(--owb-t-fast) var(--owb-ease); }
   .um-seg button:hover { color: var(--owb-text); }
   .um-seg button.on { background: var(--owb-brand); color: #fff; font-weight: 600; }
@@ -3121,15 +3088,11 @@
   <div class="lane-tabs" id="lane-tabs" role="tablist" aria-label="工作线"></div>
   <div class="side-nav top">
     <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic"><svg class="i" aria-hidden="true"><use href="#i-bot"></use></svg></span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
-    <!-- 无限画布排在「项目」前面，不是审美问题：项目底下挂着一列会长的子项（#proj-list），
-         排在它后面的同级项会被这列越推越远，看着像「项目的最后一条」。会长的那一组永远
-         压在自己这一组的末尾。顺带，这三条是「上哪儿干活」（对话在上面那个新建任务按钮里），
-         再往下才是「手里有什么家伙」（专家 / 自动化 / 更多）。 -->
-    <div class="item" data-view="canvas" title="无限画布：把一件事拆成节点摆在一张图上，边连边跑"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-map"></use></svg></span><span class="tx">无限画布<span class="sub">把任务摊成一张图</span></span></div>
     <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg></a></div>
     <div id="proj-list"></div>
     <div class="item" data-view="hub"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-blocks"></use></svg></span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
     <div class="item" data-view="autom"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg></span><span class="tx">自动化<span class="sub">定时 · 运行记录</span></span></div>
+    <div class="item" data-view="canvas" title="无限画布：把一件事拆成节点摆在一张图上，边连边跑"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-map"></use></svg></span><span class="tx">无限画布<span class="sub">把任务摊成一张图</span></span></div>
     <div class="item more-toggle" id="more-toggle"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-ellipsis"></use></svg></span><span class="tx">更多<span class="sub">模板 · 资料 · 评测 · 追踪</span></span><span class="caret" id="more-caret"><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></span></div>
     <div class="more-box" id="more-box">
       <div class="item" data-view="prompts"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-book-open"></use></svg></span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
@@ -3160,10 +3123,7 @@
 <div class="main">
   <div class="topbar">
     <button id="toggle-side" class="icon-btn" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
-    <button type="button" class="title" id="session-title" aria-haspopup="menu" aria-expanded="false" disabled>新任务</button>
-    <button type="button" class="icon-btn" id="session-rename" title="重命名任务" aria-label="重命名当前任务" hidden><svg class="i" aria-hidden="true"><use href="#i-pencil"></use></svg></button>
-    <span class="session-date" id="session-date" hidden></span>
-    <span class="session-context" id="session-context" hidden><span class="state-dot" id="session-context-dot"></span><span id="session-context-text"></span></span>
+    <div class="title" id="session-title">新任务</div>
     <div class="right"><div class="inbox-wrap"><button type="button" class="icon-btn" id="inbox-toggle" title="收件箱" aria-label="收件箱" aria-expanded="false" aria-controls="attention-inbox"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span id="inbox-count" hidden></span></button><div id="attention-inbox" role="region" aria-label="收件箱" hidden></div></div><button id="toggle-files" title="查看这个任务的文件"><svg class="i" aria-hidden="true"><use href="#i-file"></use></svg> <span id="session-file-count">文件</span></button></div>
   </div>
   <div id="chat-scroll"><div id="goal-card" style="display:none"></div><div class="chat-col" id="chat-col"></div></div>
@@ -3180,7 +3140,6 @@
         <div class="quote-bar" id="quote-bar" hidden></div>
         <div class="attach-chips" id="attach-chips"></div>
         <div id="input-box"><div id="input-hl" aria-hidden="true"></div><textarea id="input" rows="2" placeholder="今天帮你做些什么？@ 引用文件，/ 调用技能与指令"></textarea></div>
-        <div class="input-note" id="input-note">AI 也会出错，重要内容请核对。</div>
         <div class="card-toolbar">
           <div class="picker" id="plus-picker">
             <button class="icon-btn" id="attach-btn" title="添加文件 · 模式 · 专家 · 技能 · 工具 · 连接器"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg></button>
@@ -3212,8 +3171,7 @@
           <button class="picker-btn" id="mode-btn"><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg> <span id="mode-label">Craft · 执行</span> <svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
           <div class="picker-menu up-left" id="mode-menu"><!-- 四个模式由 app-02.js 从 /api/modes 画出来；这里不写死，写死过一次就漂了一次（命令行少了 goal） --></div>
         </div>
-          <label id="task-billing-control" hidden><span class="sr-only">任务类型</span><select id="task-billing-scope" aria-label="任务类型"><option value="personal">个人任务</option><option value="team">团队任务 · 组织账号</option></select></label>
-          <button class="picker-btn" id="task-billing-cost" hidden title="查看任务费用">费用</button>
+        <span class="input-note" id="input-note">AI 也会出错，重要内容请核对。</span>
       </div>
     </div>
   </div>
@@ -3310,7 +3268,6 @@
 <script src="js/app-06.js"></script>
 <script src="js/app-08-recipe.js"></script>
 <script src="js/app-09-browser.js"></script>
-<script src="js/app-10-share.js"></script>
 <script src="js/app-11-oauth.js"></script>
 <script src="js/app-12-review.js"></script>
 <script src="js/app-13-annotate.js"></script>

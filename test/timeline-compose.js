@@ -843,6 +843,36 @@ const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runtimeSections() {
   const jobs = require(mod("compose-jobs"));
+  section("输出保护：既有文件与并发创建的文件均不覆盖、不误删");
+  {
+    const cwd = path.join(TMP, "collision-safe"); fs.mkdirSync(cwd);
+    const source = path.join(cwd, "source.mp4"), target = path.join(cwd, "final.mp4");
+    const plan = () => ({ ok: true, title: "publish", warnings: [], dirs: [], aspects: [], cleanup: [], manifest: "", steps: [{ key: "publish", kind: "move", from: "source.mp4", out: "final.mp4", label: "publish" }] });
+    fs.writeFileSync(source, "new-film"); fs.writeFileSync(target, "existing-user-film");
+    let result = await jobs.startTimeline({ plan: plan(), cwd, owner: "collision", bin: process.execPath, probeBin: "" }).done;
+    ok(!!result.error, "目标已存在时失败，不假装交付成功");
+    eq(fs.readFileSync(target, "utf8"), "existing-user-film", "既有成片内容保持原样");
+    eq(fs.readFileSync(source, "utf8"), "new-film", "失败时保留待发布源文件");
+    fs.unlinkSync(target);
+    const link = fs.linkSync, copy = fs.copyFileSync;
+    try {
+      fs.linkSync = () => { throw Object.assign(new Error("cross-device"), { code: "EXDEV" }); };
+      fs.copyFileSync = (from, to, flags) => {
+        eq(flags, fs.constants.COPYFILE_EXCL, "不支持硬链接时也使用排他复制");
+        fs.writeFileSync(to, "created-by-another-writer");
+        throw Object.assign(new Error("copy failed"), { code: "EIO" });
+      };
+      result = await jobs.startTimeline({ plan: plan(), cwd, owner: "collision", bin: process.execPath, probeBin: "" }).done;
+      ok(!!result.error, "复制失败返回失败状态");
+      eq(fs.readFileSync(target, "utf8"), "created-by-another-writer", "失败清理不按文件名误删其他写入者的成果");
+      ok(fs.existsSync(source), "复制失败保留源文件");
+    } finally { fs.linkSync = link; fs.copyFileSync = copy; }
+    fs.unlinkSync(target);
+    result = await jobs.startTimeline({ plan: plan(), cwd, owner: "collision", bin: process.execPath, probeBin: "" }).done;
+    ok(!result.error && result.done, "无冲突时正常发布");
+    eq(fs.readFileSync(target, "utf8"), "new-film", "发布文件内容正确");
+    ok(!fs.existsSync(source), "发布成功后清理源文件");
+  }
   const mediaProbe = require(mod("media-probe"));
   const R = await mediaProbe.resolveMediaBins();
   const FF = R.ffmpeg.bin, FP = R.ffprobe.bin;

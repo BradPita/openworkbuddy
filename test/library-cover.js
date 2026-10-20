@@ -633,11 +633,20 @@ function niced(call, prios) {
     if (bare.pid > 0 && alive(bare.pid)) { try { process.kill(-bare.pid, "SIGKILL"); } catch {} try { process.kill(bare.pid, "SIGKILL"); } catch {} }
   });
 
-  await section("⑨ 不是 macOS：Office / PDF 直接给图标，一个子进程都不起", async () => {
+  await section("⑨ Linux：Office / PDF 直接给图标，一个子进程都不起；Windows 只排它画得出来的那几种", async () => {
     const office = ["a.pdf", "b.docx", "c.doc", "d.xlsx", "e.xls", "f.pptx", "g.ppt", "h.key", "i.pages", "j.numbers", "k.rtf"];
     const dir = path.join(ROOT_A, "非苹果");
     const files = office.map((n) => put(dir, n, "假的 " + n));
-    for (const plat of ["linux", "win32"]) {
+    {
+      const { q, fr } = mkQueue({ opt: { platform: "win32" } });
+      const got = [];
+      for (const f of files) got.push(kindOf(await q.ask(item(f))));
+      await q.idle();
+      const want = office.map((n) => (/\.(key|pages|numbers)$/.test(n) ? "icon" : "queued"));
+      eq(JSON.stringify(got), JSON.stringify(want), "win32：PDF / Word / Excel / PPT / RTF 排上，Keynote / Pages / Numbers 给图标");
+      eq(fr.calls.length, 8, "win32：渲染器只为那 8 种各跑一次");
+    }
+    for (const plat of ["linux"]) {
       const fake = installFakeSpawn();
       try {
         const { q, fr } = mkQueue({ opt: { platform: plat } });

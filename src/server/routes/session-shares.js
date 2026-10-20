@@ -4,10 +4,14 @@
 const express = require("express");
 const shares = require("../../domains/account/session-shares");
 
-function createSessionSharesRouter({ store, multiUser, sessionOf, ownerOf, orgOf, memberOf, sanitize }) {
+function createSessionSharesRouter({ store, multiUser, sessionOf, ownerOf, orgOf, memberOf, sanitize, enabled = false }) {
   const app = express.Router({ caseSensitive: true });
   const headers = (_req, res, next) => { res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" }); next(); };
   app.use(["/api/session/:id/share", "/api/session-shares"], headers);
+  app.use(["/api/session/:id/share", "/api/session-shares"], (_req, res, next) => {
+    if (!enabled) return res.status(404).json({ error: "对话分享暂未开放", disabled: true });
+    next();
+  });
   const own = (req, res) => {
     if (!multiUser()) { res.status(403).json({ error: "单人模式不提供组织分享" }); return null; }
     const s = shares.SID.test(req.params.id) && sessionOf(req.params.id);

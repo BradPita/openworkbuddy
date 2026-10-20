@@ -16286,8 +16286,10 @@ async function testUpdaterVersions() {
   const src2 = fs.readFileSync(modPath("updater"), "utf8");
   assert(/签名/.test(src2), "updater.js 里没写清「为什么不做自动更新」，后人会踩回去");
   const pkgJson = require("../package.json");
-  assert(!/electron-updater/.test(JSON.stringify(pkgJson.dependencies || {})),
-    "引了 electron-updater —— 没签名的包用它在 macOS 上必然失败，等于给用户一个永远点不动的按钮");
+  const autoUpdateSrc = fs.readFileSync(path.join(__dirname, "..", "src/desktop/auto-update.js"), "utf8");
+  assert(pkgJson.dependencies["electron-updater"] && /platform !== "win32"/.test(autoUpdateSrc)
+    && /!o.app.isPackaged/.test(autoUpdateSrc) && /PORTABLE_EXECUTABLE_FILE/.test(autoUpdateSrc)
+    && /u.autoDownload = false/.test(autoUpdateSrc), "应用内更新只面向 Windows 安装版，不能给源码、免安装版或未公证 macOS 自动下载安装");
   // 检查更新只走 updater.js 这一条。服务端跑 git 那条老路：装机版没有 .git，点一次报一次「未配置更新源」
   const serverSrc = srcLib.src("server");
   assert(!/spawnSync\(\s*["'`]git["'`]/.test(serverSrc),

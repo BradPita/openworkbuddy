@@ -20,10 +20,11 @@ const express = require("express");
  * @param deps.isOwner  (req) => 是不是这台机器的主人
  * @param deps.importer createSessionImporter() 的返回值
  */
-function createSessionImportRouter({ isOwner, importer }) {
+function createSessionImportRouter({ isOwner, importer, enabled = false }) {
   const router = express.Router();
 
   router.use("/api/import/local", (req, res, next) => {
+    if (!enabled) return res.status(404).json({ error: "会话导入暂未开放", disabled: true });
     if (!isOwner(req)) return res.status(403).json({ error: "只有这台机器的主人能导入本机会话", platform_only: true });
     next();
   });

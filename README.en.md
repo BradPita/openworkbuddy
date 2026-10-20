@@ -3,8 +3,8 @@
 <p align="center"><b>A local-first AI office workbench that turns your material into files you can open and edit.</b><br>
 For people who prepare reports, decks, spreadsheets and documents, and teams that need self-hosting.<br>
 Choose your model, inspect execution, and review the delivered files.</p>
-<p align="center"><a href="#quick-start"><b>▶ Make a project update deck</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> · <a href="https://catcatuncle.github.io/openworkbuddy/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
-<p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="Published release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial license"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="Bookmark the project"></a></p>
+<p align="center"><a href="#quick-start"><b>▶ Make a project update deck</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">Download</a> · <a href="https://catcatuncle.github.io/openworkbuddy/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
+<p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="Published release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial license"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="Bookmark the project"></a></p>
 <p align="center"><sub>Free for personal non-commercial use, schools and non-profits. Company and personal commercial use require a <a href="COMMERCIAL-LICENSE.md">commercial license</a>. Model and media services have their own costs.</sub></p>
 <p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy workflow: submit a task, inspect execution and open delivered files"><br><sub>Workflow demonstration. Measure first success with the task below.</sub></p>
 
@@ -16,7 +16,7 @@ Choose your model, inspect execution, and review the delivered files.</p>
 
 **Prerequisites:** a computer that can run the app and a usable model provider, installed local model, or authenticated local CLI. API use requires your own key. This example uses text and simple shapes; it needs no image/video model, messaging channel, or extra connector. Have PowerPoint, WPS or LibreOffice available to open and check the downloaded deck.
 
-1. **Install and launch.** Choose the macOS / Windows package for your architecture from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases): Windows installer `*-win-setup.exe`, portable `*-win-x64-portable.exe` / `*-win-arm64-portable.exe`, or macOS `.dmg`. On Linux, use source below or [Docker deployment](docs/部署.md).
+1. **Install and launch.** Choose the macOS / Windows package for your architecture from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases/latest): Windows installer `*-win-setup.exe`, portable `*-win-x64-portable.exe` / `*-win-arm64-portable.exe`, or macOS `.dmg`. On Linux, use source below or [Docker deployment](docs/部署.md).
 2. **Connect a model.** Register on first launch. In Settings → Models, enter the provider, exact model ID, API URL and key, then test the connection. An installed local CLI can also be selected under Settings → Agent.
 3. **Copy the task and open the result.** Select Craft mode and paste the task below. Preview or download `project-update.pptx` from the results panel, open it in presentation software and check all four slides. Then ask: “Turn the next-week plan on slide 4 into a two-column table. Keep the other slides unchanged.”
 
@@ -255,15 +255,19 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 20** Installed apps register the CLI on first launch using the bundled runtime; rerun `npm link` after moving a source checkout
+- **Oct 20** Two groups of five common tasks; pin directly from task rows and rename from the menu; local session imports and read-only sharing are disabled
+- **Oct 20** Read notifications stay read; run summaries distinguish ended, stopped and incomplete turns; inline script checks and video output collision protection
 - **Oct 20** Source updates check Git state first; keep modified or divergent checkouts intact to protect sessions and deliverables
 - **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
 - **Oct 19** Rename tasks and identify dated previews; Goal checks unmet work and resumes in bounded rounds after 100 steps; CLI sandbox denials explain approval limits
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
 - **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
-- **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
 
 <details>
-<summary>Earlier updates (Oct 16 and older)</summary>
+<summary>Earlier updates (Oct 17 and older)</summary>
+
+- **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
 
 - **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate
 - **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal

@@ -305,8 +305,9 @@ function composeView(job) {
   return { ...rest, running: !job.done };
 }
 
-// 同一个 Map 里住着两种任务：画布一键合成（没有 kind，老数据）和对话里 compose_video 起的时间轴成片
+// 同一个 Map 里住着三种任务：画布一键合成（没有 kind，老数据）、对话里 compose_video 起的时间轴成片、edit_video 起的剪辑
 const kindOf = (job) => (job && job.kind) || "canvas";
+const KIND_LABEL = { timeline: "时间轴成片", edit: "视频剪辑", canvas: "画布合成" };
 const composeAborts = new Map();        // 任务 id → 眼下那一步渲染的 AbortController（渲染不是子进程，杀 child 杀不到它）
 
 /**
@@ -314,7 +315,7 @@ const composeAborts = new Map();        // 任务 id → 眼下那一步渲染�
  * 画布拿到 409 也会把 r.job 当成自己的任务接着画——id 留空它就不轮询，也就不会把别的会话的路径、日志摊在画布上
  */
 function composeBusyView(job) {
-  const what = kindOf(job) === "timeline" ? "时间轴成片" : "画布合成";
+  const what = KIND_LABEL[kindOf(job)] || "合成";
   return {
     id: "", busy: true, kind: kindOf(job), stage: job.stage || "", done: true, running: false,
     error: `另一条${what}正在跑，ffmpeg 同时只跑一条，等它跑完再来`, output: "", steps: [], log: [],
@@ -400,25 +401,53 @@ function insideCwd(cwd, rel) {
 function fileSize(abs) { try { return fs.statSync(abs).size; } catch { return 0; } }
 
 /**
+ * 把工作目录里出好的成片挪到正式名字上。
+ * 用硬链接而不是改名：改名碰上同名文件会直接盖掉，链接碰上就报 EEXIST——
+ * 「先看一眼有没有、再写」中间那个空窗里冒出来的同名文件（用户刚传了一份、另一条剪辑刚写完）也盖不着。
+ * ffmpeg 自己写的是工作目录里的名字，所以正式名字上永远不会躺着半截文件。
+ */
+function composeMove(cwd, fromRel, toRel) {
+  const from = insideCwd(cwd, fromRel), to = insideCwd(cwd, toRel);
+  if (!from || !to) return { ok: false, note: "路径在工作区外面，不往那儿写" };
+  const taken = `${toRel} 盘上已经有了（不是这一趟写的），不盖它`;
+  try { fs.linkSync(from, to); }
+  catch (e) {
+    if (e.code === "EEXIST") return { ok: false, note: taken };
+    // 有的盘不支持硬链接（exFAT 的 U 盘、一些网络盘）：退回复制，COPYFILE_EXCL 一样碰上同名就停
+    try { fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL); }
+    catch (e2) {
+      if (e2.code === "EEXIST") return { ok: false, note: taken };
+      // copyFile 自己负责清理复制失败的目标，不能按名字删：其他程序可能刚在这里创建了文件。
+      return { ok: false, note: "挪不到正式名字上：" + e2.message };
+    }
+  }
+  try { fs.unlinkSync(from); } catch {}
+  return { ok: true };
+}
+
+/**
  * 开跑一条时间轴成片。
  *   plan：timelinePlan 的返回（ok 为真的那种）；bin / probeBin：ffmpeg / ffprobe；cwd：计划里相对路径的根；
  *   owner：哪个会话起的——查、停只认它自己，别的会话连路径都看不到；
  *   hooks.render(step, signal, onFrac)：把 HTML 画成 PNG / mp4；hooks.onProgress(ev)；hooks.finish(job)。
+ *   kind："timeline" 或 "edit"（edit_video 的剪辑计划也是一串 ffmpeg 步骤，跑法一样，只是查、停各认各的）。
+ *   步骤的 kind 除了 ffmpeg / render 还有 "move"：把 from 挪到 out，不覆盖（见 composeMove）。
  * 返回 {job, done}：done 在最后一步跑完（或挂了、被叫停）才 resolve 成最终那份。锁被占着就是 {busy}
  */
-function startTimeline({ plan, bin, probeBin = "", cwd, env = null, owner = "", hooks = {} }) {
+function startTimeline({ plan, bin, probeBin = "", cwd, env = null, owner = "", hooks = {}, kind = "timeline" }) {
   if (!plan || !plan.ok || !Array.isArray(plan.steps)) return { error: "计划没排出来，不能开跑" };
   if (!bin) return { error: "没找到 ffmpeg" };
   if (!cwd) return { error: "不知道成片往哪写" };
+  plan = { ...plan, guardOutputs: plan.guardOutputs !== false };
   const running = composeJobs.get(composeBusy);
   if (running && !running.done) {
-    const mine = kindOf(running) === "timeline" && String(running.owner || "") === String(owner || "");
+    const mine = kindOf(running) === kind && String(running.owner || "") === String(owner || "");
     return { busy: mine ? composeView(running) : composeBusyView(running) };
   }
   const { PROGRESS_STAGE } = require("./timeline-compose");
-  const id = "tlc" + Date.now().toString(36) + (++tlSeq).toString(36);
+  const id = (kind === "edit" ? "vec" : "tlc") + Date.now().toString(36) + (++tlSeq).toString(36);
   const job = {
-    id, kind: "timeline", owner: String(owner || ""), name: plan.title, at: 0, total: plan.steps.length,
+    id, kind, owner: String(owner || ""), name: plan.title, at: 0, total: plan.steps.length,
     startedAt: Date.now(), done: false, canceled: false, error: "", output: "", outputs: [], films: [], covers: [],
     manifest: "", subtitleFile: "", bytes: 0, log: [], child: null,
     stage: "", stages: [...new Set(plan.steps.map((s) => PROGRESS_STAGE[s.stage] || "compose"))], pct: 0,
@@ -467,7 +496,9 @@ async function composeExecuteTimeline(job, plan, bin, cwd, { hooks = {}, env = n
     if (abs && path.basename(abs).startsWith(".work") && created.dirs.includes(abs)) { try { fs.rmSync(abs, { recursive: true, force: true }); } catch {} }
   }
   if (ok) return;
-  const kept = (plan.aspects || []).map((a) => a.file).filter((f) => fileSize(path.join(cwd, f)) > 0);
+  // guardOutputs 的计划只认这一趟自己写出来的：撞上盘上原有的同名文件而停下的，那份是用户的，不能说成「出好的成片」
+  const kept = (plan.aspects || []).map((a) => a.file)
+    .filter((f) => fileSize(path.join(cwd, f)) > 0 && (!plan.guardOutputs || created.files.includes(path.resolve(cwd, f))));
   if (kept.length) { job.log.push(`已经出好的成片留着：${kept.join("、")}`); return; }
   // 一条成片都没出来：连字幕文件、空目录一起收掉，不然盘上躺着一个只有 .srt 的「成片」文件夹
   for (const abs of created.files) { try { fs.unlinkSync(abs); } catch {} }
@@ -511,14 +542,44 @@ async function timelineSteps(job, plan, bin, cwd, { hooks, env, PROGRESS_STAGE, 
         if (!abs) throw new Error(`${w.rel} 在工作区外面`);
         const existed = fs.existsSync(abs);
         fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, w.text, "utf8");
-        if (!existed) created.files.push(abs);
+        if (plan.guardOutputs && !created.files.includes(abs)) {
+          const fd = fs.openSync(abs, "wx");
+          created.files.push(abs);
+          try { fs.writeFileSync(fd, w.text, "utf8"); } finally { fs.closeSync(fd); }
+        } else {
+          fs.writeFileSync(abs, w.text, "utf8");
+          if (!existed) created.files.push(abs);
+        }
         if (w.rel === plan.srt) job.subtitleFile = w.rel;
       }
     } catch (e) { slot.state = "fail"; slot.note = "写不进工作区：" + e.message; job.error = `${slot.label} 没成——${slot.note}`; return false; }
+    // 剪辑的成片名是开跑前挑的空名字。排片到开跑之间盘上冒出了同名文件（用户刚传了一份、另一条剪辑刚写完），
+    // 就停在这儿：失败收拾半截时会按这个名字删，绝不能删到别人的文件
+    const outAbs = plan.guardOutputs ? insideCwd(cwd, step.out) : "";
+    if (plan.guardOutputs && !outAbs) { slot.state = "fail"; slot.note = `${step.out} 在工作区外面，不往那儿写`; job.error = `${slot.label} 没成——${slot.note}`; return false; }
+    if (plan.guardOutputs && fs.existsSync(outAbs) && !created.files.includes(outAbs)) {
+      slot.state = "fail"; slot.note = `${step.out} 盘上已经有了（不是这一趟写的），不盖它`;
+      job.error = `${slot.label} 没成——${slot.note}。换个名字（out）再来`;
+      return false;
+    }
+    // 排他创建占住输出名，避免检查后、渲染前刚好撞上别人的同名文件。
+    // move 自己用 link / COPYFILE_EXCL 排他发布，目标不提前创建。
+    if (outAbs && step.kind !== "move" && !created.files.includes(outAbs)) {
+      try {
+        const fd = fs.openSync(outAbs, "wx");
+        created.files.push(outAbs);
+        fs.closeSync(fd);
+      } catch (e) {
+        slot.state = "fail"; slot.note = "不能创建输出文件：" + e.message;
+        job.error = `${slot.label} 没成——${slot.note}`;
+        return false;
+      }
+    }
     const started = Date.now();
     let r;
-    if (step.kind === "render") {
+    if (step.kind === "move") {
+      r = composeMove(cwd, step.from, step.out);
+    } else if (step.kind === "render") {
       r = await timelineRender(job, step, hooks, (frac) => report(i, frac, step.label));
     } else {
       const onErr = step.mediaSeconds > 0 ? (s) => { const t = ffTimeSec(s); if (t >= 0) report(i, t / step.mediaSeconds, step.label); } : null;
@@ -536,16 +597,17 @@ async function timelineSteps(job, plan, bin, cwd, { hooks, env, PROGRESS_STAGE, 
     if (r.ok) {
       // 退出码 0 也得看东西在不在：磁盘满、被杀在半路，都可能留下一个 0 字节的壳
       const size = fileSize(path.join(cwd, step.out));
-      if (size > 0) { slot.state = "done"; slot.size = size; doneSec += step.expectSeconds || 0; continue; }
+      if (size > 0) { slot.state = "done"; slot.size = size; doneSec += step.expectSeconds || 0; if (outAbs) created.files.push(outAbs); continue; }
       slot.state = "fail";
       slot.note = `${step.kind === "render" ? "渲染器" : "ffmpeg"}说成了，但 ${step.out} 没在盘上（或者是 0 字节）`;
-    } else if (job.canceled) { slot.state = "skip"; composeDropPartial(cwd, step.out, job); continue; }
+    } else if (job.canceled) { slot.state = "skip"; if (step.kind !== "move") composeDropPartial(cwd, step.out, job); continue; }
     else {
       const tail = String(r.err || "").split("\n").filter((l) => l.trim()).slice(-4).join("\n");
       slot.state = "fail";
       slot.note = r.note || ((r.timedOut ? "跑太久被掐掉了" : r.signal ? `被中断（${r.signal}）` : `ffmpeg 退出码 ${r.code}`) + (tail ? "：" + tail : ""));
     }
-    composeDropPartial(cwd, step.out, job);
+    // 挪名字那一步没成，正式名字上要么没东西、要么是别人的文件——这里按名字删，删到的只会是别人的
+    if (step.kind !== "move") composeDropPartial(cwd, step.out, job);
     // 封面这种可有可无的：没截出来记一笔就往下走，成片本身不受影响
     if (step.optional) { job.log.push(`${slot.label}：${step.optionalWhy || "这一步没成，跳过"}`); slot.state = "skip"; doneSec += step.expectSeconds || 0; continue; }
     // 不自动整条重跑：ffmpeg 挂在哪一步、自己说了什么都在这儿，重跑一遍多半还是同一句
@@ -590,7 +652,7 @@ async function timelineSettle(job, plan, cwd, probeBin, hooks) {
   };
   const mAbs = insideCwd(cwd, plan.manifest);
   if (mAbs) {
-    try { fs.writeFileSync(mAbs, JSON.stringify(manifest, null, 2) + "\n", "utf8"); job.manifest = plan.manifest; }
+    try { fs.writeFileSync(mAbs, JSON.stringify(manifest, null, 2) + "\n", { encoding: "utf8", flag: plan.guardOutputs ? "wx" : "w" }); job.manifest = plan.manifest; }
     catch (e) { job.log.push("成片好了，但清单没写进去：" + e.message); }
   }
   const sidecars = [];
@@ -609,24 +671,24 @@ async function timelineSettle(job, plan, cwd, probeBin, hooks) {
   return true;
 }
 
-/** 按 id 查一条时间轴成片。别的会话起的、画布的，一律当没有 */
-function timelineGet(id, owner = "") {
+/** 按 id 查一条时间轴成片（kind 给 "edit" 查剪辑）。别的会话起的、别的种类的，一律当没有 */
+function timelineGet(id, owner = "", kind = "timeline") {
   const job = composeJobs.get(String(id || ""));
-  if (!job || kindOf(job) !== "timeline" || job.owner !== String(owner || "")) return null;
+  if (!job || kindOf(job) !== kind || job.owner !== String(owner || "")) return null;
   return composeView(job);
 }
 
 /** 叫停自己会话起的那条；已经跑完的原样交回 */
-function timelineCancel(id, owner = "") {
+function timelineCancel(id, owner = "", kind = "timeline") {
   const job = composeJobs.get(String(id || ""));
-  if (!job || kindOf(job) !== "timeline" || job.owner !== String(owner || "")) return null;
+  if (!job || kindOf(job) !== kind || job.owner !== String(owner || "")) return null;
   if (!job.done) cancelJob(job);
   return composeView(job);
 }
 
-/** 这个会话眼下在跑的那条时间轴成片 */
-function timelineRunning(owner = "") {
-  return composeView([...composeJobs.values()].find((j) => !j.done && kindOf(j) === "timeline" && j.owner === String(owner || ""))) || null;
+/** 这个会话眼下在跑的那条时间轴成片（或剪辑） */
+function timelineRunning(owner = "", kind = "timeline") {
+  return composeView([...composeJobs.values()].find((j) => !j.done && kindOf(j) === kind && j.owner === String(owner || ""))) || null;
 }
 
 /** 等一条跑完，最多等 ms 毫秒（signal 断了也不等了）。返回跑没跑完 */
@@ -657,4 +719,4 @@ function createComposeJobs(deps) {
   return { plan: composeBuildPlan, start: composeStart, cancel: composeCancel, get: composeGet, running: composeRunning, startTimeline };
 }
 
-module.exports = { createComposeJobs, composeBins, composeProbe, startTimeline, timelineGet, timelineCancel, timelineRunning, timelineWait };
+module.exports = { createComposeJobs, composeBins, composeFilterSet, composeProbe, startTimeline, timelineGet, timelineCancel, timelineRunning, timelineWait };

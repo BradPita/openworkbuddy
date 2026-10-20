@@ -54,6 +54,8 @@ const HTML_RE = /\.html?$/i;
 // heic / tiff 浏览器画不出来，Quick Look 画得出来：iPhone 拍的照片多半是 heic
 const OFFICE_RE = /\.(pdf|docx?|xlsx?|pptx?|key|pages|numbers|rtf|heic|heif|tiff?)$/i;
 const VIDEO_RE = /\.(mp4|mov|webm|mkv|m4v)$/i;
+// Windows 上画得出来的文档：跟 win-thumb.js 同一把尺子（.key / .pages / .numbers / heic 那边谁都画不出来）
+const WIN_COVER_RE = /\.(pdf|docx?|xlsx?|pptx?|rtf|tiff?)$/i;
 
 /** 按后缀认类型：image / html / office / video，其余空串（只给图标） */
 function coverKindOf(name) {
@@ -100,10 +102,15 @@ function tryRequire(name) {
 }
 
 /** @returns {{ office?: Function, video?: Function, html?: Function, shrink?: Function }} */
-function defaultRenderers() {
+function defaultRenderers(platform = process.platform) {
   const out = {};
-  const ql = tryRequire("../../platform/render/ql-thumb");
-  if (ql && typeof ql.qlThumb === "function") out.office = (abs, o) => ql.qlThumb(abs, { size: o.target, timeoutMs: o.timeoutMs, signal: o.signal });
+  if (platform === "win32") {
+    const wt = tryRequire("../../platform/render/win-thumb");
+    if (wt && typeof wt.winThumb === "function") out.office = (abs, o) => wt.winThumb(abs, { size: o.target, timeoutMs: o.timeoutMs, signal: o.signal });
+  } else {
+    const ql = tryRequire("../../platform/render/ql-thumb");
+    if (ql && typeof ql.qlThumb === "function") out.office = (abs, o) => ql.qlThumb(abs, { size: o.target, timeoutMs: o.timeoutMs, signal: o.signal });
+  }
   const vf = tryRequire("../../platform/render/video-frame");
   if (vf && typeof vf.videoFrame === "function") out.video = (abs, o) => vf.videoFrame(abs, { width: o.target, timeoutMs: o.timeoutMs, signal: o.signal });
   // fileRoot 给到这个人的根：AI 写的页面常引 ../assets/ 下的图，缺省只放行 html 所在那一层会缺图
@@ -212,7 +219,7 @@ function createCoverQueue(opt) {
   const cacheDir = opt.cacheDir;
   // 真渲染器用到才 require：开机不为一个还没人点开的资料库多加载三个模块
   let renderersMemo = opt.renderers || null;
-  const R = () => renderersMemo || (renderersMemo = defaultRenderers());
+  const R = () => renderersMemo || (renderersMemo = defaultRenderers(platform));
   const platform = opt.platform || process.platform;
   const htmlBackend = opt.htmlBackend || defaultHtmlBackend;
   const hasFfmpeg = opt.hasFfmpeg || defaultHasFfmpeg;
@@ -266,8 +273,8 @@ function createCoverQueue(opt) {
     const kind = coverKindOf(abs);
     const renderers = R();
     if (kind === "html") return renderers.html && size <= HTML_MAX_BYTES && htmlReady() ? "html" : "";
-    // Quick Look 只有 macOS 有。别的系统上连 spawn 都不试（test/library-cover.js ⑨）
-    if (kind === "office") return renderers.office && platform === "darwin" ? "office" : "";
+    // macOS 走 Quick Look；Windows 走 win-thumb（只认它画得出来的那几种）；Linux 连 spawn 都不试（test/library-cover.js ⑨）
+    if (kind === "office") return renderers.office && (platform === "darwin" || (platform === "win32" && WIN_COVER_RE.test(abs))) ? "office" : "";
     if (kind === "video") return renderers.video && ffmpegState() !== false ? "video" : "";
     return "";
   }
@@ -468,6 +475,6 @@ function createCoverQueue(opt) {
 }
 
 module.exports = {
-  createCoverQueue, coverKindOf, coverKey, coverUrl, coverVersion, coverTarget, isTimeoutError, isTransientError, defaultLagMonitor,
+  createCoverQueue, defaultRenderers, WIN_COVER_RE, coverKindOf, coverKey, coverUrl, coverVersion, coverTarget, isTimeoutError, isTransientError, defaultLagMonitor,
   COVER_WIDTHS, COVER_MAX_ITEMS, LEASE_MS, BUSY_GAP_MS, BUSY_START_GAP_MS, LAG_P95_MS, LAG_PAUSE_MS, HTML_MAX_BYTES, TIMEOUTS,
 };

@@ -138,6 +138,18 @@ async function login(username, password) {
 (async () => {
   await listening;
 
+  console.log("\n离线核验页与服务端验签结果一致");
+  const page = fs.readFileSync(path.join(ROOT, "docs/license-verify/index.html"), "utf8");
+  const core = /<script id="owb-verify-core">([\s\S]*?)<\/script>/.exec(page);
+  ok(!!core, "核验页面带有独立的离线核心");
+  const browser = require("vm").runInNewContext(core[1] + ";OWBLicenseVerify", { TextEncoder, TextDecoder, atob, btoa, Uint8Array, Date, crypto: crypto.webcrypto });
+  eq(Array.from(browser.PUBLIC_KEYS), BUILTIN, "离线页与应用的公钥一致");
+  const signed = await browser.verify(CODE, { keys: [PUB], now: T0 });
+  eq(JSON.parse(JSON.stringify(signed.license)), license.verify(CODE, { ...TEST_KEYS, now: T0 }).license, "同一份真实签名，两边得到相同授权字段");
+  ok(!(await browser.verify(CODE, { keys: [OTHER_PUB], now: T0 })).ok, "非匹配公钥不能通过");
+  for (const invalid of ["", "garbage", CODE.slice(0, -10) + "tampered"]) ok(!(await browser.verify(invalid, { keys: [PUB], now: T0 })).ok, "空码、坏格式或篡改签名均失败");
+  ok(page.includes("connect-src 'none'") && !/<script[^>]+src=/.test(page), "页面禁止联网且不依赖外部脚本");
+
   // ================= 【1】验签：真码过得去，字段一个不差 =================
   console.log("\n【1】验签：用现造钥匙签的码，拿对应公钥验得过，字段一个个对上");
   let v = license.verify(CODE, { ...TEST_KEYS, now: T0 });

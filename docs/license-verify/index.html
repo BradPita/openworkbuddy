@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="在浏览器里离线核验 OpenWorkBuddy 商业授权码的 Ed25519 签名，不联网、不上传。">
+<title>OWB 授权码核验</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f6fde'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11.5' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f6f6f3;
+    --surface: #ffffff;
+    --surface-2: #f0f0ec;
+    --text: #1c1c1e;
+    --muted: #5d6066;
+    --border: #e0e0db;
+    --accent: #2f6fde;
+    --accent-text: #ffffff;
+    --focus: #2f6fde66;
+    --ok: #17723f;
+    --ok-bg: #e7f4eb;
+    --warn: #8a5a00;
+    --warn-bg: #fbf1dc;
+    --bad: #b3261e;
+    --bad-bg: #fbe9e7;
+    --info: #3b4a63;
+    --info-bg: #eaeef5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #131315;
+      --surface: #1c1c1f;
+      --surface-2: #26262a;
+      --text: #ececef;
+      --muted: #a3a3ab;
+      --border: #313136;
+      --accent: #6c9cff;
+      --accent-text: #0b1222;
+      --focus: #6c9cff66;
+      --ok: #74d39d;
+      --ok-bg: #15301f;
+      --warn: #f1bd5c;
+      --warn-bg: #33270e;
+      --bad: #ff8f86;
+      --bad-bg: #3a1917;
+      --info: #b9c6dd;
+      --info-bg: #1f2633;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #131315;
+    --surface: #1c1c1f;
+    --surface-2: #26262a;
+    --text: #ececef;
+    --muted: #a3a3ab;
+    --border: #313136;
+    --accent: #6c9cff;
+    --accent-text: #0b1222;
+    --focus: #6c9cff66;
+    --ok: #74d39d;
+    --ok-bg: #15301f;
+    --warn: #f1bd5c;
+    --warn-bg: #33270e;
+    --bad: #ff8f86;
+    --bad-bg: #3a1917;
+    --info: #b9c6dd;
+    --info-bg: #1f2633;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 1.45rem; line-height: 1.3; margin: 4px 0 6px; }
+  h2 { font-size: 1.08rem; margin: 0 0 8px; }
+  p, li { margin: 0 0 10px; overflow-wrap: anywhere; }
+  .lead { color: var(--muted); margin-bottom: 18px; }
+  .tools { display: flex; gap: 8px; }
+  .chip {
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    border-radius: 999px; padding: 4px 12px; font: inherit; font-size: .86rem; cursor: pointer;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  textarea, input {
+    width: 100%; font: inherit; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  }
+  textarea {
+    min-height: 120px; resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86rem;
+    word-break: break-all; overflow-wrap: anywhere;
+  }
+  textarea:focus, input:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  fieldset { border: 0; padding: 0; margin: 14px 0 0; min-width: 0; }
+  legend { padding: 0; margin-bottom: 8px; color: var(--muted); font-size: .92rem; }
+  .row { display: grid; grid-template-columns: 1fr 9rem; gap: 10px; }
+  .row label { font-weight: 500; font-size: .92rem; }
+  .actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .btn {
+    font: inherit; font-weight: 600; border-radius: 8px; padding: 9px 22px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text);
+  }
+  .btn.secondary { background: transparent; color: var(--text); border-color: var(--border); font-weight: 500; }
+  .btn:disabled { opacity: .6; cursor: progress; }
+  #result:empty { display: none; }
+  .status { border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; border: 1px solid transparent; }
+  .status strong { display: block; font-size: 1.08rem; margin-bottom: 2px; }
+  .status.ok { background: var(--ok-bg); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+  .status.warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+  .status.bad { background: var(--bad-bg); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+  .status.info { background: var(--info-bg); color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, transparent); }
+  .status p { margin: 4px 0 0; color: var(--text); }
+  dl.fields { display: grid; grid-template-columns: 8.5em 1fr; gap: 6px 14px; margin: 0; }
+  dl.fields dt { color: var(--muted); }
+  dl.fields dd { margin: 0; overflow-wrap: anywhere; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86rem; overflow-wrap: anywhere; word-break: break-all; }
+  .cmp { list-style: none; padding: 0; margin: 12px 0 0; }
+  .cmp li { padding: 6px 10px; border-radius: 8px; margin-top: 6px; }
+  .cmp li.ok { background: var(--ok-bg); color: var(--ok); }
+  .cmp li.bad { background: var(--bad-bg); color: var(--bad); }
+  .cmp li.info { background: var(--info-bg); color: var(--info); }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); }
+  pre { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .keybox { display: flex; gap: 8px; align-items: center; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 6px 0 10px; }
+  .keybox code { flex: 1; min-width: 0; white-space: pre-wrap; }
+  ol, ul { margin: 0 0 10px; padding-left: 1.3em; }
+  li { margin: 3px 0; }
+  .muted { color: var(--muted); }
+  footer { color: var(--muted); font-size: .86rem; margin-top: 8px; }
+  @media (max-width: 480px) {
+    h1 { font-size: 1.25rem; }
+    .row { grid-template-columns: 1fr; }
+    dl.fields { grid-template-columns: 1fr; gap: 0; }
+    dl.fields dt { margin-top: 8px; font-size: .88rem; }
+    .btn { flex: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 data-i18n="title">OpenWorkBuddy 授权码核验</h1>
+    </div>
+    <div class="tools">
+      <button type="button" class="chip" id="lang" aria-label="Switch language">EN</button>
+      <button type="button" class="chip" id="theme" data-i18n="theme_auto">跟随系统</button>
+    </div>
+  </header>
+  <p class="lead" data-i18n="lead">粘贴授权码，在本机浏览器里验真伪。不联网、不上传，码不会离开这台电脑。</p>
+
+  <section class="card">
+    <label for="code" data-i18n="code_label">授权码</label>
+    <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" data-i18n-ph="code_ph" placeholder="OWB1.……（从邮件里整段复制，夹着换行和空格没关系）"></textarea>
+    <fieldset>
+      <legend data-i18n="cmp_legend">对照你们的情况（可不填）</legend>
+      <div class="row">
+        <div>
+          <label for="org" data-i18n="org_label">你们单位的全称</label>
+          <input id="org" type="text" autocomplete="off">
+        </div>
+        <div>
+          <label for="users" data-i18n="users_label">实际使用人数</label>
+          <input id="users" type="number" min="0" step="1" inputmode="numeric">
+        </div>
+      </div>
+    </fieldset>
+    <div class="actions">
+      <button type="button" class="btn" id="go" data-i18n="btn_check">核验</button>
+      <button type="button" class="btn secondary" id="clear" data-i18n="btn_clear">清空</button>
+    </div>
+  </section>
+
+  <section id="result" aria-live="polite"></section>
+
+  <section class="card">
+    <h2 data-i18n="how_title">这一页怎么验的</h2>
+    <ol>
+      <li data-i18n="how_1">授权码分三段：OWB1.〈内容〉.〈签名〉。签名用 Ed25519 算法，签的是前两段连同中间的点。</li>
+      <li data-i18n="how_2">私钥只在作者手里，只有作者签得出能验过的码。公钥公开在官方仓库的 src/domains/account/license.js 里，本页只带公钥，没有签发功能。</li>
+      <li data-i18n="how_3">内容里改一个字、签名少复制一截、换一把钥匙签，都验不过。</li>
+    </ol>
+    <p data-i18n="key_label">本页用来验签的公钥：</p>
+    <div class="keybox"><code class="mono" id="pubkeys"></code><button type="button" class="chip" id="copy" data-i18n="copy">复制</button></div>
+    <p data-i18n="key_check">请自己核对这把公钥：打开官方仓库 github.com/CatCatUncle/openworkbuddy 里的 src/domains/account/license.js，找到 PUBLIC_KEYS 那一行，逐字比对。作者换钥匙时只会往里追加，旧码照样有效。</p>
+  </section>
+
+  <section class="card">
+    <h2 data-i18n="mean_title">验过了说明什么，不说明什么</h2>
+    <p><strong data-i18n="mean_yes_h">说明：</strong><span data-i18n="mean_yes">这串码是作者的私钥签出来的，里面的内容一个字没改过。</span></p>
+    <p><strong data-i18n="mean_no_h">不说明：</strong></p>
+    <ul>
+      <li data-i18n="mean_no_1">码是不是签给你们的。要看「授权给」是不是你们单位的全称。</li>
+      <li data-i18n="mean_no_2">范围、席位、到期日够不够你们用。逐项对照你们的实际用法。</li>
+      <li data-i18n="mean_no_3">码的来路。授权码可以离线复制，拿到别人的码不等于你们有授权。</li>
+    </ul>
+    <p data-i18n="mean_ask">拿不准就发邮件找作者核实。联系方式以官方仓库 COMMERCIAL-LICENSE.md 写的为准。</p>
+  </section>
+
+  <section class="card">
+    <h2 data-i18n="cli_title">另一种核验办法：命令行</h2>
+    <p data-i18n="cli_body">装好 Node.js，克隆官方仓库，在仓库目录里运行下面这行。它用的是仓库自带的 src/domains/account/license.js，和本页互不依赖。</p>
+    <pre class="mono">node scripts/issue-license.js verify "OWB1.……"</pre>
+  </section>
+
+  <footer>
+    <p data-i18n="foot_1">本页离线运行：没有外部脚本，安全策略禁止任何联网请求，也不保存你粘贴的授权码。可以断网后再打开。</p>
+    <p data-i18n="foot_2">验签规则与官方仓库 src/domains/account/license.js 的 verify() 一致（对照版本 80da093）。到期按你这台电脑的本地日期算，到期日当天仍有效。</p>
+  </footer>
+</div>
+
+<script id="owb-verify-core">
+/*
+ * OpenWorkBuddy 授权码核验核心。浏览器和 Node 共用这一段，测试从本页原样抽出来跑。
+ * 只验签、只解析，没有任何签发能力；这里只有公钥。
+ * 规则对齐官方仓库 src/domains/account/license.js 的 verify()：错误文案、字段截断、到期判定都照搬。
+ */
+(function (root) {
+  "use strict";
+  var PREFIX = "OWB1";
+  // 与 src/domains/account/license.js 的 PUBLIC_KEYS 逐字一致（Ed25519，SPKI DER 的 base64）
+  var PUBLIC_KEYS = ["MCowBQYDK2VwAyEA7BbxYnAuenOC+ijx+/PgVdSO/613xm4Bq7JscyE5jk0="];
+  var SCOPE_LABEL = {
+    internal: "内部使用",
+    service: "对外提供服务",
+    delivery: "给客户交付",
+    oem: "打包分发",
+    all: "不限商业用途"
+  };
+  var ERRORS = {
+    empty: "授权码是空的",
+    not_ours: "这不是 OpenWorkBuddy 的授权码",
+    unreadable: "授权码读不出内容，对一下是不是完整复制的",
+    bad_sig: "签名对不上：这串码和作者签发的不一致",
+    no_licensee: "授权码里没写授权给谁",
+    unsupported: "这个浏览器不支持 Ed25519 验签"
+  };
+
+  var B64 = (function () {
+    var a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    var m = {};
+    for (var i = 0; i < a.length; i++) m[a.charCodeAt(i)] = i;
+    m[43] = 62; m[45] = 62; // + -
+    m[47] = 63; m[95] = 63; // / _
+    return m;
+  })();
+
+  // 跟 Node 的 Buffer.from(s, "base64url") 一样宽松：两套字母表都认，
+  // 非法字符跳过，碰到 = 就停，每个字符只看低 8 位
+  function decodeBase64(s) {
+    s = String(s);
+    var out = [];
+    var acc = 0, bits = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i) & 0xff;
+      if (c === 61) break;
+      var v = B64[c];
+      if (v === undefined) continue;
+      acc = ((acc << 6) | v) & 0xffffff;
+      bits += 6;
+      if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 0xff); }
+    }
+    return new Uint8Array(out);
+  }
+
+  function utf8(bytes) { return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes); }
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function localDay(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+  function own(obj, k) { return Object.prototype.hasOwnProperty.call(obj, k); }
+  function dayOf(v) { return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : ""; }
+  function str(v, max) { return String(v == null ? "" : v).trim().slice(0, max); }
+  function fail(reason) { return { ok: false, reason: reason, error: ERRORS[reason] }; }
+
+  var keyCache = new Map();
+  function importKey(subtle, b64) {
+    if (!keyCache.has(b64)) {
+      var p = subtle.importKey("spki", decodeBase64(b64), { name: "Ed25519" }, false, ["verify"]);
+      p.catch(function () { keyCache.delete(b64); });
+      keyCache.set(b64, p);
+    }
+    return keyCache.get(b64);
+  }
+
+  /**
+   * 验一张授权码。返回 { ok: true, license, key, payload } 或 { ok: false, reason, error }。
+   * 过期的码照样 ok，只是 license.expired 为 true。
+   * opts.keys 给测试注入现造的公钥；opts.now 指定「今天」；opts.subtle 指定 WebCrypto 实现。
+   */
+  async function verify(code, opts) {
+    opts = opts || {};
+    var keys = opts.keys || PUBLIC_KEYS;
+    var now = opts.now || new Date();
+    var subtle = opts.subtle || (root.crypto && root.crypto.subtle);
+    var raw = String(code || "").replace(/\s+/g, "");
+    if (!raw) return fail("empty");
+    var parts = raw.split(".");
+    if (parts.length !== 3 || parts[0] !== PREFIX) return fail("not_ours");
+    var payload, sig;
+    try {
+      payload = JSON.parse(utf8(decodeBase64(parts[1])));
+      sig = decodeBase64(parts[2]);
+    } catch (e) {
+      return fail("unreadable");
+    }
+    if (!subtle) return fail("unsupported");
+    var signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
+    var matched = "";
+    var unsupported = 0;
+    for (var i = 0; i < keys.length && !matched; i++) {
+      var key;
+      try {
+        key = await importKey(subtle, keys[i]);
+      } catch (e) {
+        if (e && e.name === "NotSupportedError") unsupported++;
+        continue;
+      }
+      try {
+        if (await subtle.verify({ name: "Ed25519" }, key, sig, signed)) matched = keys[i];
+      } catch (e) {
+        if (e && e.name === "NotSupportedError") unsupported++;
+      }
+    }
+    if (!matched) return fail(unsupported > 0 && unsupported === keys.length ? "unsupported" : "bad_sig");
+    if (!payload || typeof payload !== "object") return fail("unreadable");
+    var license = {
+      id: str(payload.id, 60),
+      licensee: str(payload.to, 120),
+      scope: str(payload.scope, 20) || "internal",
+      scope_label: (own(SCOPE_LABEL, payload.scope) && SCOPE_LABEL[payload.scope]) || str(payload.scope, 20) || SCOPE_LABEL.internal,
+      seats: Math.max(0, Math.floor(+payload.seats || 0)),
+      issued_at: dayOf(payload.iat),
+      expires_at: dayOf(payload.exp),
+      note: str(payload.note, 200)
+    };
+    if (!license.licensee) return fail("no_licensee");
+    license.expired = !!license.expires_at && license.expires_at < localDay(now);
+    return { ok: true, license: license, key: matched, payload: payload };
+  }
+
+  var api = {
+    verify: verify,
+    decodeBase64: decodeBase64,
+    localDay: localDay,
+    PUBLIC_KEYS: PUBLIC_KEYS,
+    SCOPE_LABEL: SCOPE_LABEL,
+    ERRORS: ERRORS,
+    PREFIX: PREFIX
+  };
+  if (typeof module === "object" && module && module.exports) module.exports = api;
+  root.OWBLicenseVerify = api;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+</script>
+
+<script id="owb-verify-ui">
+(function () {
+  "use strict";
+  var core = window.OWBLicenseVerify;
+  var $ = function (id) { return document.getElementById(id); };
+
+  var I18N = {
+    zh: {
+      title: "OpenWorkBuddy 授权码核验",
+      lead: "粘贴授权码，在本机浏览器里验真伪。不联网、不上传，码不会离开这台电脑。",
+      code_label: "授权码",
+      code_ph: "OWB1.……（从邮件里整段复制，夹着换行和空格没关系）",
+      cmp_legend: "对照你们的情况（可不填）",
+      org_label: "你们单位的全称",
+      users_label: "实际使用人数",
+      btn_check: "核验",
+      btn_checking: "核验中…",
+      btn_clear: "清空",
+      theme_auto: "跟随系统",
+      theme_light: "浅色",
+      theme_dark: "深色",
+      copy: "复制",
+      copied: "已复制",
+      how_title: "这一页怎么验的",
+      how_1: "授权码分三段：OWB1.〈内容〉.〈签名〉。签名用 Ed25519 算法，签的是前两段连同中间的点。",
+      how_2: "私钥只在作者手里，只有作者签得出能验过的码。公钥公开在官方仓库的 src/domains/account/license.js 里，本页只带公钥，没有签发功能。",
+      how_3: "内容里改一个字、签名少复制一截、换一把钥匙签，都验不过。",
+      key_label: "本页用来验签的公钥：",
+      key_check: "请自己核对这把公钥：打开官方仓库 github.com/CatCatUncle/openworkbuddy 里的 src/domains/account/license.js，找到 PUBLIC_KEYS 那一行，逐字比对。作者换钥匙时只会往里追加，旧码照样有效。",
+      mean_title: "验过了说明什么，不说明什么",
+      mean_yes_h: "说明：",
+      mean_yes: "这串码是作者的私钥签出来的，里面的内容一个字没改过。",
+      mean_no_h: "不说明：",
+      mean_no_1: "码是不是签给你们的。要看「授权给」是不是你们单位的全称。",
+      mean_no_2: "范围、席位、到期日够不够你们用。逐项对照你们的实际用法。",
+      mean_no_3: "码的来路。授权码可以离线复制，拿到别人的码不等于你们有授权。",
+      mean_ask: "拿不准就发邮件找作者核实。联系方式以官方仓库 COMMERCIAL-LICENSE.md 写的为准。",
+      cli_title: "另一种核验办法：命令行",
+      cli_body: "装好 Node.js，克隆官方仓库，在仓库目录里运行下面这行。它用的是仓库自带的 src/domains/account/license.js，和本页互不依赖。",
+      foot_1: "本页离线运行：没有外部脚本，安全策略禁止任何联网请求，也不保存你粘贴的授权码。可以断网后再打开。",
+      foot_2: "验签规则与官方仓库 src/domains/account/license.js 的 verify() 一致（对照版本 80da093）。到期按你这台电脑的本地日期算，到期日当天仍有效。",
+      st_valid: "真码，在有效期内",
+      st_valid_p: "签名由作者的私钥签出，内容没被改过。下面逐项核对是不是签给你们的。",
+      st_expired: "真码，但已过期",
+      st_expired_p: "签名是真的，到期日是 {d}，已经过了。到期不会锁任何功能，续期请找作者。",
+      st_bad: "没有验过",
+      st_unsupported: "这个浏览器验不了",
+      r_empty: "还没粘授权码。",
+      r_not_ours: "开头不是「OWB1.」，或者不是用点隔开的三段。看看是不是粘错了东西。",
+      r_unreadable: "中间那段解不出内容。检查一下是不是完整复制的，前后有没有漏字。",
+      r_bad_sig: "签名和作者的公钥对不上：可能是码被改过、没复制全，或者不是作者签发的。重新完整复制一次；还验不过，就把码发给作者核实，在这之前别把它当成有效授权。",
+      r_no_licensee: "签名是真的，但码里没写授权给谁，这张码不算数。请作者重新签发。",
+      r_unsupported: "这个浏览器不支持 Ed25519 验签。换新版 Chrome、Edge、Firefox 或 Safari 再打开本页，或者用下面的命令行办法。",
+      r_insecure: "这个页面要以本地文件（file://）或 https 打开才能验签。现在的打开方式拿不到浏览器的加密接口。",
+      f_licensee: "授权给",
+      f_id: "授权码编号",
+      f_scope: "使用范围",
+      f_seats: "席位",
+      f_issued: "签发日",
+      f_expires: "到期日",
+      f_note: "备注",
+      f_key: "验签用的公钥",
+      seats_n: "{n} 席",
+      seats_unlimited: "不限",
+      not_stated: "（没写）",
+      perpetual: "永久",
+      none: "—",
+      days_left: "{d}（还有 {n} 天）",
+      today_last: "{d}（今天是最后一天）",
+      c_org_ok: "单位名称和「授权给」一致（不计空格、全半角和大小写）",
+      c_org_bad: "单位名称和「授权给」不一致：码里写的是「{v}」",
+      c_seats_unlimited: "这张码不限席位",
+      c_seats_ok: "{m} 人，在授权的 {n} 席以内",
+      c_seats_bad: "超出席位：授权 {n} 席，你们有 {m} 人",
+      raw: "码里的原始内容（签名已验过）",
+      scope: { internal: "内部使用", service: "对外提供服务", delivery: "给客户交付", oem: "打包分发", all: "不限商业用途" }
+    },
+    en: {
+      title: "OpenWorkBuddy License Code Check",
+      lead: "Paste a license code to check it right here in your browser. Nothing is sent anywhere — the code never leaves this computer.",
+      code_label: "License code",
+      code_ph: "OWB1.… (paste the whole thing; line breaks and spaces are fine)",
+      cmp_legend: "Compare with your situation (optional)",
+      org_label: "Your organization's full legal name",
+      users_label: "People using it",
+      btn_check: "Check",
+      btn_checking: "Checking…",
+      btn_clear: "Clear",
+      theme_auto: "Auto",
+      theme_light: "Light",
+      theme_dark: "Dark",
+      copy: "Copy",
+      copied: "Copied",
+      how_title: "How this check works",
+      how_1: "A code has three parts: OWB1.<contents>.<signature>. The signature is Ed25519 over the first two parts and the dot between them.",
+      how_2: "Only the author holds the private key, so only the author can produce codes that pass. The public key is published in src/domains/account/license.js in the official repository; this page contains only that public key and cannot issue codes.",
+      how_3: "Changing a single character of the contents, a truncated signature, or a code signed with any other key will all fail.",
+      key_label: "Public key this page verifies against:",
+      key_check: "Check this key yourself: open src/domains/account/license.js in the official repository github.com/CatCatUncle/openworkbuddy, find the PUBLIC_KEYS line and compare it character by character. If the author ever rotates keys, new ones are only appended, so older codes stay valid.",
+      mean_title: "What a pass does and doesn't tell you",
+      mean_yes_h: "It tells you: ",
+      mean_yes: "the code was signed with the author's private key and its contents haven't been altered.",
+      mean_no_h: "It doesn't tell you:",
+      mean_no_1: "whether the code was issued to you. Check that “Licensed to” is your organization's full legal name.",
+      mean_no_2: "whether the scope, seats and expiry cover your use. Compare each one with how you actually use it.",
+      mean_no_3: "where the code came from. Codes can be copied; holding someone else's code doesn't make you licensed.",
+      mean_ask: "If in doubt, email the author to confirm. Use the contact listed in COMMERCIAL-LICENSE.md in the official repository.",
+      cli_title: "Another way to check: command line",
+      cli_body: "With Node.js installed, clone the official repository and run the line below inside it. It uses the repository's own src/domains/account/license.js and doesn't depend on this page.",
+      foot_1: "This page runs offline: no external scripts, its security policy blocks every network request, and it doesn't store the code you paste. You can disconnect before opening it.",
+      foot_2: "Verification follows verify() in the official repository's src/domains/account/license.js (checked against 80da093). Expiry uses this computer's local date; a code is still valid on its expiry date.",
+      st_valid: "Genuine and in effect",
+      st_valid_p: "Signed with the author's private key; the contents haven't been altered. Check the details below to confirm it was issued to you.",
+      st_expired: "Genuine, but expired",
+      st_expired_p: "The signature is genuine; it expired on {d}. Nothing gets locked when a code expires — contact the author to renew.",
+      st_bad: "Not verified",
+      st_unsupported: "This browser can't check it",
+      r_empty: "Paste a license code first.",
+      r_not_ours: "It doesn't start with “OWB1.” or isn't three dot-separated parts. Check that you pasted the right thing.",
+      r_unreadable: "The middle part can't be decoded. Check that you copied the whole code with nothing missing at either end.",
+      r_bad_sig: "The signature doesn't match the author's public key: the code may have been altered, copied incompletely, or not issued by the author. Copy it again in full; if it still fails, send it to the author to confirm, and don't treat it as a valid license until then.",
+      r_no_licensee: "The signature is genuine, but the code doesn't say who it's licensed to, so it doesn't count. Ask the author to reissue it.",
+      r_unsupported: "This browser doesn't support Ed25519 verification. Open this page in a recent Chrome, Edge, Firefox or Safari, or use the command-line method below.",
+      r_insecure: "Open this page as a local file (file://) or over https to verify. The current way of opening it has no access to the browser's crypto API.",
+      f_licensee: "Licensed to",
+      f_id: "License ID",
+      f_scope: "Scope",
+      f_seats: "Seats",
+      f_issued: "Issued",
+      f_expires: "Expires",
+      f_note: "Note",
+      f_key: "Verified with key",
+      seats_n: "{n}",
+      seats_unlimited: "Unlimited",
+      not_stated: "(not stated)",
+      perpetual: "Never (perpetual)",
+      none: "—",
+      days_left: "{d} ({n} days left)",
+      today_last: "{d} (today is the last day)",
+      c_org_ok: "Organization name matches “Licensed to” (ignoring spaces, full/half-width and case)",
+      c_org_bad: "Organization name doesn't match “Licensed to”: the code says “{v}”",
+      c_seats_unlimited: "This code has no seat limit",
+      c_seats_ok: "{m} people, within the {n} licensed seats",
+      c_seats_bad: "Over the seat limit: {n} seats licensed, {m} people using it",
+      raw: "Raw contents of the code (signature verified)",
+      scope: { internal: "Internal use", service: "Providing services to others", delivery: "Delivery to clients", oem: "Bundled redistribution", all: "Any commercial use" }
+    }
+  };
+
+  var store = {
+    get: function (k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { window.localStorage.setItem(k, v); } catch (e) { /* 存不了就算了：只是记个偏好 */ } }
+  };
+
+  var lang = store.get("owb-verify-lang") === "en" ? "en" : "zh";
+  var theme = store.get("owb-verify-theme");
+  if (theme !== "light" && theme !== "dark") theme = "auto";
+  var last = null;
+
+  function t(key, vars) {
+    var s = I18N[lang][key];
+    if (s == null) s = I18N.zh[key];
+    if (vars) s = String(s).replace(/\{(\w+)\}/g, function (_, k) { return vars[k] == null ? "" : String(vars[k]); });
+    return s;
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function applyTheme() {
+    if (theme === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+    $("theme").textContent = t("theme_" + theme);
+  }
+
+  function applyLang() {
+    document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+    document.title = lang === "en" ? "OWB License Check" : "OWB 授权码核验";
+    var nodes = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < nodes.length; i++) nodes[i].textContent = t(nodes[i].getAttribute("data-i18n"));
+    var ph = document.querySelectorAll("[data-i18n-ph]");
+    for (var j = 0; j < ph.length; j++) ph[j].setAttribute("placeholder", t(ph[j].getAttribute("data-i18n-ph")));
+    $("lang").textContent = lang === "en" ? "中文" : "EN";
+    $("lang").setAttribute("aria-label", lang === "en" ? "切换到中文" : "Switch to English");
+    applyTheme();
+    if (last) render(last.res, last.ctx);
+  }
+
+  // 比对单位名称：统一全半角（NFKC），去掉所有空白，不分大小写
+  function normName(s) {
+    var x = String(s || "");
+    try { x = x.normalize("NFKC"); } catch (e) { /* 老浏览器没有 normalize：按原样比 */ }
+    return x.replace(/\s+/g, "").toLowerCase();
+  }
+
+  function daysBetween(fromDay, toDay) {
+    var a = fromDay.split("-"), b = toDay.split("-");
+    var da = Date.UTC(+a[0], +a[1] - 1, +a[2]), db = Date.UTC(+b[0], +b[1] - 1, +b[2]);
+    return Math.round((db - da) / 86400000);
+  }
+
+  function scopeText(L) {
+    var map = I18N[lang].scope;
+    return Object.prototype.hasOwnProperty.call(map, L.scope) ? map[L.scope] : L.scope_label;
+  }
+
+  function render(res, ctx) {
+    var box = $("result");
+    box.textContent = "";
+    if (!res) return;
+    var card = el("div", "card");
+
+    if (!res.ok) {
+      var unsup = res.reason === "unsupported";
+      var st = el("div", "status " + (unsup ? "info" : "bad"));
+      st.appendChild(el("strong", null, unsup ? t("st_unsupported") : t("st_bad")));
+      var reasonKey = unsup && !window.isSecureContext ? "r_insecure" : "r_" + res.reason;
+      st.appendChild(el("p", null, t(reasonKey)));
+      card.appendChild(st);
+      box.appendChild(card);
+      box.setAttribute("data-state", res.reason);
+      return;
+    }
+
+    var L = res.license;
+    var today = core.localDay(new Date());
+    var stc = el("div", "status " + (L.expired ? "warn" : "ok"));
+    stc.appendChild(el("strong", null, L.expired ? t("st_expired") : t("st_valid")));
+    stc.appendChild(el("p", null, L.expired ? t("st_expired_p", { d: L.expires_at }) : t("st_valid_p")));
+    card.appendChild(stc);
+
+    var expires;
+    if (!L.expires_at) expires = t("perpetual");
+    else if (L.expired) expires = L.expires_at;
+    else {
+      var left = daysBetween(today, L.expires_at);
+      expires = left === 0 ? t("today_last", { d: L.expires_at }) : t("days_left", { d: L.expires_at, n: left });
+    }
+
+    var rows = [
+      ["f_licensee", L.licensee, "licensee"],
+      ["f_id", L.id || t("not_stated"), "id"],
+      ["f_scope", scopeText(L), "scope"],
+      ["f_seats", L.seats ? t("seats_n", { n: L.seats }) : t("seats_unlimited"), "seats"],
+      ["f_issued", L.issued_at || t("not_stated"), "issued"],
+      ["f_expires", expires, "expires"],
+      ["f_note", L.note || t("none"), "note"],
+      ["f_key", res.key, "key"]
+    ];
+    var dl = el("dl", "fields");
+    rows.forEach(function (r) {
+      dl.appendChild(el("dt", null, t(r[0])));
+      var dd = el("dd", r[2] === "key" || r[2] === "id" ? "mono" : null, r[1]);
+      dd.setAttribute("data-field", r[2]);
+      dl.appendChild(dd);
+    });
+    card.appendChild(dl);
+
+    var items = [];
+    if (ctx.org) {
+      var same = normName(ctx.org) === normName(L.licensee);
+      items.push([same ? "ok" : "bad", same ? t("c_org_ok") : t("c_org_bad", { v: L.licensee }), "org"]);
+    }
+    if (ctx.users != null) {
+      if (!L.seats) items.push(["info", t("c_seats_unlimited"), "seats"]);
+      else if (ctx.users > L.seats) items.push(["bad", t("c_seats_bad", { n: L.seats, m: ctx.users }), "seats"]);
+      else items.push(["ok", t("c_seats_ok", { n: L.seats, m: ctx.users }), "seats"]);
+    }
+    if (items.length) {
+      var ul = el("ul", "cmp");
+      items.forEach(function (it) {
+        var li = el("li", it[0], it[1]);
+        li.setAttribute("data-cmp", it[2] + ":" + it[0]);
+        ul.appendChild(li);
+      });
+      card.appendChild(ul);
+    }
+
+    var det = el("details");
+    det.appendChild(el("summary", null, t("raw")));
+    det.appendChild(el("pre", "mono", JSON.stringify(res.payload, null, 2)));
+    card.appendChild(det);
+
+    box.appendChild(card);
+    box.setAttribute("data-state", L.expired ? "expired" : "valid");
+  }
+
+  var busy = false;
+  async function run() {
+    if (busy) return;
+    busy = true;
+    var btn = $("go");
+    btn.disabled = true;
+    btn.textContent = t("btn_checking");
+    var ctx = { org: $("org").value.trim(), users: null };
+    var u = $("users").value.trim();
+    if (u !== "" && /^\d+$/.test(u)) ctx.users = parseInt(u, 10);
+    var res;
+    try {
+      res = await core.verify($("code").value);
+    } catch (e) {
+      res = { ok: false, reason: "unsupported", error: String(e && e.message || e) };
+    }
+    last = { res: res, ctx: ctx };
+    render(res, ctx);
+    btn.disabled = false;
+    btn.textContent = t("btn_check");
+    busy = false;
+    $("result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  $("pubkeys").textContent = core.PUBLIC_KEYS.join("\n");
+  $("go").addEventListener("click", run);
+  $("code").addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); run(); }
+  });
+  $("clear").addEventListener("click", function () {
+    $("code").value = ""; $("org").value = ""; $("users").value = "";
+    last = null; render(null); $("result").removeAttribute("data-state");
+    $("code").focus();
+  });
+  $("lang").addEventListener("click", function () {
+    lang = lang === "en" ? "zh" : "en";
+    store.set("owb-verify-lang", lang);
+    applyLang();
+  });
+  $("theme").addEventListener("click", function () {
+    theme = theme === "auto" ? "light" : theme === "light" ? "dark" : "auto";
+    store.set("owb-verify-theme", theme);
+    applyTheme();
+  });
+  $("copy").addEventListener("click", function () {
+    var text = core.PUBLIC_KEYS.join("\n");
+    var done = function () {
+      $("copy").textContent = t("copied");
+      setTimeout(function () { $("copy").textContent = t("copy"); }, 1500);
+    };
+    var fallback = function () {
+      var r = document.createRange();
+      r.selectNodeContents($("pubkeys"));
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+      else fallback();
+    } catch (e) { fallback(); }
+  });
+
+  applyLang();
+})();
+</script>
+</body>
+</html>

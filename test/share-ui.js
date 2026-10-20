@@ -27,27 +27,12 @@ app.whenReady().then(async () => {
   const base = "http://127.0.0.1:" + server.address().port;
   win = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { contextIsolation: false, sandbox: false, backgroundThrottling: false } });
   await win.loadURL(base);
-  const results = await win.webContents.executeJavaScript(read("public/js/i18n.js") + '\n' + read("public/js/app-10-share.js") + `\n(async()=>{
-    const names=[]; const ok=(label,v)=>{if(!v)throw new Error(label);names.push(label)};
-    var calls=[], active=false, fail=false, copied="";
-    window.settingsCache={solo:false};window.sessionId="s_fixture";window.openSession=async(id)=>{window.sessionId=id};
-    window.ic=()=>"";window.copyText=async(s)=>{copied=s;return true};
-    window.fetch=async(url,opt)=>{calls.push([url,opt.method]);if(fail)return {ok:false,json:async()=>({error:"fixture error"})};if(opt.method==="POST")active=true;if(opt.method==="DELETE")active=false;return {ok:true,json:async()=>({active,url:"/shared.html#${token}"})}};
-    await openSessionShare("s_fixture");
-    ok("分享设置在页面里，没有弹窗或遮罩",!!document.getElementById("session-share-panel")&&!document.querySelector('dialog,[role="dialog"]'));
-    ok("尚未分享时显示生成按钮",!!document.querySelector("[data-create]")&&!document.querySelector("[data-url]"));
-    await document.querySelector("[data-create]").onclick();
-    ok("点击后才生成链接",active&&calls.filter(x=>x[1]==="POST").length===1&&!!document.querySelector("[data-url]"));
-    await document.querySelector("[data-copy]").onclick();
-    ok("复制的是当前服务器的完整链接",copied===location.origin+"/shared.html#${token}");
-    fail=true;await document.querySelector("[data-revoke]").onclick();
-    ok("撤回失败时保留链接并说明错误",active&&!!document.querySelector("[data-url]")&&document.querySelector(".share-status").textContent.includes("fixture error"));
-    fail=false;await document.querySelector("[data-revoke]").onclick();
-    ok("成功撤回后原处恢复生成按钮",!active&&!!document.querySelector("[data-create]")&&!document.querySelector("[data-url]"));
-    document.querySelector("[data-close]").click();ok("收起设置不触发撤回",!document.getElementById("session-share-panel")&&calls.filter(x=>x[1]==="DELETE").length===2);
-    settingsCache.solo=true;const count=calls.length;await openSessionShare("s_fixture");ok("单人模式不显示入口，也不请求分享接口",calls.length===count&&!document.getElementById("session-share-panel"));
-    return names;
-  })()`, true);
+  assert.ok(!read("public/index.html").includes("app-10-share.js"));
+  assert.ok(!read("public/js/app-02.js").includes('act === "share"'));
+  const results = await win.webContents.executeJavaScript(`(() => {
+    if (typeof openSessionShare !== "undefined" || document.getElementById("session-share-panel")) throw Error("分享入口未关闭");
+    return ["主界面不加载分享脚本", "任务菜单没有分享操作", "没有分享面板或弹窗"];
+  })()`);
   for (const name of results) console.log("✓ " + name);
   let more = 0;
   await win.loadURL(base + "/shared.html#" + token); await new Promise((r) => setTimeout(r, 100));

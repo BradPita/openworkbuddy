@@ -28,6 +28,7 @@ const { mod } = require("./lib/mod");
 // 会一路写进用户真正的 workspace/.openworkbuddy/traces.jsonl——跑一次测试灌几千条，
 // 真任务被淹在里面翻不出来（实测淹到 14650 条假记录对 533 条真记录）。
 // 放在这儿而不是各个套件里：子进程再拉起的 server / electron 也一并继承。
+process.env.OPENWORKBUDDY_INSTALL_CLI = "0"; // 测试不注册到用户真实的终端环境。
 const ownTmp = []; // 这一轮自己建的临时目录：全过了收走，挂了留着现场
 if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-test-trace-"));
@@ -102,6 +103,7 @@ const SUITES = [
   ["md-tty", "终端里的 Markdown 渲染"],
   ["doctor", "openworkbuddy doctor 体检"],
   ["cli-args", "CLI 参数表"],
+  ["cli-install", "安装版命令行注册：运行时、路径、参数、当前目录和配置根"],
   ["cli-attach", "CLI 带文件和图片"],
   ["cli-live", "终端 ↔ 网页那座桥"],
   ["cli-ask", "终端里回答 agent 的提问"],
@@ -186,8 +188,8 @@ const SUITES = [
   ["task-billing", "团队任务：共享凭据模型、并发隔离、分账与未知价目"],
   ["checkpoint-review", "文件分块回退：独立恢复、撤销、版本冲突和路径隔离"],
   ["mcp-oauth", "OAuth：PKCE、发现与注册、发起人归属、刷新、撤回和凭据不回显"],
-  ["session-shares", "组织内只读分享：归属、组织隔离、撤回、文件边界与凭据脱敏"],
-  ["share-ui", "只读分享界面：页面内操作、复制与撤回、登录返回和安全展示", ELECTRON],
+  ["session-shares", "只读分享默认关闭；历史实现的组织隔离、文件边界与脱敏"],
+  ["share-ui", "分享入口关闭；旧分享页的登录返回、失效与安全展示", ELECTRON],
   ["readme-onboarding", "README 首次成功路径：双语任务、前置条件、核对标准和缺失指标"],
   ["motion", "HTML 动画出片：虚拟时钟、帧时间表、画幅、ffmpeg 参数、工具接线、批量截图（不开窗口）"],
   ["checkpoints", "文件检查点：改前留底 / 整步回退 / 改前 diff"],
@@ -241,6 +243,7 @@ const SUITES = [
   ["motion-render", "HTML 动画出片真渲：同一页渲两次逐帧一致、像素对得上时间轴、不是 2 倍图、颜色通道没反", ELECTRON],
   ["htmlshot-cover", "资料库 HTML 封面：一扇隐藏窗复用、不出网不出声不弹窗、卡死 5 秒放手、拍完不再画、闲 30 秒关窗", ELECTRON],
   ["ql-thumb", "文档缩略图：系统预览出图，卡住杀整组、失败回 null、临时目录不留"],
+  ["win-thumb", "Windows 文档封面：系统缩略图 → 包里的预览图 → PDF 第一页，路径原样进脚本"],
   ["video-frame", "视频封面帧：第 1 秒取一帧按宽缩，没 ffmpeg / 卡住 / 失败都回 null"],
   ["timeline-compose", "时间轴成片：多尺寸 / 字幕 / 配乐避让 / 封面 / 叫停不留半截（没有 ffmpeg 就跳过真跑那段）"],
   ["delivery-page", "交付页：各画幅能播、标题文案能复制、缺文件直说不出页"],
@@ -253,7 +256,7 @@ const SUITES = [
   ["main-stall", "界面线程卡顿：睡眠不算卡、十秒一行只记活名；缩图三件活、网页截图编 PNG 都不在界面线程上做"],
   ["server-stall", "服务进程多开不卡：会话后台存盘不丢不倒退、每步中止信号收得回来、翻工作目录挪进后台线程且结果逐条一样"],
   ["server-process", "服务端挪进独立进程：两种跑法都能用、主进程不再被对话卡住、崩了重启或退回、退出不留孤儿", ELECTRON],
-  ["session-import", "导入本机 Claude Code / Codex 会话：只读假目录、坏行跳过、工具输出只留预览、成员 403 连条数都没有、导两次不出两份、接着聊走原文件夹和原会话"],
+  ["session-import", "本机会话导入默认关闭且不扫描；历史导入数据的隔离、去重和续聊兼容"],
   ["e2e","端到端（含 frontend.js、admin-ui.js）", ELECTRON],
 ];
 

@@ -81,6 +81,10 @@ jobs:
       # 这里静默装上、打开、等页面加载完；起不来这条腿就红，坏包进不了 Release（mac 那条照发）
       - if: runner.os == 'Windows'
         run: node scripts/win-smoke.js dist
+      # 资料库的 PDF / Office 封面在 Windows 上靠系统自带的 Windows.Data.Pdf 画（win-thumb.js），
+      # 单测里的 PowerShell 是假的：真调得通调不通只有这台机器知道
+      - if: runner.os == 'Windows'
+        run: node scripts/win-thumb-check.js
       - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
@@ -88,6 +92,8 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.exe
+            dist/*.yml
+            dist/*.blockmap
           if-no-files-found: error
 
   release:

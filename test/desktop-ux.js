@@ -209,6 +209,94 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
     eq(A.attnCount(new Map()), 0, "没有等你的：0（标题不带前缀）");
   });
 
+  await section("收件箱：历史基线、已读落地、存储异常和待办保留", async () => {
+    const storage = new Map();
+    let runs = Array.from({ length: 60 }, (_, i) => ({ id: "old-" + i, session_id: "scheduled-" + i, name: "旧排期 " + i, ended_at: "2026-10-19T10:00:00Z", ok: true }));
+    const context = {
+      currentUser: { username: "fixture-owner" }, sessions: [], cliLiveRows: [], runningSessions: new Set(), sessionId: "",
+      renderHistory() {}, syncTitleCount() {}, saveSessions() {}, stripSceneTag: s => s,
+      localStorage: { getItem: k => storage.get(k) || null, setItem: (k, v) => storage.set(k, v) },
+      fetch: async () => ({ ok: true, json: async () => runs }),
+    };
+    const A = vm.runInNewContext(ATTN + "\n;({ loadScheduleInbox, attentionInboxRows, markInboxRead, attnOf, sessionAttn })", context);
+    const unread = () => A.attentionInboxRows().filter(r => !r.read && r.state !== "running");
+    await A.loadScheduleInbox();
+    eq(unread().length, 0, "首次加载六十条旧排期不会凭空出现五十条未读");
+    runs = [{ id: "new-result", session_id: "new-session", ended_at: "2026-10-20T10:00:00Z", ok: true }, ...runs];
+    await A.loadScheduleInbox();
+    eq(unread().length, 1, "后续完成的排期作为真正的新消息提醒");
+    A.markInboxRead();
+    eq(unread().length, 0, "阅读后立即清除角标，不等下次网络响应");
+    eq(A.attentionInboxRows().filter(r => r.read).length, 61, "已读记录保留，仍能打开对应任务");
+    await A.loadScheduleInbox();
+    eq(unread().length, 0, "重新拉取不会用更早的记录补满五十条未读");
+    const B = vm.runInNewContext(ATTN + "\n;({ loadScheduleInbox, attentionInboxRows })", { ...context });
+    await B.loadScheduleInbox();
+    eq(B.attentionInboxRows().filter(r => !r.read).length, 0, "刷新页面后也记得已读");
+    context.sessions.push({ id: "approval", title: "待批准" }, { id: "busy", title: "执行中" });
+    context.runningSessions.add("busy");
+    A.attnOf("approval", true).asks.set("q", { approval: true });
+    A.markInboxRead();
+    eq(A.sessionAttn.get("approval").asks.size, 1, "标为已读不会代替用户批准安全操作");
+    eq(unread().length, 1, "运行中的任务不计未读，待审批继续提醒");
+    context.localStorage.setItem = () => { throw Error("quota"); };
+    runs = [{ id: "storage-full", session_id: "new-session", ended_at: "2026-10-20T11:00:00Z", ok: false }, ...runs];
+    await A.loadScheduleInbox(); A.markInboxRead(); await A.loadScheduleInbox();
+    ok(!unread().some(r => r.id === "__schedule__:storage-full"), "本机存储满了，内存中的已读仍生效");
+    context.currentUser = { username: "another-owner" };
+    await B.loadScheduleInbox();
+    ok([...storage.keys()].every(k => k.startsWith("owb-schedule-inbox-v2:")), "已读状态按当前账号隔离");
+  });
+
+  await section("收件箱批量已读与轻量记录", () => {
+    let paints = 0, saves = 0;
+    const context = {
+      sessions: Array.from({ length: 50 }, (_, i) => ({ id: "bulk-" + i, title: "任务", unread: true })),
+      cliLiveRows: [], runningSessions: new Set(), sessionId: "", stripSceneTag: s => s,
+      renderHistory() { paints++; }, syncTitleCount() {}, saveSessions() { saves++; },
+    };
+    const A = vm.runInNewContext(ATTN + "\n;({ attnOf, markInboxRead, sessionAttn })", context);
+    for (const s of context.sessions) Object.assign(A.attnOf(s.id, true), { unseen: true, manual: true });
+    A.markInboxRead();
+    eq(paints, 1, "五十条已读只刷新一次历史列表");
+    eq(saves, 1, "批量已读只写一次会话索引");
+    eq(A.sessionAttn.size, 0, "完成通知全部清除");
+    ok(context.sessions.every(s => !s.unread), "刷新页面后不会恢复手动未读");
+    const { publicRun } = require("../src/core/automation/run-view");
+    const record = { id: "r", name: "报告", session_id: "s", ended_at: "2026-10-20", ok: true, source_session_id: "private-source", result: "body".repeat(100000), debug: "internal" };
+    const brief = publicRun(record, true), full = publicRun(record);
+    eq(Object.keys(brief).sort().join(), "ended_at,id,name,ok,session_id,source_linked", "收件箱数据只保留六个状态与导航字段");
+    ok(JSON.stringify(brief).length < 200 && !JSON.stringify(brief).includes("private-source"), "大报告与来源会话 ID 不进入角标请求");
+    eq(full.result, record.result, "排期详情仍保留完整结果");
+    ok(!("source_session_id" in full) && full.source_linked, "完整记录也不暴露来源 ID");
+    const S = src("server");
+    ok(/publicRun\(run, req.query.summary === "1"\)/.test(S) && /limit=300&summary=1/.test(ATTN), "前后端实际接入轻量模式");
+  });
+
+  await section("常用任务：两组十项，补充提示而不覆盖草稿", () => {
+    const scenes = slice(APP01, "const SCENES = {", "let sceneTag = null;", "常用任务");
+    const setter = slice(APP01, "function setSceneTag(", "\n", "选择任务");
+    const placeholder = slice(APP02, "function syncPlaceholder() {", "\n}\n", "输入提示") + "\n}";
+    let focused = false;
+    const inputEl = { value: "用户已经写好的要求", placeholder: "", focus() { focused = true; } };
+    const api = vm.runInNewContext(scenes + "\nlet sceneTag = null;\n" + setter + "\n" + placeholder + "\n;({ SCENES, SCENE_HINTS, setSceneTag })", {
+      inputEl, renderComposerTags() {}, cliBusy: () => false, curBusy: () => false,
+      planPlaceholder: "", currentMode: "craft", MODE_PLACEHOLDER: { craft: "默认输入提示" },
+    });
+    eq(Object.keys(api.SCENES).length, 2, "首页只有两组，不增加分类负担");
+    const items = Object.values(api.SCENES).flat().map(row => row[1]);
+    eq(items.length, 10, "常用任务减少到十项");
+    eq(new Set(items).size, 10, "没有重复入口");
+    for (const label of items) {
+      api.setSceneTag(label);
+      eq(inputEl.placeholder, api.SCENE_HINTS[label], `${label} 有针对性的输入提示`);
+    }
+    eq(inputEl.value, "用户已经写好的要求", "选择类型不会覆盖已输入的要求");
+    ok(focused, "选完任务回到输入框");
+    api.setSceneTag(null);
+    eq(inputEl.placeholder, "默认输入提示", "移除标签恢复当前模式提示");
+  });
+
   await section("【7】审批带着截止时刻和会话号出来", async () => {
     const security = require(mod("security"));
     const seen = [];

@@ -1275,7 +1275,7 @@ function renderHistory() {
   const askFirst = (id) => (attnPick(sessionAttn.get(id), false) === "ask" ? 0 : 1);
   for (const id of histStopping) if (!runningSessions.has(id)) histStopping.delete(id); // 真收尾了，「正在停」这个态跟着撤
   const row = (s) => ["i:" + s.id,
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}${s.pinned_at ? " pinned" : ""}" data-id="${s.id}" draggable="true" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${histFilesHtml(s)}${attnDotHtml(s.id)}${histStopHtml(s)}${histPinHtml(s)}${histMoreHtml(s)}</div>`];
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}${s.pinned_at ? " pinned" : ""}" data-id="${s.id}" draggable="true" title="${esc(stripSceneTag(s.title) + (s.files > 0 ? ` · 产出过 ${s.files} 个文件` : ""))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${histPinHtml(s)}${attnDotHtml(s.id)}${histMoreHtml(s)}</div>`];
   const sec = (k, label) => ["h:" + k, `<div class="hist-sec" data-sec="${k}">${esc(label)}</div>`];
   // 置顶的单独一组排最上面，按顶上去的先后（后顶的在上）
   const pinned = list.filter((s) => s.pinned_at).sort((a, b) => b.pinned_at - a.pinned_at);
@@ -1326,22 +1326,6 @@ function renderHistory() {
   histMenuSync();
 }
 /**
- * 侧栏每条在跑的任务，行上一颗「停」，只停这一条。
- *
- * 以前要停一条后台任务，得先点开它（整段记录重放一遍）、再点输入框那颗停止键——
- * 几条并跑时想停掉跑偏的那一条，点开它那一下就把正在看的那条换走了，停完还得再点回来。
- * 这颗键直接对着 /api/chat/stop 发这一条的 sessionId：不打开、不换走眼前这条，别的任务一概不碰。
- * 服务端收下以后，这一行先挂「正在停」，等流里真收尾（endRun → renderHistory）再撤。
- * 用 aria-disabled 而不是 disabled：键盘用户按完 Enter 焦点还留在这颗键上，不被甩回页首。
- */
-function histStopHtml(s) {
-  if (!runningSessions.has(s.id)) return "";
-  const t = stripSceneTag(s.title) || "任务";
-  return histStopping.has(s.id)
-    ? `<button type="button" class="hstop is-stopping" aria-disabled="true" title="正在停…" aria-label="${esc(`正在停「${t}」`)}">${ic("square")}</button>`
-    : `<button type="button" class="hstop" title="停下这个任务" aria-label="${esc(`停下「${t}」`)}">${ic("square")}</button>`;
-}
-/**
  * 侧栏的组按「最后动过的那天」分：今天、昨天、前几天各一组写日期（10月13日），满一周的都算「更早」。
  * 按日历天数算，不按 24 小时一格：夏令时那天差一小时，也还是「昨天」。没记过时间的老会话归「更早」。
  * 返回 [组的 key, 组标题]，key 稳定，按行对着改时组标题那一行不用重建。
@@ -1357,12 +1341,6 @@ function histDayOf(at, now) {
   if (n < 7) return ["d" + (d.getMonth() + 1) + "-" + d.getDate(), `${d.getMonth() + 1}月${d.getDate()}日`];
   return ["old", "更早"];
 }
-/** 产出过文件的任务，标题后面带一个文件图标：「这趟有东西拿」和「只是聊了几句」一眼分得开 */
-function histFilesHtml(s) {
-  if (!(s.files > 0)) return "";
-  const t = `产出过 ${s.files} 个文件`;
-  return `<span class="hfile" role="img" title="${esc(t)}" aria-label="${esc(t)}">${ic("file")}</span>`;
-}
 /** 这条对话又产出了文件：记下名字，数比侧栏记的多才改。服务端那份数的是整条对话，只会更全，这里不往小了改 */
 function noteMadeFiles(sid, names) {
   if (!sid || !names || !names.length) return;
@@ -1374,13 +1352,6 @@ function noteMadeFiles(sid, names) {
   s.files = set.size;
   saveSessions();
   renderHistory();
-}
-/** 行上那颗图钉：没顶的扫过才显形，顶了的常亮——一眼看得出这条是自己顶上来的，点它就放回去 */
-function histPinHtml(s) {
-  const t = stripSceneTag(s.title) || "任务";
-  return s.pinned_at
-    ? `<button type="button" class="hpin on" aria-pressed="true" title="取消置顶" aria-label="${esc(`取消置顶「${t}」`)}">${ic("pin")}</button>`
-    : `<button type="button" class="hpin" aria-pressed="false" title="置顶" aria-label="${esc(`置顶「${t}」`)}">${ic("pin")}</button>`;
 }
 /** 一次性的小提示看过没有，mark 为真就顺手记成看过。存不了（隐私模式、存满了）当看过：宁可不提，也别回回都提 */
 function tipSeen(k, mark = true) {
@@ -1429,6 +1400,10 @@ async function togglePin(sid, focusSel = ".hpin") {
    行上常驻的只留图钉和这一颗；右键这一行弹的也是这一份。
    开着的时候按字母直接做：P 置顶、U 未读、R 改名、M 移项目、D 删除（删除照旧再问一次）。 */
 const HIST_TITLE_MAX = 50; // 跟服务端 SESS_TITLE_MAX 一个数
+function histPinHtml(s) {
+  const label = s.pinned_at ? "取消置顶" : "置顶";
+  return `<button type="button" class="hpin${s.pinned_at ? " on" : ""}" title="${label}" aria-label="${label}" aria-pressed="${!!s.pinned_at}">${ic("pin")}</button>`;
+}
 function histMoreHtml(s) {
   const t = stripSceneTag(s.title) || "任务";
   // aria-expanded 开合时直接改在键上，不写进这段 HTML：写进去的话一开一合整行都得重建，焦点跟着丢
@@ -1438,66 +1413,14 @@ function histRowEl(sid) {
   const host = document.getElementById("history");
   return (host && host.querySelector(`.hist-item[data-id="${CSS.escape(sid)}"]`)) || null;
 }
-/** 顶栏和侧栏用同一套任务操作菜单，避免改名/置顶/移项目出现两份行为。 */
+/** 顶栏只显示任务名称和文件入口；重命名等操作统一放在侧栏任务菜单。 */
 function syncSessionHeader() {
-  if (typeof syncTaskBillingControls === "function") syncTaskBillingControls();
-  const sharePanel = document.getElementById("session-share-panel");
-  if (sharePanel && sharePanel.dataset.sid !== sessionId) sharePanel.remove();
   const title = document.getElementById("session-title");
-  const rename = document.getElementById("session-rename");
-  const date = document.getElementById("session-date");
-  const context = document.getElementById("session-context");
-  const contextText = document.getElementById("session-context-text");
-  const dot = document.getElementById("session-context-dot");
   const fileCount = document.getElementById("session-file-count");
   const fileBtn = document.getElementById("toggle-files");
   if (!title) return;
   const s = sessionId && sessions.find((x) => x.id === sessionId);
-  if (rename) {
-    rename.hidden = !s;
-    rename.disabled = !s;
-    if (s) rename.setAttribute("aria-label", `${I18N.t("重命名当前任务")}「${stripSceneTag(s.title) || "任务"}」`);
-  }
-  if (date) {
-    const ms = s && Date.parse(s.created_at || "");
-    date.hidden = !Number.isFinite(ms) || !ms;
-    if (!date.hidden) {
-      const d = new Date(ms);
-      date.textContent = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      date.title = I18N.t("任务创建日期");
-    } else date.textContent = "";
-  }
-  title.disabled = !s;
-  title.setAttribute("aria-expanded", histMenu && histMenu.at && histMenu.at.keepAnchor ? "true" : "false");
-  if (s) {
-    title.title = `任务操作：${stripSceneTag(s.title) || "任务"}`;
-    title.setAttribute("aria-label", `任务操作：${stripSceneTag(s.title) || "任务"}`);
-  } else {
-    title.title = "新任务";
-    title.setAttribute("aria-label", "新任务");
-  }
-  if (context) context.hidden = !s;
-  if (s) {
-    const picked = s.engine || (settingsCache && settingsCache.agent && settingsCache.agent.engine);
-    const modelName = sessionModels.get(s.id) || (settingsCache && settingsCache.active_model) || "";
-    const model = settingsCache && (settingsCache.models || []).find((m) => m.name === modelName);
-    let localModel = false;
-    if (model && model.base_url) {
-      try {
-        const host = new URL(model.base_url).hostname.toLowerCase();
-        localModel = host === "localhost" || host === "0.0.0.0" || host === "[::1]" || host.endsWith(".local")
-          || /^127\.|^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(host);
-      } catch {}
-    }
-    const local = (picked && picked !== "builtin") || localModel;
-    if (contextText) contextText.textContent = I18N.t(local ? "本机" : "云端");
-    const connected = !!settingsCache && (typeof navigator === "undefined" || navigator.onLine !== false);
-    if (dot) {
-      dot.classList.toggle("on", connected);
-      dot.classList.toggle("off", !connected);
-      dot.title = I18N.t(connected ? "工作台服务已连接" : "工作台服务暂时不可达");
-    }
-  }
+  title.title = stripSceneTag((s && s.title) || title.textContent || "新任务");
   if (fileCount) fileCount.textContent = s && s.files > 0 ? String(s.files) : I18N.t("文件");
   if (fileBtn) {
     const count = s && Number(s.files) > 0 ? Number(s.files) : 0;
@@ -1519,15 +1442,15 @@ function histMenuHtml(s, view) {
   }
   const st = sessionAttn.get(s.id);
   return [
+    runningSessions.has(s.id) ? ["stop", "square", histStopping.has(s.id) ? "正在停…" : "停下这个任务", ""] : null,
     ["win", "app-window", "在新窗口打开", ""],
     ["pin", "pin", s.pinned_at ? "取消置顶" : "置顶", "P"],
     ["unread", "circle-dot", st && st.unseen ? "标为已读" : "标为未读", "U"],
-    ["rename", "pencil", "改名…", "R"],
+    ["rename", "pencil", "重命名", "R"],
     histCanMove(s) ? ["move", "folder", "移到项目…", "M"] : null,
-    typeof settingsCache !== "undefined" && settingsCache && settingsCache.solo === false ? ["share", "link", "组织内只读分享", ""] : null,
     ["del", "trash-2", "删除", "D"],
   ].filter(Boolean).map(([act, icon, label, key]) =>
-    `<button type="button" role="menuitem" class="hm-i${act === "del" ? " danger" : ""}" data-act="${act}"${key ? ` aria-keyshortcuts="${key}"` : ""}>${ic(icon)}<span>${esc(label)}</span>${key ? `<kbd>${key}</kbd>` : ""}</button>`).join("");
+    `<button type="button" role="menuitem" class="hm-i${act === "del" || act === "stop" ? " danger" : ""}${act === "stop" && histStopping.has(s.id) ? " is-stopping" : ""}" data-act="${act}"${act === "stop" && histStopping.has(s.id) ? ' aria-disabled="true"' : ""}${key ? ` aria-keyshortcuts="${key}"` : ""}>${ic(icon)}<span>${esc(label)}</span>${key ? `<kbd>${key}</kbd>` : ""}</button>`).join("");
 }
 /** 从「⋯」开的贴着它往下开，右键开的贴着鼠标；靠边了往里收，底下放不下就翻到上面 */
 function placeHistMenu(m) {
@@ -1556,8 +1479,8 @@ function openHistMenu(sid, at) {
   el.innerHTML = histMenuHtml(s, "main");
   document.body.appendChild(el);
   const m = histMenu = { sid, el, at, view: "main", prev: "prev" in at ? at.prev : (at.keepAnchor ? at.btn : (at.btn ? null : document.activeElement)) };
-  placeHistMenu(m);
   if (at.btn) { at.btn.setAttribute("aria-expanded", "true"); at.btn.classList.add("on"); }
+  placeHistMenu(m);
   m.onDown = (e) => {
     if (el.contains(e.target)) return;
     if (m.at.keepAnchor && m.at.btn && (e.target === m.at.btn || m.at.btn.contains(e.target))) return;
@@ -1663,28 +1586,13 @@ function onHistMenuClick(e) {
   if (act === "back") { histMenuView("main"); return; }
   // 先收菜单、焦点回到「⋯」，再弹改名框 / 确认框：框收起来时还焦点，还的是弹出那一刻的焦点
   closeHistMenu(true);
-  if (act === "win") openSessionWindow(sid);
-  else if (act === "pin") togglePin(sid, m.at.keepAnchor ? "#session-title" : ".hmore");
+  if (act === "stop") stopRowRun(sid);
+  else if (act === "win") openSessionWindow(sid);
+  else if (act === "pin") togglePin(sid, ".hmore");
   else if (act === "unread") toggleUnread(sid);
   else if (act === "rename") renameSessionRow(sid);
-  else if (act === "share") openSessionShare(sid);
   else if (act === "to") { if (b.getAttribute("aria-checked") !== "true") moveSessionRow(sid, b.dataset.name); }
   else if (act === "del") deleteSessionRow(sid);
-}
-const sessionTitleButton = document.getElementById("session-title");
-const sessionRenameButton = document.getElementById("session-rename");
-if (sessionRenameButton) sessionRenameButton.addEventListener("click", () => {
-  if (sessionId) renameSessionRow(sessionId);
-});
-if (sessionTitleButton) {
-  sessionTitleButton.addEventListener("click", () => {
-    const s = sessionId && sessions.find((x) => x.id === sessionId);
-    if (!s) return;
-    if (histMenu && histMenu.sid === s.id && histMenu.at.keepAnchor) { closeHistMenu(true); return; }
-    openHistMenu(s.id, { btn: sessionTitleButton, keepAnchor: true });
-  });
-  window.addEventListener("online", syncSessionHeader);
-  window.addEventListener("offline", syncSessionHeader);
 }
 /** 新窗口里开这一条：桌面版开一个应用里的窗口（同一份登录），网页版开一个新标签页。地址上只带会话号 */
 function openSessionWindow(sid) {
@@ -1712,7 +1620,7 @@ async function renameSessionRow(sid) {
   if (!s) return;
   const old = stripSceneTag(s.title);
   const typed = await askText({
-    title: "改个名字", value: old, ok: "改好",
+    title: "重命名任务", value: old, ok: "保存",
     validate: (v) => (v.replace(/\s+/g, " ").length > HIST_TITLE_MAX ? `最多 ${HIST_TITLE_MAX} 个字` : ""),
   });
   const title = typed == null ? "" : typed.replace(/\s+/g, " ").trim();
@@ -1736,7 +1644,7 @@ async function renameSessionRow(sid) {
   } catch { err = "没连上服务端"; }
   if (histEditBusy.get(key) !== seq) return; // 后面又改了一次，结果归那一次管
   histEditBusy.delete(key);
-  if (err) { show(was); toast(`名字没改成：${err}`, "circle-x"); return; }
+  if (err) { show(was); toast(`重命名失败：${err}`, "circle-x"); return; }
   if (got && got !== s.title) show(got); // 存的以服务端那份为准（它会把连着的空白收成一个）
 }
 async function moveSessionRow(sid, project) {
@@ -1785,10 +1693,10 @@ async function stopRowRun(sid) {
   const t = stripSceneTag(s && s.title) || "任务";
   const name = t.length > 16 ? t.slice(0, 16) + "…" : t;
   const host = document.getElementById("history");
-  const hadFocus = !!(document.activeElement && document.activeElement.closest && document.activeElement.closest(".hstop"));
+  const hadFocus = !!(document.activeElement && document.activeElement.closest && document.activeElement.closest(".hmore"));
   const refocus = () => {
     if (!hadFocus || !host) return;
-    const b = host.querySelector(`.hist-item[data-id="${CSS.escape(sid)}"] .hstop`);
+    const b = host.querySelector(`.hist-item[data-id="${CSS.escape(sid)}"] .hmore`);
     if (b) b.focus();
   };
   histStopping.add(sid);
@@ -1841,7 +1749,6 @@ document.getElementById("history").addEventListener("click", async (e) => {
     if (row) await openCliLive(row);
     return;
   }
-  if (e.target.closest(".hstop")) { await stopRowRun(item.dataset.id); return; } // 只停这一条，不打开它
   if (e.target.closest(".hpin")) { await togglePin(item.dataset.id); return; }
   const more = e.target.closest(".hmore");
   if (more) {
@@ -2329,7 +2236,7 @@ function syncPlaceholder() {
   // 跟着终端里那趟活儿时只能插话，停不了——停它得回终端按 Ctrl+C。这里就照实说
   inputEl.placeholder = cliBusy() ? CLI_PLACEHOLDER
     : curBusy() ? (busySendMode === "queue" ? QUEUE_PLACEHOLDER : BUSY_PLACEHOLDER)
-    : (planPlaceholder && currentMode === "plan" ? planPlaceholder : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft));
+    : (planPlaceholder && currentMode === "plan" ? planPlaceholder : (sceneTag && SCENE_HINTS[sceneTag]) || MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft);
 }
 /** 框里有没有还没发出去的东西（文字或待发附件） */
 // 只挂了一张图、或者只引了一段还没打字，也算「有话要说」：按钮得是「发出」，Enter 也得送得出去
@@ -2768,15 +2675,16 @@ function notifyRunDone(sid, ui, opts) {
   const name = stripSceneTag(s && s.title) || "任务";
   // 长跑完成通知带上战报：用时/步数/产出件数，长任务离开视线也知道干了多少活
   const st = ui && ui.stats ? ui.stats() : null;
+  const resultLabel = st && st.label ? st.label : "已完成";
   const detail = st ? `用时 ${st.dur}${st.steps ? ` · ${st.steps} 步` : ""}${st.rounds ? ` · 续跑 ${st.rounds} 轮` : ""}${st.outs ? ` · 产出 ${st.outs} 件` : ""}` : "";
-  if (sid !== sessionId && !(opts && opts.quiet)) toast(`「${name}」已完成${detail ? `（${detail}）` : ""}，点侧栏查看`, "circle-check");
+  if (sid !== sessionId && !(opts && opts.quiet)) toast(`「${name}」${resultLabel}${detail ? `（${detail}）` : ""}，点侧栏查看`, "circle-check");
   // isAway 而不是 document.hidden：桌面版窗口收起来以后 hidden 一直是 false（见 app-01-attention.js）
   const away = isAway();
   if (away) bumpDoneWhileAway(name);
   if (away && "Notification" in window) {
     try {
       if (Notification.permission === "granted") {
-        const n = new Notification(name, { body: detail || "任务已完成" });
+        const n = new Notification(name, { body: `${resultLabel}${detail ? " · " + detail : ""}` });
         n.onclick = () => { try { window.focus(); } catch {} document.querySelector(`.hist-item[data-id="${sid}"]`)?.click(); };
       } else if (Notification.permission === "default") Notification.requestPermission();
     } catch {}
@@ -2955,10 +2863,8 @@ async function runTurn(sid, text, mode, regen, shown, retried, adopt) {
       if (resp.status === 401) showAuth(!!d.setup);
       sawDone = true; // 请求根本没被受理，没有可续的流
     } else if (/event-stream/.test(resp.headers.get("content-type") || "")) {
-      if (typeof lockTaskBillingScope === "function") lockTaskBillingScope(sid);
       sawDone = await pumpStream(resp, ui, rc); // 老服务端不认 detach，照旧整条流读到底
     } else {
-      if (typeof lockTaskBillingScope === "function") lockTaskBillingScope(sid);
       rid = ((await resp.json().catch(() => null)) || {}).rid || "";
     }
   } catch (e) {
@@ -3643,10 +3549,11 @@ function renderUserChip() {
   if (!currentUser) { row.style.display = "none"; return; }
   row.style.display = "flex";
   const av = avatarBits(currentUser.avatar, currentUser.username);
+  const name = displayName(currentUser);
   chip.innerHTML = `<span class="ava${av.cls ? " " + av.cls : ""}">${av.html}</span>`
-    + `<span class="un">${esc(displayName(currentUser))}${currentUser.role === "member" ? "" : " · " + esc(currentUser.role_label || "")}</span>`
-    // 不限额时不显示余额：一个永远不会动、也拦不住任何事的数字挂在那里只会让人担心
-    + (creditsOn ? `<span class="uc">${ic("sparkles")}${(+currentUser.credits).toLocaleString()}</span>` : "");
+    + `<span class="user-meta"><span class="un">${esc(name)}</span>${name !== currentUser.username ? `<span class="user-id">${esc(currentUser.username)}</span>` : ""}</span>`;
+  chip.title = displayName(currentUser);
+  chip.setAttribute("aria-label", `${I18N.t("账号菜单")} · ${displayName(currentUser)}`);
   onActivate(chip, (e) => { e.stopPropagation(); toggleUserMenu(); });
 }
 document.getElementById("gear-btn").onclick = () => { closeUserMenu(); openModal("settings"); };
@@ -3771,6 +3678,11 @@ function openUserMenu() {
     else if (act === "logout") { await fetch("/api/auth/logout", { method: "POST" }); location.reload(); }
   });
   userMenu.classList.add("show");
+  const anchor = userMenu.parentElement.getBoundingClientRect();
+  const width = userMenu.getBoundingClientRect().width;
+  userMenu.style.left = Math.max(12, Math.min(anchor.left, innerWidth - width - 12)) + "px";
+  userMenu.style.bottom = Math.max(12, innerHeight - anchor.top + 8) + "px";
+  userMenu.style.maxHeight = Math.max(120, anchor.top - 20) + "px";
 }
 document.addEventListener("click", (e) => { if (!e.target.closest("#user-row")) closeUserMenu(); });
 

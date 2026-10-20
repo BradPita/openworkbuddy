@@ -9,6 +9,14 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 20** Installed apps register a bundled-runtime CLI without changing the launch directory; source links can be repaired with `npm link`. Account menu labels stay horizontal and scroll within the window; the canvas entry moves below automation
+
+- **Oct 20** Reduced the home screen to two groups of five common tasks with input guidance; pin directly on task rows, rename and stop from the menu
+- **Oct 20** Disabled local CLI session imports and organization read-only sharing, including discovery, import endpoints and existing share links
+- **Oct 20** Streamlined account and chat controls; persistent read notifications, one-pass bulk updates and summary-only inbox payloads; distinct ended, stopped and incomplete states
+- **Oct 20** Extracted inline script validation and protected video publication against overwriting existing files
+- **Oct 20** Added explicit Windows installer updates and document thumbnails; source, portable and macOS builds keep their own update paths
+
 - **Oct 20** Clarify that source update checks only read GitHub Releases; require a clean, fast-forwardable checkout before pulling, and keep modified or divergent source trees intact while preparing an isolated copy that reuses the existing data root
 - **Oct 19** Fix the release CI list so it runs the Goal step-resume suite; add the missing test copyright line; redraw the architecture diagram around actual hosts, runtime, security gates and delivery paths
 - **Oct 19** Replace Mermaid with bilingual SVG diagrams to prevent rendering failures and clipped labels; shorten the README updates

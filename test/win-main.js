@@ -288,6 +288,50 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
     ok(/appendSwitch\("disk-cache-dir", path\.join\(process\.env\.LOCALAPPDATA/.test(EM), "Windows 网页缓存挪到 LOCALAPPDATA 的那行还在");
   });
 
+  await section("Windows 安装版更新：支持范围、显式下载、并发与失败状态", async () => {
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "owb-update-test-"));
+    const { createAutoUpdate } = require("../src/desktop/auto-update");
+    try {
+      fs.writeFileSync(path.join(dir, "app-update.yml"), "provider: github\n");
+      let checks = 0, downloads = 0, installed = 0, loaded = 0, release;
+      const u = new EventEmitter();
+      u.checkForUpdates = async () => { checks++; u.emit("checking-for-update"); await new Promise(r => { release = r; }); u.emit("update-available", { version: "0.16.4" }); };
+      u.downloadUpdate = async () => { downloads++; };
+      u.quitAndInstall = () => { installed++; };
+      const base = { app: { isPackaged: true }, platform: "win32", env: {}, resourcesPath: dir, loadUpdater: () => { loaded++; return u; } };
+      for (const [change, why] of [[{ platform: "darwin" }, "not-win"], [{ platform: "linux" }, "not-win"], [{ app: { isPackaged: false } }, "source"], [{ env: { PORTABLE_EXECUTABLE_FILE: "fixture.exe" } }, "portable"], [{ resourcesPath: "" }, "no-feed"]]) {
+        const a = createAutoUpdate({ ...base, ...change });
+        eq((await a.download()).why, why, `${why} 不下载更新`);
+        eq(a.install().ok, false, `${why} 不能安装`);
+      }
+      eq(loaded, 0, "不支持的平台不会加载更新器");
+      const a = createAutoUpdate(base);
+      eq(a.install().ok, false, "未下载不能安装");
+      const checking = a.check(), again = a.check();
+      eq(checks, 1, "同时检查只发起一次请求");
+      eq(downloads, 0, "检查更新不会偷偷下载");
+      release(); await Promise.all([checking, again]);
+      eq(a.state().phase, "available", "查到更新再提供下载");
+      eq(u.autoDownload, false, "自动下载明确关闭");
+      eq(u.allowDowngrade, false, "不自动降级");
+      await Promise.all([a.download(), a.download()]);
+      eq(downloads, 1, "连点下载只启动一份");
+      u.emit("download-progress", { percent: 52.4, transferred: 52, total: 100 });
+      eq(a.state().percent, 52, "下载进度来自更新器");
+      u.emit("error", new Error("network unavailable\nprivate detail"));
+      eq(a.state().error, "network unavailable", "失败如实显示首行错误");
+      eq(a.install().ok, false, "失败不进入安装");
+      u.emit("update-downloaded", { version: "0.16.4" });
+      eq(a.state().percent, 100, "下载完成显示百分之百");
+      eq(a.install().ok, true, "下载完成后可显式重启安装");
+      await new Promise(r => setTimeout(r, 350));
+      eq(installed, 1, "只调用一次安装器");
+      const cfg = require("../electron-builder.config");
+      eq(cfg.win.publish[0].provider, "github", "Windows 安装包包含更新源");
+      const workflow = read(".github", "workflows", "release.yml");
+      ok(workflow.includes("dist/*.yml") && workflow.includes("dist/*.blockmap"), "发布同时带上更新元数据和增量索引");
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
   finished = true;
   console.log(`\n${fail ? "✗" : "✓"} Windows 主进程：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);

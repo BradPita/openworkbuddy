@@ -203,6 +203,7 @@ module.exports = {
   },
 
   win: {
+    publish: [{ provider: "github", owner: "CatCatUncle", repo: "openworkbuddy" }],
     icon: "build/icon.ico",
     // 系统沙箱小助手只有 Windows 用（跟上面那份 files 合在一起算）
     files: ["native/bin/*.exe"],

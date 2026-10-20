@@ -248,6 +248,32 @@ const reset = () => { calls.sync = 0; calls.exec.length = 0; };
     ok(r.bad && calls.exec.length === 0, "★反向对照★ 普通写错（多了个逗号）报错里没有那几个词：照样零进程当场报", { note: r.note, exec: calls.exec.length });
   }
 
+  console.log("\n⑨ HTML：内联脚本写错立即提示，检查不执行网页代码");
+  {
+    reset();
+    const html = (script) => "<!doctype html><html><head><title>Test</title></head><body><p>A small working web page for syntax checks.</p>\n" + script + "\n</body></html>";
+    const check = async (script, partial = false) => selfCheck(W("inline.html", html(script)), "inline.html", partial);
+    let r = await check("<script>const items = { a: 1 b: 2 };</script>");
+    ok(r.bad && /脚本语法没过/.test(r.note) && /脚本第 2 行/.test(r.note), "漏逗号的游戏脚本不能作为正常成品交付，提示 HTML 行号", r.note);
+    r = await check("<script>const state = {};</script>\n<script>const state = {};</script>");
+    ok(r.bad && /又声明了一次 state/.test(r.note), "分段续写重复声明同一全局变量也会被发现", r.note);
+    r = await check("<script>const document = {};</script>");
+    ok(r.bad && /浏览器自带的全局变量/.test(r.note), "不能用顶层 const 覆盖浏览器的 document", r.note);
+    r = await check("<script>throw new Error('must not execute'); while (true) {}</script>");
+    ok(!r.bad, "只编译，不执行用户的 throw 或死循环", r.note);
+    r = await check('<script type="application/ld+json">{"a": 1}</script><textarea><script>const x = ;</script></textarea><!-- <script>const y = ;</script> -->');
+    ok(!r.bad, "JSON、注释和文本输入区里的内容不当成脚本", r.note);
+    r = await check('<script type="module">const state = {}; await Promise.resolve();</script><script type="module">const state = {};</script>');
+    ok(!r.bad, "独立模块可以同名，顶层 await 不误报", r.note);
+    r = await check('<script>const state = {', true);
+    ok(!r.bad, "尚未闭合的续写脚本不提前报错", r.note);
+    r = await tools.executeTool("write_file", { path: "game.html", content: html("<script>const data = { a: 1 b: 2 };</script>") }, S1);
+    ok(r.isError === true && /脚本语法没过/.test(r.content), "真实 write_file 会把坏脚本反馈给模型", r.content);
+    r = await tools.executeTool("edit_file", { path: "game.html", old_text: "a: 1 b: 2", new_text: "a: 1, b: 2" }, S1);
+    ok(!r.isError, "原地修复逗号后可通过检查", r.content);
+    ok(calls.sync === 0 && calls.exec.length === 0, "网页语法检查不启动外部进程", calls);
+  }
+
   cp.execFile = realExecFile;
   cp.spawnSync = realSpawnSync;
   try { fs.rmSync(WS, { recursive: true, force: true }); fs.rmSync(TMP, { recursive: true, force: true }); } catch {}

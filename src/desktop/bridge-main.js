@@ -120,6 +120,12 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
       if (off) return off.value;
       return require("../platform/render/thumb").makeThumb(String(a && a.abs), Number(a && a.w)) || null;
     },
+    // Windows 安装版的应用内更新（auto-update.js）：更新器只能在主进程里跑，服务进程过来要状态、叫它查 / 下 / 装
+    "update.state": async () => require("./auto-update").shared(electron).state(),
+    "update.download": async () => require("./auto-update").shared(electron).download(),
+    "update.install": async () => require("./auto-update").shared(electron).install(),
+    // Windows 资料库的文档封面：资源管理器那张缩略图（win-thumb.js 第 1 步），没有就回 null
+    "image.fileThumb": async (a) => require("../platform/render/win-thumb").fileThumbNative(electron, String(a && a.abs), Number(a && a.size)),
     "image.shrinkForVision": async (a) => {
       const maxEdge = Number(a && a.maxEdge) || 1568;
       const off = pixels && await pixels.shrinkForVision(String(a && a.abs), maxEdge, Number(a && a.quality) || 82);

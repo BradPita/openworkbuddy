@@ -598,6 +598,11 @@ async function waitForServer(url, tries = 200) {
 
 app.whenReady().then(async () => {
   bootLog("Electron 运行时就绪");
+  if (app.isPackaged && !HIDDEN && path.resolve(app.getAppPath()) === path.resolve(__dirname) && process.env.OPENWORKBUDDY_INSTALL_CLI !== "0") {
+    require("./src/desktop/cli-install").installCli({ appDir: __dirname })
+      .then(r => { if (!r.ok) bootLog("CLI 注册未完成：" + r.reason); })
+      .catch(e => bootLog("CLI 注册失败：" + e.message));
+  }
   // 开发态（npm run app）跑的是 node_modules 里的 Electron.app，Dock 默认挂它的图标；换成我们自己的。
   // 菜单栏左上角的名字改不了——macOS 只认正在跑的那个 .app 的 Info.plist，
   // 要连名字一起对，用 scripts/make-mac-app.sh 生成的 ~/Applications/OpenWorkBuddy.app 启动。

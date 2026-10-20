@@ -220,9 +220,23 @@ const DEDUP_LINE = "return !!(e && e.sid && sessionExists(e.sid));";
 
 (async () => {
   const importer = si.createSessionImporter({ sessionFile: sessFile(SESS) });
-  const server = await serve(createSessionImportRouter({ isOwner, importer }));
+  const server = await serve(createSessionImportRouter({ enabled: true, isOwner, importer }));
   const servers = [server];
   try {
+    await section("默认关闭：所有导入接口均不可用，不触碰扫描器", async () => {
+      let calls = 0;
+      const disabled = await serve(createSessionImportRouter({ isOwner, importer: new Proxy({}, { get() { calls++; throw new Error("不应扫描"); } }) }));
+      servers.push(disabled);
+      for (const user of ["boss", "alice", ""]) {
+        for (const [method, url] of [["GET", "/api/import/local"], ["GET", "/api/import/local/list?source=codex"], ["POST", "/api/import/local"], ["GET", "/api/import/local/job"]]) {
+          const r = await call(disabled, method, url, user, method === "POST" ? { source: "codex", all: true } : null);
+          ok(r.status === 404 && r.body.disabled === true, `${user || "匿名"} ${method} ${url}：关闭`);
+          ok(!("sources" in r.body) && !("items" in r.body) && !("job" in r.body), "不返回会话数据");
+        }
+      }
+      eq(calls, 0, "关闭时连扫描器属性都不读取");
+    });
+
     await section("① 只读假目录", async () => {
       ok(si.claudeRoot() === CLAUDE && si.codexRoot() === CODEX, "两个来源都指在临时目录里", { claude: si.claudeRoot(), codex: si.codexRoot() });
       const keep = process.env.OPENWORKBUDDY_IMPORT_CODEX_DIR;
@@ -528,20 +542,21 @@ const DEDUP_LINE = "return !!(e && e.sid && sessionExists(e.sid));";
 
     await section("⑨ 接线", async () => {
       const S = src("server");
-      ok(/createSessionImportRouter\(\{\s*isOwner:\s*isPlatformOwner,/.test(S), "server.js 挂路由用的是 isPlatformOwner");
+      ok(/createSessionImportRouter\(\{\s*isOwner:\s*isPlatformOwner\s*}/.test(S), "server.js 挂路由用的是 isPlatformOwner");
       ok(/sessionImport\.continuePlan\(sess,\s*\{\s*engine:\s*laneEngine,\s*owner:\s*isPlatformOwner\(req\)/.test(S), "/api/chat 每一轮先问 continuePlan，主人按 isPlatformOwner 判");
       ok(/engineSession:\s*imPlan\.engineSession,/.test(S) && /engineImport:\s*imPlan\.engineImport,/.test(S), "runTask 拿的是 continuePlan 给的线和文件夹");
       const admin = require(mod("admin"));
       ok(admin.PLATFORM_WRITE.includes("/api/import/") && admin.PLATFORM_READ.includes("/api/import/"), "/api/import/ 进了平台读写两张表（两道闸都得过）");
       const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
-      ok(/\/api\/import\/local/.test(fe) && /function buildEmpty\(\)[\s\S]{0,4000}offerLocalImport\(/.test(fe), "新建任务的空白页上挂着导入入口");
+      ok(!/offerLocalImport|openLocalImport|empty-import|\/api\/import\/local/.test(fe), "空白页不扫描本机会话，也没有导入入口");
+      ok(!/sessionImport\.createSessionImporter\(/.test(S), "服务启动不创建本机会话扫描器");
     });
 
     await section("★反向对照★", async () => {
       const routeFile = require.resolve(mod("routes/session-import"));
       const openRouter = mutant(routeFile, GATE_LINE, "");
       const mutOut = sub("mut-route");
-      const open = await serve(openRouter.createSessionImportRouter({ isOwner, importer: si.createSessionImporter({ sessionFile: sessFile(mutOut), sessionDirs: [mutOut], ledgerFile: path.join(mutOut, "ledger.json") }) }));
+      const open = await serve(openRouter.createSessionImportRouter({ enabled: true, isOwner, importer: si.createSessionImporter({ sessionFile: sessFile(mutOut), sessionDirs: [mutOut], ledgerFile: path.join(mutOut, "ledger.json") }) }));
       servers.push(open);
       const leak = await call(open, "GET", "/api/import/local", "alice");
       ok(leak.status === 200 && Array.isArray(leak.body.sources), "★反向对照★ 去掉主人检查：成员也能看到条数（测试必须红）", leak.status);

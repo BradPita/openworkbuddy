@@ -54,7 +54,7 @@ function request(port, method, route, token) {
   const routerStore = shares.createShareStore(path.join(HOME, "router-shares.json")); let multi = true, status = "active", ownerOrg = "org-a";
   const app = require("express")();
   app.use((req, _res, next) => { req.user = { username: req.headers["x-fixture-user"] || "owner", org: req.headers["x-fixture-org"] || "org-a" }; next(); });
-  app.use(createSessionSharesRouter({ store: routerStore, multiUser: () => multi, sessionOf: (sid) => sid === "s_fixture" ? session : null, ownerOf: (s) => s.user, orgOf: (u) => u.org, memberOf: (org) => ownerOrg === org ? { status } : null, sanitize: (s) => s }));
+  app.use(createSessionSharesRouter({ enabled: true, store: routerStore, multiUser: () => multi, sessionOf: (sid) => sid === "s_fixture" ? session : null, ownerOf: (s) => s.user, orgOf: (u) => u.org, memberOf: (org) => ownerOrg === org ? { status } : null, sanitize: (s) => s }));
   const server = await new Promise((resolve) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
   try {
     const row = routerStore.create("s_fixture", "owner", "org-a"), port = server.address().port;
@@ -83,23 +83,21 @@ function request(port, method, route, token) {
     const timeout = setTimeout(() => { clearInterval(poll); reject(new Error("isolated server did not start")); }, 60000);
     const poll = setInterval(() => { const m = /已启动: http:\/\/localhost:(\d+)/.exec(output); if (m) { clearTimeout(timeout); clearInterval(poll); resolve(Number(m[1])); } else if (child.exitCode !== null) { clearTimeout(timeout); clearInterval(poll); reject(new Error("isolated server exited")); } }, 100);
   });
-  let link;
-  await check("真实服务器：成员不能创建，匿名不能读取；主人可以生成链接", async () => {
-    assert.equal((await request(port, "POST", "/api/session/s_fixture/share", memberToken)).code, 403);
-    const result = await request(port, "POST", "/api/session/s_fixture/share", ownerToken); assert.equal(result.code, 200); assert.equal(result.data.active, true); link = result.data.url.split("#")[1];
-    assert.equal((await request(port, "GET", "/api/session-shares/" + link)).code, 401);
-  });
-  await check("真实服务器：分享去掉配置凭据与工具参数，完整正文保留；下载仅限交付文件", async () => {
-    const result = await request(port, "GET", "/api/session-shares/" + link, memberToken); assert.equal(result.code, 200); assert.ok(!result.text.includes(secret)); assert.ok(!result.text.includes(HOME)); assert.ok(result.text.includes("END-OF-RESULT")); assert.equal(result.headers["cache-control"], "no-store");
-    const file = await request(port, "GET", "/api/session-shares/" + link + "/file?path=report.md", memberToken); assert.equal(file.code, 200); assert.equal(file.text, "# Fixture report"); assert.match(file.headers["content-disposition"], /^attachment/);
-    for (const p of ["not-delivered.txt", "link.txt", "../outside.txt"]) assert.equal((await request(port, "GET", "/api/session-shares/" + link + "/file?path=" + encodeURIComponent(p), memberToken)).code, 404);
+  await check("真实服务器：分享默认关闭，主人和成员均不能创建、读取或下载", async () => {
+    const row = shares.createShareStore(path.join(HOME, "data", "session-shares.json")).create("s_fixture", "owner", "default");
+    for (const token of [ownerToken, memberToken]) {
+      for (const [method, url] of [["GET", "/api/session/s_fixture/share"], ["POST", "/api/session/s_fixture/share"], ["DELETE", "/api/session/s_fixture/share"], ["GET", "/api/session-shares/" + row.token], ["GET", "/api/session-shares/" + row.token + "/file?path=report.md"]]) {
+        const result = await request(port, method, url, token);
+        assert.equal(result.code, 404); assert.equal(result.data.disabled, true);
+        assert.ok(!result.text.includes(secret) && !result.text.includes("END-OF-RESULT"));
+        assert.equal(result.headers["cache-control"], "no-store");
+      }
+    }
+    assert.equal((await request(port, "GET", "/api/session-shares/" + row.token)).code, 401);
     assert.equal((await request(port, "POST", "/api/session/s_fixture/title", memberToken)).code, 403);
-  });
-  await check("真实服务器：主人撤回立即生效，任务删掉后新链接也不能读取", async () => {
-    assert.equal((await request(port, "DELETE", "/api/session/s_fixture/share", ownerToken)).code, 200); assert.equal((await request(port, "GET", "/api/session-shares/" + link, memberToken)).code, 404);
-    const next = (await request(port, "POST", "/api/session/s_fixture/share", ownerToken)).data.url.split("#")[1]; assert.notEqual(link, next);
-    assert.equal((await request(port, "DELETE", "/api/session/s_fixture", ownerToken)).code, 200);
-    assert.equal((await request(port, "GET", "/api/session-shares/" + next, memberToken)).code, 404);
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    const ui = fs.readFileSync(path.join(__dirname, "../public/js/app-02.js"), "utf8");
+    assert.ok(!html.includes("app-10-share.js")); assert.ok(!ui.includes("组织内只读分享") && !ui.includes('act === "share"'));
   });
   child.kill("SIGINT"); await new Promise((r) => child.once("exit", r));
   console.log(`Session sharing: ${checks} checks passed`);

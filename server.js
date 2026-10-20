@@ -37,7 +37,8 @@ const dramaRoutes = require("./src/server/routes/drama"); // 短剧分镜表 + �
 const { createComposeRouter } = require("./src/server/routes/compose"); // 一键合成的两条接口
 const libraryRoutes = require("./src/server/routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./src/server/routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
-const { createSessionImportRouter } = require("./src/server/routes/session-import"); // 导入本机终端里的 Claude Code / Codex 会话
+const { createSessionImportRouter } = require("./src/server/routes/session-import"); // 会话导入入口默认关闭
+const { publicRun } = require("./src/core/automation/run-view");
 const sessionImport = require("./src/domains/import/session-import"); // 导进来的会话接着聊：在原来的文件夹里、接原来那根线
 const { createGeoRouter } = require("./src/server/routes/geo"); // 行程卡：查地点、两站间路线、底图瓦片和地点照片
 const { createChromeRouter } = require("./src/server/routes/chrome"); // 设置 → 浏览器：配对码、连没连上、扩展文件夹
@@ -1695,8 +1696,38 @@ app.get("/api/info", (_req, res) => {
 // 版本 / 更新检查。查的是 GitHub Releases，最快 6 小时一次（force=1 强查）。
 // 界面上「有没有新版」和「你这种装法怎么升」是一起给的——只报版本号等于没说。
 const updater = require("./src/server/updater");
+// Windows 安装版能在应用里直接下、直接装（auto-update.js，在主进程里）。别的装法 auto.supported=false，界面照旧只讲「怎么升」
+async function autoUpdate(op) {
+  const bridge = require("./src/platform/electron-bridge");
+  try {
+    if (bridge.isRemote()) {
+      if (op === "state") return await bridge.call("update.state", {}, { timeoutMs: 5000 });
+      if (op === "download") return await bridge.call("update.download", {}, { timeoutMs: 5000 });
+      if (op === "install") return await bridge.call("update.install", {}, { timeoutMs: 5000 });
+      throw new Error("不支持的更新操作");
+    }
+    if (bridge.mode() === "inproc") return await require("./src/desktop/auto-update").shared(require("electron"))[op]();
+  } catch (e) { return { supported: false, why: "error", phase: "error", error: String(e.message || e) }; }
+  return { supported: false, why: "no-shell" };
+}
 app.get("/api/update", async (req, res) => {
-  res.json(await updater.checkUpdate({ force: req.query.force === "1" }));
+  const [d, auto] = await Promise.all([updater.checkUpdate({ force: req.query.force === "1" }), autoUpdate("state")]);
+  res.json({ ...d, auto });
+});
+// 下载、安装只给管理员：个人桌面版那一个人就是管理员；多人的服务器上本来就没有这个能力（auto.supported=false）
+app.get("/api/update/auto", async (_req, res) => res.json(await autoUpdate("state")));
+const updateAllowed = (req, res) => {
+  if (req.user && account.isAdmin(req.user)) return true;
+  res.status(403).json({ error: "只有管理员能装更新" });
+  return false;
+};
+app.post("/api/update/download", async (req, res) => {
+  if (!updateAllowed(req, res)) return;
+  res.json(await autoUpdate("download"));
+});
+app.post("/api/update/install", async (req, res) => {
+  if (!updateAllowed(req, res)) return;
+  res.json(await autoUpdate("install"));
 });
 
 // 跟 files 事件同一份清单，走后台线程翻目录（见 agent.js scanOutputs）：输入框里敲 @ 就会拉它，
@@ -1756,7 +1787,8 @@ app.use(createPromptTplsRouter({
 }));
 app.use(createGeoRouter({ getConfig: () => config }));
 // 只有这台机器的主人能导（个人桌面版或平台管理员）：~/.claude、~/.codex 是跑服务器的那个系统账号的
-app.use(createSessionImportRouter({ isOwner: isPlatformOwner, importer: sessionImport.createSessionImporter({ sessionFile: sessFile }) }));
+// 保留已导入会话的续聊兼容；关闭新导入接口，不创建扫描器。
+app.use(createSessionImportRouter({ isOwner: isPlatformOwner }));
 
 // 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
 // 多人服务器上成员给自己的助理另起过名字、换过头像的，看到的是他自己那份（prefs.assistantFor）
@@ -8822,7 +8854,7 @@ function ownSessionOr404(req, res, notMine) {
   if (req.user && owner && owner !== req.user.username) { res.status(403).json({ error: notMine }); return null; }
   return s;
 }
-// 分享始终要求登录并属于同一组织；链接不会授予修改、提问或启动任务的权限。
+// 对话只读分享默认关闭，旧链接与新建接口均不可用。
 app.use(createSessionSharesRouter({
   store: createShareStore(dataPath("data", "session-shares.json")),
   multiUser: () => admin.multiUser(),
@@ -9275,7 +9307,7 @@ function publicScheduleItem(item) {
 }
 app.get("/api/schedules", (req, res) => res.json(scheduler.list(schedViewer(req)).map(publicScheduleItem)));
 // 运行记录。只看 last_result 的话，昨天跑挂今天跑好就查无此事
-app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300), schedViewer(req)).map(({ source_session_id, ...run }) => ({ ...run, source_linked: !!source_session_id }))));
+app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300), schedViewer(req)).map(run => publicRun(run, req.query.summary === "1"))));
 app.post("/api/schedules", (req, res) => {
   try {
     const v = schedViewer(req);

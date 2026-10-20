@@ -927,6 +927,8 @@ function renderAboutPane(pane) {
         <code id="ab-up-cmd-t" style="display:block;padding:8px 12px;border:1px solid var(--owb-border);border-radius:var(--radius-md);background:var(--owb-bg-hover);font-family:var(--font-mono);font-size:12px;overflow-x:auto;white-space:pre"></code>
         <a href="#" class="link" id="ab-up-cmd-copy" style="display:inline-block;margin-top:4px;font-size:12px">${ic("copy")} 复制这条命令</a>
       </div>
+      <div class="d" id="ab-up-auto" style="display:none;margin-bottom:8px"></div>
+      <button class="btn-brand" id="ab-up-dl" style="display:none;margin-right:8px"></button>
       <button class="btn-plain" id="ab-up-btn">检查更新</button>
       <a class="link" id="ab-up-link" href="https://github.com/CatCatUncle/openworkbuddy/releases/latest" target="_blank" rel="noreferrer" style="margin-left:10px;display:none">去下载页</a>
       <span class="ok-msg" id="ab-up-msg" style="margin-left:8px"></span>
@@ -1002,7 +1004,51 @@ function renderAboutPane(pane) {
     upCmdT.textContent = cmd;
     upCmd.style.display = cmd ? "" : "none";
     if (d.url) upLink.href = d.url;
+    drawAuto(d.auto, d.has_update);
   };
+  // Windows 安装版：应用里直接下、直接装（auto-update.js）。别的装法 auto.supported=false，这一块不出现
+  const upAuto = pane.querySelector("#ab-up-auto"), upDl = pane.querySelector("#ab-up-dl");
+  let autoTimer = 0;
+  const drawAuto = (a, hasUpdate) => {
+    clearTimeout(autoTimer);
+    const on = !!(a && a.supported);
+    let note = "", btn = "";
+    if (on && a.phase === "downloading") {
+      note = `正在下载新版… ${a.percent || 0}%`;
+      // 只在关于页还开着时轮询：关掉设置就停
+      autoTimer = setTimeout(async () => {
+        if (!pane.isConnected) return;
+        try { drawAuto(await fetch("/api/update/auto").then(r => r.json()), hasUpdate); } catch {}
+      }, 1000);
+    } else if (on && a.phase === "downloaded") {
+      note = `新版 v${a.version} 下好了，重启就装上。`;
+      btn = "重启安装";
+    } else if (on && a.phase === "error") {
+      note = `下载失败：${a.error}`;
+      btn = "重试下载";
+    } else if (on && (hasUpdate || a.phase === "available")) {
+      btn = "下载更新";
+    }
+    upAuto.textContent = note;
+    upAuto.style.display = note ? "" : "none";
+    upDl.textContent = btn;
+    upDl.style.display = btn ? "" : "none";
+    upDl.dataset.act = btn === "重启安装" ? "install" : "download";
+    // 能在应用里装，就不再把人往下载页上指
+    if (on && (btn || note)) upLink.style.display = "none";
+  };
+  upDl.onclick = async () => {
+    const act = upDl.dataset.act;
+    upDl.disabled = true;
+    try {
+      const r = await fetch(`/api/update/${act}`, { method: "POST" }).then(r => r.json());
+      if (r.error && !r.phase) throw new Error(r.error);
+      if (act === "install" && r.ok) { upAuto.textContent = "正在退出并安装，装完会自己打开。"; upDl.style.display = "none"; return; }
+      drawAuto(r, true);
+    } catch (e) { setMsg(upMsg, "circle-x", e.message, "err"); }
+    finally { upDl.disabled = false; }
+  };
+
   const loadUpdate = async (force) => {
     upMsg.style.color = ""; upMsg.textContent = force ? "查询中…" : "";
     try { drawUpdate(await fetch("/api/update" + (force ? "?force=1" : "")).then(r => r.json())); upMsg.textContent = ""; }

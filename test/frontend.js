@@ -3989,7 +3989,7 @@ const MULTIRUN_I18N_CASES = [
   ["没有名字里带「report」的文件。只找了本对话的，切到「全部对话」再找找", "只找了本对话的，切到「全部对话」再找找"],
   ["这个对话里还没有成果文件（4 个中间材料已折起）", "个中间材料已折起"],
   ["连接中断：60 秒没收到任何数据。任务可能仍在后台运行，刷新即可接回；别点重新生成，会重复执行", "任务可能仍在后台运行，刷新即可接回"],
-  ["停下「weekly」", "停下「"], ["正在停「weekly」", "正在停「"],
+  ["停下「weekly」", "停下「"],
   ["已停下「weekly」，别的任务照常跑", "别的任务照常跑"],
   ["显示更早的 12 轮", "显示更早的"],
 ];
@@ -4116,18 +4116,16 @@ const HIST_I18N_CASES = [
   ["在新窗口打开", "Open in new window"],
   ["标为未读", "Mark as unread"],
   ["标为已读", "Mark as read"],
-  ["改名…", "Rename…"],
+  ["重命名", "Rename"],
   ["重命名任务", "Rename task"],
   ["重命名当前任务", "Rename current task"],
   ["任务创建日期", "Task creation date"],
   ["移到项目…", "Move to project…"],
   ["移到哪个项目", "Move to project"],
-  ["改个名字", "Rename task"],
-  ["改好", "Save"],
-  ["最多 50 个字", "Up to 50 characters"],
+      ["最多 50 个字", "Up to 50 characters"],
   ["名字太长了，最多 50 个字", "That name is too long. Up to 50 characters"],
-  ["名字没改成：只能改自己任务的名字", "Couldn't rename it: You can only rename your own tasks"],
-  ["名字没改成：名字不能是空的", "Couldn't rename it: The name can't be empty"],
+  ["重命名失败：只能改自己任务的名字", "Couldn't rename it: You can only rename your own tasks"],
+  ["重命名失败：名字不能是空的", "Couldn't rename it: The name can't be empty"],
   ["没挪成：只能挪自己的任务", "Couldn't move it: You can only move your own tasks"],
   ["没挪成：这里没有项目可挪", "Couldn't move it: There are no projects to move it to"],
   ["没挪成：没有这个项目", "Couldn't move it: That project doesn't exist"],
@@ -4147,16 +4145,16 @@ function testHistI18n() {
   const app01 = fs.readFileSync(path.join(jsDir, "app-01.js"), "utf8");
   const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
   const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
-  ok("当前任务标题旁有直接重命名按钮", /id="session-rename"[^>]*hidden/.test(html) && /sessionRenameButton\.addEventListener\("click"/.test(app02), "没有找到直接入口");
-  ok("当前任务标题旁显示固定创建日期", /id="session-date"/.test(html) && /date\.textContent = `\$\{d\.getFullYear\(\)\}-/.test(app02), "任务日期标签没有接入");
+  ok("重命名保留在任务菜单，顶栏没有重复入口", !/id="session-rename"/.test(html) && /act === "rename"/.test(app02), "重命名入口位置不符合当前设计");
+  ok("顶栏不再占用空间显示日期", !/id="session-date"/.test(html), "日期标签仍在顶栏");
   ok("旧会话日期取首条消息或存量时间兜底", /created_at: firstUserAt \|\| s\.created_at \|\| s\.updated_at/.test(server), "服务端没有提供兼容旧会话的创建日期");
   ok("预览对应当前任务成果时用任务名、日期和文件名显示", /activeTask\.dir/.test(app01) && /activeTask\.title/.test(app01) && /normalizedName\.slice\(taskPrefix\.length\)/.test(app01), "预览标题没有关联会话名与成果目录");
   // 源码里真这么拼：措辞改了这边当场红，词典跟着改
-  for (const frag of ["\"已置顶\"", "`置顶「${t}」`", "`取消置顶「${t}」`", "`${d.getMonth() + 1}月${d.getDate()}日`", "`产出过 ${s.files} 个文件`", "`${on ? \"没置顶上\" : \"没取消掉\"}：${err}`"]) {
+  for (const frag of ["\"已置顶\"", "`${d.getMonth() + 1}月${d.getDate()}日`", "产出过 ${s.files} 个文件", "`${on ? \"没置顶上\" : \"没取消掉\"}：${err}`"]) {
     ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");
   }
-  for (const frag of ['title="更多操作"', "`更多操作「${t}」`", "}」的操作`", '"在新窗口打开"', '"标为未读"', '"标为已读"', '"改名…"', '"重命名当前任务"', '"任务创建日期"', '"移到项目…"', ">移到哪个项目<",
-    'title: "改个名字"', 'ok: "改好"', "`最多 ${HIST_TITLE_MAX} 个字`", "`名字没改成：${err}`", "`没挪成：${err}`", "`已移到「${project}」，之前的文件还在原处`",
+  for (const frag of ['title="更多操作"', "`更多操作「${t}」`", "}」的操作`", '"在新窗口打开"', '"标为未读"', '"标为已读"', '"重命名"', '"移到项目…"', ">移到哪个项目<",
+    'title: "重命名任务"', 'ok: "保存"', "`最多 ${HIST_TITLE_MAX} 个字`", "`重命名失败：${err}`", "`没挪成：${err}`", "`已移到「${project}」，之前的文件还在原处`",
     '"<span>拖到这里置顶</span>"', 'toast("下回直接把任务拖进「已置顶」也行"']) {
     ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");
   }
@@ -4165,7 +4163,7 @@ function testHistI18n() {
   ok("源码里真有：标成了未读那句提示", attnSrc.includes('"标成了未读，回头再看"'), "app-01-attention.js 里找不到「标成了未读，回头再看」——措辞改过？词典跟着改");
   const app03 = fs.readFileSync(path.join(jsDir, "app-03.js"), "utf8");
   ok("源码里真有：链接里的任务不在了那句", app03.includes('toast("这个任务已经不在了"'), "app-03.js 里找不到 toast(\"这个任务已经不在了\"——措辞改过？词典跟着改");
-  // 改名、挪项目被服务端拒的那几句原因，拼进上面「名字没改成：」「没挪成：」后面
+  // 改名、挪项目被服务端拒的那几句原因，拼进上面「重命名失败：」「没挪成：」后面
   const serverSrc = fs.readFileSync(path.join(root, "server.js"), "utf8");
   for (const frag of ['"名字不能是空的"', "`名字太长了，最多 ${SESS_TITLE_MAX} 个字`", '"只能改自己任务的名字"', '"只能挪自己的任务"', '"这里没有项目可挪"', '"没有这个项目"']) {
     ok("服务端真有：" + frag.slice(0, 18), serverSrc.includes(frag), "server.js 里找不到 " + frag + "——措辞改过？词典跟着改");
@@ -10281,7 +10279,7 @@ const UPD_OLD_CALLERS = fs.readdirSync(path.join(__dirname, "..", "public", "js"
   .filter((f) => UPD_OLD_RE.test(fs.readFileSync(path.join(__dirname, "..", "public", "js", f), "utf8")));
 const MENU_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='hist-item active' id='hia'>当前</div>"
-  + "<div id='user-row' style='position:relative;width:260px;margin-top:320px'><div class='user-menu' id='user-menu'></div></div></body>";
+  + "<div id='user-row' style='position:relative;width:180px;margin-top:320px'><div class='user-menu' id='user-menu'></div></div></body>";
 const MENU_STUBS = `
   ${IC_STUB}
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
@@ -10405,6 +10403,18 @@ const MENU_CHECKS = `
   settingsCache = { pet: { available: true } };
   openUserMenu();
   ok("桌面版：宠物行紧挨着语言行出现，一共十行", !!petRow() && acts() === TEN, acts());
+  for (const language of ["zh", "en"]) {
+    I18N.setLang(language); openUserMenu(); await tick();
+    const box = menu.getBoundingClientRect();
+    ok(language + "：窄侧栏的账号菜单独立宽度，不贴着侧栏挤文字", box.width >= 280 && box.left >= 0 && box.right <= innerWidth && box.top >= 0);
+    for (const selector of [".um-lang", ".um-pet"]) {
+      const label = menu.querySelector(selector + " > span:first-child"), segment = menu.querySelector(selector + " .um-seg");
+      const l = label.getBoundingClientRect(), r = segment.getBoundingClientRect();
+      ok(language + selector + "：标签单行且不与开关重叠", l.height <= 26 && l.right <= r.left && r.right <= box.right);
+    }
+  }
+  I18N.setLang("zh"); openUserMenu(); await tick();
+
   ok("★没配过就是关着★ 后端三处都默认不给宠物（server.js / pet.js / electron-main），界面不许反着画", petOff(), petPill());
   ok("宠物行有自己的图标，十行图标各不相同", (() => {
     const rows = [...menu.querySelectorAll(".um-i")];
@@ -10888,11 +10898,11 @@ const TRAIL_CHECKS = `
   ui.handleEvent({ type: "usage", prompt: 1000, completion: 100, cached: 30000, calls: 2, elapsed_ms: 5000, model: "m", provider: "P" });
   ui.finish();
   const wrap = t.querySelector(".proc-wrap");
-  ok("收尾写清耗时和步数", wrap.querySelector(".pt").textContent === "已完成 5s · 5 步", wrap.querySelector(".pt").textContent);
+  ok("收尾写清耗时和步数", wrap.querySelector(".pt").textContent === "本轮结束 5s · 5 步", wrap.querySelector(".pt").textContent);
   ok("回合结束过程区收起", !wrap.classList.contains("open") && disp(wrap.querySelector(".proc-body")) === "none");
   ok("跑完了进度条不再钉在顶上占地方", !wrap.classList.contains("running") && getComputedStyle(wrap.querySelector(".proc-head")).position !== "sticky");
   ok("收起了轨迹条照样看得见（真样式）", disp(wrap.querySelector(".trail")) !== "none" && chips(t).every((c) => disp(c) !== "none"));
-  ok("出错角标挂上", /1 步出错/.test(wrap.querySelector(".proc-warn").textContent));
+  ok("历史工具错误放在过程记录，最终提示只说明待返回操作", wrap.querySelector(".pt").title.includes("1 次工具调用未成功") && !wrap.querySelector(".proc-warn"));
   const body = t.querySelector(".body");
   const texts = [...body.querySelectorAll(":scope > .a-text")];
   ok("开场白和结论都在过程区外面", texts.length === 2 && wrap.querySelector(".proc-body").querySelectorAll(":scope > .a-text").length === 0, texts.length + " / " + wrap.querySelector(".proc-body").querySelectorAll(":scope > .a-text").length);
@@ -10906,6 +10916,22 @@ const TRAIL_CHECKS = `
   ok("点徽章打开的是合并组里最近那张卡", cards[1].classList.contains("open") && !cards[0].classList.contains("open"));
   chips(t)[1].click();
   ok("点出错徽章直达出错那张卡", cards[2].classList.contains("open") && wrap.classList.contains("open"));
+
+  const capped = createTurnUI("执行上限", "craft", "s_t");
+  capped.handleEvent({ type: "tool_use", id: "done", name: "read_file" });
+  capped.handleEvent({ type: "tool_result", id: "done", name: "read_file", preview: "ok" });
+  capped.handleEvent({ type: "limit", note: "已达最大步数（100 步）" }); capped.finish();
+  ok("执行上限只显示未完成，不再同时写已完成", capped.turn.querySelector(".pt").textContent.startsWith("未完成") && !capped.turn.querySelector(".pt").textContent.includes("已完成"));
+  const manual = createTurnUI("手动停止", "craft", "s_t");
+  manual.handleEvent({ type: "tool_use", id: "stop", name: "read_file" });
+  manual.handleEvent({ type: "limit", note: "已手动停止" }); manual.finish();
+  ok("用户停止后显示已停止，不再把它标为完成或工具失败", manual.stats().state === "stopped" && manual.turn.querySelector(".pt").textContent.startsWith("已停止"));
+  const resumed = createTurnUI("自动续跑", "craft", "s_t");
+  resumed.handleEvent({ type: "tool_use", id: "r", name: "read_file" });
+  resumed.handleEvent({ type: "tool_result", id: "r", name: "read_file", preview: "ok" });
+  resumed.handleEvent({ type: "limit", note: "已达最大步数（100 步）" });
+  resumed.handleEvent({ type: "auto_continue", round: 1, total: 3 }); resumed.finish();
+  ok("续跑结束后不残留上一轮的未跑完标记", resumed.stats().state === "ended" && !resumed.turn.querySelector(".proc-warn"));
 
   // ---- 2. 中止：回合结束时还没回来的步骤，徽章标中止、不再转 ----
   const u2 = createTurnUI("中止", "craft", "s_t");
@@ -11245,8 +11271,8 @@ const TRAIL_CHECKS = `
     isReplaying = false;
     ok("断掉的那一轮不再转圈", chatCol.querySelectorAll(".proc-wrap.running").length === 0 && chatCol.querySelectorAll(".spinner").length === 0);
     const pt = chatCol.querySelector(".proc-head .pt").textContent;
-    ok("而且写明是断的，不冒充「已完成」", pt.includes("中断了") && !pt.includes("已完成"), pt);
-    ok("标题上挂出原因", (chatCol.querySelector(".proc-warn") || {}).textContent.includes("断的"));
+    ok("而且写明是断的，不冒充「已完成」", pt.includes("连接中断") && !pt.includes("已完成"), pt);
+    ok("标题上挂出原因", (chatCol.querySelector(".proc-warn") || {}).textContent.includes("连接中断"));
   }
 
   // ---- 内容配方的开头表单：带 fields 的提问画成一张多项表单（app-08-recipe.js） ----
@@ -11315,7 +11341,7 @@ const TRAIL_CHECKS = `
     u.handleEvent({ type: "tool_result", id: "n1", name: "read_file", preview: "ok" });
     u.finish();
     const pt = chatCol.querySelector(".proc-head .pt").textContent;
-    ok("反向对照：正常收尾还是「已完成」", pt.includes("已完成") && !pt.includes("中断了"), pt);
+    ok("正常收尾显示本轮结束，不冒充整个任务已经验收", pt.includes("本轮结束") && !pt.includes("未完成"), pt);
   }
 
   // ---- 结论在折叠区外面流 ----
@@ -12800,7 +12826,7 @@ const COMPOSER_STUBS = [
   "var BUSY = false; const curBusy = () => BUSY;",
   // 跟着终端（openworkbuddy 命令行）里那趟活儿时是另一套：插得上话，但停不了——那个进程不归网页管
   "var CLI = false; const cliBusy = () => CLI;",
-  "let currentMode = 'craft';",
+  "let currentMode = 'craft'; let sceneTag = null; const SCENE_HINTS = {};",
   "const inputEl = document.getElementById('input'), sendBtn = document.getElementById('send');",
   "function handleApprovalShortcut() { return false; }",
   "const pendingAttach = [];",
@@ -13678,8 +13704,7 @@ const HIST_MIN_SRC = (() => {
 // 真样式要注进来：高亮态、那个数字徽标都只写在 CSS 里，只看 class 名的话改坏了照样全绿。
 // 侧栏宽度也按真值给（默认 250px，拖到底是 180px），不然「一行放得下」这条等于没验
 const laneHtml = (sideW) => "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
-  + "<body style='margin:0'><button id='inbox-toggle' aria-expanded='false'></button><span id='inbox-count' hidden></span><div class='inbox-wrap'><div id='attention-inbox' hidden></div></div><button id='session-title' aria-haspopup='menu' aria-expanded='false'>新任务</button>"
-  + "<span id='session-context' hidden><span id='session-context-dot'></span><span id='session-context-text'></span></span>"
+  + "<body style='margin:0'><button id='inbox-toggle' aria-expanded='false'></button><span id='inbox-count' hidden></span><div class='inbox-wrap'><div id='attention-inbox' hidden></div></div><div id='session-title'>新任务</div>"
   + "<button id='toggle-files'><span id='session-file-count'>文件</span></button><aside style='width:" + sideW + "px'>"
   + "<div class='lane-tabs' id='lane-tabs' role='tablist' aria-label='工作线'></div>"
   // 标题行那个计数徽章也摆上：它现在有「平时不显示、过滤时才写」这条规矩，没有这个元素就验不了
@@ -14195,7 +14220,7 @@ const LANE_CHECKS = `
   const inboxRows = [...document.querySelectorAll("#attention-inbox .inbox-row")];
   ok("收件箱·待答复优先，其次出错、运行中、未读", inboxRows.map((r) => r.dataset.inboxId).join() === "a4,a2,a1,a3", inboxRows.map((r) => r.dataset.inboxId).join());
   ok("收件箱·状态各自可辨，干净任务不列入", inboxRows.map((r) => r.dataset.state).join() === "ask,error,running,unseen" && !inboxRows.some((r) => r.dataset.inboxId === "a5"), inboxRows.map((r) => r.dataset.state).join());
-  ok("收件箱·铃铛角标计数与列表一致", document.getElementById("inbox-count").textContent === "4" && !document.getElementById("inbox-count").hidden);
+  ok("收件箱·运行中的任务不冒充未读消息", document.getElementById("inbox-count").textContent === "3" && !document.getElementById("inbox-count").hidden);
   inboxRows[0].click(); await Promise.resolve();
   ok("收件箱·点一条待答复跳到原任务", __OPENED[0] === "a4" && document.getElementById("attention-inbox").hidden, JSON.stringify(__OPENED));
   scheduleInboxById.set("run-alone", { id: "run-alone", name: "独立排期结果", session_id: "schedule-session" });
@@ -14378,7 +14403,7 @@ const HPIN_CHECKS = `
   const hist = document.getElementById("history");
   const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
   const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
-  const pin = (id) => row(id) && row(id).querySelector(".hpin");
+  const pin = (id) => row(id)?.querySelector(".hpin");
   const order = () => [...hist.children].map((el) => el.classList.contains("hist-sec") ? "[" + el.textContent + "]" : el.dataset.id).join(",");
   const posts = [];
   let mode = "ok", hold = null;
@@ -14406,19 +14431,17 @@ const HPIN_CHECKS = `
 
   ok("没有置顶时不出「已置顶」这组，只按天分", order() === "[今天],a,b,c,d", order());
   const C0 = pin("c");
-  ok("每行一颗图钉，是真按钮、读屏念得出顶的是哪条", !!C0 && C0.tagName === "BUTTON" && C0.getAttribute("type") === "button"
-    && C0.getAttribute("aria-label") === "置顶「上个月那条合同」" && C0.getAttribute("aria-pressed") === "false", C0 && C0.outerHTML.slice(0, 200));
+  ok("置顶按钮常驻任务行，不需要打开菜单", !!C0 && C0.tagName === "BUTTON" && C0.title === "置顶"
+    && !!row("c").querySelector(".hpin") && !row("c").querySelector(".hstop, .hfile"));
 
   C0.click(); await flush();
   ok("★顶上去的那条排到最上面，单独一组★", order() === "[已置顶],c,[今天],a,b,d", order());
   ok("告诉服务端的就是这一条、要顶", posts.join() === "c=true", posts.join());
   ok("服务端回的时间记下来了，也存进了本地", sessions.find((x) => x.id === "c").pinned_at === 777 && __SAVED > 0);
-  ok("图钉换成按下状态，读屏改念「取消置顶」", pin("c").getAttribute("aria-pressed") === "true" && pin("c").classList.contains("on")
-    && pin("c").getAttribute("aria-label") === "取消置顶「上个月那条合同」");
-  ok("行挪了位置，焦点跟着图钉走", document.activeElement === pin("c"), document.activeElement && document.activeElement.className);
-  ok("点图钉不打开那条", __OPENED.length === 0 && sessionId === "a", JSON.stringify(__OPENED));
-  const op = (el) => { el.getAnimations().forEach((a) => a.finish()); return getComputedStyle(el).opacity; };
-  ok("顶了的那颗图钉常亮，没顶的平时藏着", op(pin("c")) === "1" && op(pin("b")) === "0", op(pin("c")) + "/" + op(pin("b")));
+  ok("置顶后焦点跟随任务行的图钉", document.activeElement === pin("c"));
+  ok("置顶后图钉提供取消置顶", pin("c").title === "取消置顶");
+  ok("点菜单置顶不打开那条", __OPENED.length === 0 && sessionId === "a", JSON.stringify(__OPENED));
+  closeHistMenu(false);
 
   sessions.find((x) => x.id === "c").pinned_at = 5; // 先顶的
   pin("d").click(); await flush();
@@ -14464,7 +14487,7 @@ const DRAGPIN_MUTANTS = {
   anywhere: (src) => src.replace('const ok = !!d && ((at === "pin" && !d.pinned) || (at === "unpin" && d.pinned));', 'const ok = !!d;'),
   leak: (src) => src.replace('  e.stopPropagation();\n  const d = histDrag;', '  const d = histDrag;'),
   tipalways: (src) => src.replace(' && !tipSeen("drag-pin")', ''),
-  focussteal: (src) => src.replace('togglePin(s.id, null)', 'togglePin(s.id)'),
+  focussteal: (src) => src.replace('togglePin(s.id, null)', 'togglePin(s.id, ".hpin")'),
 };
 const HIST_TASK_DRAGOVER_SRC = (() => {
   const a = APP02.indexOf('document.addEventListener("dragover", (e) => {');
@@ -14479,7 +14502,7 @@ const DRAGPIN_CHECKS = `
   const hist = document.getElementById("history");
   const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
   const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
-  const pin = (id) => row(id) && row(id).querySelector(".hpin");
+  const pin = (id) => { const el = row(id); if (!el) return null; openHistMenu(id, { btn: el.querySelector(".hmore") }); return histMenu.el.querySelector('[data-act="pin"]'); };
   const posts = [];
   fetch = async (u, init) => {
     const k = String(u).split("?")[0];
@@ -14534,7 +14557,7 @@ const DRAGPIN_CHECKS = `
   finish(drag.dt, zone); await flush();
   ok("放进置顶落点后请求服务端置顶这一条", posts.join() === "b=true", posts.join());
   ok("拖放后只显示一个置顶分组，临时落点收起", !!hist.querySelector('.hist-sec[data-sec="pin"]') && zone.hidden);
-  ok("★拖放置顶不抢键盘焦点★", document.activeElement !== pin("b"));
+  ok("★拖放置顶不抢键盘焦点★", document.activeElement !== row("b").querySelector(".hpin"));
   ok("拖动已教会用户，记下提示已看", __LANE_LS["owb-tip-drag-pin"] === "1");
 
   // 已有置顶分组时，组标题和置顶行接受置顶任务；置顶行拖回普通任务则取消置顶。
@@ -14645,22 +14668,13 @@ const HMENU_CHECKS = `
   settingsCache = { agent: { engine: "codex" }, models: [], active_model: "" };
   Object.defineProperty(navigator, "onLine", { configurable: true, get: () => true });
   renderHistory();
-  ok("顶栏标题可打开同一套任务菜单", !title.disabled && title.getAttribute("aria-haspopup") === "menu");
-  ok("顶栏标出本机环境和已连接状态", document.getElementById("session-context-text").textContent === "本机"
-    && document.getElementById("session-context-dot").classList.contains("on"),
-    document.getElementById("session-context-text").textContent + "/" + document.getElementById("session-context-dot").className);
-  settingsCache = { agent: { engine: "builtin" }, models: [{ name: "local-ollama", base_url: "http://192.168.1.22:11434/v1" }], active_model: "" };
-  sessionModels.set("a", "local-ollama"); renderHistory();
-  ok("走局域网 Ollama 的任务也标成本机", document.getElementById("session-context-text").textContent === "本机");
-  sessionModels.delete("a"); settingsCache = { agent: { engine: "codex" }, models: [], active_model: "" }; renderHistory();
+  ok("顶栏只显示任务标题，不再重复提供操作菜单", title.tagName === "DIV" && !title.hasAttribute("aria-haspopup"));
+  ok("顶栏没有重命名铅笔和含糊的云端状态", !document.getElementById("session-rename") && !document.getElementById("session-context"));
   ok("成果文件按钮显示当前任务文件数", document.getElementById("session-file-count").textContent === "3"
     && document.getElementById("toggle-files").title.includes("3"),
     document.getElementById("session-file-count").textContent + "/" + document.getElementById("toggle-files").title);
   title.click(); await Promise.resolve();
-  ok("点顶栏标题打开改名/置顶/移项目/删除菜单", !!menu() && labels() === "在新窗口打开|置顶|标为未读|改名…|移到项目…|删除", labels());
-  ok("顶栏菜单展开状态同步到读屏属性", title.getAttribute("aria-expanded") === "true");
-  key("Escape");
-  ok("Esc 收起顶栏菜单并把焦点还给标题", !menu() && document.activeElement === title && title.getAttribute("aria-expanded") === "false");
+  ok("点击顶栏标题不会弹任务菜单", !menu());
 
   // ① 行上那颗「⋯」
   const B = more("b");
@@ -14672,7 +14686,7 @@ const HMENU_CHECKS = `
   await tap("b");
   ok("点「⋯」弹出菜单，挂在 body 上", !!menu() && menu().parentElement === document.body && menu().getAttribute("role") === "menu");
   ok("菜单念得出是哪条的", !!menu() && menu().getAttribute("aria-label") === "「整理发票」的操作", menu() ? menu().getAttribute("aria-label") : "");
-  ok("六样按顺序：新窗口 / 置顶 / 未读 / 改名 / 移到项目 / 删除", labels() === "在新窗口打开|置顶|标为未读|改名…|移到项目…|删除", labels());
+  ok("六样按顺序：新窗口 / 置顶 / 未读 / 改名 / 移到项目 / 删除", labels() === "在新窗口打开|置顶|标为未读|重命名|移到项目…|删除", labels());
   ok("五样带着自己的字母键", items().map((b) => b.getAttribute("aria-keyshortcuts") || "").join("") === "PURMD" && items().filter((b) => b.querySelector("kbd")).length === 5);
   ok("删除标成危险色", !!act("del") && act("del").classList.contains("danger") && !!act("rename") && getComputedStyle(act("del")).color !== getComputedStyle(act("rename")).color);
   ok("「⋯」标上开着", !!B && B.getAttribute("aria-expanded") === "true" && B.classList.contains("on"));
@@ -14765,7 +14779,7 @@ const HMENU_CHECKS = `
   reply["/api/session/b/title"] = { status: 200, body: { ok: true, title: "周报 第二版" } };
   await tap("b"); key("r"); await flush();
   const A0 = __ASKED[0] || {};
-  ok("改名框：标题、原来的名字、按钮上的字", A0.title === "改个名字" && A0.value === "整理发票" && A0.ok === "改好", JSON.stringify(A0));
+  ok("改名框：标题、原来的名字、按钮上的字", A0.title === "重命名任务" && A0.value === "整理发票" && A0.ok === "保存", JSON.stringify(A0));
   ok("改名框：超过 50 个字当场说", typeof A0.validate === "function" && A0.validate("字".repeat(51)) === "最多 50 个字" && A0.validate("字".repeat(50)) === "");
   ok("改名：行上先换成新名字（不等服务端）", ht("b") === "周报 第二版", ht("b"));
   ok("改名：存着的时候记着「正在存」（并回服务端那份时别被旧名字盖回去）", histEditBusy.has("b:title"));
@@ -14779,7 +14793,7 @@ const HMENU_CHECKS = `
   reply["/api/session/b/title"] = { status: 403, body: { error: "只能改自己任务的名字" } };
   await tap("b"); key("r"); await flush(); await flush();
   ok("★名字没存上就改回去★", ht("b") === "周报 第二版" && S("b").title === "周报 第二版", ht("b"));
-  ok("没存上照实说原因", __TOASTS.join() === "名字没改成：只能改自己任务的名字", __TOASTS.join(" ／ "));
+  ok("没存上照实说原因", __TOASTS.join() === "重命名失败：只能改自己任务的名字", __TOASTS.join(" ／ "));
   posts.length = 0; __ANSWER = null;
   await tap("b"); key("r"); await flush();
   __ANSWER = "周报 第二版";
@@ -14815,7 +14829,7 @@ const HMENU_CHECKS = `
   ok("没挪成照实说原因", __TOASTS.join() === "没挪成：没有这个项目", __TOASTS.join(" ／ "));
   projects = [{ name: "默认项目" }];
   await tap("b");
-  ok("只有一个项目：菜单里没有「移到项目…」", !act("move") && labels() === "在新窗口打开|置顶|标为未读|改名…|删除", labels());
+  ok("只有一个项目：菜单里没有「移到项目…」", !act("move") && labels() === "在新窗口打开|置顶|标为未读|重命名|删除", labels());
   key("m"); await flush();
   ok("  └ 按 M 也不进", !act("back") && !!menu());
   key("Escape");
@@ -14852,7 +14866,7 @@ const HMENU_CHECKS = `
     ok("靠右下角右键：往里收，整张还在窗口里", r.right <= innerWidth - 7.5 && r.bottom <= innerHeight - 7.5 && r.left >= 8 && r.top >= 8, JSON.stringify([r.left, r.top, r.right, r.bottom, innerWidth, innerHeight]));
   } else ok("靠右下角右键：往里收，整张还在窗口里", false, "没弹");
   key("Escape");
-  const pinA = () => row("a") && row("a").querySelector(".hpin");
+  const pinA = () => more("a");
   const kbMenu = () => { const p = pinA(); if (p) { p.focus(); p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 0, clientY: 0 })); } };
   kbMenu(); await flush();
   if (menu() && more("a")) {
@@ -14896,13 +14910,13 @@ const HDAY_MUTANTS = {
   nogroup: (src) => src.replace("const [k, label] = histDayOf(s.at, now);", "const [k, label] = [\"old\", \"更早\"];"),
   hours24: (src) => src.replace("const n = Math.round((day(now) - d) / 864e5);", "const n = Math.floor((now - t) / 864e5);"),
   asklost: (src) => src.replace("...g.rows.sort((a, b) => askFirst(a.id) - askFirst(b.id)).map(row)", "...g.rows.map(row)"),
-  noicon: (src) => src.replace("if (!(s.files > 0)) return \"\";", "return \"\";"),
+  noicon: (src) => src.replace("s.files > 0 ?", "false ?"),
 };
 const HDAY_MUST = {
   nogroup: /★今天 \/ 昨天 \/ 前几天 \/ 更早各一组★/,
   hours24: /★按日历天算：昨晚 11 点那条归「昨天」★/,
   asklost: /★等你答的排到自己那组最前★/,
-  noicon: /★产出过文件的行带文件图标★/,
+  noicon: /★产出过文件的行有文件数量提示★/,
 };
 const HDAY_CHECKS = `
 (async () => {
@@ -14946,20 +14960,15 @@ const HDAY_CHECKS = `
   attnForget("t3");
   renderHistory();
 
-  // 文件图标：产出过文件的才有，读屏念得出几个
-  const F = row("t4") && row("t4").querySelector(".hfile");
-  ok("★产出过文件的行带文件图标★", !!F && F.getAttribute("role") === "img" && F.getAttribute("aria-label") === "产出过 2 个文件", row("t4") && row("t4").innerHTML.slice(0, 240));
-  ok("图标跟在标题后面，不挤到标题前头", !!F && F.previousElementSibling && F.previousElementSibling.classList.contains("ht"));
-  ok("没产出过文件的行没有图标", !row("t1").querySelector(".hfile") && !row("t2").querySelector(".hfile"));
-  const fw = F ? F.getBoundingClientRect().width : 0;
-  ok("图标是小号的（12px 上下），不撑高这一行", fw > 0 && fw <= 14 && row("t4").getBoundingClientRect().height <= row("t1").getBoundingClientRect().height + 0.5, fw + "px / " + (row("t4") && row("t4").getBoundingClientRect().height));
+  ok("★产出过文件的行有文件数量提示★", row("t4").title.includes("产出过 2 个文件"), row("t4").title);
+  ok("任务行只保留置顶和更多按钮", !!row("t4").querySelector(".hpin") && !row("t4").querySelector(".hfile, .hstop"));
 
   // 回放或直播里看见新文件：同名只算一个，数只增不减
   window.sessionMadeFiles = new Map();
   const s0 = __SAVED;
   noteMadeFiles("t1", ["周报.docx", "周报.docx", "数据.xlsx"]);
-  ok("新文件进来，行上跟着长出图标、同名只算一个", sessions.find((x) => x.id === "t1").files === 2
-    && row("t1").querySelector(".hfile") && row("t1").querySelector(".hfile").getAttribute("aria-label") === "产出过 2 个文件" && __SAVED > s0,
+  ok("新文件进来，悬停数量更新、同名只算一个", sessions.find((x) => x.id === "t1").files === 2
+    && row("t1").title.includes("产出过 2 个文件") && __SAVED > s0,
     row("t1") && row("t1").innerHTML.slice(0, 200));
   const T4 = row("t4");
   noteMadeFiles("t4", ["只看见了一个.md"]);
@@ -14996,8 +15005,8 @@ const HIST_CLICK_SRC = (() => {
   return APP02.slice(a, b);
 })();
 const HSTOP_MUTANTS = {
-  onscreen: (src) => src.replace("stopRowRun(item.dataset.id)", "stopRowRun(sessionId)"),
-  opens: (src) => src.replace(/\n[ \t]*if \(e\.target\.closest\("\.hstop"\)\)[^\n]*/, ""),
+  onscreen: (src) => src.replace('if (act === "stop") stopRowRun(sid);', 'if (act === "stop") stopRowRun(sessionId);'),
+  opens: (src) => src.replace('if (act === "stop") stopRowRun(sid);', 'if (act === "stop") { stopRowRun(sid); openSession(sid); }'),
 };
 // 收尾那句「「X」已完成，点侧栏查看」也切真源码：2026-09-29 侧栏停下一条后台任务，
 // 刚弹完「已停下「X」」紧跟着又报「「X」已完成」，两句话打架。
@@ -15018,7 +15027,7 @@ const HSTOP_CHECKS = `
   const hist = document.getElementById("history");
   const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); }; // 这页的 setTimeout 被替身接走了，只能按微任务等
   const row = (id) => hist.querySelector('.hist-item[data-id="' + id + '"]');
-  const stopBtn = (id) => row(id) && row(id).querySelector(".hstop");
+  const stopBtn = (id) => { const el = row(id); if (!el || !runningSessions.has(id)) return null; openHistMenu(id, { btn: el.querySelector(".hmore") }); return histMenu.el.querySelector('[data-act="stop"]'); };
   if (window.__hstopMutant === "global") {
     // 全局停止：把在跑的全停了（输入框那颗停止键要是被接到这里，就是这个样子）
     stopRowRun = async (sid) => {
@@ -15051,34 +15060,10 @@ const HSTOP_CHECKS = `
   sessionId = "a"; __OPENED.length = 0; __TOASTS.length = 0;
   renderHistory();
 
-  // ① 画法：在跑的每一行一颗，没在跑的没有；键盘够得着、读屏念得出是停哪条
-  ok("在跑的三行各一颗「停」，没在跑的那行没有", !!stopBtn("a") && !!stopBtn("b") && !!stopBtn("c") && !stopBtn("d"), hist.innerHTML.slice(0, 300));
+  ok("在跑的三行菜单各有停止操作，没在跑的没有", !!stopBtn("a") && !!stopBtn("b") && !!stopBtn("c") && !stopBtn("d"));
   const B0 = stopBtn("b");
-  ok("是真按钮（Tab 走得到），读屏念得出停的是哪条", B0.tagName === "BUTTON" && B0.getAttribute("type") === "button"
-    && B0.getAttribute("aria-label") === "停下「把这个表里重复的行挑出来并且导出一份干净的」", B0.outerHTML.slice(0, 200));
-  // 按钮身上挂着全局那条 opacity .18s 的过渡：焦点刚落上去当场读，读到的是过渡起点 0（离屏窗口里时间轴还不走）。
-  // 这页的 setTimeout 又被替身接走了没法干等——直接把跑着的过渡拨到终点，量的是「最后露没露出来」
-  const op = (el) => { el.getAnimations().forEach((a) => a.finish()); return getComputedStyle(el).opacity; };
-  ok("平时透明、点不着（不跟标题抢眼）", op(B0) === "0" && getComputedStyle(B0).pointerEvents === "none", op(B0) + "/" + getComputedStyle(B0).pointerEvents);
-  B0.focus();
-  ok("Tab 一落上去就显形", document.activeElement === B0 && op(B0) === "1", op(B0));
-  // ★反向对照★ 真 CSS 里把「:focus-within 显形」那条摘掉：焦点落上去它还是透明的
-  {
-    let sheet = null, idx = -1, text = "";
-    for (const sh of document.styleSheets) {
-      [...sh.cssRules].forEach((r, i) => { if (r.selectorText && r.selectorText.includes(".hist-item:focus-within .hstop")) { sheet = sh; idx = i; text = r.cssText; } });
-    }
-    ok("真 CSS 里找得到那条显形规则", idx >= 0);
-    if (idx >= 0) {
-      sheet.deleteRule(idx);
-      ok("反向对照：摘掉 :focus-within 那条，Tab 落上去还是透明（键盘用户看不见自己停在哪）", op(B0) === "0", op(B0));
-      sheet.insertRule(text, idx);
-    }
-    // 手机上没有悬停：一直露着，不然摸不着
-    const touch = [...document.styleSheets].flatMap((sh) => [...sh.cssRules]).find((r) => r.media && /hover: none/.test(r.conditionText || r.media.mediaText)
-      && [...r.cssRules].some((x) => x.selectorText === ".hist-item .hstop" && x.style.opacity === "1" && x.style.pointerEvents === "auto"));
-    ok("触屏（没有悬停）上一直露着", !!touch);
-  }
+  ok("停止是任务菜单中的真按钮，行内只留状态和更多入口", B0.tagName === "BUTTON" && B0.textContent.includes("停下")
+    && !row("b").querySelector(".hstop, .hfile"));
 
   // ② 点 B 行的停：只停 B，A、C 照常跑，不打开 B，眼前还是 A
   B0.click();
@@ -15087,11 +15072,9 @@ const HSTOP_CHECKS = `
   ok("★A、C 照常跑★", server.has("a") && server.has("c") && !server.has("b"), JSON.stringify([...server]));
   ok("★不打开它、不换走眼前这条★", __OPENED.length === 0 && sessionId === "a", JSON.stringify({ opened: __OPENED, sessionId }));
   ok("停下以后说一句，点名是哪条（长标题截短）", __TOASTS[__TOASTS.length - 1] === "已停下「把这个表里重复的行挑出来并且导出…」，别的任务照常跑", __TOASTS.join(" ／ "));
+  ok("B 正在停止时 A、C 的菜单停止操作仍可用", histStopping.has("b") && !histStopping.has("a") && !histStopping.has("c"));
   const B1 = stopBtn("b");
-  ok("B 行挂上「正在停」，A、C 行的停照旧能点", !!B1 && B1.classList.contains("is-stopping") && B1.getAttribute("aria-disabled") === "true"
-    && !stopBtn("a").classList.contains("is-stopping") && !stopBtn("c").classList.contains("is-stopping"), hist.innerHTML.slice(0, 400));
-  ok("键盘按的：换成「正在停」那颗后焦点还在它上面，没被甩回页首", document.activeElement === B1,
-    document.activeElement ? document.activeElement.tagName + "." + document.activeElement.className : "无");
+  ok("重新打开菜单能看到正在停止且不可重复发起", B1.classList.contains("is-stopping") && B1.getAttribute("aria-disabled") === "true");
   B1.click();
   await flush();
   ok("正在停的时候再点：不重复发", stops.length === 1, JSON.stringify(stops));
@@ -15716,10 +15699,10 @@ const ICO_CHECKS = FLUSH_SRC + `
   const at = R("#attach-btn"), pk = R("#fx-pick");
   ok("输入区工具条上附件键和模型选择器同高（" + at.h + " / " + pk.h + "）", at.h === pk.h, [at, pk]);
 
-  // 齿轮是故意留在外面的：带描边、挨着 44 高圆角 10 的用户气泡，跟着气泡走更齐
-  const gear = R("#gear-btn"), uc = document.querySelector("#fx-uchip");
-  ok("齿轮故意不并档：36 见方 / 圆角 10，跟旁边用户气泡的圆角对上（" + getComputedStyle(uc).borderTopLeftRadius + "）",
-     gear.w === 36 && gear.h === 36 && gear.rad === getComputedStyle(uc).borderTopLeftRadius, [gear, getComputedStyle(uc).borderTopLeftRadius]);
+  // 账号底栏采用紧凑的无边框齿轮，给用户名保留空间。
+  const gear = R("#gear-btn");
+  ok("账号齿轮为 32 见方，使用统一中号圆角",
+     gear.w === 32 && gear.h === 32 && gear.rad === at.rad, gear);
 
   // ★反向对照★ 先把桥接层那两档整个撤掉，再把改之前七条真写着的声明原样压回去。
   // 上面那几把尺子必须当场全红：六个尺寸、三种圆角、两颗不是正方形。
@@ -18450,15 +18433,16 @@ app.whenReady().then(async () => {
 
     // 侧栏行上的「停」：真源码一遍，再三个变体各跑一遍，每个变体必须红在它该红的那条上
     for (const mutant of ["", "global", "onscreen", "opens", "noisy"]) {
-      const clickSrc = HSTOP_MUTANTS[mutant] ? HSTOP_MUTANTS[mutant](HIST_CLICK_SRC) : HIST_CLICK_SRC;
-      if (HSTOP_MUTANTS[mutant] && clickSrc === HIST_CLICK_SRC) throw new Error("[侧栏行上的停·反向对照 " + mutant + "] 变体没改动源码（监听里那行写法变了？）");
+      const stopBase = HIST_MIN_SRC + "\n" + HIST_CLICK_SRC;
+      const clickSrc = HSTOP_MUTANTS[mutant] ? HSTOP_MUTANTS[mutant](stopBase) : stopBase;
+      if (HSTOP_MUTANTS[mutant] && clickSrc === stopBase) throw new Error("[侧栏行上的停·反向对照 " + mutant + "] 变体没改动源码（监听里那行写法变了？）");
       const notifySrc = HSTOP_NOTIFY_MUTANTS[mutant] ? HSTOP_NOTIFY_MUTANTS[mutant](NOTIFY_DONE_SRC) : NOTIFY_DONE_SRC;
       if (HSTOP_NOTIFY_MUTANTS[mutant] && notifySrc === NOTIFY_DONE_SRC) throw new Error("[侧栏行上的停·反向对照 " + mutant + "] 变体没改动源码（notifyRunDone 那段写法变了？）");
       const winHS = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
       try {
         await winHS.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
         const hs = await winHS.webContents.executeJavaScript(IC_BOOT + (mutant ? "window.__hstopMutant = " + JSON.stringify(mutant) + ";\n" : "")
-          + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + clickSrc + "\n" + notifySrc + "\n" + HSTOP_CHECKS, true)
+          + LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + clickSrc + "\n" + notifySrc + "\n" + HSTOP_CHECKS, true)
           .catch((e) => { throw new Error("[侧栏行上的停" + (mutant ? "·" + mutant : "") + "] " + ((e && (e.stack || e.message)) || String(e))); });
         if (!mutant) {
           if (hs.fails.length) throw new Error("[侧栏行上的停]\n" + hs.fails.join("\n"));

@@ -1324,7 +1324,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0, liveErr = 0;
   const liveOutFiles = []; // 这一趟改过的文件（收尾时拿它做正文链接 + 决定预览开哪一件）
   let outRoot = ""; // 这一趟的文件事件是哪个工作目录的（服务端 workspaceKey）；没来过文件事件就是空
-  const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
+  const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
   // 单步耗时得带小数：fmtDur 最小档就是 1s，可工具里一大半是几百毫秒的本地读写，
   // 全印成「1s」等于没印——用户要的是「哪一步慢」，不是「每一步都一样」。
@@ -1656,6 +1656,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       endRetry();
       if (ev.depth > 0) return;
       liveStep = ev.step || liveStep;
+      turn._limited = false; turn._stopNote = "";
       body.querySelector(".thinking-hint")?.remove();
       const hint = document.createElement("div");
       hint.className = "thinking-hint";
@@ -1841,7 +1842,9 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       ensureProc().appendChild(procNote("timer", /^已手动停止/.test(lnote) ? lnote : `${lnote}，任务强制收尾`, "err"));
       procWrap?.classList.add("open");
       turn._limited = true;
+      turn._stopNote = lnote;
     } else if (ev.type === "auto_continue") {
+      turn._limited = false; turn._stopNote = "";
       endText();
       foldTail();
       liveRound = ev.round || 0; liveRoundTotal = ev.total || 0;
@@ -2045,6 +2048,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         live.hidden = false;
       }
     } else if (ev.type === "error") {
+      turn._failed = true;
       endRetry();
       endText();
       const t = document.createElement("div");
@@ -2064,6 +2068,12 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
     endRetry(); // 收尾了还在倒数「3 秒后重试」就是骗人，计时器也得停
     const 断了 = !!(opts && opts.interrupted);
+    const pendingTools = turn.querySelectorAll(".step-card .spinner").length;
+    const stopped = !!(turn._limited && /^已手动停止/.test(turn._stopNote || ""));
+    const state = 断了 ? "interrupted" : stopped ? "stopped" : turn._failed ? "failed" : turn._limited || pendingTools ? "incomplete" : "ended";
+    const stateLabel = { interrupted: "连接中断", stopped: "已停止", failed: "执行失败", incomplete: "未完成", ended: "本轮结束" }[state];
+    turn.dataset.runState = state;
+    turn.dataset.runLabel = stateLabel;
     body.querySelector(".thinking-hint")?.remove();
     // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
     turn.querySelectorAll(".step-card .spinner").forEach(s => {
@@ -2095,14 +2105,22 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         const ms = (turn._usage && turn._usage.elapsed_ms) || Date.now() - t0;
         const n = procBody.querySelectorAll(".step-card").length;
         const pt = procWrap.querySelector(".pt");
-        pt.textContent = (断了 ? "中断了" : `已完成 ${fmtDur(ms)}`) + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
+        pt.textContent = `${stateLabel} ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
         // 出过错以前靠"保持展开"提示，结果一个四十步的任务只要中间错过一次就整片摊开，
         // 用户要往下滚半天才够得着结论。改成收起 + 标题挂红角标：信号一个字没少，点开就直达过程
         const marks = [];
         const nErr = procBody.querySelectorAll(".tag.err").length;
-        if (nErr) marks.push(`${nErr} 步出错`);
-        if (turn._limited) marks.push("未跑完");
-        if (断了) marks.push("没收到结束，这一轮是断的");
+        pt.title = nErr ? `过程记录中有 ${nErr} 次工具调用未成功，展开可查看详情` : "";
+        if (turn._limited && !stopped) marks.push(turn._stopNote || "达到本轮执行上限，可继续");
+        else if (断了) marks.push("连接中断，请检查后继续");
+        else if (pendingTools && !stopped) marks.push("有操作未返回结果，请检查后继续");
+        const activity = procWrap.querySelector(".act-live");
+        if (activity) { activity.hidden = true; activity.style.display = "none"; }
+        const progress = procWrap.querySelector(".ms-live");
+        if (progress && !progress.hidden) {
+          const items = [...procBody.querySelectorAll(".ms-item")];
+          progress.textContent = `进度记录：${items.filter(i => i.classList.contains("done")).length}/${items.length} 项完成`;
+        }
         if (marks.length) {
           const chip = document.createElement("span");
           chip.className = "proc-warn";
@@ -2320,6 +2338,8 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     steps: turn.querySelectorAll(".step-card").length,
     rounds: liveRound,
     outs: liveOuts,
+    state: turn.dataset.runState || "running",
+    label: turn.dataset.runLabel || "运行中",
   });
   /** 回合刚挂回页面（点回这条对话、刷新后接回）：后台期间欠下的那几帧一次画完。
    *  已经合回整块的段落 sealStream 当时就按全文画好了，这里只补还在长、又没排上帧的那一段 */
@@ -2428,27 +2448,26 @@ function turnOrdinal(turn) {
 }
 
 // ================= 空状态（场景 tab + 分类胶囊） =================
-// 每个胶囊是 [图标 id, 文案]。文案得单独一格：点一下是把它挂成「任务类型」标签
-// （setSceneTag），发送时拼成「【任务类型：X】」交给模型，所以这格里只能是干净的词，
-// 前面粘个表情的话模型收到的第一个字符就是 emoji。
-// 这份表重排过两次。
-// 第一次是从 日常办公 / 代码开发 / 设计创意 / 内容与增长 改成按**你要交出什么东西**分，
-// 治的是「同一件事两个入口」（幻灯片制作 vs PPT 设计）和「第一个 tab 是个筐」。
-// 第二次就是现在这版：分类从五个并到三个。上一版每个 tab 分得都对，但**加起来太多了**——
-// 空态第一屏顶着五个标签页，用户得先做一道「我这件事算哪一类」的选择题，
-// 才轮到真正要做的那件事。而这道题本来就不该出：模型不看分类，分类只影响
-// 挂上去的那枚「任务类型」标签。分得再细也不会让结果更好，只会让第一步更慢。
-// 三类的尺子还是「交出什么」：一份能交上去的文档 / 一个想清楚的结论或一条要发出去的内容 /
-// 一个能跑能看的东西。顺手去掉了「PPT 美化」——它和「做幻灯片」是同一件事的两个入口，
-// 正是上一版明令要治的毛病，上次漏网了。
+// 分类按交付结果组织；任务名使用动作，提示词帮助用户补齐素材和目标。
+// 不自动发送或覆盖草稿；点击后只选中类型并更新输入提示。
 const SCENES = {
-  "文档与汇报": [["notebook-pen", "会议纪要"], ["calendar-days", "周报月报"], ["presentation", "做幻灯片"], ["folder-open", "调研报告"], ["file-text", "长文档整理"], ["scale", "合同审阅"], ["mail", "商务邮件"], ["languages", "翻译校对"]],
-  "数据与内容": [["chart-column", "数据分析"], ["table", "表格处理"], ["brain", "深度研究"], ["target", "竞品分析"], ["trending-up", "行情与财报"], ["newspaper", "公众号推文"], ["book-open", "小红书图文"], ["film", "短视频成片"], ["megaphone", "营销方案"]],
-  "代码与设计": [["code", "日常开发"], ["bug", "找 Bug"], ["file-search", "代码审查"], ["globe", "网站开发"], ["bot", "Agent 应用"], ["puzzle", "Skill 开发"], ["book-open", "技术文档"], ["monitor", "界面设计"], ["palette", "海报与封面"], ["rocket", "落地页"], ["smartphone", "移动端 App"]],
+  "办公与分析": [["presentation", "制作汇报 PPT"], ["calendar-days", "撰写周报"], ["file-text", "整理文档要点"], ["chart-column", "分析表格数据"], ["notebook-pen", "整理会议纪要"]],
+  "创作与开发": [["globe", "制作网页"], ["newspaper", "撰写文章"], ["palette", "设计海报封面"], ["film", "制作短视频"], ["bug", "排查与修复 Bug"]],
 };
-// 老用户的 localStorage 里存着已经不存在的分类名（比如「写作与传播」）。
-// 下面读的时候有 SCENES[s] 这一道判，读不到就退回第一个，不用专门写迁移
-const SCENE_ICON = ["file-text", "chart-column", "code"];
+const SCENE_HINTS = {
+  "制作汇报 PPT": "说明汇报主题、受众、页数和风格，可上传已有资料或数据",
+  "撰写周报": "提供本周工作记录、汇报对象和下周计划，说明需要的文件格式",
+  "整理文档要点": "上传文档，说明重点关注的问题和希望保留的篇幅",
+  "分析表格数据": "上传表格，说明想回答的问题、统计口径和需要的图表",
+  "整理会议纪要": "粘贴会议记录或上传转写文件，说明需要提取的决议、待办和负责人",
+  "制作网页": "描述网页用途、功能和风格，需要修改现有项目时先选择工作目录",
+  "撰写文章": "说明主题、目标读者、发布渠道和篇幅，可附素材与事实来源",
+  "设计海报封面": "说明用途、尺寸、文案和视觉风格，可上传参考图与品牌素材",
+  "制作短视频": "说明主题、时长、横竖屏和风格，可提供脚本、图片或视频素材",
+  "排查与修复 Bug": "提供报错、复现步骤和预期行为，先选择项目工作目录",
+};
+// 不存在的历史分类回退首项，不影响旧任务的类型标签。
+const SCENE_ICON = ["file-text", "palette"];
 let sceneTag = null; // 选中的任务类型标签
 /**
  * 「用这个专家 / 专家团 / 技能」点下去之后，挂在输入框上方的那枚标签。
@@ -2474,7 +2493,7 @@ function renderComposerTags() {
   box.innerHTML = h;
   box.querySelectorAll("[data-clr]").forEach((b) => { b.onclick = () => (b.dataset.clr === "scene" ? setSceneTag(null) : setUseTag(null)); });
 }
-function setSceneTag(label) { sceneTag = label; renderComposerTags(); inputEl.focus(); }
+function setSceneTag(label) { sceneTag = label; renderComposerTags(); syncPlaceholder(); inputEl.focus(); }
 /** 挂上（或摘掉）委派标签。kind 取 team / expert / skill，传 null 就是摘掉 */
 function setUseTag(tag) {
   useTag = tag && tag.name ? { kind: tag.kind || "expert", name: String(tag.name) } : null;
@@ -2491,176 +2510,6 @@ function useDirective(t) {
   if (t.kind === "skill") return `【使用技能：${t.name}】按这份技能说明书的步骤，做下面这件事。\n\n`;
   return `【交给专家：${t.name}】把下面这件事委派给这位专家（delegate_to_expert）。\n\n`;
 }
-// ================= 导入本机终端里的 Claude Code / Codex 会话 =================
-/**
- * 新任务的空白页底下那一行「发现本机 N 条 … 会话 · 导入」。
- * 只有这台机器的主人（个人桌面版、平台管理员）拿得到条数；别人那边服务端回 403，
- * 记一笔就再也不问了——成员连有几条都不该知道，也别每开一次新任务就去撞一次闸。
- * 条数服务端只 readdir + stat 还带缓存，这里再晚 300ms 才问，空白页先画出来。
- */
-let localImportGone = false;
-let localImportPoll = null;
-function offerLocalImport(box) {
-  setTimeout(async () => {
-    if (localImportGone || !box.isConnected) return;
-    let d;
-    try {
-      const r = await fetch("/api/import/local");
-      if (r.status === 403) { localImportGone = true; return; }
-      if (!r.ok) return;
-      d = await r.json();
-    } catch { return; }
-    const rows = (d && Array.isArray(d.sources) ? d.sources : []).filter((s) => s && Number(s.count) > 0);
-    if (!box.isConnected) return;
-    box.innerHTML = rows.map((s) => `<button class="btn-plain" data-src="${esc(s.source)}">${ic("terminal")}`
-      + `<span>发现本机 ${Number(s.count)} 条 ${esc(s.name)} 会话</span><span aria-hidden="true">·</span><span class="ei-act">导入</span></button>`).join("");
-    box.hidden = !rows.length;
-    box.onclick = (e) => {
-      const b = e.target.closest("button[data-src]");
-      if (b) openLocalImport(b.dataset.src);
-    };
-  }, 300);
-}
-/** 「3 分钟前 / 昨天 / 09-14」，去年以前的带上年份 */
-function importWhen(t) {
-  if (!t) return "";
-  const d = (Date.now() - t) / 1000;
-  if (d < 60) return "刚刚";
-  if (d < 3600) return Math.floor(d / 60) + " 分钟前";
-  if (d < 86400) return Math.floor(d / 3600) + " 小时前";
-  if (d < 172800) return "昨天";
-  const dt = new Date(t);
-  const md = (dt.getMonth() + 1) + "-" + String(dt.getDate()).padStart(2, "0");
-  return dt.getFullYear() === new Date().getFullYear() ? md : dt.getFullYear() + "-" + md;
-}
-/** 弹窗：先列条数和最近几条，勾好了再导；导入在后台跑，这边轮询进度 */
-async function openLocalImport(source) {
-  mask.classList.add("show");
-  modalBox.classList.remove("wide");
-  mTitle.textContent = "导入本机会话";
-  mBody.innerHTML = `<p class="li-hint">原文件只读不改，导进来的在「工程」那栏，可以接着聊。</p>
-    <label class="li-head"><input type="checkbox" id="li-all"><span>全选</span><span class="li-total" id="li-total"></span></label>
-    <div class="li-list" id="li-list"><div class="li-empty">正在读…</div></div>
-    <div class="li-more" id="li-more-box" hidden><button class="btn-plain" id="li-more">再列一些</button></div>
-    <div class="li-foot"><span class="li-status" id="li-status"></span><button class="btn-plain" id="li-open" hidden>打开看看</button><button class="btn-brand" id="li-go" disabled>导入</button></div>`;
-  const $ = (id) => document.getElementById(id);
-  const listEl = $("li-list"), allEl = $("li-all"), goEl = $("li-go"), statusEl = $("li-status");
-  let total = 0, next = 0, loading = false;
-  const picked = new Set();
-  const say = (...parts) => { statusEl.innerHTML = parts.filter(Boolean).map((p) => `<span>${esc(p)}</span>`).join(""); };
-  const refresh = () => {
-    const n = allEl.checked ? total : picked.size;
-    goEl.disabled = !n;
-    say(allEl.checked && total ? `全部 ${total} 条都选上了` : n ? `选了 ${n} 条` : "");
-  };
-  const loadMore = async () => {
-    if (loading || next == null) return;
-    loading = true;
-    let d;
-    try {
-      const r = await fetch(`/api/import/local/list?source=${encodeURIComponent(source)}&offset=${next}&limit=30`);
-      d = await r.json();
-      if (!r.ok) throw new Error((d && d.error) || "");
-    } catch (e) {
-      listEl.innerHTML = `<div class="li-empty">${esc((e && e.message) || "本机会话没读出来，稍后再试")}</div>`;
-      loading = false;
-      return;
-    }
-    loading = false;
-    if (!$("li-list")) return; // 弹窗已经关了 / 换成别的了
-    if (!next) {
-      listEl.innerHTML = "";
-      mTitle.textContent = `导入本机 ${d.name || source} 会话`;
-    }
-    total = Number(d.total) || 0;
-    next = d.next;
-    $("li-total").textContent = total ? `共 ${total} 条` : "";
-    for (const it of d.items || []) {
-      const row = document.createElement("label");
-      row.className = "li-row";
-      row.innerHTML = `<input type="checkbox" value="${esc(it.id)}"${allEl.checked || picked.has(it.id) ? " checked" : ""}>`
-        + `<span class="li-t" data-i18n-skip>${esc(it.title)}</span>`
-        + `<span class="li-m">${it.folder ? `<span data-i18n-skip>${esc(it.folder)}</span>` : ""}<span>${esc(importWhen(it.at))}</span></span>`;
-      listEl.appendChild(row);
-    }
-    if (!listEl.children.length) listEl.innerHTML = `<div class="li-empty">没有能导入的会话了</div>`;
-    $("li-more-box").hidden = next == null;
-    refresh();
-  };
-  listEl.addEventListener("change", (e) => {
-    const cb = e.target.closest("input[type=checkbox]");
-    if (!cb) return;
-    if (cb.checked) picked.add(cb.value); else picked.delete(cb.value);
-    if (!cb.checked && allEl.checked) allEl.checked = false;
-    refresh();
-  });
-  allEl.addEventListener("change", () => {
-    listEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
-      cb.checked = allEl.checked;
-      if (allEl.checked) picked.add(cb.value); else picked.delete(cb.value);
-    });
-    refresh();
-  });
-  $("li-more").onclick = loadMore;
-  goEl.onclick = async () => {
-    goEl.disabled = true;
-    allEl.disabled = true;
-    const body = allEl.checked ? { source, all: true } : { source, ids: [...picked] };
-    let d, r;
-    try {
-      r = await fetch("/api/import/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      d = await r.json();
-    } catch { d = null; }
-    if (!r || (!r.ok && r.status !== 409) || !d || !d.job) {
-      say((d && d.error) || "没导成，稍后再试");
-      goEl.disabled = false;
-      allEl.disabled = false;
-      return;
-    }
-    if (r.status === 409) say(d.error || "上一批还在导，等它导完再来");
-    watchLocalImport(d.job);
-  };
-  await loadMore();
-}
-/** 轮询导入进度。弹窗关了也接着问，导完把会话并进任务历史、把空白页那行条数刷一遍 */
-function watchLocalImport(job) {
-  clearInterval(localImportPoll);
-  const show = (j) => {
-    const statusEl = document.getElementById("li-status");
-    if (!statusEl || !j) return;
-    const parts = j.state === "done"
-      ? [`导好了 ${j.done} 条`, j.skipped ? `跳过 ${j.skipped} 条导过的或空的` : "", j.failed ? `${j.failed} 条没读出来` : ""]
-      : [`正在导 ${j.done + j.skipped + j.failed}/${j.total}`];
-    statusEl.innerHTML = parts.filter(Boolean).map((p) => `<span>${esc(p)}</span>`).join("");
-    const open = document.getElementById("li-open");
-    if (open && j.state === "done" && j.first) {
-      open.hidden = false;
-      open.onclick = () => {
-        closeModal();
-        if (activeLane !== "cli") {
-          activeLane = "cli";
-          try { localStorage.setItem("owb_lane", activeLane); } catch {}
-          renderLaneTabs();
-        }
-        openSession(j.first);
-      };
-    }
-  };
-  show(job);
-  if (job && job.state === "done") { finishLocalImport(); return; }
-  localImportPoll = setInterval(async () => {
-    let j;
-    try { j = (await fetch("/api/import/local/job").then((r) => r.json())).job; } catch { return; }
-    if (!j) { clearInterval(localImportPoll); return; }
-    show(j);
-    if (j.state === "done") { clearInterval(localImportPoll); finishLocalImport(); }
-  }, 800);
-}
-async function finishLocalImport() {
-  await mergeServerSessions();
-  const box = document.querySelector("#empty .empty-import");
-  if (box) offerLocalImport(box);
-}
 function buildEmpty() {
   const tpl = document.createElement("div");
   tpl.className = "empty"; tpl.id = "empty";
@@ -2669,24 +2518,23 @@ function buildEmpty() {
   try { const s = localStorage.getItem("owb_last_scene"); if (s && SCENES[s]) startScene = s; } catch {}
   tpl.innerHTML = `<h1>把事情交给我</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
-      `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
-    <div class="chips" id="scene-chips"></div>
-    <div class="empty-import" hidden></div>`;
-  offerLocalImport(tpl.querySelector(".empty-import"));
+      `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}" aria-pressed="${startScene === k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
+    <div class="chips" id="scene-chips"></div>`;
   const chipsEl = tpl.querySelector("#scene-chips");
   const renderChips = (scene) => {
-    chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button>${ic(i)}${esc(t)}</button>`).join("");
+    chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button data-scene-task="${esc(t)}">${ic(i)}${esc(t)}</button>`).join("");
   };
   renderChips(startScene);
   tpl.querySelector(".scene-tabs").addEventListener("click", (e) => {
-    if (e.target.tagName !== "BUTTON") return;
-    tpl.querySelectorAll(".scene-tabs button").forEach(b => b.classList.toggle("active", b === e.target));
-    try { localStorage.setItem("owb_last_scene", e.target.dataset.scene); } catch {}
-    renderChips(e.target.dataset.scene);
+    const button = e.target.closest("button[data-scene]");
+    if (!button) return;
+    tpl.querySelectorAll(".scene-tabs button").forEach(b => { b.classList.toggle("active", b === button); b.setAttribute("aria-pressed", String(b === button)); });
+    try { localStorage.setItem("owb_last_scene", button.dataset.scene); } catch {}
+    renderChips(button.dataset.scene);
   });
   chipsEl.addEventListener("click", (e) => {
     const b = e.target.closest("button");
-    if (b) setSceneTag(b.textContent.trim());
+    if (b) setSceneTag(b.dataset.sceneTask || b.textContent.trim());
   });
   return tpl;
 }
@@ -6597,7 +6445,6 @@ async function refreshSettingsCache() {
   const wasPerChat = wsPerChat();
   const wasRoot = settingsCache && settingsCache.workspace_dir;
   settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
-  if (typeof syncTaskBillingControls === "function") syncTaskBillingControls();
   if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
   if (settingsCache && Array.isArray(settingsCache.moved_on_boot) && settingsCache.moved_on_boot.length) bootMoved = settingsCache.moved_on_boot;
   // 换了项目/工作空间，「本对话 / 全部」该不该出现跟着变；不重画的话要等下一次刷文件列表才对得上

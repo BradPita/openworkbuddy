@@ -32,8 +32,10 @@ Required Notice: Any use not permitted by the PolyForm Noncommercial License 1.0
 | @joint/core | 4.3.3 | MPL-2.0 | https://github.com/clientIO/joint |
 | docx | 9.7.1 | MIT | https://github.com/dolanmiu/docx |
 | echarts | 6.1.0 | Apache-2.0 | https://github.com/apache/echarts |
+| electron-updater | 6.8.9 | MIT | https://github.com/electron-userland/electron-builder |
 | exceljs | 4.4.0 | MIT | https://github.com/exceljs/exceljs |
 | express | 4.22.2 | MIT | https://github.com/expressjs/express |
+| jszip | 3.10.1 | MIT | https://github.com/Stuk/jszip |
 | mermaid | 11.17.0 | MIT | https://github.com/mermaid-js/mermaid |
 | nodemailer | 9.1.1 | MIT-0 | https://github.com/nodemailer/nodemailer |
 | pptxgenjs | 3.12.0 | MIT | https://github.com/gitbrent/PptxGenJS |

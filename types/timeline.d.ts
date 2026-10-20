@@ -111,7 +111,10 @@ export interface TimelineStep {
   argv: string[];
   out: string;
   stage: "clips" | "cards" | "audio" | "film" | "covers";
-  kind: "ffmpeg" | "render";
+  /** move：把 from 挪到 out，名字上已经有东西就停（剪辑最后一步，见 compose-jobs 的 composeMove） */
+  kind: "ffmpeg" | "render" | "move";
+  /** kind 是 move 时，从哪儿挪 */
+  from?: string;
   /** 跑这一步之前要落盘的文本（字幕文件、卡片 HTML） */
   writes?: Array<{ rel: string; text: string }>;
   /** 预估要跑几秒：进度按它加权，超时按它放宽 */
@@ -194,7 +197,7 @@ export interface ComposeFilm {
 export interface ComposeJobView {
   /** 锁被别的任务占着时交回的那份是空串：前端见空 id 不轮询 */
   id: string;
-  kind: "timeline" | "canvas";
+  kind: "timeline" | "canvas" | "edit";
   owner?: string;
   busy?: boolean;
   name?: string;
