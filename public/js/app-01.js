@@ -458,7 +458,7 @@ function fpath(name) { return String(name == null ? "" : name).split("/").map(en
  *
  * 带的是 sha1 前 8 位的指纹（服务端 workspaceKey），不是真路径：这串会出现在
  * 截图、日志和分享出去的链接里，本机目录名不该跟着漏出去。服务端只在**自己用过的**
- * 目录名单里反查这枚指纹，认不出来就当没带，读不到名单外的任何地方。
+ * 目录名单里反查这枚指纹；认不出来就报错，不会换成别的同名文件。
  */
 function withRoot(url, root) {
   const r = String(root || "");
@@ -755,6 +755,10 @@ const MD_FILE_RE = /\.(html?|pdf|svgz?|png|jpe?g|gif|webp|bmp|ico|avif|mp3|wav|m
  */
 function mdFileLink(label, url, base, root) {
   const u = String(url || "").trim();
+  const local = localFileRef(u.replace(/&amp;/g, "&"), true);
+  if (local && MD_FILE_RE.test(local)) {
+    return `<a class="file-ln" data-md="1" data-local="${esc(local)}" data-name="${esc(local)}" title="点击预览 ${esc(local)}" tabindex="0">${label}</a>`;
+  }
   // 引号/尖括号/空白拼进属性会把标签撑破，跟 mdImg 同一条规矩
   if (!u || /["'<>\s\\]/.test(u)) return "";
   if (/^[a-zA-Z][\w+.-]*:/.test(u) || u.startsWith("//") || u.startsWith("#")) return "";
@@ -4924,7 +4928,10 @@ async function previewFile(name, root, opts) {
   const taskDir = activeTask && String(activeTask.dir || "").replace(/\\/g, "/").replace(/\/+$/, "");
   const normalizedName = String(name).replace(/\\/g, "/");
   const taskPrefix = taskDir ? taskDir + "/" : "";
-  if (taskPrefix && normalizedName.startsWith(taskPrefix) && activeTask.created_at) {
+  if (opts && opts.label) {
+    pvName.textContent = String(opts.label);
+    pvName.title = String(opts.label);
+  } else if (taskPrefix && normalizedName.startsWith(taskPrefix) && activeTask.created_at) {
     const created = new Date(activeTask.created_at);
     const stamp = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
     pvName.textContent = `${stripSceneTag(activeTask.title) || "任务"} · ${stamp} / ${normalizedName.slice(taskPrefix.length)}`;
@@ -5182,16 +5189,25 @@ document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvC
 
 // ---- 本地部署预览：iframe 里看长相够了，但真网页要有自己的 origin（相对路径/fetch/localStorage/手机上开）----
 let previewSrv = { running: false };
+let deploySeq = 0;
 async function renderDeployBar() {
   const bar = document.getElementById("pv-deploy");
+  const seq = ++deploySeq, name = pvCurrent, root = pvRoot;
+  const stale = () => seq !== deploySeq || name !== pvCurrent || root !== pvRoot;
   if (!pvCurrent || !/\.html?$/i.test(pvCurrent)) { bar.style.display = "none"; return; }
   bar.style.display = "";
+  bar.innerHTML = "";
+  const state = await fetch(withRoot("/api/preview/status", root)).then(r => r.json()).catch(() => ({ running: false }));
+  if (stale()) return;
+  previewSrv = state;
   if (!previewSrv.running) {
     bar.innerHTML = `<span>网页默认在应用内预览。只有需要相对路径、fetch 或长期保存网页数据时，才手动启动本机预览服务。</span>
       <button class="primary" id="pv-serve">手动在浏览器打开</button>`;
     bar.querySelector("#pv-serve").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "启动中…";
-      previewSrv = await startPreview(false, pvCurrent); // 默认只听本机，并直接打开当前网页；要给手机看再单独放开
+      const st = await startPreview(false, name, root);
+      if (stale()) return;
+      previewSrv = st;
       if (!previewSrv.running) { toast(previewSrv.error || "本地预览服务启动失败"); } // 服务端回了原因就照它说
       renderDeployBar();
     };
@@ -5199,7 +5215,7 @@ async function renderDeployBar() {
   }
   // 令牌必须跟着链接走：预览站是独立进程，认不了应用的登录 cookie，
   // 没令牌的链接打开是 401 而不是页面
-  const withTok = (base) => base + fpath(pvCurrent) + (previewSrv.token ? "?t=" + previewSrv.token : "");
+  const withTok = (base) => base + fpath(name) + (previewSrv.token ? "?t=" + previewSrv.token : "");
   const url = withTok(previewSrv.url);
   const lan = previewSrv.lan_url ? withTok(previewSrv.lan_url) : null;
   // 「放开给手机看」= 把这台机器上的目录挂到局域网，属于服务器级动作。
@@ -5215,26 +5231,31 @@ async function renderDeployBar() {
   bar.querySelector("#pv-open-br").onclick = async (e) => {
     // 传当前的 lan 状态，别把已经放开给手机的服务悄悄收回本机
     e.target.disabled = true;
-    const st = await startPreview(previewSrv.lan_open, pvCurrent);
+    const st = await startPreview(!!state.lan_open, name, root);
+    if (stale()) return;
     e.target.disabled = false;
     if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
   };
   const lanBtn = bar.querySelector("#pv-lan");
   if (lanBtn) lanBtn.onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = "切换中…";
-    previewSrv = await startPreview(true);
+    const st = await startPreview(true, undefined, root);
+    if (stale()) return;
+    previewSrv = st;
     if (previewSrv.lan_denied) toast((previewSrv.lan_hint || "对局域网开放要平台管理员来开"), "circle-x");
     else if (!previewSrv.lan_url) toast("这台机器没找到局域网地址（没连 Wi-Fi？）");
     renderDeployBar();
   };
   bar.querySelector("#pv-serve-stop").onclick = async () => {
-    previewSrv = await fetch("/api/preview/stop", { method: "POST" }).then(r => r.json()).catch(() => ({ running: false }));
+    const st = await fetch(withRoot("/api/preview/stop", root), { method: "POST" }).then(r => r.json()).catch(() => ({ running: false }));
+    if (stale()) return;
+    previewSrv = st;
     renderDeployBar();
   };
 }
-function startPreview(lan, open) {
+function startPreview(lan, open, root) {
   // 20 秒没回就当没起来：不掐的话按钮一直写着「启动中…」，点不了也没个说法
-  return fetch("/api/preview/start", {
+  return fetch(withRoot("/api/preview/start", root === undefined ? pvRoot : root), {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lan: !!lan, open: open || undefined }),
     signal: AbortSignal.timeout(20000),
@@ -5245,7 +5266,6 @@ function startPreview(lan, open) {
     error: e && e.name === "TimeoutError" ? "20 秒没等到应用回话，这次没启动" : "这次没启动：" + String((e && e.message) || e).slice(0, 40),
   }));
 }
-fetch("/api/preview/status").then(r => r.json()).then(s => { previewSrv = s; }).catch(() => {});
 
 // 产出快照：记住每个文件的 mtime，下一回合才认得出哪些是这回合新写/改过的
 let fileSnapshot = null;  // null = 基线还没建（首屏 /api/files 还没回来）
@@ -5984,7 +6004,7 @@ function makeOutCard(f, isHtml, root) {
     if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e, root);
     if (e.target.closest('[data-a="br"]')) {
       e.stopPropagation();
-      startPreview(previewSrv.lan_open, f.name).then(st => {
+      startPreview(false, f.name, root).then(st => {
         if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
       });
       return;
@@ -6015,6 +6035,55 @@ function markDupBasenames(grid) {
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
 // ---- 正文里提到的产出文件名 → 可点开的链接 ----
+/** Explicit local paths retain their identity; they are resolved only on click. */
+function localFileRef(value, encoded) {
+  let p = String(value || "").trim();
+  try {
+    if (/^file:\/\//i.test(p)) {
+      const u = new URL(p);
+      if (u.hostname && u.hostname !== "localhost") return "";
+      p = decodeURIComponent(u.pathname);
+      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
+    } else {
+      if (!/^(?:\/(?!\/)|[A-Za-z]:[\\/])/.test(p)) return "";
+      if (encoded) p = decodeURIComponent(p);
+    }
+  } catch { return ""; }
+  return p.includes("\0") ? "" : p.replace(/\\/g, "/");
+}
+function localLinkTargets(text) {
+  const map = new Map(), dirs = new Map();
+  const paths = /(^|[\s"'`(（【「：:，,；;])((?:file:\/\/\/|\/(?!\/)|[A-Za-z]:[\\/])[^\s"<>`()，。；：！？、]+)/gm;
+  for (const m of String(text || "").matchAll(paths)) {
+    const p = localFileRef(m[2]);
+    if (!p) continue;
+    const file = /\.[A-Za-z0-9]{1,8}$/.test(p);
+    if (file) map.set(m[2], p);
+    const dir = (file ? p.slice(0, p.lastIndexOf("/")) : p).replace(/\/+$/, "");
+    const base = dir.split("/").pop();
+    if (base) (dirs.get(base) || dirs.set(base, new Set()).get(base)).add(dir);
+  }
+  for (const line of String(text || "").split("\n")) {
+    const raw = line.trim(), p = localFileRef(raw);
+    if (p && /\.[A-Za-z0-9]{1,8}$/.test(p)) map.set(raw, p);
+  }
+  for (const [base, group] of dirs) {
+    if (group.size !== 1) continue;
+    const re = new RegExp(base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/[^\\s\"<>`()，。；：！？、]+\\.[A-Za-z0-9]{1,8}", "g");
+    for (const m of String(text || "").matchAll(re)) map.set(m[0], [...group][0] + m[0].slice(base.length));
+  }
+  return map;
+}
+async function previewLocalFile(file) {
+  const seq = ++pvSeq;
+  try {
+    const r = await fetch("/api/files/resolve-local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: file }) });
+    const d = await r.json();
+    if (seq !== pvSeq) return;
+    if (!r.ok || !d.name || !d.root) throw new Error(d.error || "这个本机文件无法打开");
+    return previewFile(d.name, d.root, { label: d.label || d.name });
+  } catch (e) { if (seq === pvSeq) toast(e.message || "这个本机文件无法打开", "circle-x"); }
+}
 // 模型收尾时爱写「简历已经写好了，在 张三_简历.html 里」——那串文件名在对话里是死的，
 // 用户得自己去右侧面板一行行找同名的那个。现在正文里提到的文件名，只要盘上真有，就是能点的。
 // 认的是两份名单：这一趟真产出过的，和工作目录里现在就有的（右侧清单）。
@@ -6025,8 +6094,8 @@ function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s)
 // 裸文件名（模型多半只写名字不写路径）指向哪一份：
 //   · 这一趟的产出优先——它就是这句话在说的那个
 //   · 这一趟的同一件产出常被拷成两份（任务子目录一份、根上一份），指路径最浅的那个
-//   · 清单里的同名文件只在认得出是哪一个时才链：一份，或者有一份比别的都浅（根上那份）。
-//     两个子目录里各有一份 README.md，模型说的是哪个没法知道，猜错了点开的是另一份东西，宁可不链
+//   · 旧清单只按完整相对路径匹配，不给其他任务的 index.html 等文件创建裸名别名。
+//   · 本轮两个等深目录都有同名文件时不猜；绝对路径必须按原路径验证。
 function fileLinkTargets(files, listing) {
   const map = new Map();
   const depth = (n) => n.split("/").length;
@@ -6035,26 +6104,24 @@ function fileLinkTargets(files, listing) {
     return name && /\.[A-Za-z0-9]{1,8}$/.test(name.split("/").pop()) ? name : ""; // 没后缀的不认，免得把普通词当文件名挑出来
   };
   // 先铺清单，再拿这一趟的产出盖上去
-  const byBase = new Map();
   for (const f of listing || []) {
     const name = nameOf(f);
     if (!name) continue;
     map.set(name, name);
-    const base = name.split("/").pop();
-    (byBase.get(base) || byBase.set(base, []).get(base)).push(name);
   }
-  for (const [base, names] of byBase) {
-    const d = names.map(depth), top = Math.min(...d);
-    if (d.filter((x) => x === top).length === 1) map.set(base, names[d.indexOf(top)]);
-  }
-  const own = new Map();
+  const own = new Map(), ownBases = new Map();
   for (const f of files || []) {
     const name = nameOf(f);
     if (!name) continue;
     own.set(name, name);
     const base = name.split("/").pop();
-    const cur = own.get(base);
-    if (!cur || depth(name) < depth(cur)) own.set(base, name);
+    (ownBases.get(base) || ownBases.set(base, new Set()).get(base)).add(name);
+  }
+  for (const [base, group] of ownBases) {
+    const names = [...group], top = Math.min(...names.map(depth));
+    const nearest = names.filter(n => depth(n) === top);
+    if (nearest.length === 1) own.set(base, nearest[0]);
+    else map.delete(base);
   }
   for (const [k, v] of own) map.set(k, v);
   return map;
@@ -6077,7 +6144,8 @@ function listingFor(turnRoot) {
  * 任务_A/报告.md，后来清单里根上那份同名的就不会再把它抢走。
  */
 function linkTurn(turn, targets, root) {
-  if (!turn || !targets || !targets.size) return 0;
+  if (!turn) return 0;
+  targets = targets || new Map();
   const tried = turn._linkTried || (turn._linkTried = new Set());
   // 回答收尾后正文不会再变，字只取一次。[文字](报告.md) 这种链接的路径不在正文里，也并进来，
   // 不然校正它的那一步（linkifyOutputs 开头）拿不到对应的名字
@@ -6092,7 +6160,8 @@ function linkTurn(turn, targets, root) {
     if (turn._linkText.includes(k)) pick.set(k, v);
   }
   let n = 0;
-  if (pick.size) turn.querySelectorAll(".body .a-text").forEach((el) => { n += linkifyOutputs(el, pick, root); });
+  if (pick.size || !turn._linkLocalDone) turn.querySelectorAll(".body .a-text").forEach((el) => { n += linkifyOutputs(el, pick, root); });
+  turn._linkLocalDone = true;
   return n;
 }
 /**
@@ -6129,18 +6198,27 @@ function listingTargets(listing) {
   return listingTargets.memo.map;
 }
 function linkifyOutputs(root, targets, fileRoot) {
-  if (!root || !targets || !targets.size) return 0;
+  if (!root) return 0;
+  targets = new Map(targets || []);
   // renderMd 拼出来的 [文字](报告.md) 只照字面那条路径指，可模型十有八九只写文件名，
   // 真身在任务子目录里（任务_A/报告.md）。这儿拿这一趟的产出表把它校正过来，
   // 不然点下去就是一句「文件不存在」。
   // 表里查不到的不动：那多半是上一轮的产出，链接本身是好的，只是不归这一趟管
   for (const a of root.querySelectorAll("a.file-ln[data-md]")) {
+    if (a.dataset.local) continue;
     const want = a.dataset.name || "";
-    const real = targets.get(want) || targets.get(want.split("/").pop());
+    const real = targets.get(want);
     if (real && real !== want) { a.dataset.name = real; a.title = "点击预览 " + real; }
   }
   // 清单能有几百个名字，正文里提到的往往就三五个：先按字面筛一遍，别拿几百个分支的正则去扫每一段字
-  const text = root.textContent || "";
+  const nodes = [];
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+    const p = t.parentElement;
+    if (t.nodeValue && /\S/.test(t.nodeValue) && p && !p.closest("a, pre, .out-block, .file-ln")) nodes.push(t);
+  }
+  const text = nodes.map(t => t.nodeValue).join("\n");
+  for (const [k, v] of localLinkTargets(text)) if (!targets.has(k) || localFileRef(k)) targets.set(k, v);
   const keys = [...targets.keys()].filter((k) => text.includes(k)).sort((a, b) => b.length - a.length); // 长的先匹配，全路径别被切成半截
   if (!keys.length) return 0;
   const re = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
@@ -6157,17 +6235,6 @@ function linkifyOutputs(root, targets, fileRoot) {
     const start = i - m[0].length;
     return okLeft(s, start) ? start : -1;
   };
-  const nodes = [];
-  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  for (let t = walk.nextNode(); t; t = walk.nextNode()) {
-    const p = t.parentElement;
-    if (!t.nodeValue || !/\S/.test(t.nodeValue) || !p) continue;
-    // 代码块（<pre>）里的路径是代码，链接化会把代码改样。但**行内** `报告.html` 是另一回事：
-    // 模型收尾列交付物时十有八九给文件名套了反引号，以前这一套就把它们全筛掉了——
-    // 说的就是这批。
-    if (p.closest("a, pre, .out-block, .file-ln")) continue;
-    nodes.push(t);
-  }
   let n = 0;
   for (const t of nodes) {
     const s = t.nodeValue;
@@ -6180,9 +6247,12 @@ function linkifyOutputs(root, targets, fileRoot) {
       if (!okLeft(s, start)) {
         start = leadPath(s, start);
         if (start < 0 || start < last) continue;
+        // A complete path must match as a whole. Never turn another project's
+        // index.html (or an absolute local path) into a workspace basename hit.
+        if (!targets.has(s.slice(start, m.index + m[0].length))) continue;
       }
       if (start > last) frag.appendChild(document.createTextNode(s.slice(last, start)));
-      frag.appendChild(makeFileLink(s.slice(start, m.index + m[0].length), targets.get(m[0]), fileRoot));
+      frag.appendChild(makeFileLink(s.slice(start, m.index + m[0].length), targets.get(s.slice(start, m.index + m[0].length)) || targets.get(m[0]), fileRoot));
       last = m.index + m[0].length;
       hit++;
     }
@@ -6197,11 +6267,13 @@ function makeFileLink(label, name, root) {
   const a = document.createElement("a");
   a.className = "file-ln";
   a.dataset.name = name;
+  const local = localFileRef(name);
+  if (local) a.dataset.local = local;
   if (root) a.dataset.root = root; // 这张回答是哪个工作目录的：换过目录以后点它，开的还是当时那一份
   a.textContent = label;
   a.title = "点击预览";
   a.tabIndex = 0;
-  const open = (e) => { e.preventDefault(); previewFile(name, root || ""); };
+  const open = (e) => { e.preventDefault(); if (local) previewLocalFile(local); else previewFile(name, root || ""); };
   a.onclick = open;
   a.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") open(e); };
   return a;

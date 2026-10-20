@@ -7257,7 +7257,7 @@ const WINLOOK_CHECKS = `
 `;
 
 // ---- 流式正文的分段渲染（已定稿那截不许被重建） ----
-const STREAM_SRC = APP02X.slice(APP02X.indexOf("function repairBareCode"), APP02X.indexOf("\n// 【任务类型：X】"));
+const STREAM_SRC = srcBlock("function localFileRef(") + "\n" + APP02X.slice(APP02X.indexOf("function repairBareCode"), APP02X.indexOf("\n// 【任务类型：X】"));
 const STREAM_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0;width:760px'><div class='a-text' id='t'></div><div class='a-text' id='ref'></div></body>";
 const STREAM_STUBS = [
@@ -13399,16 +13399,29 @@ const ARRIVAL_CHECKS = `
      lns2[0].dataset.name === "任务_0910/张三_简历.docx" && lns2[1].dataset.name === "张三_简历.html",
      lns2[0].dataset.name + " | " + lns2[1].dataset.name);
   ok("裸的全路径整串都是链接，不是只挑尾巴那一截",
-     lns2[2].textContent === "/Users/somebody/ws/任务_0910/张三_简历.docx" && lns2[2].dataset.name === "任务_0910/张三_简历.docx",
+     lns2[2].textContent === "/Users/somebody/ws/任务_0910/张三_简历.docx" && lns2[2].dataset.local === "/Users/somebody/ws/任务_0910/张三_简历.docx",
      lns2[2].textContent);
   ok("file:// 开头的也算一条（模型爱把本地地址写成这样）",
-     lns2[3].textContent === "file:///Users/somebody/ws/张三_简历.html" && lns2[3].dataset.name === "张三_简历.html",
+     lns2[3].textContent === "file:///Users/somebody/ws/张三_简历.html" && lns2[3].dataset.local === "/Users/somebody/ws/张三_简历.html",
      lns2[3].textContent);
   ok("反向对照：代码块（<pre>）里那条还是一个字都不动",
      host2.querySelector("pre code").querySelector(".file-ln") === null &&
      host2.querySelector("pre code").textContent === "open 任务_0910/张三_简历.docx",
      host2.querySelector("pre code").innerHTML);
   host2.remove();
+
+  const wrong = new Map([["index.html", "old-project/_deploy/index.html"], ["old-project/_deploy/index.html", "old-project/_deploy/index.html"]]);
+  const collision = document.createElement("div");
+  collision.innerHTML = '<p><code>new-project/index.html</code></p><a class="file-ln" data-md="1" data-name="new-project/index.html">new project</a>';
+  ok("不同项目的 index.html 不按尾部同名替换", linkifyOutputs(collision, wrong) === 0 && collision.querySelector('a').dataset.name === "new-project/index.html");
+  ok("旧清单不能替其他目录的 index.html 创建裸名别名", !fileLinkTargets([], [F("old-project/_deploy/index.html")]).has("index.html"));
+  ok("本轮两个等深目录都有 index.html 时也不猜", !fileLinkTargets([F("one/index.html"), F("two/index.html")]).has("index.html"));
+  collision.innerHTML = '<p>项目目录 <code>/Users/example/External/new-project</code></p><p><code>new-project/index.html</code></p>';
+  linkifyOutputs(collision, wrong);
+  const external = collision.querySelector('a.file-ln');
+  ok("工作区外的明确项目路径保留原身份，点击才向服务端核对", external && external.dataset.local === "/Users/example/External/new-project/index.html" && !external.dataset.name.includes("old-project"));
+  collision.innerHTML = '<p>/Users/example/one/new-project</p><p>/Users/example/two/new-project</p><p>new-project/index.html</p>';
+  ok("两个外部目录项目同名时不猜其中一个", linkifyOutputs(collision, wrong) === 0);
 
   // ---------- 盘上本来就有的文件也要能点 ----------
   // 用户原话：「一些在产出目录下有的文件怎么没给我搞成链接啊」。

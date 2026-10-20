@@ -329,7 +329,7 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
       const cfg = require("../electron-builder.config");
       eq(cfg.win.publish[0].provider, "github", "Windows 安装包包含更新源");
       const workflow = read(".github", "workflows", "release.yml");
-      ok(workflow.includes("dist/*.yml") && workflow.includes("dist/*.blockmap"), "发布同时带上更新元数据和增量索引");
+      ok(workflow.includes("dist/latest*.yml") && workflow.includes("dist/*.blockmap"), "发布同时带上更新元数据和增量索引");
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
   finished = true;

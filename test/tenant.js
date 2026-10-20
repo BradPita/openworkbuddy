@@ -325,7 +325,7 @@ async function login(username, password) {
   const slice5 = SRC5.slice(cutA, cutB);
   const rpBody = slice5.slice(slice5.indexOf("function rootedPath("));
   eq((rpBody.match(/safePathIn\(/g) || []).length, 1,
-     "rootedPath 里只有一处 safePathIn：候选根全从 tryRoot 这一个口子过（多出一处就是一条绕开围栏的新路）");
+     "rootedPath 里只有一处 safePathIn：候选根全从 inRoot 这一个口子过（多出一处就是一条绕开围栏的新路）");
   // 最坏情况的「见过的根」：总部的根、分公司的根、分公司根下一个老的子项目、他自己那份里的子项目、外加一个换过的目录
   const SUB2 = path.join(root2, "子项目");
   fs.mkdirSync(SUB2, { recursive: true });
@@ -364,8 +364,9 @@ async function login(username, password) {
   const outside = (p) => !path.resolve(p).startsWith(path.resolve(BASE_WS) + path.sep);
   let got = ask(uFen, "总部机密.md");
   ok(outside(got) && !fs.existsSync(got), "光凭文件名要不到总部的文件（兜底扫描只在自己那份里找）", got);
-  got = ask(uFen, "总部机密.md", { root: hqKey });
-  ok(outside(got) && !fs.existsSync(got), "把总部那个根的指纹抄进 ?root= 也要不到（线索是用户给的，根得服务端认）", got);
+  let rootDenied = "";
+  try { ask(uFen, "总部机密.md", { root: hqKey }); } catch (e) { rootDenied = e.message; }
+  eq(rootDenied, "文件所属的工作目录不可用，请在原项目中打开", "别人的根指纹明确拒绝，不回退当前根或其他同名文件");
   got = ask(uFen, "总部机密.md", { sid: "s-hq-1" });
   ok(outside(got) && !fs.existsSync(got), "?sid= 也要不到（会话归属是第一道闸，这里故意只留第二道，它得自己扛得住）", got);
   got = ask(uHq, "总部机密.md");

@@ -7120,7 +7120,7 @@ function mediaMime(p) {
  *   ① ?root=<8位指纹>：files 事件本来就带着它、也跟着会话存了盘，前端照原样回传；
  *   ② ?sid=<会话 id>：新会话都记了 sess.root，比指纹更直接（也查归属）；
  *   ③ 兜底扫一遍已知的根：老会话盘上什么线索都没有，只能按「哪个根下真有这个文件」认，
- *      多个根都有就取改动时间最新的那个。这条是专门救用户手上那些已经存在的旧对话的。
+ *      多个根都有则报冲突，不能拿修改时间猜用户要的是哪一个。
  * 找不到就退回当前根的路径，让调用方照常报 404。
  * 不止一个账号时三条都先过 rootFence：只在请求人自己的根里找（见下）。
  */
@@ -7218,7 +7218,7 @@ function rootFromKey(key, req) {
  * 返回 { path, dir }：dir 是那一格（预览令牌只签到这一格）；按名字放行的 dir 为空，不签令牌。
  * @param {any} s 会话（或资料库那张表里同样形状的一行）
  */
-function sessionGrant(s, rel) {
+function sessionGrant(s, rel, rootKey) {
   const norm = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".").join("/");
   if (!s || !norm || norm.split("/").includes("..") || path.isAbsolute(String(rel || ""))) return null;
   const def = dataPath("workspace");
@@ -7232,6 +7232,7 @@ function sessionGrant(s, rel) {
   for (const [r, d] of Object.entries(s.dirs || {})) if (d) cells.push([r, d]);
   for (const [r, d] of cells) {
     const R = realOf(r), cell = path.resolve(R, String(d));
+    if (rootKey && workspaceKeyOf(R) !== rootKey && workspaceKeyOf(r) !== rootKey) continue;
     let p;
     try { p = safePathIn(R, norm); } catch { continue; }
     if (p.startsWith(cell + path.sep) && fs.existsSync(p) && within(p, cell)) return { path: p, dir: cell };
@@ -7242,6 +7243,7 @@ function sessionGrant(s, rel) {
   const roots = [s.root || def, ...all.filter((d) => keys.has(workspaceKeyOf(d)))];
   const tried = new Set();
   for (const R of roots) {
+    if (rootKey && workspaceKeyOf(R) !== rootKey) continue;
     const c = taskDirs.canonDir(R);
     if (tried.has(c)) continue;
     tried.add(c);
@@ -7257,34 +7259,50 @@ const grantOf = new WeakMap(); // req -> sessionGrant 的结果：预览令牌�
 /** 只读接口用：把请求里的相对路径解析成真实绝对路径，必要时换到它原本所属的根 */
 function rootedPath(req, rel) {
   grantOf.delete(req);
-  const here = safePath(rel); // 先按当前根算，顺带做越界检查（越界直接抛，下面一律不碰）
+  const hint = (k) => String((req.query || {})[k] || (req.body || {})[k] || "");
+  const key = hint("root");
   const fence = rootFence(req);
+  const inRoot = dir => {
+    if (!dir || (fence && !fence(dir))) return "";
+    const p = safePathIn(dir, rel);
+    if (fence && !fence(p)) throw new Error("路径越界，只允许访问自己的工作目录");
+    return p;
+  };
+  // An explicit origin is authoritative even when its file was deleted. Falling
+  // back to the current workspace here silently opens a different same-name file.
+  if (key) {
+    const dir = rootFromKey(key, req);
+    if (dir) {
+      return inRoot(dir);
+    }
+    const sid = hint("sid");
+    const s = sid && (sessions.get(sid) || (fs.existsSync(sessFile(sid)) ? getSession(sid) : null));
+    const g = s && sessionAllowed(req.user, s) ? sessionGrant(s, rel, key) : null;
+    if (g) { grantOf.set(req, g); return g.path; }
+    throw new Error("文件所属的工作目录不可用，请在原项目中打开");
+  }
+  const sidHint = hint("sid");
+  const session = sidHint && (sessions.get(sidHint) || (fs.existsSync(sessFile(sidHint)) ? getSession(sidHint) : null));
+  if (session && sessionAllowed(req.user, session)) {
+    const p = session.root ? inRoot(session.root) : "";
+    if (p) return p;
+    const g = fence ? sessionGrant(session, rel) : null;
+    if (g) { grantOf.set(req, g); return g.path; }
+    if (session.root) throw new Error("文件不在这条会话允许访问的目录中");
+  }
+  const here = safePath(rel); // 先按当前根算，顺带做越界检查（越界直接抛，下面一律不碰）
   if (fence && !fence(here)) throw new Error(`路径越界，只允许访问 workspace 内: ${rel}`);
   if (fs.existsSync(here)) return here;
   const tryRoot = (d) => {
-    if (!d || (fence && !fence(d))) return "";
-    try { const p = safePathIn(d, rel); return fs.existsSync(p) && (!fence || fence(p)) ? p : ""; } catch { return ""; }
+    try { const p = inRoot(d); return p && fs.existsSync(p) ? p : ""; } catch { return ""; }
   };
-  const hint = (k) => String((req.query || {})[k] || (req.body || {})[k] || ""); // GET 走 query，reveal/open 那两个 POST 走 body
-  const hinted = tryRoot(rootFromKey(hint("root"), req));
-  if (hinted) return hinted;
-  const sid = hint("sid");
-  if (sid) {
-    // 盘上没有的 id 不建空会话：getSession 会凭空塞一条进缓存
-    const s = sessions.get(sid) || (fs.existsSync(sessFile(sid)) ? getSession(sid) : null);
-    // 归属照查：会话 id 出现在链接和截图里，不是秘密
-    if (s && sessionAllowed(req.user, s)) {
-      const p = tryRoot(s.root);
-      if (p) return p;
-      const g = fence ? sessionGrant(s, rel) : null;
-      if (g) { grantOf.set(req, g); return g.path; }
-    }
-  }
   const hits = [];
   for (const d of knownRoots(req)) { const p = tryRoot(d); if (p) hits.push(p); }
   if (!hits.length) return here;
   if (hits.length === 1) return hits[0];
-  return hits.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+  const unique = [...new Map(hits.map(p => [fs.realpathSync(p), p])).values()];
+  if (unique.length === 1) return unique[0];
+  throw new Error("多个项目存在同名文件，请从原项目打开");
 }
 
 app.get("/api/files/download/*", (req, res) => {
@@ -7296,6 +7314,30 @@ app.get("/api/files/download/*", (req, res) => {
     res.status(400).send(e.message);
   }
 });
+
+// Explicit user clicks can open an external local file without guessing a
+// same-name workspace file. Only the platform owner can register its directory.
+app.post("/api/files/resolve-local", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "只有本机主人能打开工作区外的文件" });
+  try {
+    const requested = String((req.body || {}).path || "");
+    if (!path.isAbsolute(requested) || requested.includes("\0")) throw new Error("需要完整的本机文件路径");
+    const p = fs.realpathSync(requested), fence = rootFence(req);
+    if ((fence && !fence(p)) || !fs.statSync(p).isFile()) throw new Error("这个本机文件不可访问");
+    let dir = path.dirname(p), cursor = dir;
+    for (let i = 0; i < 8; i++) {
+      if (fence && !fence(cursor)) break;
+      if (fs.existsSync(path.join(cursor, "package.json")) || fs.existsSync(path.join(cursor, ".git"))) { dir = cursor; break; }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+    rememberRoot(dir);
+    const name = path.relative(dir, p).split(path.sep).join("/");
+    res.json({ name, root: workspaceKeyOf(dir), label: path.basename(dir) + "/" + name });
+  } catch { res.status(404).json({ error: "本机文件不存在或不允许访问，请核对完整路径" }); }
+});
+
 
 /**
  * 「这几个文件还在不在」——只回在与不在，不回内容。
@@ -7737,6 +7779,7 @@ function previewState(dir) {
   // 登录态 cookie 到不了那边，没有令牌的话「开了局域网」就等于同网段裸奔。
   return {
     running: true,
+    root: workspaceKeyOf(ps.dir),
     port: ps.port,
     dir: ps.dir,
     lan_open: !!ps.lanOpen,
@@ -7745,9 +7788,21 @@ function previewState(dir) {
     lan_url: lan ? `http://${lan}:${ps.port}/` : null,
   };
 }
-app.get("/api/preview/status", (_req, res) => res.json(previewState(getWorkspaceDir())));
+function previewDir(req) {
+  const key = String((req.query || {}).root || (req.body || {}).root || "");
+  if (!key) return getWorkspaceDir();
+  const dir = rootFromKey(key, req);
+  if (!dir) throw new Error("预览所属的项目目录不可用，请重新打开原文件");
+  return dir;
+}
+app.get("/api/preview/status", (req, res) => {
+  try { res.json(previewState(previewDir(req))); }
+  catch (e) { res.status(400).json({ running: false, error: e.message }); }
+});
 app.post("/api/preview/start", (req, res) => {
-  const dir = getWorkspaceDir();
+  let dir;
+  try { dir = previewDir(req); }
+  catch (e) { return res.status(400).json({ running: false, error: e.message }); }
   // lan=true 才对局域网开放：开了手机能扫，但同一个 Wi-Fi 下的人也能翻整个工作目录。
   // 「把这台机器上的一个目录挂到局域网上」是服务器级动作，普通成员开不了；
   // 不静默降级——降了要在返回体里说清楚，不然用户只会看到「怎么扫不出来」。
@@ -7756,6 +7811,11 @@ app.post("/api/preview/start", (req, res) => {
   const lanDenied = wantLan && !lanOpen;
   // open=文件名：服务就绪后用系统默认浏览器打开它
   const openName = req.body && req.body.open ? String(req.body.open).replace(/^\/+/, "") : null;
+  if (openName) {
+    try {
+      if (!fs.statSync(safePathIn(dir, openName)).isFile()) throw new Error("不是文件");
+    } catch { return res.status(404).json({ running: false, error: "这个项目里找不到要打开的文件，请确认文件路径" }); }
+  }
   const done = (st) => {
     if (openName) openWithSystem(st.url + openName.split("/").map(encodeURIComponent).join("/") + `?t=${st.token}`);
     res.json(lanDenied ? { ...st, lan_denied: true, lan_hint: "对局域网开放要平台管理员来开" } : st);
@@ -7779,6 +7839,24 @@ app.post("/api/preview/start", (req, res) => {
     }
     rs.status(401).type("text/plain; charset=utf-8").send("这个预览链接要带令牌才能看（回 OpenWorkBuddy 里重新复制一次）");
   });
+  site.use((rq, rs, nx) => {
+    try {
+      const rel = decodeURIComponent(rq.path).replace(/^\/+/, "");
+      let p = rel ? safePathIn(dir, rel) : dir;
+      const base = fs.realpathSync(dir);
+      const allowed = target => {
+        if (pvNestedBlocked(dir, target)) return false;
+        if (!fs.existsSync(target)) return true;
+        const real = fs.realpathSync(target);
+        return real === base || real.startsWith(base + path.sep);
+      };
+      if (!allowed(p)) return rs.sendStatus(403);
+      if (fs.existsSync(p) && fs.statSync(p).isDirectory()) p = path.join(p, "index.html");
+      else if (!fs.existsSync(p)) p += ".html";
+      if (!allowed(p)) return rs.sendStatus(403);
+      nx();
+    } catch { rs.sendStatus(403); }
+  });
   site.use(express.static(dir, { extensions: ["html"] }));
   // 端口 0 = 让系统分配空闲端口，避免和用户本机其它服务撞车
   const srv = site.listen(0, lanOpen ? "0.0.0.0" : "127.0.0.1", () => {
@@ -7789,8 +7867,10 @@ app.post("/api/preview/start", (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: "本地预览服务起不来：" + e.message });
   });
 });
-app.post("/api/preview/stop", (_req, res) => {
-  const dir = getWorkspaceDir();
+app.post("/api/preview/stop", (req, res) => {
+  let dir;
+  try { dir = previewDir(req); }
+  catch (e) { return res.status(400).json({ running: false, error: e.message }); }
   const ps = previewServers.get(dir);
   if (ps) { try { ps.srv.close(); } catch {} previewServers.delete(dir); } // 只停自己那份
   res.json({ running: false });

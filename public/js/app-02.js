@@ -3703,6 +3703,7 @@ document.addEventListener("click", (e) => {
 // renderMd 是拼字符串出来的，挂不上 onclick；而 makeFileLink 造的那一批走的是自己那只 onclick，
 // 所以这儿只认带 data-md 的，免得同一下点出两次预览。
 function openMdFileLink(a) {
+  if (a.dataset.local && typeof previewLocalFile === "function") { previewLocalFile(a.dataset.local); return; }
   if (typeof previewFile === "function") previewFile(a.dataset.name, a.dataset.root || "");
 }
 document.addEventListener("click", (e) => {

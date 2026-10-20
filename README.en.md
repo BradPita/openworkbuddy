@@ -255,6 +255,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
 - **Oct 20** Installed apps register the CLI on first launch using the bundled runtime; rerun `npm link` after moving a source checkout
 - **Oct 20** Two groups of five common tasks; pin directly from task rows and rename from the menu; local session imports and read-only sharing are disabled
 - **Oct 20** Read notifications stay read; run summaries distinguish ended, stopped and incomplete turns; inline script checks and video output collision protection
@@ -262,10 +263,11 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 - **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
 - **Oct 19** Rename tasks and identify dated previews; Goal checks unmet work and resumes in bounded rounds after 100 steps; CLI sandbox denials explain approval limits
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
-- **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 
 <details>
-<summary>Earlier updates (Oct 17 and older)</summary>
+<summary>More updates</summary>
+
+- **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 
 - **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
 

@@ -11,10 +11,12 @@ on:
   workflow_dispatch: # 也允许手动点一次，用来验证流水线本身通不通
 
 permissions:
+  actions: read # 只复用同一提交的已通过主分支 CI
   contents: write # 创建 Release 要写权限
 
 jobs:
-  # 发版前先跑全套测试。放 macOS 单独一个 job，不塞进下面 build 的两条腿里：
+  # 先核对同一提交的主分支 CI；没有可信的新鲜记录才重跑全套测试。
+  # 测试放 macOS 单独一个 job，不塞进下面 build 的两条腿里：
   # e2e 里有 execFileSync("/bin/sh", ...) 和 .app 装机态验证，Windows runner 上过不了，
   # 硬塞进 matrix 会把 Windows 那份包直接打没——而那份恰恰是开发机造不出来、最需要发的。
   test:
@@ -29,7 +31,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - id: ci
+        name: 查找同一提交的已通过主分支 CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verified="$(node scripts/release-ci.js)"
+          if [ -n "$verified" ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing successful main CI #$verified for $GITHUB_SHA"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
       - run: npm ci
+        if: steps.ci.outputs.passed != 'true'
       # 产物名来自 package.json 的 ${version}，流水线认的却是 tag。两边不一致 =
       # Release v0.1.7 里挂着 0.1.6 的包；更糟的是 src/server/updater.js 的 currentVersion() 读的也是
       # package.json，装完的用户「设置 → 关于 → 检查更新」会永远显示有新版，点过去下的还是同一个包。
@@ -41,6 +57,7 @@ jobs:
         run: |
           node -e "const v=require('./package.json').version,t=process.env.GITHUB_REF_NAME.replace(/^v/,'');if(v!==t){console.error('对不上：package.json 是 '+v+'，tag 是 '+t+'。先改 package.json 再重打 tag。');process.exit(1)}"
       - run: npm test
+        if: steps.ci.outputs.passed != 'true'
 
   build:
     needs: test
@@ -92,7 +109,7 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.exe
-            dist/*.yml
+            dist/latest*.yml
             dist/*.blockmap
           if-no-files-found: error
 

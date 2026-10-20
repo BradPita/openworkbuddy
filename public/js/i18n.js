@@ -28,6 +28,15 @@
   // ---------- 词典：中文原句 → 英文 ----------
   const DICT = {
     en: {
+      "这个本机文件无法打开": "This local file could not be opened",
+      "只有本机主人能打开工作区外的文件": "Only the local owner can open files outside the workspace",
+      "本机文件不存在或不允许访问，请核对完整路径": "The local file is missing or inaccessible. Check the full path",
+      "文件所属的工作目录不可用，请在原项目中打开": "The original workspace is unavailable. Open the file from its project",
+      "文件不在这条会话允许访问的目录中": "This file is outside the directories allowed for this session",
+      "多个项目存在同名文件，请从原项目打开": "Multiple projects contain this filename. Open it from the original project",
+      "预览所属的项目目录不可用，请重新打开原文件": "The preview project is unavailable. Reopen the original file",
+      "这个项目里找不到要打开的文件，请确认文件路径": "The file was not found in this project. Check its path",
+      "路径越界，只允许访问自己的工作目录": "This path is outside your own workspace",
       "办公与分析": "Office & analysis",
       "创作与开发": "Create & build",
       "制作汇报 PPT": "Create a presentation",

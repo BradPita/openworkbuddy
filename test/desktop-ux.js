@@ -588,6 +588,57 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
     ok(r.status === 0 && /✓ Windows 主进程：\d+ 过 \/ 0 挂/.test(tail), "test/win-main.js 全绿：" + tail, { status: r.status, bad, err: String(r.stderr || "").slice(0, 300) });
   });
 
+  await section("【14】预览和部署绑定原目录，迟到响应不能切回旧项目", async () => {
+    const code = slice(APP01, "let previewSrv =", "// 产出快照", "部署控件");
+    const calls = [], buttons = new Map(), bar = { innerHTML: "", style: {}, querySelector: sel => buttons.get(sel) || (buttons.set(sel, {}), buttons.get(sel)) };
+    const state = root => ({ running: true, root, url: "http://127.0.0.1:" + (root === "aaaa1111" ? 1111 : 2222) + "/", token: "fixture", lan_open: false });
+    let holdA = false, releaseA;
+    const ctx = { document: { getElementById: () => bar }, pvCurrent: "index.html", pvRoot: "aaaa1111", sessionId: "fixture", AbortSignal, encodeURIComponent,
+      fpath: encodeURIComponent, esc: s => s, ic: () => "", amPlatformOwner: () => true, toast: () => {},
+      fetch: async (url, opts) => {
+        calls.push({ url, opts }); const root = new URL(url, "http://localhost").searchParams.get("root");
+        if (holdA && root === "aaaa1111" && url.includes("/status")) return new Promise(resolve => { releaseA = () => resolve({ json: async () => state(root) }); });
+        return { json: async () => state(root) };
+      } };
+    vm.createContext(ctx);
+    vm.runInContext(slice(APP01, "function withRoot(", "/** 顺着 DOM", "文件目录参数") + "\n" + code, ctx);
+    await ctx.renderDeployBar();
+    ok(bar.innerHTML.includes(":1111/"), "项目 A 的部署链接指向 A 服务");
+    ctx.pvRoot = "bbbb2222"; await ctx.renderDeployBar();
+    ok(bar.innerHTML.includes(":2222/") && !bar.innerHTML.includes(":1111/"), "同名 index.html 切到 B 后不复用 A 的端口");
+    vm.runInContext("previewSrv = {running:true,lan_open:true};", ctx);
+    await buttons.get("#pv-open-br").onclick({ target: {} });
+    const started = calls.findLast(x => x.url.includes("/start"));
+    ok(started.url.includes("root=bbbb2222") && JSON.parse(started.opts.body).open === "index.html" && JSON.parse(started.opts.body).lan === false, "浏览器打开携带 B 的根，不继承另一个项目的 LAN 状态");
+    await buttons.get("#pv-serve-stop").onclick();
+    ok(calls.at(-2).url.includes("/stop?root=bbbb2222"), "停止只停 B 的预览服务");
+    holdA = true; ctx.pvRoot = "aaaa1111"; const late = ctx.renderDeployBar();
+    ctx.pvRoot = "bbbb2222"; await ctx.renderDeployBar(); releaseA(); await late;
+    ok(bar.innerHTML.includes(":2222/") && !bar.innerHTML.includes(":1111/"), "A 的迟到状态不能把 B 的界面切回去");
+
+    const refCode = slice(APP01, "function localFileRef(", "async function previewLocalFile(", "明确的本机文件路径");
+    const refs = { URL }; vm.createContext(refs); vm.runInContext(refCode, refs);
+    eq(refs.localFileRef("file://remote-host/private/file.html"), "", "不把远程 file 主机当本机路径");
+    eq(refs.localFileRef("file:///C:/Project%20Space/index.html"), "C:/Project Space/index.html", "Windows 文件 URL 保留完整路径与空格");
+    eq(refs.localFileRef("/data/custom/index.html"), "/data/custom/index.html", "任意 POSIX 绝对路径也不截成工作区相对路径");
+    ok(!refs.localLinkTargets("other/project/index.html").has("/project/index.html"), "相对路径中间的斜杠不被误判成绝对路径");
+    ok(!refs.localLinkTargets("别的项目/说明.md").size, "中文相对目录的斜杠同样不能截成绝对路径");
+    ok(refs.localLinkTargets("/Users/example/Project Space/index.html").has("/Users/example/Project Space/index.html"), "独占文本节点的含空格路径完整保留");
+    const mapped = refs.localLinkTargets("/Users/example/External/project\nproject/index.html");
+    eq(mapped.get("project/index.html"), "/Users/example/External/project/index.html", "相对项目链接只根据同一回答中明确的绝对项目目录解析");
+
+    const localCode = slice(APP01, "async function previewLocalFile(", "\n}\n", "外部文件打开") + "\n}";
+    let firstResolve; const opened = [], errors = [];
+    const local = { pvSeq: 0, toast: s => errors.push(s), previewFile: (n, r) => opened.push([n, r]), fetch: async (_url, opts) => {
+      const p = JSON.parse(opts.body).path;
+      const response = { ok: true, json: async () => ({ name: "index.html", root: p }) };
+      return p === "first" ? new Promise(resolve => { firstResolve = () => resolve(response); }) : response;
+    } };
+    vm.createContext(local); vm.runInContext(localCode, local);
+    const first = local.previewLocalFile("first"); await local.previewLocalFile("second"); firstResolve(); await first;
+    ok(opened.length === 1 && opened[0][1] === "second" && errors.length === 0, "外部文件连续点击只打开最后点击的那份，迟到解析不抢回预览");
+  });
+
   finished = true;
   console.log(`\n${fail ? "✗" : "✓"} 桌面端体验：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);
