@@ -15712,6 +15712,7 @@ const ICO_CHECKS = FLUSH_SRC + `
     ".side-nav .nav-head #proj-add .i, .row-more .i { width: 1em; height: 1em; }",
     ".picker-btn { height: auto; padding: 6px 10px; }",
     ".icon-btn { width: 32px; height: 32px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; }",
+    "#gear-btn { width: 36px; height: 36px; border-radius: var(--radius-lg); border: 1px solid var(--owb-border); }",
     ".chip .icon-btn { width: 18px; height: 18px; flex: none; }",
     ".pv-head button { padding: 4px 8px; border-radius: var(--radius-sm); }",
     "#toggle-side { padding: 4px 10px; border-radius: var(--radius-md); margin-left: -8px; width: auto; height: auto; display: inline-block; }",
