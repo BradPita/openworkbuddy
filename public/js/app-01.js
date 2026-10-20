@@ -5197,7 +5197,7 @@ async function renderDeployBar() {
   if (!pvCurrent || !/\.html?$/i.test(pvCurrent)) { bar.style.display = "none"; return; }
   bar.style.display = "";
   bar.innerHTML = "";
-  const state = await fetch(withRoot("/api/preview/status", root)).then(r => r.json()).catch(() => ({ running: false }));
+  const state = await fetch(withRoot("/api/preview/status", root), { signal: AbortSignal.timeout(5000) }).then(r => r.json()).catch(() => ({ running: false }));
   if (stale()) return;
   previewSrv = state;
   if (!previewSrv.running) {
@@ -6077,12 +6077,12 @@ function localLinkTargets(text) {
 async function previewLocalFile(file) {
   const seq = ++pvSeq;
   try {
-    const r = await fetch("/api/files/resolve-local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: file }) });
+    const r = await fetch("/api/files/resolve-local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: file }), signal: AbortSignal.timeout(15000) });
     const d = await r.json();
     if (seq !== pvSeq) return;
     if (!r.ok || !d.name || !d.root) throw new Error(d.error || "这个本机文件无法打开");
     return previewFile(d.name, d.root, { label: d.label || d.name });
-  } catch (e) { if (seq === pvSeq) toast(e.message || "这个本机文件无法打开", "circle-x"); }
+  } catch (e) { if (seq === pvSeq) toast(e.name === "TimeoutError" ? "文件定位超时，请稍后再试" : (e.message || "这个本机文件无法打开"), "circle-x"); }
 }
 // 模型收尾时爱写「简历已经写好了，在 张三_简历.html 里」——那串文件名在对话里是死的，
 // 用户得自己去右侧面板一行行找同名的那个。现在正文里提到的文件名，只要盘上真有，就是能点的。

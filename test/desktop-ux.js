@@ -629,7 +629,7 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
 
     const localCode = slice(APP01, "async function previewLocalFile(", "\n}\n", "外部文件打开") + "\n}";
     let firstResolve; const opened = [], errors = [];
-    const local = { pvSeq: 0, toast: s => errors.push(s), previewFile: (n, r) => opened.push([n, r]), fetch: async (_url, opts) => {
+    const local = { pvSeq: 0, AbortSignal, toast: s => errors.push(s), previewFile: (n, r) => opened.push([n, r]), fetch: async (_url, opts) => {
       const p = JSON.parse(opts.body).path;
       const response = { ok: true, json: async () => ({ name: "index.html", root: p }) };
       return p === "first" ? new Promise(resolve => { firstResolve = () => resolve(response); }) : response;
@@ -637,6 +637,9 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
     vm.createContext(local); vm.runInContext(localCode, local);
     const first = local.previewLocalFile("first"); await local.previewLocalFile("second"); firstResolve(); await first;
     ok(opened.length === 1 && opened[0][1] === "second" && errors.length === 0, "外部文件连续点击只打开最后点击的那份，迟到解析不抢回预览");
+    local.fetch = async () => { const e = new Error("timeout"); e.name = "TimeoutError"; throw e; };
+    await local.previewLocalFile("timeout");
+    ok(opened.length === 1 && errors.at(-1) === "文件定位超时，请稍后再试", "定位超时明确提示且保留现有预览，不打开其他同名文件");
   });
 
   finished = true;

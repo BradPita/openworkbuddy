@@ -29,6 +29,7 @@
   const DICT = {
     en: {
       "这个本机文件无法打开": "This local file could not be opened",
+      "文件定位超时，请稍后再试": "Locating the file timed out. Try again shortly",
       "只有本机主人能打开工作区外的文件": "Only the local owner can open files outside the workspace",
       "本机文件不存在或不允许访问，请核对完整路径": "The local file is missing or inaccessible. Check the full path",
       "文件所属的工作目录不可用，请在原项目中打开": "The original workspace is unavailable. Open the file from its project",
