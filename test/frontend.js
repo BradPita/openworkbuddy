@@ -3264,6 +3264,8 @@ const WIN_CHECKS = `
   ok("搜索结果列出匹配片段", snippets.length > 1 && snippets[0].textContent.includes("第"));
   snippets[1].click();
   ok("点匹配片段直接跳转并高亮，计数跟着改变", csIdx === 1 && csMatches[1].classList.contains("search-hit") && document.getElementById("cs-count").textContent.startsWith("2/"));
+  const selectedRange = [...CSS.highlights.get("owb-chat-search")][0];
+  ok("关键词定位使用准确文字 Range，长回复不会只跳到整段中间", selectedRange.toString() === "第" && selectedRange.getBoundingClientRect().height > 0, JSON.stringify({ text: selectedRange.toString(), height: selectedRange.getBoundingClientRect().height, html: csMatches[1].outerHTML.slice(0, 200) }));
   document.getElementById("cs-prev").click();
   ok("上一处与下一处可连续定位", csIdx === 0);
   await open("S_LONG");

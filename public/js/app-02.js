@@ -3145,6 +3145,7 @@ function openChatSearch() {
   runChatSearch();
 }
 function closeChatSearch(focusInput = true) {
+  if (typeof CSS !== "undefined" && CSS.highlights) CSS.highlights.delete("owb-chat-search");
   const bar = document.getElementById("chat-search");
   if (bar) bar.style.display = "none";
   csMatches.forEach(m => m.classList.remove("search-hit"));
@@ -3159,6 +3160,7 @@ function closeChatSearch(focusInput = true) {
   if (focusInput) inputEl.focus();
 }
 function runChatSearch() {
+  if (typeof CSS !== "undefined" && CSS.highlights) CSS.highlights.delete("owb-chat-search");
   csMatches.forEach(m => m.classList.remove("search-hit"));
   csMatches = [];
   csIdx = -1;
@@ -3190,12 +3192,34 @@ function runChatSearch() {
   cnt.textContent = csMatches.length ? `0/${csMatches.length}` : "无结果";
   if (csMatches.length) csNav(1);
 }
+/** 用原文 Range 定位关键词，不改消息 DOM，避免破坏代码块与正在流式输出的正文。 */
+function csMatchRange(el, query) {
+  const at = el.textContent.toLowerCase().indexOf(query);
+  if (at < 0 || !query) return null;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), range = document.createRange();
+  let node, offset = 0, started = false;
+  while ((node = walker.nextNode())) {
+    const end = offset + node.textContent.length;
+    if (!started && at < end) { range.setStart(node, at - offset); started = true; }
+    if (started && at + query.length <= end) { range.setEnd(node, at + query.length - offset); return range; }
+    offset = end;
+  }
+  return null;
+}
 function csNav(dir) {
   if (!csMatches.length) return;
   if (csIdx >= 0) csMatches[csIdx].classList.remove("search-hit");
   csIdx = (csIdx + dir + csMatches.length) % csMatches.length;
   csMatches[csIdx].classList.add("search-hit");
-  csMatches[csIdx].scrollIntoView({ block: "center", behavior: "smooth" });
+  for (let parent = csMatches[csIdx].parentElement; parent && parent !== chatCol; parent = parent.parentElement) {
+    if (parent.matches(".proc-wrap")) parent.classList.add("open");
+    if (parent.matches("details")) parent.open = true;
+  }
+  const range = csMatchRange(csMatches[csIdx], document.getElementById("cs-input").value.trim().toLowerCase());
+  const scroller = document.getElementById("chat-scroll"), rect = range && range.getBoundingClientRect();
+  if (range && typeof CSS !== "undefined" && CSS.highlights && typeof Highlight === "function") CSS.highlights.set("owb-chat-search", new Highlight(range));
+  if (scroller && rect && rect.height) scroller.scrollTo({ top: scroller.scrollTop + rect.top - scroller.getBoundingClientRect().top - scroller.clientHeight / 2, behavior: "smooth" });
+  else csMatches[csIdx].scrollIntoView({ block: "center", behavior: "smooth" });
   document.getElementById("cs-count").textContent = `${csIdx + 1}/${csMatches.length}`;
   document.querySelectorAll("#cs-results .cs-result").forEach((button, index) => button.setAttribute("aria-current", String(index === csIdx)));
 }
