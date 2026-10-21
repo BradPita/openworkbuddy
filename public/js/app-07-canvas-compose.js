@@ -902,7 +902,7 @@ function canvasRestoreOrSeed(remote = null) {
   }
   // 刚从「新建短剧」表单过来的，填的画幅、时长、风格、模型记在这张起手剧本卡上（见 canvasCreateBoard）
   const seed = typeof canvasTakeSeedDrama === "function" ? canvasTakeSeedDrama() : null;
-  const script = canvasAddNode("script", { title: "一句话概念", text: "在这里写一句话概念、人物关系、冲突、对白和结局。", ...(seed || {}) }, { x: 100, y: 110 }, { persist: false, skipSelect: true });
+  const script = canvasAddNode("script", { title: "一句话概念", text: "", ...(seed || {}) }, { x: 100, y: 110 }, { persist: false, skipSelect: true });
   const storyboard = canvasAddNode("storyboard", {}, { x: 510, y: 110 }, { persist: false, skipSelect: true });
   if (script && storyboard) canvasConnect(script, storyboard); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(false); canvasPersist();
 }

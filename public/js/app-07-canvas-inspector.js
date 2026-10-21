@@ -82,7 +82,19 @@ function canvasBindNode(node, root) {
   root.querySelectorAll("[data-canvas-job-again]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasGenerateAgain(node, button.dataset.canvasJobAgain); }));
   root.querySelectorAll("[data-canvas-job-dismiss]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDismissJob(node, button.dataset.canvasJobDismiss); }));
   root.querySelector("[data-canvas-draft]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDraftStoryboard(node); });
-  root.querySelectorAll("[data-canvas-inline-key]").forEach((field) => field.addEventListener("input", () => { const next = canvasPayload(node); next[field.dataset.canvasInlineKey] = field.value; node.set("canvasPayload", next); canvasPersist(); }));
+  root.querySelectorAll("[data-canvas-inline-key]").forEach((field) => {
+    // 原生输入保留选字、换行、复制粘贴和右键菜单，不交给拖卡/删除/全局快捷键。
+    field.addEventListener("pointerdown", (evt) => evt.stopPropagation());
+    field.addEventListener("contextmenu", (evt) => evt.stopPropagation());
+    field.addEventListener("keydown", (evt) => evt.stopPropagation());
+    field.addEventListener("input", () => {
+      canvasState.handsOnAt = Date.now();
+      const next = { ...canvasPayload(node), [field.dataset.canvasInlineKey]: field.value };
+      node.set("canvasPayload", next); canvasSchedulePersist();
+    });
+    field.addEventListener("blur", () => { if (canvasState.editSaveTimer) canvasPersist(); });
+    field.addEventListener("pointerup", () => canvasFitSoon(node));
+  });
   // 卡上那格改完离开：右边检查器里同一格跟着换成新值（见 canvasInspectorSyncField）
   root.querySelectorAll("[data-canvas-inline-key]").forEach((field) => field.addEventListener("change", () => canvasInspectorSyncField(node, field.dataset.canvasInlineKey)));
   root.querySelector("[data-canvas-expand]")?.addEventListener("click", async (evt) => {
@@ -272,13 +284,13 @@ function canvasPortSpot(source, kind) {
 function canvasPortReveal(node) {
   const viewport = document.getElementById("canvas-viewport"), paper = canvasState.paper;
   if (!viewport || !paper || !node) return;
-  const b = node.getBBox(), s = canvasState.scale || 1, pad = 32, vw = viewport.clientWidth, vh = viewport.clientHeight;
+  const area = canvasViewportArea(), b = node.getBBox(), s = canvasState.scale || 1, pad = 32, vw = area.offsetX + area.width, vh = area.offsetY + area.height;
   const left = canvasState.x + b.x * s, top = canvasState.y + b.y * s, right = left + b.width * s, bottom = top + b.height * s;
   let dx = 0, dy = 0;
   if (right > vw - pad) dx = vw - pad - right;
-  if (left + dx < pad) dx = pad - left;
+  if (left + dx < area.offsetX + pad) dx = area.offsetX + pad - left;
   if (bottom > vh - pad) dy = vh - pad - bottom;
-  if (top + dy < pad) dy = pad - top;
+  if (top + dy < area.offsetY + pad) dy = area.offsetY + pad - top;
   if (!dx && !dy) return;
   canvasState.x += dx; canvasState.y += dy;
   paper.translate(canvasState.x, canvasState.y);
@@ -303,10 +315,10 @@ const CANVAS_INLINE_FIELDS = {
   agent: [[".canvas-node-head b", "title", true], [".canvas-node-body > .canvas-node-copy", "task", false]],
   character: [[".canvas-node-head b", "name", true], [".canvas-node-desc", "description", false]],
   location: [[".canvas-node-head b", "name", true], [".canvas-node-desc", "description", false]],
-  shot: [[".canvas-shot-prompt", "prompt", false]],
+  shot: [[".canvas-shot-prompt", "prompt", false], [".canvas-shot-line", "line", false]],
   image: [[".canvas-node-head b", "title", true]],
   video: [[".canvas-node-head b", "title", true]],
-  audio: [[".canvas-node-head b", "title", true], [".canvas-media-text", "text", false]],
+  audio: [[".canvas-node-head b", "title", true]],
 };
 function canvasInlineMark(node, root) {
   (CANVAS_INLINE_FIELDS[canvasKind(node)] || []).forEach(([sel, key]) => {
@@ -579,15 +591,34 @@ function canvasMarkDupShots() {
   if (hint) hint.hidden = !(sel && canvasKind(sel) === "shot" && dup.has(canvasShotFileKey(canvasPayload(sel).id)));
 }
 
+function canvasFocusNodeInput(node, key) {
+  if (!node || !canvasState.paper) return;
+  const root = canvasWireRoot(node.id); if (!root) return;
+  const kind = canvasKind(node);
+  key = key || ({ image: "prompt", video: "prompt", audio: "text", character: "description", location: "description", shot: "prompt", script: "text", agent: "task", note: "text" })[kind];
+  if (kind === "shot" && key === "text") key = "line";
+  if (!key) return;
+  const field = root.querySelector(`[data-canvas-inline-key="${key}"]`);
+  if (field) field.focus({ preventScroll: true });
+  else if (kind === "note") root.querySelector("[contenteditable=true]")?.focus({ preventScroll: true });
+  else canvasInlineOpen(node, root, { key });
+}
+
 function canvasAddNode(kind, payload = {}, position, options = {}) {
   const page = document.getElementById("assist-page"), J = typeof joint !== "undefined" ? joint : null; if (!page || !canvasState.graph || !canvasState.paper || !J) return null;
   // 新加的镜头没给编号就取下一个空号；恢复存档（带 options.id）、展开分镜表（自带编号）都不动
   if (kind === "shot" && !options.id && !String((payload && payload.id) || "").trim()) payload = { ...payload, id: canvasNextShotId() };
-  const def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note, Type = canvasType(J), n = canvasState.next++;
-  const node = new Type({ id: options.id, position: position || { x: 90 + ((n - 1) % 3) * 410, y: 100 + Math.floor((n - 1) / 3) * 300 }, size: { width: def.width, height: def.height }, z: 2 });
-  node.set({ canvasKind: kind, canvasPayload: { ...canvasDefaultPayload(kind), ...payload } }); canvasState.graph.addCell(node); canvasRefreshNode(node);
+  if (!options.skipSelect && canvasState.inlineEdit) canvasInlineCommit();
+  const def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note, Type = canvasType(J); canvasState.next++;
+  const node = new Type({ id: options.id, position: position || canvasNewNodePosition(kind), size: { width: def.width, height: def.height }, z: 2 });
+  node.set({ canvasKind: kind, canvasPayload: canvasNormalizeNodePayload(kind, payload) }); canvasState.graph.addCell(node); canvasRefreshNode(node);
   if (!options.skipSelect) { canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = false; canvasRenderInspector(false); }
-  if (options.persist !== false) canvasPersist(); return node;
+  if (options.persist !== false) canvasPersist();
+  if (!options.skipSelect && !options.id && options.focus !== false) {
+    const p = canvasPayload(node), text = p.prompt || p.text || p.description || p.task || "";
+    if (!text.trim()) canvasFocusNodeInput(node);
+  }
+  return node;
 }
 
 function canvasUpdateSelected(key, value, rerender = true) {
@@ -599,6 +630,7 @@ function canvasUpdateSelected(key, value, rerender = true) {
 }
 
 function canvasRenderInspector(focus = true) {
+  canvasRenderSelectionTools(); canvasState.minimap?.schedule();
   const box = document.getElementById("canvas-inspector"); if (!box) return; const node = canvasSelectedNode();
   canvasState.graph?.getElements().forEach((item) => {
     const view = canvasState.paper && item.findView(canvasState.paper), root = view && view.el && view.el.querySelector(".canvas-joint-node");

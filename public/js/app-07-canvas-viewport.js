@@ -19,6 +19,10 @@ function canvasZoom(page, value) {
 // - 其余（按像素，触控板双指滑动）：按 deltaX/deltaY 平移，不改缩放。
 // 缩放的两种都以光标为锚点：缩放前光标下是哪一点，缩放后还在光标下。
 // macOS 下有些鼠标也报像素模式，会变成上下平移；按住 ⌘/Ctrl 滚仍然是缩放。
+function canvasWheelFactor(evt) {
+  const dy = Number(evt.deltaY) || 0;
+  return evt.deltaMode === 1 || Math.abs(dy) >= 50 ? (dy > 0 ? .92 : 1.08) : Math.exp(-Math.max(-10, Math.min(10, dy)) * .01);
+}
 function canvasWheel(page, evt) {
   const paper = canvasState.paper;
   if (!paper || !evt) return;
@@ -32,7 +36,7 @@ function canvasWheel(page, evt) {
     return;
   }
   if (!dy) return;
-  const factor = evt.deltaMode === 1 || Math.abs(dy) >= 50 ? (dy > 0 ? .92 : 1.08) : Math.exp(-Math.max(-10, Math.min(10, dy)) * .01);
+  const factor = canvasWheelFactor(evt);
   const client = { x: evt.clientX, y: evt.clientY };
   const exact = typeof paper.clientToLocalPoint === "function" && typeof paper.localToClientPoint === "function";
   const anchor = exact ? paper.clientToLocalPoint(client) : null;
@@ -50,17 +54,56 @@ function canvasWheel(page, evt) {
   paper.translate(canvasState.x, canvasState.y);
 }
 
+// 一帧内的滚轮只更新一次 SVG 变换；每个缩放事件仍按自己的光标锚点计算，不能丢掉累计位移。
+function canvasFlushWheel(page) {
+  if (canvasState.wheelFrame !== null) cancelAnimationFrame(canvasState.wheelFrame);
+  canvasState.wheelFrame = null;
+  const events = canvasState.wheelQueue; canvasState.wheelQueue = [];
+  const paper = canvasState.paper;
+  if (!events.length || !paper) return;
+  const origin = paper.localToClientPoint({ x: 0, y: 0 });
+  let scale = canvasState.scale || 1, x = canvasState.x, y = canvasState.y, ox = origin.x, oy = origin.y;
+  const height = Math.max(200, page.querySelector("#canvas-viewport")?.clientHeight || 600);
+  for (const evt of events) {
+    const zoom = evt.ctrlKey || evt.metaKey || (evt.deltaMode === 1 && evt.deltaY);
+    if (zoom && evt.deltaY) {
+      const next = Math.max(.12, Math.min(1.8, scale * canvasWheelFactor(evt)));
+      const dx = (evt.clientX - ox) * (1 - next / scale), dy = (evt.clientY - oy) * (1 - next / scale);
+      x += dx; y += dy; ox += dx; oy += dy; scale = next;
+    } else if (!zoom) {
+      const unit = evt.deltaMode === 1 ? 16 : evt.deltaMode === 2 ? height : 1;
+      const dx = evt.deltaX * unit, dy = evt.deltaY * unit;
+      x -= dx; y -= dy; ox -= dx; oy -= dy;
+    }
+  }
+  if (scale !== canvasState.scale) canvasZoom(page, scale);
+  canvasState.x = x; canvasState.y = y; paper.translate(x, y);
+}
+
+// 使用实际没有被对话框、时间线和属性面板遮住的区域；面板在视口外时不重复扣空间。
+function canvasViewportArea(page = document.getElementById("assist-page")) {
+  const viewport = page?.querySelector("#canvas-viewport"); if (!viewport) return null;
+  const rect = viewport.getBoundingClientRect();
+  let right = Math.min(rect.right, window.innerWidth), bottom = Math.min(rect.bottom, window.innerHeight);
+  const top = Math.max(0, rect.top), left = Math.max(0, rect.left);
+  const inspector = page.querySelector(".canvas-layout:not(.canvas-inspector-hidden) .canvas-inspector");
+  if (inspector?.offsetParent !== null && inspector?.offsetWidth) right = Math.min(right, inspector.getBoundingClientRect().left - 12);
+  page.querySelectorAll(".canvas-chat, .canvas-timeline").forEach((el) => {
+    if (el.hidden || el.offsetParent === null) return;
+    const r = el.getBoundingClientRect();
+    if (r.height && r.left < right && r.right > left && r.top > top && r.top < bottom) bottom = r.top - 12;
+  });
+  return { left, top, width: Math.max(120, right - left), height: Math.max(120, bottom - top), offsetX: left - rect.left, offsetY: top - rect.top, rect };
+}
+
 function canvasFitToBox(page, box, padding = 64, minScale = .12) {
   const viewport = page?.querySelector("#canvas-viewport"), paper = canvasState.paper;
   if (!viewport || !paper || !box || !box.width || !box.height) return;
-  const inspector = page.querySelector(".canvas-layout:not(.canvas-inspector-hidden) .canvas-inspector");
-  const inspectorWidth = inspector && inspector.offsetParent !== null ? inspector.offsetWidth + 24 : 0;
-  // 对话框在 viewport 外面，不能再从可视高度扣一次；那会把新画布错误缩到 20%。
-  const vw = Math.max(280, viewport.clientWidth - inspectorWidth), vh = Math.max(220, viewport.clientHeight);
+  const area = canvasViewportArea(page), vw = area.width, vh = area.height;
   const scale = Math.max(minScale, Math.min(1.6, (vw - padding * 2) / box.width, (vh - padding * 2) / box.height));
   canvasState.scale = scale;
-  canvasState.x = (vw - box.width * scale) / 2 - box.x * scale;
-  canvasState.y = (vh - box.height * scale) / 2 - box.y * scale;
+  canvasState.x = area.offsetX + (vw - box.width * scale) / 2 - box.x * scale;
+  canvasState.y = area.offsetY + (vh - box.height * scale) / 2 - box.y * scale;
   paper.scale(scale, scale); paper.translate(canvasState.x, canvasState.y);
   const label = page.querySelector("#canvas-zoom"); if (label) label.textContent = Math.round(scale * 100) + "%";
 }
@@ -81,11 +124,140 @@ function canvasFitAll(page) {
 function canvasCenterSelected(page) {
   const node = canvasSelectedNode();
   if (!node) { canvasFitAll(page); return; }
-  const b = node.getBBox(), viewport = page?.querySelector("#canvas-viewport");
+  const selected = [...canvasState.selectedIds].map((id) => canvasState.graph.getCell(id)).filter((item) => item?.isElement?.());
+  const b = canvasNodeBounds(selected.length ? selected : [node]), viewport = page?.querySelector("#canvas-viewport");
   if (!viewport || !canvasState.paper) return;
-  const vw = Math.max(320, viewport.clientWidth), vh = Math.max(260, viewport.clientHeight), scale = canvasState.scale || 1;
-  canvasState.x = vw / 2 - (b.x + b.width / 2) * scale; canvasState.y = vh / 2 - (b.y + b.height / 2) * scale;
+  const area = canvasViewportArea(page), scale = canvasState.scale || 1;
+  canvasState.x = area.offsetX + area.width / 2 - (b.x + b.width / 2) * scale; canvasState.y = area.offsetY + area.height / 2 - (b.y + b.height / 2) * scale;
   canvasState.paper.translate(canvasState.x, canvasState.y);
+}
+
+function canvasNodeBounds(nodes) {
+  return nodes.reduce((out, node) => {
+    const b = node.getBBox();
+    if (!out) return { x: b.x, y: b.y, width: b.width, height: b.height };
+    const right = Math.max(out.x + out.width, b.x + b.width), bottom = Math.max(out.y + out.height, b.y + b.height);
+    out.x = Math.min(out.x, b.x); out.y = Math.min(out.y, b.y);
+    out.width = right - out.x; out.height = bottom - out.y; return out;
+  }, null);
+}
+
+function canvasArrangeSelection(action) {
+  const graph = canvasState.graph, nodes = [...canvasState.selectedIds].map((id) => graph?.getCell(id)).filter((node) => node?.isElement?.());
+  if (nodes.length < 2) return;
+  const box = canvasNodeBounds(nodes), horizontal = action === "space-x";
+  if (!["left", "top", "space-x", "space-y"].includes(action)) return;
+  if (canvasState.inlineEdit) canvasInlineCommit();
+  canvasHistoryFlush(); graph.startBatch("canvas-edit");
+  try {
+    if (action === "left" || action === "top") nodes.forEach((node) => {
+      const p = node.position(); node.position(action === "left" ? box.x : p.x, action === "top" ? box.y : p.y);
+    });
+    else {
+      const key = horizontal ? "x" : "y", size = horizontal ? "width" : "height";
+      nodes.sort((a, b) => a.position()[key] - b.position()[key]);
+      const gap = Math.max(32, (box[size] - nodes.reduce((sum, node) => sum + node.size()[size], 0)) / (nodes.length - 1));
+      let at = box[key];
+      nodes.forEach((node) => { const p = node.position(); node.position(horizontal ? at : p.x, horizontal ? p.y : at); at += node.size()[size] + gap; });
+    }
+  } finally { graph.stopBatch("canvas-edit"); }
+  canvasPersist();
+}
+
+function canvasRenderSelectionTools() {
+  const box = document.getElementById("canvas-selection-tools"); if (!box) return;
+  const count = canvasState.selectedIds.size;
+  box.hidden = count < 2;
+  if (count < 2) { box.replaceChildren(); return; }
+  const graph = canvasState.graph, selected = [...canvasState.selectedIds].map((id) => graph?.getCell(id)).filter(Boolean);
+  const images = selected.every((node) => !!canvasUpstreamImage({ node, kind: canvasKind(node), path: canvasMediaPath(canvasPayload(node)) }));
+  const targets = images ? graph.getElements().filter((node) => !canvasState.selectedIds.has(node.id) && ["image", "shot", "character", "location"].includes(canvasKind(node))) : [];
+  const references = images ? `<select data-canvas-reference-target aria-label="${esc(canvasT("批量连接参考图"))}"><option value="">${canvasT("作为参考图…")}</option><option value="__new__">${canvasT("新建图片节点")}</option>${targets.map((node) => `<option value="${esc(node.id)}">${esc(canvasNodeLabel(node))}</option>`).join("")}</select>` : "";
+  box.innerHTML = `<span>${esc(canvasT("已选 {n} 个", { n: count }))}</span><select data-canvas-arrange aria-label="${esc(canvasT("整理选中节点"))}"><option value="">${canvasT("整理选中节点")}</option><option value="left">${canvasT("左对齐")}</option><option value="top">${canvasT("顶部对齐")}</option><option value="space-x">${canvasT("水平等距")}</option><option value="space-y">${canvasT("垂直等距")}</option></select>${references}<button type="button" class="canvas-tool-button" data-canvas-duplicate-selection title="${esc(canvasT("复制节点与参考"))}" aria-label="${esc(canvasT("复制节点与参考"))}">${ic("copy")}</button><button type="button" class="canvas-tool-button" data-canvas-delete-selection title="${esc(canvasT("删除选中节点"))}" aria-label="${esc(canvasT("删除选中节点"))}">${ic("trash-2")}</button>`;
+  box.querySelector("[data-canvas-arrange]").addEventListener("change", (evt) => { canvasArrangeSelection(evt.target.value); evt.target.value = ""; });
+  box.querySelector("[data-canvas-delete-selection]").addEventListener("click", () => canvasDeleteSelection());
+  box.querySelector("[data-canvas-duplicate-selection]").addEventListener("click", () => canvasDuplicateSelection());
+  box.querySelector("[data-canvas-reference-target]")?.addEventListener("change", (evt) => { const target = evt.target.value; evt.target.value = ""; if (target) canvasConnectReferences(target); });
+}
+
+function canvasConnectReferences(targetId) {
+  const graph = canvasState.graph;
+  const sources = [...canvasState.selectedIds].map((id) => graph?.getCell(id)).filter((node) => node?.isElement?.());
+  if (!sources.length) return;
+  const paths = sources.map((node) => canvasUpstreamImage({ node, kind: canvasKind(node), path: canvasMediaPath(canvasPayload(node)) }));
+  if (paths.some((path) => !path)) return canvasToast("选中的节点包含不可用的图片。", "triangle-alert", "err");
+  let target = targetId === "__new__" ? null : graph.getCell(targetId);
+  if (targetId !== "__new__" && !target) return;
+  if (target) {
+    const problem = sources.map((source) => canvasLinkProblem(source, target)).find(Boolean);
+    if (problem) return canvasToast(problem, "triangle-alert", "err");
+  }
+  const p = target ? canvasPayload(target) : {};
+  const all = new Set([...paths, ...(target ? canvasUpstreamImages(target) : []), p.reference, p.first_frame].filter(Boolean));
+  if (all.size > 4) return canvasToast("最多使用 4 张参考图，请减少选择后再连接。", "triangle-alert", "err");
+  canvasHistoryFlush(); graph.startBatch("canvas-edit");
+  try {
+    if (!target) target = canvasAddNode("image", {}, undefined, { persist: false, skipSelect: true });
+    if (!target) return;
+    sources.forEach((source) => canvasConnect(source, target, "reference"));
+  } finally { graph.stopBatch("canvas-edit"); }
+  canvasSetSelection([target.id]); canvasPersist(); canvasFocusNodeInput(target);
+}
+
+// 小地图只绘制几何轮廓，既不加载素材，也不重新创建卡片。
+function canvasBindMinimap(page) {
+  const el = page.querySelector("#canvas-minimap"), button = page.querySelector("[data-canvas-minimap]");
+  if (!el || !button) return;
+  const map = { el, svg: el.querySelector("[data-canvas-map-surface]"), nodes: el.querySelector("[data-canvas-map-nodes]"), view: el.querySelector("[data-canvas-map-view]"), bounds: null, frame: null };
+  canvasState.minimap = map;
+  const draw = () => {
+    map.frame = null;
+    if (canvasState.minimap !== map || !canvasState.minimapOpen) return;
+    const nodes = canvasState.graph?.getElements() || [], box = canvasNodeBounds(nodes);
+    const area = canvasViewportArea(page), scale = canvasState.scale || 1;
+    const visible = { x: (area.offsetX - canvasState.x) / scale, y: (area.offsetY - canvasState.y) / scale, width: area.width / scale, height: area.height / scale };
+    map.el.style.bottom = `${Math.max(12, area.rect.height - area.offsetY - area.height + 12)}px`;
+    const left = Math.min(box?.x ?? visible.x, visible.x) - 80, top = Math.min(box?.y ?? visible.y, visible.y) - 80;
+    const right = Math.max(box ? box.x + box.width : visible.x, visible.x + visible.width) + 80;
+    const bottom = Math.max(box ? box.y + box.height : visible.y, visible.y + visible.height) + 80;
+    map.bounds = { x: left, y: top, width: right - left, height: bottom - top };
+    map.svg.setAttribute("viewBox", `${left} ${top} ${right - left} ${bottom - top}`);
+    map.nodes.innerHTML = nodes.map((node) => { const b = node.getBBox(); return `<rect class="canvas-map-node${canvasState.selectedIds.has(node.id) ? " is-selected" : ""}" x="${b.x}" y="${b.y}" width="${b.width}" height="${b.height}" rx="12"/>`; }).join("");
+    canvasMinimapView();
+  };
+  map.schedule = () => { if (canvasState.minimap === map && canvasState.minimapOpen && map.frame === null) map.frame = requestAnimationFrame(draw); };
+  const toggle = (open) => {
+    canvasState.minimapOpen = open; el.hidden = !open; button.setAttribute("aria-pressed", String(open));
+    if (open) map.schedule();
+  };
+  button.addEventListener("click", () => toggle(!canvasState.minimapOpen));
+  el.querySelector("button").addEventListener("click", () => toggle(false));
+  const jump = (evt) => {
+    const matrix = map.svg.getScreenCTM(); if (!matrix || !canvasState.paper) return;
+    const point = new DOMPoint(evt.clientX, evt.clientY).matrixTransform(matrix.inverse());
+    const area = canvasViewportArea(page), scale = canvasState.scale || 1;
+    canvasState.x = area.offsetX + area.width / 2 - point.x * scale;
+    canvasState.y = area.offsetY + area.height / 2 - point.y * scale;
+    canvasState.paper.translate(canvasState.x, canvasState.y);
+  };
+  map.svg.addEventListener("pointerdown", (evt) => { if (evt.button !== 0) return; evt.preventDefault(); evt.stopPropagation(); map.svg.setPointerCapture(evt.pointerId); jump(evt); });
+  map.svg.addEventListener("pointermove", (evt) => { if (map.svg.hasPointerCapture(evt.pointerId)) jump(evt); });
+  map.svg.addEventListener("pointerup", (evt) => { if (map.svg.hasPointerCapture(evt.pointerId)) map.svg.releasePointerCapture(evt.pointerId); });
+  canvasState.graph.on("add remove change:position change:size", map.schedule);
+  canvasState.paper.on("translate scale", canvasMinimapView);
+  map.resize = new ResizeObserver(() => map.schedule()); map.resize.observe(page.querySelector("#canvas-viewport"));
+  page.querySelectorAll(".canvas-chat, .canvas-timeline").forEach((el) => map.resize.observe(el));
+  toggle(canvasState.minimapOpen);
+}
+
+function canvasMinimapView() {
+  const map = canvasState.minimap, viewport = document.getElementById("canvas-viewport");
+  if (!map || !canvasState.minimapOpen || !viewport) return;
+  const scale = canvasState.scale || 1, area = canvasViewportArea();
+  const attrs = { x: (area.offsetX - canvasState.x) / scale, y: (area.offsetY - canvasState.y) / scale, width: area.width / scale, height: area.height / scale };
+  for (const [key, value] of Object.entries(attrs)) map.view.setAttribute(key, value);
+  const b = map.bounds;
+  if (b && (attrs.x < b.x || attrs.y < b.y || attrs.x + attrs.width > b.x + b.width || attrs.y + attrs.height > b.y + b.height)) map.schedule();
 }
 
 function canvasAutoLayout(page) {
@@ -111,6 +283,30 @@ function canvasAutoLayout(page) {
     nodes.forEach((node) => { const point = layoutGraph.node(node.id), size = node.size(); if (point) node.position(Math.round(point.x - size.width / 2), Math.round(point.y - size.height / 2)); });
   } finally { canvasState.historyMute = false; canvasState.bulk = false; }
   canvasPersist(); canvasFitAll(page); canvasToast("已按生成关系紧凑排版并居中。", "git-branch");
+}
+
+// 新卡按当前可见区域定位，平移和缩放后仍在眼前。碰撞只在屏幕内找空位，不能为了避让一路挪到屏幕外。
+function canvasNewNodePosition(kind, client) {
+  canvasFlushWheel(document.getElementById("assist-page"));
+  const viewport = document.getElementById("canvas-viewport"), paper = canvasState.paper;
+  const def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note;
+  if (!viewport || !paper) return { x: 90, y: 100 };
+  const area = canvasViewportArea(), rect = area, scale = canvasState.scale || 1;
+  const width = area.width, height = area.height, pad = 24;
+  const maxX = Math.max(pad, width - def.width * scale - pad), maxY = Math.max(pad, height - def.height * scale - pad);
+  const origin = { x: (client ? client.x - rect.left : width / 2) - def.width * scale / 2, y: (client ? client.y - rect.top : height / 2) - def.height * scale / 2 };
+  const bounds = canvasState.graph.getElements().map((node) => node.getBBox());
+  let best = null, bestOverlap = Infinity;
+  for (let i = 0; i < 49; i++) {
+    const ring = Math.ceil(Math.sqrt(i)), angle = i * 2.4;
+    const x = Math.max(pad, Math.min(maxX, origin.x + Math.cos(angle) * ring * 40));
+    const y = Math.max(pad, Math.min(maxY, origin.y + Math.sin(angle) * ring * 40));
+    const at = paper.clientToLocalPoint({ x: rect.left + x, y: rect.top + y });
+    const overlap = bounds.reduce((sum, b) => sum + Math.max(0, Math.min(at.x + def.width + 16, b.x + b.width) - Math.max(at.x - 16, b.x)) * Math.max(0, Math.min(at.y + def.height + 16, b.y + b.height) - Math.max(at.y - 16, b.y)), 0);
+    if (overlap < bestOverlap) { best = { x: Math.round(at.x), y: Math.round(at.y) }; bestOverlap = overlap; }
+    if (!overlap) break;
+  }
+  return best;
 }
 
 function canvasBindViewport(page) {
@@ -158,7 +354,13 @@ function canvasBindViewport(page) {
     drag = null; world.classList.remove("dragging");
   });
   if (canvasState.wheelHandler) world.removeEventListener("wheel", canvasState.wheelHandler);
-  canvasState.wheelHandler = (evt) => { evt.preventDefault(); canvasWheel(page, evt); };
+  canvasState.wheelHandler = (evt) => {
+    // 卡内的多行文本、播放器保留自己的滚动行为。
+    if (evt.target?.closest?.("textarea, input, select, video, audio, [contenteditable=true]")) { evt.stopPropagation(); return; }
+    evt.preventDefault();
+    canvasState.wheelQueue.push({ deltaX: Number(evt.deltaX) || 0, deltaY: Number(evt.deltaY) || 0, deltaMode: evt.deltaMode, ctrlKey: evt.ctrlKey, metaKey: evt.metaKey, clientX: evt.clientX, clientY: evt.clientY });
+    if (canvasState.wheelFrame === null) canvasState.wheelFrame = requestAnimationFrame(() => canvasFlushWheel(page));
+  };
   world.addEventListener("wheel", canvasState.wheelHandler, { passive: false });
   const viewport = page.querySelector("#canvas-viewport");
   if (!viewport) return;
@@ -205,6 +407,8 @@ function canvasBindViewport(page) {
       if (evt.shiftKey) canvasRedo(); else canvasUndo();
     } else if (command && evt.key.toLowerCase() === "y") {
       evt.preventDefault(); canvasRedo();
+    } else if (command && evt.key.toLowerCase() === "d") {
+      evt.preventDefault(); canvasDuplicateSelection();
     } else if (command && evt.key.toLowerCase() === "a") {
       evt.preventDefault();
       const nodes = canvasState.graph?.getElements?.() || [];
@@ -219,13 +423,7 @@ function canvasBindViewport(page) {
       canvasSetSelection(new Set());
     } else if ((evt.key === "Backspace" || evt.key === "Delete") && canvasState.selectedIds.size) {
       evt.preventDefault();
-      // 跟右键菜单的删除（canvasDeleteSelection）是同一件事：先记下删之前那一步，删完挂「撤销」。
-      // 这段留在键盘处理里原地写，是因为前端测试按起止标记把这一段单独切出来跑
-      if (typeof canvasHistoryFlush === "function") canvasHistoryFlush();
-      const ids = new Set(canvasState.selectedIds), gone = (canvasState.graph?.getElements?.() || []).filter((node) => ids.has(node.id));
-      gone.forEach((node) => node.remove());
-      canvasState.selectedAll = false; canvasState.selectedIds = new Set(); canvasState.selected = null; canvasRenderInspector(); canvasPersist();
-      if (gone.length) canvasToast("节点已删除。", "trash-2", undefined, typeof canvasUndoAction === "function" ? canvasUndoAction() : { label: "撤销", run: canvasUndo });
+      canvasDeleteSelection();
     }
   };
   canvasState.keyUpHandler = (evt) => { if (evt.code === "Space") canvasState.spacePanning = false; };

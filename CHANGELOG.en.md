@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 22** Enter prompts directly on image, video and voice cards; add nodes in the current viewport and block empty generation requests. Fix context menus swallowing Delete clicks. Keep upstream references when duplicating, connect multiple reference images, arrange selections and navigate with an optional minimap. Synchronize changed nodes incrementally, batch wheel transforms per frame and save bulk deletion once; add browser interaction and large canvas regressions
+
 - **Oct 21** Opening the inbox no longer marks everything read. Keep up to 300 task notifications per account across reloads, include linked scheduled results, and filter all/unread/scheduled notifications. Add a visible conversation search button and clickable match snippets, retain previous/next navigation and older-message search, and clear stale results when switching conversations.
 
 - **Oct 21** Fixed double-escaped batch arguments in Windows installer verification. Main CI now checks the real command interpreter, bundled runtime, Unicode/space paths and launch directory before tagging. Failed candidates keep their tags and use a new version for the next release

@@ -119,16 +119,18 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
     return `<article class="canvas-node canvas-node-video">${header(payload.title || "Video", `${payload.model || "视频生成"} · ${payload.aspect_ratio || "16:9"}`)}<div class="canvas-node-body"><div class="canvas-video-stage">${preview}</div><textarea class="canvas-video-prompt" data-canvas-inline-key="prompt" rows="2" placeholder="描述任何你想生成的内容…">${esc(payload.prompt || "")}</textarea><div class="canvas-video-refs">${refs.map((ref) => `<span>${esc(ref)}</span>`).join("")}</div><div class="canvas-video-settings"><span>${esc(payload.model || "默认模型")}</span><span>${esc(payload.aspect_ratio || "16:9")}</span><span>${esc(payload.resolution || "1080p")}</span><span>${esc(payload.duration || "5s")}</span></div>${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-generate="video" ${busy ? "disabled" : ""}>${busy ? "生成中…" : mediaPath ? "重新生成" : "生成视频"}</button>${mediaPath ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
   }
   if (kind === "image" || kind === "audio") {
-    const mediaText = payload.text || payload.prompt || "还没有素材或描述";
     const mediaPath = canvasMediaPath(payload), mediaAvailable = canvasMediaAvailable(mediaPath), media = kind === "image" && mediaPath && mediaAvailable
       ? `<img class="canvas-node-preview canvas-image-preview" data-canvas-image-preview data-canvas-media-path="${esc(mediaPath)}" src="${esc(canvasFileUrl(mediaPath, 640))}" ${canvasAspectAttr(mediaPath, 1)} alt="${esc(payload.title || def.label)}" title="双击放大预览">`
       : kind === "audio" && mediaPath && mediaAvailable
         ? canvasAudioPreview(mediaPath)
         : "";
     const missing = mediaPath && !mediaAvailable ? `<div class="canvas-media-missing" title="${esc(mediaPath)}">工作区里找不到这个文件，请在右侧重新选择或上传。</div>` : "";
-    const action = kind === "audio" ? "生成配音" : mediaPath && mediaAvailable ? `重跑${def.label}` : `生成${def.label}`;
+    const action = canvasT(kind === "audio" ? "生成配音" : mediaPath && mediaAvailable ? "重新生成" : "生成图片");
     const busy = canvasState.busy.has(`${nodeId}:${kind}`);
-    return `<article class="canvas-node canvas-node-media canvas-node-${kind}">${header(payload.title || def.label, kind === "image" ? "点击图片放大" : "可直接播放")}<div class="canvas-node-body">${media}${missing}<div class="canvas-media-text">${esc(mediaText)}</div>${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : action}</button>${mediaPath && mediaAvailable ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
+    const promptKey = kind === "image" ? "prompt" : "text";
+    const promptLabel = canvasT(kind === "image" ? "图片提示词" : "配音文本");
+    const input = `<label class="canvas-card-prompt-label"><span>${esc(promptLabel)}</span><textarea class="canvas-video-prompt canvas-card-prompt" data-canvas-inline-key="${promptKey}" rows="3" aria-label="${esc(promptLabel)}">${esc(payload[promptKey] ?? (kind === "image" ? payload.text : payload.prompt) ?? "")}</textarea></label>`;
+    return `<article class="canvas-node canvas-node-media canvas-node-${kind}">${header(payload.title || def.label, kind === "image" ? "参考素材 · 图片生成" : "可直接播放")}<div class="canvas-node-body">${media}${missing}${input}${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : action}</button>${mediaPath && mediaAvailable ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
   }
   if (kind === "timeline") {
     // 这一格以前只有一颗「交给 Agent」，按下去得到的是一段文字方案，不是一条片子。
@@ -158,7 +160,7 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
     const copy = desc ? `<div class="canvas-node-copy canvas-node-desc">${esc(desc)}</div>` : "";
     return `<article class="canvas-node canvas-node-${kind}">${header(kind === "character" ? (payload.name || "新角色") : (payload.name || "新场景"), kind === "character" ? (payload.role || "角色") : def.subtitle)}<div class="canvas-node-body">${preview ? canvasMediaRow(preview, copy, canvasAspectOf(embedded, fallback)) : copy}${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="image" ${busy ? "disabled" : ""}>${esc(act)}</button>${embedded ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(embedded)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
   }
-  return `<article class="canvas-node canvas-node-note">${header(payload.title || "画布笔记")}<div class="canvas-node-body canvas-note-edit" contenteditable="true" spellcheck="false">${esc(payload.text || "在这里记录想法、任务或素材线索…")}</div></article>`;
+  return `<article class="canvas-node canvas-node-note">${header(payload.title || "画布笔记")}<div class="canvas-node-body canvas-note-edit" contenteditable="true" spellcheck="false" aria-label="笔记内容">${esc(payload.text || "")}</div></article>`;
 }
 
 function canvasSelectedNode() { return canvasState.graph && canvasState.selected ? canvasState.graph.getCell(canvasState.selected) : null; }
@@ -197,14 +199,61 @@ function canvasDeleteSelection(fallbackNode, onlyThis = false) {
   // 不先记下来，撤销就直接退到拖之前了
   canvasHistoryFlush();
   const gone = new Set(nodes.map((node) => node.id));
-  nodes.forEach((node) => node.remove());
+  const graph = canvasState.graph;
+  graph.startBatch("canvas-edit");
+  try { nodes.forEach((node) => node.remove()); }
+  finally { graph.stopBatch("canvas-edit"); }
   canvasState.selectedIds = new Set([...canvasState.selectedIds].filter((id) => !gone.has(id)));
   if (gone.has(canvasState.selected)) canvasState.selected = [...canvasState.selectedIds][0] || null;
   canvasState.selectedAll = false; canvasRenderInspector(); canvasPersist();
   canvasToast("节点已删除。", "trash-2", undefined, canvasUndoAction());
 }
+function canvasContextMenuClose() {
+  if (canvasState.contextMenuClose) canvasState.contextMenuClose();
+  else document.getElementById("canvas-context-menu")?.remove();
+}
+
+function canvasDuplicateSelection(fallbackNode) {
+  const graph = canvasState.graph;
+  if (!graph) return [];
+  const ids = fallbackNode && !canvasState.selectedIds.has(fallbackNode.id) ? [fallbackNode.id] : [...canvasState.selectedIds];
+  const nodes = ids.map((id) => graph.getCell(id)).filter((node) => node?.isElement?.());
+  if (!nodes.length) return [];
+  if (canvasState.inlineEdit) canvasInlineCommit();
+  canvasHistoryFlush();
+  const edges = canvasSnapshot().edges, copies = new Map();
+  const box = canvasNodeBounds(nodes), target = canvasNewNodePosition(canvasKind(nodes[0]));
+  graph.startBatch("canvas-edit");
+  try {
+    nodes.forEach((node) => {
+      const kind = canvasKind(node), p = node.position(), copy = JSON.parse(JSON.stringify(canvasPayload(node)));
+      // 内容和参考可以沿用；待收取任务、生成回执和分镜表绑定属于原节点。
+      for (const key of ["generation", "generation_runs", "pending_jobs", "board", "board_scene", "board_shot", "board_character"]) delete copy[key];
+      if (["shot", "character", "location"].includes(kind)) delete copy.id;
+      const titleKey = ["character", "location"].includes(kind) ? "name" : "title";
+      const base = `${copy[titleKey] || CANVAS_NODE_DEFS[kind]?.label || kind} ${canvasT("副本")}`;
+      const names = new Set(graph.getElements().map((item) => canvasPayload(item)[titleKey]));
+      copy[titleKey] = base;
+      for (let n = 2; names.has(copy[titleKey]); n++) copy[titleKey] = `${base} ${n}`;
+      const fresh = canvasAddNode(kind, copy, { x: target.x + p.x - box.x, y: target.y + p.y - box.y }, { persist: false, skipSelect: true });
+      if (fresh) copies.set(node.id, fresh);
+    });
+    edges.forEach((edge) => {
+      const targetId = canvasEndpointId(edge.target), sourceId = canvasEndpointId(edge.source);
+      // 复制目标节点的所有上游参考；整组选中时，组内连线指向新的节点。
+      if (copies.has(targetId)) canvasConnect(copies.get(sourceId) || graph.getCell(sourceId), copies.get(targetId), edge.relation);
+    });
+    copies.forEach((node) => {
+      const p = canvasPayload(node), source = copies.get(p.sourceId);
+      if (source) node.set("canvasPayload", { ...p, sourceId: source.id });
+      else if (p.sourceId) { delete p.sourceId; node.set("canvasPayload", p); }
+    });
+  } finally { graph.stopBatch("canvas-edit"); }
+  canvasFitFlush(); canvasSetSelection([...copies.values()].map((node) => node.id)); canvasPersist();
+  return [...copies.values()];
+}
 function canvasOpenContextMenu(clientX, clientY, node = null) {
-  document.getElementById("canvas-context-menu")?.remove();
+  canvasContextMenuClose();
   const menu = document.createElement("div"); menu.id = "canvas-context-menu"; menu.className = "canvas-context-menu";
   const media = node ? canvasMediaPath(canvasPayload(node)) || canvasEmbeddedImage(canvasPayload(node), canvasKind(node)) : "";
   menu.innerHTML = node
@@ -213,25 +262,33 @@ function canvasOpenContextMenu(clientX, clientY, node = null) {
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect(), left = Math.max(8, Math.min(clientX, window.innerWidth - rect.width - 8)), top = Math.max(8, Math.min(clientY, window.innerHeight - rect.height - 8));
   menu.style.left = `${left}px`; menu.style.top = `${top}px`;
-  const close = () => { menu.remove(); document.removeEventListener("pointerdown", close, true); document.removeEventListener("keydown", onKey, true); };
+  let armed = null;
+  const close = (event) => {
+    // 按下菜单里的按钮时先留着菜单，等 click 执行操作；捕获阶段移除它会吞掉真实鼠标点击。
+    if (event?.type === "pointerdown" && menu.contains(event.target)) return;
+    if (armed !== null) clearTimeout(armed);
+    menu.remove(); document.removeEventListener("pointerdown", close, true); document.removeEventListener("keydown", onKey, true);
+    if (canvasState.contextMenuClose === close) canvasState.contextMenuClose = null;
+  };
   const onKey = (event) => { if (event.key === "Escape") close(); };
+  canvasState.contextMenuClose = close;
   menu.querySelectorAll("[data-canvas-context]").forEach((button) => button.addEventListener("click", () => {
     const action = button.dataset.canvasContext; close();
     if (action === "agent") canvasRunInternal(node);
     else if (action === "preview") canvasPreviewRight(media);
     else if (action === "duplicate") {
-      // 复制镜头：编号和分镜表的戳都不能跟着抄——抄过去就是两张卡写同一个文件、回同一行分镜表
-      const p = node.position(), copy = { ...canvasPayload(node) };
-      if (canvasKind(node) === "shot") ["id", "board", "board_scene", "board_shot", "board_character"].forEach((k) => { delete copy[k]; });
-      canvasAddNode(canvasKind(node), copy, { x: p.x + 42, y: p.y + 42 });
+      canvasDuplicateSelection(node);
     }
     else if (action === "connect") { canvasState.selected = node.id; canvasState.selectedIds = new Set([node.id]); canvasState.inspectorOpen = true; canvasRenderInspector(false); window.setTimeout(() => document.querySelector("[data-connect-target]")?.focus(), 0); }
     else if (action === "layout") canvasAutoLayout(document.getElementById("assist-page"));
     else if (action === "fit") canvasFitAll(document.getElementById("assist-page"));
     else if (action === "delete") canvasDeleteSelection(node);
-    else if (action === "add-note" || action === "add-image") canvasAddNode(action === "add-note" ? "note" : "image");
+    else if (action === "add-note" || action === "add-image") {
+      const kind = action === "add-note" ? "note" : "image";
+      canvasAddNode(kind, {}, canvasNewNodePosition(kind, { x: clientX, y: clientY }));
+    }
   }));
-  window.setTimeout(() => { document.addEventListener("pointerdown", close, true); document.addEventListener("keydown", onKey, true); }, 0);
+  armed = window.setTimeout(() => { armed = null; document.addEventListener("pointerdown", close, true); document.addEventListener("keydown", onKey, true); }, 0);
 }
 // dupIds：撞号的镜头号，调用方一次算好递进来（整图重铺时一张张各数一遍整图就是 N²）；不递就当场算
 function canvasRefreshNode(node, dupIds) {
@@ -319,8 +376,8 @@ function canvasFitFlush() {
     // 画布页这会儿没显示，量出来是 0，别拿它去改；留在队里，等下一回有卡要量时一起量
     if (!content) { canvasFitQueue.add(node); return null; }
     const kind = canvasKind(node), def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note, size = node.size();
-    // 最矮不低于默认高，字少的卡跟原来一样大。带图的图片卡例外：它就是一张图加一排按钮，宽图下面不该空一大截
-    const floor = kind === "image" && card.querySelector(".canvas-node-preview") ? 120 : def.height;
+    // 图片卡跟着实际内容收紧，空输入框下面也不留一大块空白。
+    const floor = kind === "image" ? 120 : def.height;
     const h = Math.max(floor, Math.ceil(content + card.offsetHeight - card.clientHeight));
     return Math.abs(h - size.height) >= 1 ? { node, h, size } : null;
   }).filter(Boolean);
@@ -398,6 +455,7 @@ function canvasHistoryReset(snapshot) {
   canvasState.historySeq = (canvasState.historySeq || 0) + 1;
 }
 function canvasHistoryFlush() {
+  if (canvasState.editSaveTimer) canvasPersist();
   if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer);
   canvasState.historyTimer = null;
   if (!canvasState.historyMute && canvasState.graph) canvasHistoryCommit(canvasSnapshot());

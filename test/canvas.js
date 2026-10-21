@@ -62,6 +62,8 @@ const VENDOR = {
   "/vendor/dagre/dagre.min.js": path.join(ROOT, "node_modules/@dagrejs/dagre/dist/dagre.min.js"),
 };
 
+const { canvasFixture: 摆画布, canvasNodeFixture: 卡片, runCanvasExperience } = require("./lib/canvas-experience");
+
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {
   if (cond) { pass++; console.log("  ✅ " + msg); }
@@ -414,6 +416,15 @@ app.whenReady().then(async () => {
   await run('I18N.setLang("zh")');
   // 第八节起 askConfirm 被换成「一律点确定」；批量扣费前那个确认框要用真的量，先把真的存一份
   await run("window.__realAskConfirm = window.askConfirm; true");
+
+  if (process.env.CANVAS_EXPERIENCE_ONLY === "1") {
+    await run(`chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>'; renderCanvasLazy()`);
+    await run(STUB2); await run(STUB3); await run(STUB4);
+    await runCanvasExperience({ run, win, ok });
+    srv.close();
+    console.log(fail ? `有失败：${pass} 过 / ${fail} 挂` : `全部通过：${pass} 过 / 0 挂`);
+    app.exit(fail ? 1 : 0); return;
+  }
 
   console.log("\n— 画布开得起来 —");
   const booted = await run(`
@@ -1206,17 +1217,7 @@ app.whenReady().then(async () => {
   // ———— 下面六节是「画布前端必现 bug」那一轮：每一条都是界面照常、钱或数据在漏 ————
   await run(STUB3);
   // 每节开头都摆一张干净画布：先把上一节欠着的写完（不然那笔迟到的写会盖掉刚摆好的），再重开画布页
-  const 摆画布 = (nodes, edges) => `
-      await canvasFlushRemoteWrite();
-      await new Promise((r) => setTimeout(r, 250));
-      localStorage.clear();
-      window.__store.jia = { main: { version: 2, updatedAt: 1000, edges: ${JSON.stringify(edges || [])}, nodes: ${JSON.stringify(nodes)} } };
-      window.__active = "jia"; canvasState.canvasName = "main"; canvasState.handsOnAt = 0; canvasState.nodeGesture = null;
-      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      localStorage.setItem("openworkbuddy.canvas.name", "main");
-      await renderCanvasPage();
-      await new Promise((r) => setTimeout(r, 400));
-      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }`;
+
   const 镜头 = (id, prompt, y) => ({ id, kind: "shot", payload: { id, title: id, prompt }, position: { x: 40, y }, size: { width: 300, height: 220 } });
 
   console.log("\n— 十二、合成成片：真跑那一枪要带上「垫上配乐」 —");
@@ -1366,7 +1367,10 @@ app.whenReady().then(async () => {
       window.__store.jia.main = { ...远端, updatedAt: Date.now() + 5000 };
       canvasStartRemoteSync();
       const 到点 = Date.now() + 6000;
-      while (Date.now() < 到点 && canvasState.graph.getCell("g2") === 旧对象) await new Promise((r) => setTimeout(r, 100));
+      while (Date.now() < 到点 && !canvasState.graph.getCell("g3")) await new Promise((r) => setTimeout(r, 100));
+      const 增量保留对象 = canvasState.graph.getCell("g2") === 旧对象;
+      // 轮询改用增量同步；另走一次完整恢复，仍检验在途结果不会写进旧模型。
+      canvasApplySnapshot(canvasSnapshot());
       const 换了对象 = canvasState.graph.getCell("g2") !== 旧对象;
       const 重铺后 = { 标题: (canvasState.graph.getCell("g2").get("canvasPayload") || {}).title, 对照铺上了: !!canvasState.graph.getCell("g3") };
       release2(); const 结果2 = await 跑2; window.__holdRun = null;
@@ -1385,7 +1389,7 @@ app.whenReady().then(async () => {
       const 后炸 = { 结果: 结果3, 提示: (document.querySelector("#owb-toast span") || {}).textContent || "",
         首帧: (canvasState.graph.getCell("g3").get("canvasPayload") || {}).first_frame || "" };
       await canvasFlushRemoteWrite(); await new Promise((r) => setTimeout(r, 200));
-      return { 删, 后炸, 铺: { 换了对象, 重铺后, 结果2, 屏幕上: (新.get("canvasPayload") || {}).first_frame || "",
+      return { 删, 后炸, 铺: { 增量保留对象, 换了对象, 重铺后, 结果2, 屏幕上: (新.get("canvasPayload") || {}).first_frame || "",
         孤儿身上: (旧对象.get("canvasPayload") || {}).first_frame || "", 盘上: (盘上 && 盘上.payload && 盘上.payload.first_frame) || "" } };
     })()`);
   ok(途中.删.发出去了 && 途中.删.登记在途, "先验料：那一枪真发出去了，而且登记成在途", 途中.删);
@@ -1395,6 +1399,7 @@ app.whenReady().then(async () => {
   ok(途中.删.结果 && 途中.删.结果.ok === false && /没有放回画布/.test(途中.删.提示) && 途中.删.在途清了,
      "删掉之后回来的结果不算做好了，并且告诉人文件去了哪；在途登记也清掉了",
      { 结果: 途中.删.结果, 提示: 途中.删.提示, 在途清了: 途中.删.在途清了 });
+  ok(途中.铺.增量保留对象, "增量同步保留在途节点对象，同时收下其他节点的新增", 途中.铺);
   ok(途中.铺.换了对象, "先验料：生成途中远端同步真把图重铺了一遍（节点对象换新了）", 途中.铺);
   ok(途中.铺.结果2 && 途中.铺.结果2.ok === true && /^outputs\//.test(途中.铺.屏幕上) && !途中.铺.孤儿身上,
      "★重铺之后回来的结果，落到屏幕上那张卡上，不是落到被扔掉的旧对象上★",
@@ -1525,7 +1530,13 @@ app.whenReady().then(async () => {
       root.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 120, button: 2 }));
       const 删 = document.querySelector('#canvas-context-menu [data-canvas-context="delete"]');
       if (!删) { window.askConfirm = 原来的问; return { 错: "右键菜单里没有删除" }; }
-      删.click();
+      await new Promise((r) => setTimeout(r, 20));
+      删.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+      const 按下后菜单还在 = 删.isConnected;
+      if (按下后菜单还在) {
+        删.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0 }));
+        删.click();
+      }
       await new Promise((r) => setTimeout(r, 60));
       const 删后 = { r1: !!canvasState.graph.getCell("r1"), r2: !!canvasState.graph.getCell("r2"), 连线: canvasState.graph.getLinks().length };
       const box = document.getElementById("owb-toast"), 撤 = box && box.querySelector(".owb-toast-act");
@@ -1546,8 +1557,9 @@ app.whenReady().then(async () => {
       if (键撤) 键撤.click();
       await new Promise((r) => setTimeout(r, 100));
       window.askConfirm = 原来的问;
-      return { 问了, 删后, 按钮, 提示, 撤后, 键: { 删后: 键删后, 按钮: 键按钮, 撤后: !!canvasState.graph.getCell("r3") } };
+      return { 问了, 按下后菜单还在, 删后, 按钮, 提示, 撤后, 键: { 删后: 键删后, 按钮: 键按钮, 撤后: !!canvasState.graph.getCell("r3") } };
     })()`);
+  ok(右键.按下后菜单还在, "★按下删除按钮时菜单保留到 click，真实鼠标点击不会被外层关闭逻辑吞掉★", 右键);
   ok(!右键.错 && 右键.删后 && !右键.删后.r1 && 右键.删后.r2 && 右键.删后.连线 === 0,
      "右键「删除节点」删掉的是右键点的那张，选着的另一张不动", 右键);
   ok(右键.问了 === 0 && 右键.按钮 === "撤销" && 右键.提示 === "节点已删除。",
@@ -2195,14 +2207,17 @@ app.whenReady().then(async () => {
       // ① 触控板捏合（Chromium 报成 ctrl+wheel，像素模式、delta 小）
       let anchor = paper.clientToLocalPoint(光标), s0 = canvasState.scale;
       const 拦了 = 滚({ deltaY: -30, deltaMode: 0, ctrlKey: true });
+      await new Promise(requestAnimationFrame);
       out.捏合 = { 前: s0, 后: canvasState.scale, 偏: 偏(anchor), 拦了 };
       // ② 普通鼠标滚轮（按行），不按键也缩放
       anchor = paper.clientToLocalPoint(光标); s0 = canvasState.scale;
       滚({ deltaY: 3, deltaMode: 1 });
+      await new Promise(requestAnimationFrame);
       out.鼠标 = { 前: s0, 后: canvasState.scale, 偏: 偏(anchor) };
       // ③ 双指滑动（像素模式、没按键）：只平移
       s0 = canvasState.scale; const t0 = 平移();
       滚({ deltaX: 30, deltaY: 50, deltaMode: 0 });
+      await new Promise(requestAnimationFrame);
       const t1 = 平移();
       out.滑动 = { 前: s0, 后: canvasState.scale, dx: t1.x - t0.x, dy: t1.y - t0.y };
       // 反向对照：不校正平移、以原点缩放，光标下那一点会跑——量法看得出来
@@ -3969,13 +3984,13 @@ app.whenReady().then(async () => {
   ok(配.沿用.发了 === 0 && 配.沿用.问价 === 0 && !配.沿用.框 && /没扣费/.test(配.沿用.提示) && 配.沿用.配音 === "短剧/main/配音_S1-01_v2.mp3",
      "★参数没变再点「生成配音」：沿用这一版，不弹「确认后开始扣费」★ 不花钱的事不该让人确认扣费", 配.沿用);
   ok(配.换取消.发了 === 0 && 配.换取消.配音 === "短剧/main/配音_S1-01_v2.mp3", "反向对照：换一版点「先不了」，一枪不发、卡上还是 v2", 配.换取消);
-  ok(配.没台词.发了 === 0 && 配.没台词.问价 === 0 && !配.没台词.框 && /先写台词|请先填写对白/.test(配.没台词.提示),
+  ok(配.没台词.发了 === 0 && 配.没台词.问价 === 0 && !配.没台词.框 && /先写台词|请先填写对白|请先填写配音文本/.test(配.没台词.提示),
      "★没写台词的镜头点「生成配音」：直接说先写台词，不先拿一个价让人点★", 配.没台词);
 
   console.log("\n— 五十、连接点：拖到另一张卡上就连线、连不上的标红说原因；点「+」新建并连上；选中卡后标题/提示词直接在卡上改 —");
   // 全在真页面上走真事件：连接点认的是 PointerEvent（canvasPortDown），拖卡认的是 mousedown / mousemove（JointJS）。
   // 每一段先把缩放、平移摆死，要指的卡都落在视口里、底下时间线和对话框盖不到的地方
-  const 卡片 = (id, kind, payload, x, y) => ({ id, kind, payload, position: { x, y } });
+
   const 连 = (a, b) => ({ source: { id: a }, target: { id: b }, relation: "input" });
   const 场次 = [卡片("sc1", "scene", { id: "S1", place: "站台" }, 40, 40)]
     .concat([1, 2, 3, 4, 5].map((i) => 卡片("p" + i, "shot", { id: "S1-0" + i, prompt: "第" + i + "镜" }, i <= 3 ? 960 : 1400, [40, 340, 640, 40, 340][i - 1])));
@@ -4358,7 +4373,8 @@ app.whenReady().then(async () => {
   ok(!选文件夹.成员.有选 && 选文件夹.成员.能点 && 同(选文件夹.成员.项, ["jia", "yi"]) && 选文件夹.管理员.有选,
      "★成员账号的画布：文件夹下拉里只有自己的几个项目，没有「选择其他文件夹…」★；管理员照旧有", 选文件夹);
 
+  await runCanvasExperience({ run, win, ok });
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
   app.exit(fail ? 1 : 0);
-});
+}).catch((error) => { console.error(error); app.exit(1); });

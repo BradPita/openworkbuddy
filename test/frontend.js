@@ -17412,7 +17412,7 @@ const APP07 = srcLib.src("canvas");
 const CK0 = APP07.indexOf('page.setAttribute("tabindex", "-1");');
 const CK1 = APP07.indexOf('page.addEventListener("keyup", canvasState.keyUpHandler);');
 if (CK0 < 0 || CK1 <= CK0) throw new Error("app-07-canvas.js 里 canvasBindViewport 的键盘那一段找不到了，前端测试没法定位真源码");
-const CANVASKEY_SRC = "function bindCanvasKeys(page, viewport) {\n"
+const CANVASKEY_SRC = APP07.slice(APP07.indexOf("function canvasDeleteSelection("), APP07.indexOf("function canvasContextMenuClose(")) + "\nfunction bindCanvasKeys(page, viewport) {\n"
   + APP07.slice(CK0, CK1) + 'page.addEventListener("keyup", canvasState.keyUpHandler);\n}';
 const CANVASKEY_HTML = "<!doctype html><meta charset='utf-8'><body>"
   + "<div class='assist-page canvas-page' id='assist-page'>"
@@ -17424,10 +17424,10 @@ const CANVASKEY_HTML = "<!doctype html><meta charset='utf-8'><body>"
   + "</div></body>";
 const CANVASKEY_STUBS = `
 const REMOVED = [];
-const mkNode = (id) => ({ id, remove() { REMOVED.push(id); } });
+const mkNode = (id) => ({ id, isElement: () => true, remove() { REMOVED.push(id); } });
 const NODES = [mkNode("n_c1"), mkNode("n_c2"), mkNode("n_s1")];
 const canvasState = { selectedIds: new Set(), selected: null, selectedAll: false, marqueeMode: true, spacePanning: false,
-  graph: { getElements: () => NODES.filter((n) => !REMOVED.includes(n.id)) } };
+  graph: { getElements: () => NODES.filter((n) => !REMOVED.includes(n.id)), getCell: (id) => NODES.find((n) => n.id === id && !REMOVED.includes(id)), startBatch() {}, stopBatch() {} } };
 let PERSIST = 0, INSPECT = 0, UNDO = 0, REDO = 0; const TOASTS = [];
 function canvasSetSelection(ids) { canvasState.selectedIds = new Set(ids); canvasState.selected = [...canvasState.selectedIds][0] || null; }
 function canvasRenderInspector() { INSPECT++; }
@@ -17435,6 +17435,8 @@ function canvasPersist() { PERSIST++; }
 function canvasToast(msg) { TOASTS.push(String(msg)); }
 function canvasUndo() { UNDO++; }
 function canvasRedo() { REDO++; }
+function canvasHistoryFlush() {}
+function canvasUndoAction() { return { label: "撤销", run: canvasUndo }; }
 `;
 const CANVASKEY_CHECKS = `(async () => {
   const names = [];

@@ -319,10 +319,10 @@ function canvasCreateDramaWorkflow() {
   const drama = Object.fromEntries(CANVAS_DRAMA_KEYS.filter((k) => starter[k] != null && starter[k] !== "").map((k) => [k, starter[k]]));
   if (isEmptyStarter) canvasState.graph.clear();
   const base = 120 + (canvasState.next % 2) * 40;
-  const note = canvasAddNode("note", { title: "创作方向", text: "先写清楚受众、情绪、时长和发布平台。" }, { x: base, y: 100 }, { skipSelect: true });
-  const script = canvasAddNode("script", { title: "短剧剧本", text: "在这里写一句话概念、人物关系、冲突、对白和结局。", ...drama }, { x: base + 430, y: 100 }, { skipSelect: true });
-  const character = canvasAddNode("character", { name: "主角", role: "主角", description: "外形、性格、目标、秘密、关系和表演要求。" }, { x: base + 430, y: 440 }, { skipSelect: true });
-  const location = canvasAddNode("location", { name: "核心场景", description: "地点、时间、天气、光线、色彩和空间连续性。" }, { x: base + 790, y: 440 }, { skipSelect: true });
+  const note = canvasAddNode("note", { title: "创作方向", text: "" }, { x: base, y: 100 }, { skipSelect: true });
+  const script = canvasAddNode("script", { title: "短剧剧本", text: "", ...drama }, { x: base + 430, y: 100 }, { skipSelect: true });
+  const character = canvasAddNode("character", { name: "主角", role: "主角", description: "" }, { x: base + 430, y: 440 }, { skipSelect: true });
+  const location = canvasAddNode("location", { name: "核心场景", description: "" }, { x: base + 790, y: 440 }, { skipSelect: true });
   const storyboard = canvasAddNode("storyboard", {}, { x: base + 860, y: 100 }, { skipSelect: true });
   const timeline = canvasAddNode("timeline", {}, { x: base + 1290, y: 100 }, { skipSelect: true });
   if (note && script) canvasConnect(note, script);
@@ -845,6 +845,7 @@ async function canvasGenerate(node, kind) {
   // 返回 { ok, error }：一键补齐要靠它数「几个成了、哪几个没成」，没成的那几个才能单独重跑。
   // 拦在开枪前的（占位文字、没首帧、没点名说话人）也算没成——这一格确实还空着
   if (!node || !["image", "video", "audio"].includes(kind)) return { ok: false, error: "不支持的生成类型" };
+  if (typeof canvasInlineCommit === "function" && canvasState.inlineEdit?.nodeId === node.id) canvasInlineCommit();
   const key = `${node.id}:${kind}`;
   // 「换一版」是从 canvasReroll 进来的：它先在 reroll 里记一笔再调这里。签名不能加参数（测试按
   // 「canvasGenerate(node, kind)」切源码），所以走这个旁路。先取走再判忙：忙着的时候点了也不该留到下一次
@@ -872,6 +873,7 @@ async function canvasGenerate(node, kind) {
   // 所以提示词、文件名、写回哪个字段，三样都跟镜头那条不一样。
   const castKind = kind === "image" && (nodeKind === "character" || nodeKind === "location") ? nodeKind : "";
   if (!collected && castKind && canvasIsPlaceholderPrompt(p.description)) {
+    if (typeof canvasFocusNodeInput === "function") canvasFocusNodeInput(node, "description");
     canvasToast(castKind === "character"
       ? "先写人物设定：只有名字，每次生成的脸都不一样。"
       : "先把场景设定写出来：只有一个地名，生出来的景每次都不一样。", "triangle-alert", "err");
@@ -890,13 +892,14 @@ async function canvasGenerate(node, kind) {
   // 定妆照那条已经这么拦了（castKind 那一段），图 / 视频 / 配音三种节点身上的默认文案一样得拦：
   // 这几个节点的面板上就摆着「生成…」按钮，一按就是真花钱。
   const ownPrompt = kind === "audio"
-    ? String(p.text || p.line || p.description || "").trim()
-    : String(p.prompt || p.description || p.text || "").trim();
-  if (!collected && !castKind && ownPrompt && canvasIsPlaceholderPrompt(ownPrompt)) {
-    canvasToast(kind === "audio"
-      ? "还是模板占位文字，先写台词或旁白。"
-      : "还是模板占位文字，先写提示词。", "triangle-alert", "err");
-    return { ok: false, error: "占位文字" };
+    ? String(nodeKind === "audio" ? p.text ?? "" : p.text || p.line || p.description || "").trim()
+    : String(kind === "video" ? String(p.motion_prompt || "").trim() || p.prompt || p.description || "" : nodeKind === "image" ? p.prompt ?? "" : p.prompt || p.description || p.text || "").trim();
+  // 连线是参考条件，不能代替用户的生成指令；先挡住空内容，再拼风格、参考和上下文。
+  if (!collected && !castKind && canvasIsPlaceholderPrompt(ownPrompt)) {
+    if (typeof canvasFocusNodeInput === "function") canvasFocusNodeInput(node, kind === "audio" ? "text" : "prompt");
+    canvasToast(ownPrompt ? (kind === "audio" ? "还是模板占位文字，先写台词或旁白。" : "还是模板占位文字，先写提示词。")
+      : (kind === "audio" ? "请先填写配音文本。" : "请先填写生成提示词。"), "triangle-alert", "err");
+    return { ok: false, error: ownPrompt ? "占位文字" : "缺提示词" };
   }
   // 配音多一道：用谁的嗓子。定不下来就停，不替用户挑（挑错了声音是好声音，只是不是这个人的，
   // 而这种错要等到把成片放出来才听得见）
@@ -917,12 +920,12 @@ async function canvasGenerate(node, kind) {
   // 统一风格摆在最前面（见 canvasShotStyle）：只有镜头卡的首帧和视频带，配音、定妆照、场景图不带
   const style = castKind || kind === "audio" ? "" : canvasShotStyle(p, nodeKind);
   const prompt = castPrompt ? [castPrompt, context].filter(Boolean).join("\n") : kind === "image"
-    ? [canvasStyledPrompt(p.prompt || p.description || p.text || "", style), context].filter(Boolean).join("\n")
+    ? [canvasStyledPrompt(ownPrompt, style), context].filter(Boolean).join("\n")
     : kind === "video"
       // 首帧已经把画面定死了，这一枪只该说「怎么动」。把首帧提示词再递一遍，模型会照着它重画一遍画面，
       // 生出来的片子跟你刚确认过的那张首帧对不上（skill 第 4 节）。所以有运镜提示词就只用它。
-      ? [canvasStyledPrompt(p.motion_prompt || p.prompt || p.description || "保持角色和场景一致，动作自然，镜头运动克制。", style), canvasIsPlaceholderPrompt(p.line) ? "" : `对白/旁白：${p.line}`, context].filter(Boolean).join("\n")
-      : String(p.text || p.line || p.description || "").trim();
+      ? [canvasStyledPrompt(ownPrompt, style), canvasIsPlaceholderPrompt(p.line) ? "" : `对白/旁白：${p.line}`, context].filter(Boolean).join("\n")
+      : ownPrompt;
   const model = kind === "audio" ? "" : canvasDramaModel(p, kind, nodeKind);
   if (!prompt && !collected) { canvasToast(kind === "audio" ? "请先填写对白或音乐说明。" : "请先填写生成提示词。", "triangle-alert", "err"); return { ok: false, error: "缺提示词" }; }
   // 收回来的那一单按当时发出去的参数记（提示词这期间可能改过）；台账里没存参数的老记录才现算

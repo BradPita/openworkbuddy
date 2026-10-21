@@ -19559,7 +19559,8 @@ async function testDramaVoice() {
     sent = null; toast = "";
     await gen(n, gk);
     assert(sent === null, `★${kind} 节点的占位文案原样就发出去了★ 这一枪照样花钱：` + JSON.stringify(sent && sent.body.input));
-    assert(/占位文字/.test(toast), "拦下来了却没说是占位文字：" + toast);
+    assert(!String(kind === "audio" ? n.p.text : n.p.prompt).trim(), "新节点不应预填示例文案");
+    assert(/请先填写/.test(toast), "空内容拦截应提示填写：" + toast);
   }
 
   // ── ⑨ 一键补齐配音：说不清谁在讲的那几个摘出来，其余照跑，最后一起说 ────────
@@ -19974,9 +19975,9 @@ async function testDramaBoardExpand() {
     assert(m, "找不到占位文案表");
     return JSON.parse(m[1].replace(/'/g, '"'));
   })();
-  assert(placeholders.includes(raw.prompt),
-    "反向对照失效了：原样铺开时 prompt 本该还是起手模板那句（这条一旦恒假，②就成了摆设）：" + JSON.stringify(raw.prompt));
-  assert(!placeholders.includes(shots[0].payload.prompt), "映射之后 prompt 不该还是占位文案");
+  assert(!String(raw.prompt || "").trim() || placeholders.includes(raw.prompt),
+    "反向对照失效了：不映射 frame_prompt 时，提示词应为空或旧版占位文字：" + JSON.stringify(raw.prompt));
+  assert(String(shots[0].payload.prompt || "").trim() && !placeholders.includes(shots[0].payload.prompt), "映射之后 prompt 应是实际的画面描述");
 
   // ── ④ 摆到画布上：角色、场次、镜头都建了，cast 点到的角色真连了线 ────────────
   const boardNode = N.b1 = { id: "b1", kind: "storyboard", p: { board: "最后一班车" }, set() {}, position: () => ({ x: 90, y: 100 }) };

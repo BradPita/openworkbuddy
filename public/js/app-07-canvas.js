@@ -22,7 +22,47 @@
  * 测试那边按加载顺序把几片拼回去，顺序一乱，切出来的就不是原来那一段。
  * 新功能加进对应那片；哪片都不合适就新开一片，并在 loadCanvasDeps 里挂上。
  */
-function canvasDestroy() { canvasPlaybackStop(); if (canvasState.timelineTimer) clearTimeout(canvasState.timelineTimer); canvasState.timelineTimer = null; canvasState.find = null; if (canvasState.timelineChatObserver) { try { canvasState.timelineChatObserver.disconnect(); } catch {} canvasState.timelineChatObserver = null; } if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer); if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer); if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer); if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler); const page = document.getElementById("assist-page"); if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler); if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler); if (canvasState.paper) canvasState.paper.remove(); canvasState.graph = null; canvasState.paper = null; canvasState.wheelHandler = null; canvasState.keyHandler = null; canvasState.keyUpHandler = null; canvasState.spacePanning = false; canvasState.inspectorOpen = false; canvasState.nodeGesture = null; canvasState.multiMove = null; canvasState.dragDirty = false; canvasState.bulk = false; canvasState.fullscreenHandler = null; canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.remoteSnapshot = null; canvasState.remoteContentKey = ""; canvasState.remoteUpdatedAt = 0; canvasState.remoteWriteArmed = null; canvasState.remoteWritePending = false; canvasState.remoteBase = null; canvasState.remotePushing = null; canvasState.remoteConflict = null; canvasState.restoreChoice = null; canvasState.saveFailed = ""; canvasState.proposal = null; canvasState.shotHistory = new Map(); document.getElementById("canvas-conflict-dialog")?.remove(); canvasState.remoteBroken = ""; canvasState.remoteBrokenNotified = false; canvasState.lostNotified = ""; canvasState.taskSessionId = null; canvasState.chatReferences = new Map(); canvasState.history = []; canvasState.historyIndex = -1; canvasState.historyTimer = null; if (typeof canvasWireCancel === "function") canvasWireCancel(); if (typeof canvasPortMenuClose === "function") canvasPortMenuClose(); canvasState.inlineEdit = null; }
+function canvasDestroy() {
+  if (canvasState.inlineEdit) canvasInlineCommit();
+  if (canvasState.editSaveTimer && canvasState.graph) canvasPersist();
+  if (canvasState.saveHandler) {
+    window.removeEventListener("beforeunload", canvasState.saveHandler);
+    window.removeEventListener("pagehide", canvasState.saveHandler);
+    canvasState.saveHandler = null;
+  }
+  canvasContextMenuClose(); canvasPlaybackStop();
+  canvasState.minimap?.resize?.disconnect();
+  if (canvasState.minimap?.frame !== null && canvasState.minimap?.frame !== undefined) cancelAnimationFrame(canvasState.minimap.frame);
+  canvasState.minimap = null;
+  if (canvasState.wheelFrame !== null) cancelAnimationFrame(canvasState.wheelFrame);
+  canvasState.wheelFrame = null; canvasState.wheelQueue = []; canvasState.remotePoll = null;
+  for (const key of ["timelineTimer", "remoteWriteTimer", "historyTimer", "castTimer"]) {
+    if (canvasState[key]) clearTimeout(canvasState[key]);
+    canvasState[key] = null;
+  }
+  if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer);
+  canvasState.remoteTimer = null;
+  if (canvasState.timelineChatObserver) { canvasState.timelineChatObserver.disconnect(); canvasState.timelineChatObserver = null; }
+  if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler);
+  const page = document.getElementById("assist-page");
+  if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler);
+  if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler);
+  if (canvasState.paper) canvasState.paper.remove();
+  Object.assign(canvasState, {
+    graph: null, paper: null, wheelHandler: null, keyHandler: null, keyUpHandler: null,
+    spacePanning: false, inspectorOpen: false, nodeGesture: null, multiMove: null, dragDirty: false,
+    bulk: false, fullscreenHandler: null, selected: null, selectedIds: new Set(), selectedAll: false,
+    remoteSnapshot: null, remoteContentKey: "", remoteUpdatedAt: 0, remoteWriteArmed: null,
+    remoteWritePending: false, remoteBase: null, remotePushing: null, remoteConflict: null,
+    restoreChoice: null, saveFailed: "", proposal: null, shotHistory: new Map(), remoteBroken: "",
+    remoteBrokenNotified: false, lostNotified: "", taskSessionId: null, chatReferences: new Map(),
+    history: [], historyIndex: -1, find: null,
+  });
+  document.getElementById("canvas-conflict-dialog")?.remove();
+  if (typeof canvasWireCancel === "function") canvasWireCancel();
+  if (typeof canvasPortMenuClose === "function") canvasPortMenuClose();
+  canvasState.inlineEdit = null;
+}
 
 async function renderCanvasPage() {
   const page = document.getElementById("assist-page"); if (!page) return;
@@ -40,12 +80,13 @@ async function renderCanvasPage() {
       <span class="canvas-tool-divider"></span>
       <button class="canvas-tool-button" type="button" data-canvas-history="undo" title="撤销（${accelDisplay("Mod+Z")}）" aria-label="撤销">${ic("rotate-ccw")}</button>
       <button class="canvas-tool-button is-redo" type="button" data-canvas-history="redo" title="重做（${accelDisplay("Shift+Mod+Z")}）" aria-label="重做">${ic("rotate-ccw")}</button>
+      <button class="canvas-tool-button" type="button" data-canvas-minimap aria-pressed="false" title="小地图" aria-label="小地图">${ic("map")}</button>
       <button class="canvas-tool-button" type="button" data-canvas-layout title="按生成关系自动排版" aria-label="自动排版">${ic("git-branch")}</button>
       <button class="canvas-tool-button" type="button" data-canvas-marquee title="框选：拖出一个框，碰到的节点都选中（不开这个开关时按住 Shift 拖也一样）。Shift/${modKeyName()} 点节点加选减选，Delete 删除" aria-label="框选">${ic("square-dashed")}</button>
     </span><span class="canvas-zoom-box"><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-zoom="out">−</button><span id="canvas-zoom">100%</span><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-zoom="in">+</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-fit>适配</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-center>居中</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-zoom="reset">${ic("target")}复位</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-clear>清空</button><label class="canvas-batch-limit" title="一键补齐时同时生成几条，默认 2 条"><span>同时跑</span><select data-canvas-batch-limit aria-label="一键补齐时同时生成几条，默认 2 条">${[1, 2, 3, 4].map((n) => `<option value="${n}"${n === canvasBatchLimit() ? " selected" : ""}>${n}</option>`).join("")}</select></label></span></div>
     <div class="canvas-find" id="canvas-find" hidden role="search"><input type="text" data-canvas-find-input placeholder="搜标题、台词、镜头号" aria-label="搜标题、台词、镜头号"><span class="canvas-find-count" data-canvas-find-count aria-live="polite"></span><button type="button" class="canvas-tool-button" data-canvas-find-nav="-1" title="上一个（Shift+Enter）" aria-label="上一个">${ic("chevron-up")}</button><button type="button" class="canvas-tool-button" data-canvas-find-nav="1" title="下一个（Enter）" aria-label="下一个">${ic("chevron-down")}</button><button type="button" class="canvas-tool-button" data-canvas-find-close title="关闭（Esc）" aria-label="关闭">${ic("x")}</button></div>
     <div class="canvas-bars" id="canvas-bars" hidden></div>
-    <div class="canvas-layout"><div id="canvas-viewport" class="canvas-viewport"><div id="canvas-world" class="canvas-world"></div></div><aside id="canvas-inspector" class="canvas-inspector"></aside></div>
+    <div class="canvas-layout"><div id="canvas-viewport" class="canvas-viewport"><div id="canvas-world" class="canvas-world"></div><div id="canvas-selection-tools" class="canvas-selection-tools" hidden></div><div id="canvas-minimap" class="canvas-minimap" hidden><div class="canvas-minimap-head"><span>小地图</span><button type="button" aria-label="关闭小地图" title="关闭小地图">${ic("x")}</button></div><svg data-canvas-map-surface aria-label="画布导航" role="img" preserveAspectRatio="xMidYMid meet"><g data-canvas-map-nodes></g><rect class="canvas-map-view" data-canvas-map-view></rect></svg></div></div><aside id="canvas-inspector" class="canvas-inspector"></aside></div>
     <section class="canvas-timeline" id="canvas-timeline" hidden aria-label="时间线"></section>
     <section class="canvas-chat" aria-label="画布 Agent 对话"><div class="canvas-chat-head"><div><b>画布 Agent</b><small>直接对话，让 Agent 读取、添加、连接和生成节点</small></div><span>本项目内执行</span></div><div id="canvas-chat-log" class="canvas-chat-log"><div class="canvas-chat-message is-agent"><span class="canvas-chat-role">Agent</span><span class="canvas-chat-text">输入 @ 可引用画布节点或工作区素材。</span></div></div><div id="canvas-chat-mention-menu" class="canvas-chat-mention-menu" hidden></div><div class="canvas-chat-compose"><div id="canvas-chat-ref-chips" class="canvas-chat-ref-chips"></div><textarea id="canvas-chat-input" rows="2" placeholder="描述人物关系、交互动作和镜头；输入 @ 添加人物、背景、风格或首尾帧"></textarea><div class="canvas-chat-tools"><button class="canvas-chat-tool" type="button" data-canvas-chat-attach title="上传文件到当前工作文件夹">${ic("paperclip")}</button><input type="file" data-canvas-chat-file accept="image/*,video/*,audio/*" multiple hidden><button class="canvas-chat-tool" type="button" data-canvas-chat-mention title="引用画布节点或素材">@</button><div class="canvas-chat-tools-spacer"></div><select class="canvas-chat-mode" data-canvas-chat-mode title="执行模式"></select><select class="canvas-chat-model" data-canvas-chat-model title="模型"><option value="">默认模型</option></select><button class="canvas-chat-send" type="button" title="发送（Enter）" aria-label="发送" data-canvas-chat-send>${ic("arrow-up")}</button></div></div></section>`;
   await canvasLoadBoards(); const remote = await canvasLoadRemote(); const world = page.querySelector("#canvas-world"), J = typeof joint !== "undefined" ? joint : null;
@@ -55,8 +96,14 @@ async function renderCanvasPage() {
   canvasState.graph = new J.dia.Graph({}, { cellNamespace: J.shapes });
   // guard：按在卡右边的连接点、卡上正在改字的那一格上，画布整个不接（不拖卡、不平移）——
   // 连接点按下去是拉线（见 canvasPortDown），框里按下去是挪光标、选字
-  canvasState.paper = new J.dia.Paper({ el: world, model: canvasState.graph, width: 2400, height: 1600, gridSize: 16, drawGrid: { name: "dot", args: { color: "var(--owb-text-3)", thickness: 1, gap: 22 } }, background: { color: "transparent" }, cellViewNamespace: J.shapes, interactive: { elementMove: true, linkMove: false, labelMove: false, addLinkFromMagnet: false }, guard: (evt) => !!evt.target?.closest?.("[data-canvas-port], [data-canvas-inline-editor]") });
-  canvasBindViewport(page); canvasBindLinkHover(canvasState.paper);
+  canvasState.paper = new J.dia.Paper({ el: world, model: canvasState.graph, width: 2400, height: 1600, gridSize: 16, drawGrid: { name: "dot", args: { color: "var(--owb-text-3)", thickness: 1, gap: 22 } }, background: { color: "transparent" }, cellViewNamespace: J.shapes, interactive: { elementMove: true, linkMove: false, labelMove: false, addLinkFromMagnet: false }, guard: (evt) => !!evt.target?.closest?.("[data-canvas-port], [data-canvas-inline-editor], [data-canvas-inline-key]") });
+  canvasBindViewport(page); canvasBindLinkHover(canvasState.paper); canvasBindMinimap(page);
+  canvasState.saveHandler = () => {
+    if (canvasState.inlineEdit) canvasInlineCommit();
+    if (canvasState.editSaveTimer) canvasPersist();
+  };
+  window.addEventListener("beforeunload", canvasState.saveHandler);
+  window.addEventListener("pagehide", canvasState.saveHandler);
   // 拖一张卡，每一帧都来一次 change:position。以前每一帧都整图序列化 + 写 localStorage + 记撤销 + 判撞号，
   // 卡一多拖起来一顿一顿的（框选十几张一起拖，每帧还要乘十几）。手还按着就只记一笔「脏了」，松手存一次
   // 量卡高往下让位（fitting）、一口气摆一片（bulk）本来就不存，不能借着手还按着记成「脏了」、松手当改动存掉
@@ -89,6 +136,7 @@ async function renderCanvasPage() {
   // 场次卡上的「N 镜」数的是连出去的镜头卡，不再读 payload 里的抄本。所以连线一加一减
   // （包括删镜头时连带掀掉的线、重开画布时先摆卡后接线）都要把那张场次卡重画一遍
   const sceneWatch = (cell) => {
+    if (canvasState.bulk) return;
     if (!cell || typeof cell.isLink !== "function" || !cell.isLink() || !canvasState.graph) return;
     const src = canvasState.graph.getCell(canvasEndpointId(cell.get("source")));
     if (src && canvasKind(src) === "scene") canvasRefreshNode(src);

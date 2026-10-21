@@ -197,7 +197,7 @@ async function canvasCreateBoard() {
   await renderCanvasPage();
   // 没取走 = 起手卡没铺（盘上这张已经有人动过）。设定不能就这么丢了：单独放一张剧本卡
   const left = canvasTakeSeedDrama();
-  if (left) canvasAddNode("script", { title: "一句话概念", text: "在这里写一句话概念、人物关系、冲突、对白和结局。", ...left }, undefined, { skipSelect: true });
+  if (left) canvasAddNode("script", { title: "一句话概念", text: "", ...left }, undefined, { skipSelect: true });
   canvasState.seedDrama = null;
   canvasToast(`已创建画布「${canvasState.canvasName}」`, "circle-check");
 }
@@ -598,14 +598,25 @@ async function canvasRestoreSnapshotFromBar(name, id, button) {
   canvasToast(canvasT("放回了 {n} 个节点", { n: data.restored || 0 }), "rotate-ccw");
 }
 
+function canvasSchedulePersist() {
+  if (canvasState.editSaveTimer) clearTimeout(canvasState.editSaveTimer);
+  const scope = canvasScope(), graph = canvasState.graph;
+  canvasState.editSaveTimer = window.setTimeout(() => {
+    canvasState.editSaveTimer = null;
+    if (canvasScope() === scope && canvasState.graph === graph) canvasPersist();
+  }, 160);
+}
+
 function canvasPersist() {
   // 一次摆几十个节点和连线的时候（展开分镜表就是），每加一个都整图序列化一遍存盘 + 记一条撤销，
   // 十二镜的戏要跑六十来趟。收在这儿而不是收在调用方：canvasConnect 里那句存盘也在这条路上。
   // 顺带一个好处——整次展开只记一条撤销，按一次 ⌘Z 回到展开前，而不是要按六十次。
   if (canvasState.bulk) return;
+  if (canvasState.graph?.hasActiveBatch?.("canvas-edit")) return;
   // 卡片按内容量高、给长高的卡往下让位，都是从内容算出来的，不算一次改动（见 canvasFitFlush）
   if (canvasState.fitting) return;
   if (!canvasState.graph || typeof localStorage === "undefined") return;
+  if (canvasState.editSaveTimer) { clearTimeout(canvasState.editSaveTimer); canvasState.editSaveTimer = null; }
   const snapshot = canvasSnapshot();
   try { localStorage.setItem(canvasStorageKey(), JSON.stringify({ ...snapshot, version: 3, savedAt: Date.now() })); } catch {}
   canvasHistorySchedule(snapshot);
@@ -739,7 +750,7 @@ function canvasStableKey(value) {
 function canvasMergeNodeKey(item) {
   if (!item) return "";
   const kind = String(item.kind || "note");
-  return canvasStableKey({ kind, payload: { ...canvasDefaultPayload(kind), ...(item.payload || {}) } });
+  return canvasStableKey({ kind, payload: canvasNormalizeNodePayload(kind, item.payload || {}) });
 }
 function canvasMergeEdgeId(edge) { return `${canvasEndpointId(edge && edge.source)}\n${canvasEndpointId(edge && edge.target)}`; }
 
@@ -911,6 +922,8 @@ function canvasClearPendingConflict(scope = canvasScope()) {
 
 /** 切画布、切项目之前，先把欠着的那一趟写完 —— 走了再写就寄不到原来那张了 */
 async function canvasFlushRemoteWrite() {
+  if (canvasState.inlineEdit) canvasInlineCommit();
+  if (canvasState.editSaveTimer) canvasPersist();
   // 拖到一半攒着没存的位置也算欠着的（见 change:position 那条监听）：先存上，下面跟着一起交
   if (canvasState.dragDirty) { canvasState.dragDirty = false; canvasPersist(); }
   const armed = canvasState.remoteWriteArmed;
@@ -1097,6 +1110,62 @@ function canvasInferLegacyEdges(snapshot) {
  * 画纸冻住只排队不画，铺完一起画、一起量、存一次。冻结和 bulk 都在 finally 里放开：
  * 铺到一半抛了，画纸要是一直冻着，之后的改动全都画不出来
  */
+function canvasReconcileNodes(snapshot, keep) {
+  const graph = canvasState.graph, byId = new Map(), changed = new Set();
+  const wanted = new Map(snapshot.nodes.map((item) => [item.id, item]));
+  const wantedEdges = new Set((snapshot.edges || []).map(canvasMergeEdgeId));
+  graph.getLinks().forEach((link) => {
+    if (wantedEdges.has(canvasMergeEdgeId({ source: link.get("source"), target: link.get("target") }))) return;
+    const source = graph.getCell(canvasEndpointId(link.get("source")));
+    if (source && canvasKind(source) === "scene") changed.add(source);
+  });
+  graph.getElements().forEach((node) => {
+    const item = wanted.get(node.id);
+    if (!item || canvasKind(node) !== item.kind) node.remove();
+  });
+  snapshot.nodes.forEach((item) => {
+    const payload = canvasNormalizeNodePayload(item.kind, keep.has(item.id) ? keep.get(item.id) : item.payload);
+    let node = graph.getCell(item.id);
+    if (!node) {
+      node = canvasAddNode(item.kind, payload, item.position, { persist: false, skipSelect: true, id: item.id });
+      if (node) changed.add(node);
+    } else if (canvasStableKey(canvasPayload(node)) !== canvasStableKey(payload)) {
+      node.set("canvasPayload", payload); changed.add(node);
+    }
+    if (!node) return;
+    if (item.position) node.position(item.position.x, item.position.y);
+    if (item.size) {
+      const size = node.size(), width = Number(item.size.width) || size.width, height = Number(item.size.height) || size.height;
+      if (width !== size.width || height !== size.height) { node.resize(width, height); canvasFitSoon(node); }
+    }
+    byId.set(item.id, node);
+  });
+  const edgeKey = (edge) => `${canvasEndpointId(edge.source)}\n${canvasEndpointId(edge.target)}`;
+  const edges = new Map((snapshot.edges || []).map((edge) => [edgeKey(edge), edge]));
+  const remaining = new Map();
+  graph.getLinks().forEach((link) => {
+    const key = edgeKey({ source: link.get("source"), target: link.get("target") });
+    if (!edges.has(key)) {
+      const source = byId.get(canvasEndpointId(link.get("source")));
+      if (source && canvasKind(source) === "scene") changed.add(source);
+      link.remove();
+    } else remaining.set(key, link);
+  });
+  edges.forEach((edge, key) => {
+    const source = byId.get(canvasEndpointId(edge.source)), target = byId.get(canvasEndpointId(edge.target));
+    if (!source || !target) return;
+    const link = remaining.get(key), relation = edge.relation || canvasDefaultRelation(source, target);
+    if (link) {
+      if (canvasLinkRelation(link, source, target) !== relation) canvasDecorateLink(link, relation);
+    } else {
+      canvasConnect(source, target, relation);
+      if (canvasKind(source) === "scene") changed.add(source);
+    }
+  });
+  // 没改过的卡保留原来的 DOM，视频不会重载、输入框不会掉光标。
+  return { byId, changed };
+}
+
 function canvasApplySnapshot(snapshot, { fromRemote = false, external = fromRemote } = {}) {
   if (!canvasState.graph || !snapshot || !Array.isArray(snapshot.nodes)) return;
   // 撤销 / 重做自己就是在铺栈里的格子，historyMute 开着，不用对齐
@@ -1119,19 +1188,24 @@ function canvasApplySnapshot(snapshot, { fromRemote = false, external = fromRemo
   const graph = canvasState.graph, paper = canvasState.paper;
   canvasState.suspendSync = true;
   try {
-    const byId = new Map();
+    let byId = new Map(), changed = new Set();
     canvasState.bulk = true; graph.startBatch("canvas-apply"); if (paper) paper.freeze({ key: "canvas-apply" });
     try {
-      graph.clear();
-      restoredSnapshot.nodes.forEach((item) => { const node = canvasAddNode(item.kind, keep.has(item.id) ? keep.get(item.id) : item.payload, item.position, { persist: false, skipSelect: true, id: item.id }); if (node) { if (item.size) node.resize(Number(item.size.width) || node.size().width, Number(item.size.height) || node.size().height); byId.set(item.id, node); } });
-      (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target)), edge.relation));
+      if (fromRemote && graph.getElements().length) {
+        ({ byId, changed } = canvasReconcileNodes(restoredSnapshot, keep));
+      } else {
+        graph.clear();
+        restoredSnapshot.nodes.forEach((item) => { const node = canvasAddNode(item.kind, keep.has(item.id) ? keep.get(item.id) : item.payload, item.position, { persist: false, skipSelect: true, id: item.id }); if (node) { if (item.size) node.resize(Number(item.size.width) || node.size().width, Number(item.size.height) || node.size().height); byId.set(item.id, node); changed.add(node); } });
+        (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target)), edge.relation));
+      }
     } finally {
       canvasState.bulk = false; graph.stopBatch("canvas-apply"); if (paper) paper.unfreeze({ key: "canvas-apply" });
     }
     // 冻着的时候卡片的壳还没画出来，canvasAddNode 里填内容那一下是空跑：解冻后统一填一遍。
     // 撞号的那几张一次算好，不让每张卡各自把整张图数一遍
     const dup = canvasDupShotIds();
-    byId.forEach((node) => canvasRefreshNode(node, dup));
+    changed.forEach((node) => canvasRefreshNode(node, dup));
+    canvasMarkDupShots();
     // 卡高当场量完，别等下一拍：底下记服务器那份指纹要的是量完的样子，
     // 不然量完的那一下跟服务器那份对不上，就成了一次「本机改动」被写回去
     canvasFitFlush();
@@ -1173,6 +1247,7 @@ function canvasBusyNow() {
 function canvasStartRemoteSync() {
   if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer);
   canvasState.remoteTimer = window.setInterval(async () => {
+    if (canvasState.remotePoll) return;
     // 挂着一趟还没发出去的写也算：这时候拉回来的是改之前的那份，铺上去等于把刚改的抹掉
     if (!canvasState.graph || canvasState.remoteWritePending || canvasState.remoteWriteArmed) return;
     // 两边都改了、正等人选的时候也不拉：拉回来一铺，人还没选，本机那几张卡就被盖掉了
@@ -1186,15 +1261,19 @@ function canvasStartRemoteSync() {
     if (canvasBusyNow()) return;
     // 拖完那一下松手没被接住（撒手在窗外），攒着的位置还没存：先存上，这一圈不拉——拉回来一铺，那张卡就弹回去了
     if (canvasState.dragDirty) { canvasState.dragDirty = false; canvasPersist(); return; }
-    const previous = Number(canvasState.remoteUpdatedAt || 0);
-    const state = await canvasLoadRemote();
-    // 拉的这一趟在路上时本机又改了一笔（已经挂上写），拉回来的这份就是旧的了，别铺
-    if (canvasState.remoteWritePending || canvasState.remoteWriteArmed || canvasState.remoteConflict || canvasState.restoreChoice) return;
-    if (canvasState.saveFailed && canvasState.saveFailed === canvasScope()) return;
-    if (!(state && Number(state.updatedAt) > previous)) return;
-    const before = canvasState.graph.getElements().length;
-    canvasApplySnapshot(state, { fromRemote: true });
-    // 一下子少了节点：多半是 Agent 在清空、在连删。去看有没有它动手前存的快照，有就挂「撤销」
-    if (Array.isArray(state.nodes) && state.nodes.length < before) canvasOfferSnapshotUndo();
+    const previous = Number(canvasState.remoteUpdatedAt || 0), graph = canvasState.graph;
+    const poll = { scope: canvasScope() }; canvasState.remotePoll = poll;
+    try {
+      const state = await canvasLoadRemote();
+      if (canvasState.remotePoll !== poll || canvasState.graph !== graph || canvasScope() !== poll.scope || canvasBusyNow()) return;
+      // 拉的这一趟在路上时本机又改了一笔（已经挂上写），拉回来的这份就是旧的了，别铺
+      if (canvasState.remoteWritePending || canvasState.remoteWriteArmed || canvasState.remoteConflict || canvasState.restoreChoice) return;
+      if (canvasState.saveFailed && canvasState.saveFailed === canvasScope()) return;
+      if (!(state && Number(state.updatedAt) > previous)) return;
+      const before = canvasState.graph.getElements().length;
+      canvasApplySnapshot(state, { fromRemote: true });
+      // 一下子少了节点：多半是 Agent 在清空、在连删。去看有没有它动手前存的快照，有就挂「撤销」
+      if (Array.isArray(state.nodes) && state.nodes.length < before) canvasOfferSnapshotUndo();
+    } finally { if (canvasState.remotePoll === poll) canvasState.remotePoll = null; }
   }, 1800);
 }

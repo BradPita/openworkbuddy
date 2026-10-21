@@ -33,7 +33,7 @@ const CANVAS_NODE_DEFS = {
   storyboard: { label: "分镜表", icon: "clapperboard", width: 350, height: 235, subtitle: "short-drama 业务节点", group: "分镜制作" },
   scene: { label: "场次", icon: "film", width: 380, height: 255, subtitle: "场次下的镜头集合", group: "分镜制作" },
   shot: { label: "镜头", icon: "video", width: 360, height: 260, subtitle: "可生成、可重跑的最小单元", group: "分镜制作" },
-  image: { label: "参考图", icon: "image", width: 340, height: 330, subtitle: "角色、场景或首帧", group: "素材与生成" },
+  image: { label: "参考图", icon: "image", width: 340, height: 220, subtitle: "角色、场景或首帧", group: "素材与生成" },
   video: { label: "视频片段", icon: "video", width: 380, height: 390, subtitle: "生成结果或本地素材", group: "素材与生成" },
   audio: { label: "声音", icon: "music", width: 320, height: 220, subtitle: "对白、配音或音乐", group: "素材与生成" },
   timeline: { label: "剪辑时间线", icon: "film", width: 380, height: 240, subtitle: "本项目 AI 剪辑时间线", group: "交付" },
@@ -49,7 +49,7 @@ const CANVAS_EDGE_RELATIONS = [
 ];
 
 let canvasState = {
-  graph: null, paper: null, wheelHandler: null, scale: 1, x: 0, y: 0, next: 1,
+  graph: null, paper: null, wheelHandler: null, wheelFrame: null, wheelQueue: [], scale: 1, x: 0, y: 0, next: 1,
   boards: [], files: [], busy: new Set(), selected: null, selectedIds: new Set(), nodeType: null,
   // 服务端**逐个确认过**盘上真没有的素材路径。注意不是「不在 files 里的那些」——
   // files 是截断过的清单（最深 3 层、最多 500 条），拿它判缺失会冤枉一大片，详见 canvasMediaAvailable
@@ -58,9 +58,10 @@ let canvasState = {
   inspectorOpen: false, nodeGesture: null, multiMove: null, skipNodeClick: null, suppressInspectorUntil: 0,
   // 卡右边那颗连接点（见 canvasPortDown）：wire 是正从它往外拖的那根线，portMenu 是点一下弹出来的「接一张新卡」菜单；
   // inlineEdit 是正在卡上直接改的那一格 { nodeId, key, draft, … }——卡整张重画时靠它把没改完的字放回去
-  wire: null, portMenu: null, inlineEdit: null,
+  wire: null, portMenu: null, inlineEdit: null, contextMenuClose: null, editSaveTimer: null, saveHandler: null,
+  minimap: null, minimapOpen: false,
   // remoteContentKey：服务器上那份画布的内容指纹。屏幕上这份跟它一样就不再往上写（见 canvasPersist）
-  remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
+  remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remotePoll: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // fitting：正在按内容给卡量高、给长高的卡让位。这期间的挪动不存盘（见 canvasFitFlush）
   fitting: false,
   // bulk：一口气摆一大片（铺快照、展开分镜表、自动排版），这期间每一下都不存盘，摆完存一次（见 canvasPersist）。
@@ -494,20 +495,27 @@ function canvasReuseTarget(payload, kind, sig, nodeKind) {
 
 function canvasDefaultPayload(kind) {
   switch (kind) {
-    case "script": return { title: "新剧本", text: "一句话概念、人物关系、冲突与结局…" };
-    case "agent": return { title: "Agent任务", role: "导演 Agent", task: "根据上游剧本和素材生成可审核的短剧创作计划。", status: "待执行", approval: "先给方案，等我确认" };
-    case "character": return { name: "新角色", role: "主角", description: "人物外形、性格、目标与关系…", reference: "", voice: "" };
-    case "location": return { name: "新场景", description: "地点、时间、天气、光线与氛围…" };
+    case "script": return { title: "新剧本", text: "" };
+    case "agent": return { title: "Agent任务", role: "导演 Agent", task: "", status: "待执行", approval: "先给方案，等我确认" };
+    case "character": return { name: "新角色", role: "主角", description: "", reference: "", voice: "" };
+    case "location": return { name: "新场景", description: "" };
     // 卡面上那句「短剧分镜」是写死的，所以画布上看着没毛病；掉进 default 分支的是 payload。
     // 于是这张卡在「连接到下游节点…」那个下拉里叫「新笔记」，交给 Agent 的正文也是
     // 「记录灵感、任务或需要补充的内容…」——起手模板铺出来的那张就是这样
     case "storyboard": return { board: "" };
-    case "shot": return { id: "S1-01", title: "新镜头", shot_size: "中景", duration: "4", prompt: "镜头内容与运动…", motion_prompt: "", line: "对白或旁白…", speaker: "" };
-    case "image": return { title: "参考图", url: "", role: "参考素材", tags: "", prompt: "这张图要保持的主体、风格与构图…" };
-    case "video": return { title: "Video", url: "", role: "生成结果", tags: "", prompt: "描述你想生成的内容…", model: "", aspect_ratio: "16:9", resolution: "1080p", duration: "5s" };
-    case "audio": return { title: "声音", url: "", role: "对白/音乐", tags: "", text: "对白、旁白或音乐说明…", voice: "" };
+    case "shot": return { id: "S1-01", title: "新镜头", shot_size: "中景", duration: "4", prompt: "", motion_prompt: "", line: "", speaker: "" };
+    case "image": return { title: "参考图", url: "", role: "参考素材", tags: "", prompt: "" };
+    case "video": return { title: "Video", url: "", role: "生成结果", tags: "", prompt: "", model: "", aspect_ratio: "16:9", resolution: "1080p", duration: "5s" };
+    case "audio": return { title: "声音", url: "", role: "对白/音乐", tags: "", text: "", voice: "" };
     case "timeline": return { title: "最终剪辑", description: "把镜头按顺序交给本项目 Agent 生成时间线。" };
     case "scene": return { id: "S1", place: "未命名场景", time: "" };
-    default: return { title: "新笔记", text: "记录灵感、任务或需要补充的内容…" };
+    default: return { title: "新笔记", text: "" };
   }
+}
+
+function canvasNormalizeNodePayload(kind, payload = {}) {
+  // 旧存档用过的别名只补一次；显式清空正式字段时，不能又把旧内容填回来。
+  if (kind === "image" && payload.prompt == null && payload.text != null) payload = { ...payload, prompt: payload.text };
+  if (kind === "audio" && payload.text == null && payload.prompt != null) payload = { ...payload, text: payload.prompt };
+  return { ...canvasDefaultPayload(kind), ...payload };
 }

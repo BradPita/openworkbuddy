@@ -209,6 +209,8 @@ Script, characters, scenes, shots, reference images, video, voice and the edit t
 
 Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, `Shift`/`⌘`+click to add or drop nodes from the selection, and `@` any node or asset from the chat box at the bottom.
 
+Enter prompts directly on image, video and voice cards. New cards appear in the current viewport; empty prompts never start generation. Connect several reference images at once, duplicate cards with their references, align selections and navigate with the optional minimap. See the [canvas guide](docs/无限画布使用.md) (Chinese).
+
 ## Put it on a server for your team: multi-user, self-hosted
 
 ```bash
@@ -255,18 +257,19 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
-- **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
+- **Oct 22** Edit prompts on cards, block empty generation, connect reference images in batches, duplicate with references, arrange selections and navigate with a minimap; fix context-menu deletion and reduce large-canvas redraws
 - **Oct 21** Keep read notifications, find scheduled results in the inbox, and jump to conversation search matches from a visible search button
+- **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
 - **Oct 20** Installed apps register a bundled-runtime CLI; Windows checks cover Unicode/space paths and the launch directory. Rerun `npm link` after moving a source checkout
 - **Oct 20** Two groups of five common tasks; pin directly from task rows and rename from the menu; local session imports and read-only sharing are disabled
+<details>
+<summary>More updates</summary>
+
 - **Oct 20** Read notifications stay read; run summaries distinguish ended, stopped and incomplete turns; inline script checks and video output collision protection
 - **Oct 20** Source updates check Git state first; keep modified or divergent checkouts intact to protect sessions and deliverables
 - **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
 - **Oct 19** Rename tasks and identify dated previews; Goal checks unmet work and resumes in bounded rounds after 100 steps; CLI sandbox denials explain approval limits
 - **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
-
-<details>
-<summary>More updates</summary>
 
 - **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
 
