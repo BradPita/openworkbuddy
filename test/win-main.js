@@ -332,6 +332,37 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
       ok(workflow.includes("dist/latest*.yml") && workflow.includes("dist/*.blockmap"), "发布同时带上更新元数据和增量索引");
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
+  await section("Windows CLI：真实命令解释器与内置运行时", async () => {
+    const smoke = read("scripts", "win-smoke.js");
+    ok(smoke.includes("windowsVerbatimArguments: true"), "cmd.exe 的批处理引号不被再次转义");
+    if (process.platform !== "win32") return;
+    const os = require("os"), cp = require("child_process"), assert = require("assert/strict");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cli live 中文 "));
+    try {
+      const appDir = path.join(dir, "App space 中文"), cwd = path.join(dir, "project space");
+      fs.mkdirSync(appDir); fs.mkdirSync(cwd);
+      fs.writeFileSync(path.join(appDir, "cli.js"), "console.log(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2)}));");
+      const { installCli } = require("../src/desktop/cli-install");
+      const opts = { appDir, executable: require("electron"), home: dir,
+        env: { ...process.env, OPENWORKBUDDY_INSTALL_CLI: "1", LOCALAPPDATA: dir }, runCommand: async () => {} };
+      const registered = await installCli(opts);
+      assert.equal(registered.ok, true);
+      const call = args => cp.spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `call "${registered.file}" ${args}`], {
+        cwd, env: { ...process.env, OPENWORKBUDDY_HOME: dir }, windowsHide: true, windowsVerbatimArguments: true, encoding: "utf8", timeout: 30000,
+      });
+      const probe = call('"hello world" "中文"');
+      assert.equal(probe.status, 0, probe.stderr);
+      const result = JSON.parse(probe.stdout);
+      assert.equal(fs.realpathSync(result.cwd), fs.realpathSync(cwd));
+      assert.deepEqual(result.args, ["hello world", "中文"]);
+      ok(true, "中文和空格路径、参数、启动目录都经过真实 cmd.exe 验证");
+      await installCli({ ...opts, appDir: ROOT });
+      const version = call("--version");
+      assert.equal(version.status, 0, version.stderr);
+      assert.equal(version.stdout.trim(), "OpenWorkBuddy " + require("../package.json").version);
+      ok(true, "Windows 内置 Electron 真正运行 CLI，无需系统 Node.js");
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
   finished = true;
   console.log(`\n${fail ? "✗" : "✓"} Windows 主进程：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);

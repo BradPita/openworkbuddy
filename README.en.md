@@ -256,7 +256,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 ## What's new
 
 - **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
-- **Oct 20** Installed apps register the CLI on first launch using the bundled runtime; rerun `npm link` after moving a source checkout
+- **Oct 20** Installed apps register a bundled-runtime CLI; Windows checks cover Unicode/space paths and the launch directory. Rerun `npm link` after moving a source checkout
 - **Oct 20** Two groups of five common tasks; pin directly from task rows and rename from the menu; local session imports and read-only sharing are disabled
 - **Oct 20** Read notifications stay read; run summaries distinguish ended, stopped and incomplete turns; inline script checks and video output collision protection
 - **Oct 20** Source updates check Git state first; keep modified or divergent checkouts intact to protect sessions and deliverables

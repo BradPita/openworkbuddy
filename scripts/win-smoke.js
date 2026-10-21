@@ -132,7 +132,7 @@ async function main() {
       env: { ...process.env, OPENWORKBUDDY_INSTALL_CLI: "1", LOCALAPPDATA: cliHome }, runCommand: async () => {} });
     if (!registered.ok) throw new Error("CLI 注册失败：" + registered.reason);
     const result = cp.spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `call "${registered.file}" --version`], {
-      cwd: cliHome, env: { ...process.env, OPENWORKBUDDY_HOME: cliHome }, windowsHide: true, encoding: "utf8", timeout: 30000,
+      cwd: cliHome, env: { ...process.env, OPENWORKBUDDY_HOME: cliHome }, windowsHide: true, windowsVerbatimArguments: true, encoding: "utf8", timeout: 30000,
     });
     if (result.status !== 0 || !String(result.stdout).includes("OpenWorkBuddy " + pkg.version)) throw new Error("安装版 CLI 启动失败：" + (result.stderr || result.error || result.stdout));
     console.log("[冒烟] 安装版 CLI 使用内置运行时启动成功");
