@@ -13,5 +13,11 @@ try {
   assert.ok(yaml.includes("actions: read") && yaml.includes("node scripts/release-ci.js"));
   assert.equal((yaml.match(/if: steps\.ci\.outputs\.passed != 'true'/g) || []).length, 2);
   assert.ok(yaml.includes("- run: npm ci") && yaml.includes("- run: npm test") && yaml.includes("needs: test"));
+  const testYaml = fs.readFileSync(path.join(__dirname, "../.github/workflows/test.yml"), "utf8");
+  const preflight = testYaml.indexOf("run: node test/lib/css-token-gate.js");
+  assert.ok(preflight > 0 && preflight < testYaml.indexOf("- run: npm ci"), "UI color preflight runs before dependency installation and the full suite");
+  const e2e = fs.readFileSync(path.join(__dirname, "e2e.js"), "utf8");
+  assert.ok(e2e.includes('require("./lib/css-token-gate")(path.join(__dirname, ".."))'), "E2E reuses the same color gate");
+  require("./lib/css-token-gate")();
   console.log("✓ Release CI: exact SHA, main push, trusted workflow, freshness and full-test fallback");
 } catch (e) { console.error(e.stack || e); process.exitCode = 1; }

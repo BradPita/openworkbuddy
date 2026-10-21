@@ -60,6 +60,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Check UI color tokens
+        run: node test/lib/css-token-gate.js
       - run: npm ci
       # 只在 ubuntu 那条腿装发行版的 ffmpeg：它带 libass/drawtext，本机 Homebrew 那份不带，
       # 烧字幕这类分支只有在这儿才真跑得到。中文字体给 libass 排字用。macOS 那条腿不装，照旧跳过真 ffmpeg 段。
