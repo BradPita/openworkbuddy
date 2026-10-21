@@ -163,7 +163,13 @@ function attnFlag(sid, flag) {
  *  auto = 只是切回了窗口：人在行菜单里亲手标的「未读」（manual）不算看过，得真点开这一条 */
 function attnSeen(sid, auto, defer = false) {
   const st = sessionAttn.get(sid);
-  if (!st) return;
+  if (!st) {
+    const row = inboxHistory().get(sid);
+    if (!row || row.read) return;
+    inboxHistory().set(sid, { ...row, read: true });
+    if (!defer) { saveInboxHistory(); attnChanged(); }
+    return true;
+  }
   const keep = !!(auto && st.manual);
   if (!st.error && (!st.unseen || keep)) return;
   if (!keep) rememberInboxTask(sid, true, defer);
