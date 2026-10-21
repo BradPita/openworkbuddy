@@ -936,6 +936,7 @@ async function pollCliLive() {
 
 /** 跟一趟终端里的活儿：它此刻在干什么，原样放到对话区里，跟本机跑的任务长一个样 */
 async function openCliLive(row) {
+  if (typeof closeChatSearch === "function") closeChatSearch(false);
   closeAssistView();
   stopCliWatch();
   sessionId = row.id;
@@ -2012,6 +2013,7 @@ function openNote(text, retry) {
   return d;
 }
 async function openSession(id, opts) {
+  closeChatSearch(false);
   const sid = id;
   const tok = ++openSeq;
   if (openCtl) openCtl.abort();
@@ -2112,6 +2114,7 @@ async function openSession(id, opts) {
   scrollBottom(true);
 }
 document.getElementById("new-task").onclick = () => {
+  closeChatSearch(false);
   closeAssistView();
   stopCliWatch();
   sessionId = null;
@@ -2275,6 +2278,8 @@ function syncSendBtn() {
   if (sendBtn._title !== title || touched) { sendBtn.title = title; sendBtn._title = title; }
 }
 function updateSendUI() {
+  const searchButton = document.getElementById("search-conversation");
+  if (searchButton) searchButton.hidden = !sessionId;
   syncSendBtn();
   syncPlaceholder();
   // ⚡ 插队按钮退役：发消息默认就是插队，按钮常隐（interject() 留给快捷键等旧入口）
@@ -3119,8 +3124,10 @@ function openChatSearch() {
   if (!bar) {
     bar = document.createElement("div");
     bar.id = "chat-search";
-    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--owb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">${ic("chevron-up")}</button><button id="cs-next" title="下一个">${ic("chevron-down")}</button><button id="cs-close" title="关闭 (Esc)">${ic("x")}</button>`;
-    document.querySelector(".main").appendChild(bar);
+    bar.setAttribute("role", "search");
+    bar.setAttribute("aria-label", "搜索当前对话");
+    bar.innerHTML = `<div class="cs-controls"><input id="cs-input" aria-label="搜索当前对话" placeholder="搜索对话内容…"><span id="cs-count" role="status" aria-live="polite" style="color:var(--owb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">${ic("chevron-up")}</button><button id="cs-next" title="下一个">${ic("chevron-down")}</button><button id="cs-close" title="关闭 (Esc)">${ic("x")}</button></div><div id="cs-results"></div>`;
+    document.querySelector(".main > .topbar").after(bar);
     bar.querySelector("#cs-input").oninput = runChatSearch;
     bar.querySelector("#cs-input").addEventListener("keydown", (e) => {
       if (imeKey(e)) return;
@@ -3132,16 +3139,24 @@ function openChatSearch() {
     bar.querySelector("#cs-close").onclick = closeChatSearch;
   }
   bar.style.display = "flex";
+  document.getElementById("search-conversation")?.setAttribute("aria-expanded", "true");
   bar.querySelector("#cs-input").focus();
   bar.querySelector("#cs-input").select();
+  runChatSearch();
 }
-function closeChatSearch() {
+function closeChatSearch(focusInput = true) {
   const bar = document.getElementById("chat-search");
   if (bar) bar.style.display = "none";
   csMatches.forEach(m => m.classList.remove("search-hit"));
   csMatches = [];
   csIdx = -1;
-  inputEl.focus();
+  document.getElementById("search-conversation")?.setAttribute("aria-expanded", "false");
+  if (bar) {
+    bar.querySelector("#cs-input").value = "";
+    bar.querySelector("#cs-count").textContent = "";
+    bar.querySelector("#cs-results")?.replaceChildren();
+  }
+  if (focusInput) inputEl.focus();
 }
 function runChatSearch() {
   csMatches.forEach(m => m.classList.remove("search-hit"));
@@ -3149,6 +3164,8 @@ function runChatSearch() {
   csIdx = -1;
   const q = document.getElementById("cs-input").value.trim().toLowerCase();
   const cnt = document.getElementById("cs-count");
+  const results = document.getElementById("cs-results");
+  results?.replaceChildren();
   if (!q) { cnt.textContent = ""; return; }
   // 顶上收着没画的那几轮也得搜得到（见 showOlderTurns）：记录里有这个词，就补画到最早提到它的那一轮
   const more = chatCol.querySelector(":scope > .turns-more");
@@ -3159,6 +3176,17 @@ function runChatSearch() {
   for (const el of chatCol.querySelectorAll(".u-msg .bubble, .a-text")) {
     if (el.textContent.toLowerCase().includes(q)) csMatches.push(el);
   }
+  if (results) csMatches.forEach((el, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cs-result";
+    button.setAttribute("data-i18n-skip", "");
+    const text = el.textContent.replace(/\s+/g, " ").trim(), at = text.toLowerCase().indexOf(q);
+    const start = Math.max(0, at - 25);
+    button.textContent = `${index + 1}. ${start ? "…" : ""}${text.slice(start, start + 110)}${text.length > start + 110 ? "…" : ""}`;
+    button.onclick = () => csNav(index - csIdx);
+    results.appendChild(button);
+  });
   cnt.textContent = csMatches.length ? `0/${csMatches.length}` : "无结果";
   if (csMatches.length) csNav(1);
 }
@@ -3169,7 +3197,9 @@ function csNav(dir) {
   csMatches[csIdx].classList.add("search-hit");
   csMatches[csIdx].scrollIntoView({ block: "center", behavior: "smooth" });
   document.getElementById("cs-count").textContent = `${csIdx + 1}/${csMatches.length}`;
+  document.querySelectorAll("#cs-results .cs-result").forEach((button, index) => button.setAttribute("aria-current", String(index === csIdx)));
 }
+document.getElementById("search-conversation")?.addEventListener("click", openChatSearch);
 
 // ================= 命令审批条（安全中心「询问名单」命中时挂起等这里批准） =================
 let apSeen = new Set(); // 已经通知过的审批 id：轮询是重复的，系统通知只发一次

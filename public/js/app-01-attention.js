@@ -156,6 +156,7 @@ function attnFlag(sid, flag) {
   const st = attnOf(sid, true);
   if (st[flag]) return;
   st[flag] = true;
+  rememberInboxTask(sid, false);
   attnChanged();
 }
 /** 人点开了这条（或者切回了窗口）：出错、跑完这两笔就算看过了。题不算——题得答了才算。
@@ -165,6 +166,7 @@ function attnSeen(sid, auto, defer = false) {
   if (!st) return;
   const keep = !!(auto && st.manual);
   if (!st.error && (!st.unseen || keep)) return;
+  if (!keep) rememberInboxTask(sid, true, defer);
   st.error = false;
   if (!keep) {
     st.unseen = false;
@@ -198,7 +200,9 @@ function attnRestoreUnread() {
 /** 会话删掉了：它名下的账一起清，不然标题上的数永远下不去 */
 function attnForget(sid) {
   if (sid) attnGone.add(sid);
-  if (!sessionAttn.delete(sid)) return;
+  const archived = inboxHistory().delete(sid);
+  if (archived) saveInboxHistory();
+  if (!sessionAttn.delete(sid) && !archived) return;
   attnChanged();
 }
 
@@ -262,8 +266,38 @@ function attnDotHtml(sid, cliLive) {
 let scheduleInboxRows = [];
 let scheduleInboxById = new Map();
 const scheduleInboxMemory = new Map();
-const inboxReadRows = new Map();
+const inboxHistoryMemory = new Map();
+let inboxFilter = "all";
+let scheduleInboxError = false;
+let scheduleInboxOwner = "";
 let scheduleInboxRequest = 0;
+function inboxHistoryKey() { return scheduleInboxKey().replace("owb-schedule-inbox-v2:", "owb-task-inbox-v1:"); }
+function inboxHistory() {
+  const key = inboxHistoryKey();
+  if (!inboxHistoryMemory.has(key)) {
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(key) || "[]"); } catch { /* 内存继续工作 */ }
+    inboxHistoryMemory.set(key, new Map((Array.isArray(saved) ? saved : [])
+      .filter(r => r && typeof r.id === "string" && typeof r.title === "string" && ["error", "unseen"].includes(r.state))
+      .slice(-300).map(r => [r.id, { id: r.id, title: r.title.slice(0, 240), state: r.state, status: r.state === "error" ? "出错了" : "本轮结束", read: !!r.read, at: Number(r.at) || 0, cli: !!r.cli }])));
+  }
+  return inboxHistoryMemory.get(key);
+}
+function saveInboxHistory() {
+  const rows = inboxHistory();
+  if (rows.size > 300) {
+    const keep = [...rows.values()].sort((a, b) => b.at - a.at).slice(0, 300);
+    rows.clear(); for (const row of keep) rows.set(row.id, row);
+  }
+  try { localStorage.setItem(inboxHistoryKey(), JSON.stringify([...rows.values()])); } catch { /* 已读仍保留在内存 */ }
+}
+function rememberInboxTask(sid, read, defer = false) {
+  const st = sessionAttn.get(sid);
+  if (!sid || attnGone.has(sid) || !st || (!st.error && !st.unseen)) return;
+  const previous = inboxHistory().get(sid);
+  inboxHistory().set(sid, { id: sid, title: attnName(sid), state: st.error ? "error" : "unseen", status: st.error ? "出错了" : "本轮结束", read: !!read, cli: cliLiveRows.some(r => r.id === sid), at: read && previous ? previous.at : Date.now() });
+  if (!defer) saveInboxHistory();
+}
 function scheduleInboxKey() {
   const user = typeof currentUser !== "undefined" && currentUser;
   return "owb-schedule-inbox-v2:" + (user && (user.id || user.username) || "desktop");
@@ -274,9 +308,9 @@ function scheduleInboxState() {
   if (!state) {
     try {
       const saved = JSON.parse(localStorage.getItem(key) || "null");
-      if (saved && Array.isArray(saved.seen)) state = { initialized: true, seen: new Set(saved.seen.filter((id) => typeof id === "string")) };
+      if (saved && Array.isArray(saved.seen)) state = { initialized: true, linkedInitialized: saved.linkedInitialized === true, seen: new Set(saved.seen.filter((id) => typeof id === "string")) };
     } catch { /* 本机存储不可用时，仍在内存中记录已读 */ }
-    state = state || { initialized: false, seen: new Set() };
+    state = state || { initialized: false, linkedInitialized: false, seen: new Set() };
     scheduleInboxMemory.set(key, state);
   }
   return state;
@@ -288,20 +322,27 @@ function saveScheduleInboxSeen() {
   const state = scheduleInboxState();
   state.initialized = true;
   state.seen = new Set([...state.seen].slice(-600));
-  try { localStorage.setItem(scheduleInboxKey(), JSON.stringify({ seen: [...state.seen] })); } catch { /* 保留内存态，不让已读重新冒出来 */ }
+  try { localStorage.setItem(scheduleInboxKey(), JSON.stringify({ seen: [...state.seen], linkedInitialized: state.linkedInitialized })); } catch { /* 保留内存态，不让已读重新冒出来 */ }
 }
 async function loadScheduleInbox() {
   const request = ++scheduleInboxRequest, owner = scheduleInboxKey();
+  if (scheduleInboxOwner !== owner) {
+    scheduleInboxOwner = owner; scheduleInboxRows = []; scheduleInboxById = new Map(); scheduleInboxError = false;
+  }
   try {
     const response = await fetch("/api/schedules/runs?limit=300&summary=1");
-    if (!response.ok) return;
+    if (!response.ok) throw new Error("schedule inbox unavailable");
     const runs = await response.json();
     if (request !== scheduleInboxRequest || owner !== scheduleInboxKey()) return;
-    const finished = (Array.isArray(runs) ? runs : [])
-      .filter((run) => run && typeof run.id === "string" && run.ended_at && !run.source_linked && run.session_id);
+    if (!Array.isArray(runs)) throw new Error("invalid schedule inbox response");
+    const finished = runs
+      .filter((run) => run && typeof run.id === "string" && run.ended_at);
+    scheduleInboxError = false;
     // 首次启用收件箱只建立历史基线，避免把几十条旧运行记录全部当作新消息。
-    if (!scheduleInboxState().initialized) {
-      for (const run of finished) readScheduleInboxSeen().add(run.id);
+    const baseline = scheduleInboxState();
+    if (!baseline.initialized || !baseline.linkedInitialized) {
+      for (const run of finished) if (!baseline.initialized || run.source_linked || !run.session_id) readScheduleInboxSeen().add(run.id);
+      baseline.linkedInitialized = true;
       saveScheduleInboxSeen();
     }
     const seen = readScheduleInboxSeen();
@@ -312,7 +353,11 @@ async function loadScheduleInbox() {
         return { id: `__schedule__:${run.id}`, title: run.name || "定时任务", state: run.ok ? "unseen" : "error", status: run.ok ? "定时任务已完成" : "定时任务出错", read: seen.has(run.id), cli: false, at: Date.parse(run.ended_at) || 0 };
       });
     syncAttentionInbox();
-  } catch { /* 运行记录接口暂时不可用时，不影响普通任务收件箱 */ }
+  } catch {
+    if (request !== scheduleInboxRequest || owner !== scheduleInboxKey()) return;
+    scheduleInboxError = true;
+    syncAttentionInbox();
+  }
 }
 function attentionInboxRows() {
   const rows = new Map(), byId = new Map(sessions.map(s => [s.id, s]));
@@ -323,7 +368,9 @@ function attentionInboxRows() {
     if (!state) return;
     const status = state === "ask" ? (st.asks.values().next().value.approval ? "待审批" : "待回答")
       : state === "error" ? "出错了" : state === "running" ? "运行中" : "未读";
-    rows.set(id, { id, title: stripSceneTag(title || attnName(id)) || "任务", state, status, cli: !!cli, at: (byId.get(id) || {}).at || 0 });
+    const row = { id, title: stripSceneTag(title || attnName(id)) || "任务", state, status, cli: !!cli, at: (byId.get(id) || {}).at || 0 };
+    rows.set(id, row);
+    if ((state === "error" || state === "unseen") && !inboxHistory().has(id)) rememberInboxTask(id, false);
   };
   for (const s of sessions) add(s.id, s.title, false);
   for (const r of cliLiveRows) add(r.id, r.title, true);
@@ -334,8 +381,8 @@ function attentionInboxRows() {
     const approval = [...loose.asks.values()].some((a) => a.approval);
     rows.set("__approval__", { id: "__approval__", title: "安全审批", state: "ask", status: approval ? "待审批" : "待回答", cli: false, at: Date.now() });
   }
-  for (const row of scheduleInboxRows) rows.set(row.id, row);
-  for (const [id, row] of inboxReadRows) if (!rows.has(id)) rows.set(id, row);
+  if (scheduleInboxOwner === scheduleInboxKey()) for (const row of scheduleInboxRows) rows.set(row.id, row);
+  for (const [id, row] of inboxHistory()) if (!rows.has(id) && attnKnownSid(id)) rows.set(id, { ...row, title: stripSceneTag((byId.get(id) || {}).title || row.title) });
   const rank = { ask: 0, error: 1, running: 2, unseen: 3 };
   return [...rows.values()].sort((a, b) => Number(!!a.read) - Number(!!b.read) || rank[a.state] - rank[b.state] || b.at - a.at);
 }
@@ -344,14 +391,17 @@ function markInboxRead(rows = attentionInboxRows()) {
   let changed = false, sessionChanged = false;
   for (const row of rows) {
     if (row.read || row.state === "ask" || row.state === "running") continue;
-    inboxReadRows.set(row.id, { ...row, read: true });
     if (row.id.startsWith("__schedule__:")) {
       readScheduleInboxSeen().add(row.id.slice("__schedule__:".length));
       const stored = scheduleInboxRows.find((r) => r.id === row.id);
       if (stored) stored.read = true;
       changed = true;
-    } else if (attnSeen(row.id, false, true)) sessionChanged = true;
+    } else {
+      inboxHistory().set(row.id, { ...row, status: row.state === "error" ? "出错了" : "本轮结束", read: true });
+      if (attnSeen(row.id, false, true)) sessionChanged = true;
+    }
   }
+  saveInboxHistory();
   if (changed) saveScheduleInboxSeen();
   if (sessionChanged) { saveSessions(); attnChanged(); }
   syncAttentionInbox();
@@ -360,15 +410,23 @@ function syncAttentionInbox() {
   if (typeof document === "undefined" || typeof document.getElementById !== "function") return;
   const button = document.getElementById("inbox-toggle"), panel = document.getElementById("attention-inbox"), badge = document.getElementById("inbox-count");
   if (!button || !panel || !badge) return;
-  const rows = attentionInboxRows();
-  const unread = rows.filter((r) => !r.read && r.state !== "running").length;
+  const all = attentionInboxRows();
+  const rows = all.filter(r => inboxFilter === "schedule" ? r.id.startsWith("__schedule__:") : inboxFilter !== "unread" || (!r.read && r.state !== "running"));
+  const unread = all.filter((r) => !r.read && r.state !== "running").length;
   badge.hidden = !unread;
   badge.textContent = unread > 99 ? "99+" : String(unread);
   button.setAttribute("aria-label", unread ? `${attnT("收件箱")} · ${unread} ${attnT("未读")}` : attnT("收件箱"));
   const focusedId = panel.contains(document.activeElement) && document.activeElement.dataset ? document.activeElement.dataset.inboxId : "";
-  const html = `<div class="inbox-head"><span>${esc(attnT("收件箱"))}</span><button type="button" class="inbox-read-all"${rows.some((r) => !r.read && (r.state === "error" || r.state === "unseen")) ? "" : " disabled"}>${esc(attnT("全部标为已读"))}</button></div>`
-    + (rows.length ? rows.map((r) => `<button type="button" class="inbox-row${r.read ? " is-read" : ""}" data-inbox-id="${esc(r.id)}" data-state="${r.state}"><span class="i-dot" aria-hidden="true"></span><span class="i-copy"><span class="i-title">${esc(r.title === "安全审批" ? attnT(r.title) : r.title)}</span><span class="i-status">${esc(attnT(r.status))}${r.read ? " · " + esc(attnT("已读")) : ""}</span></span></button>`).join("")
-      : `<div class="inbox-empty">${esc(attnT("没有待处理的任务"))}</div>`);
+  const time = at => {
+    const date = new Date(at);
+    return at && Number.isFinite(date.getTime()) ? ` · <time datetime="${date.toISOString()}" title="${esc(date.toLocaleString())}">${esc(date.toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }))}</time>` : "";
+  };
+  const html = `<div class="inbox-head"><span>${esc(attnT("收件箱"))}</span><button type="button" class="inbox-read-all"${all.some((r) => !r.read && (r.state === "error" || r.state === "unseen")) ? "" : " disabled"}>${esc(attnT("全部标为已读"))}</button></div>`
+    + `<div class="inbox-filters" role="group" aria-label="${esc(attnT("筛选通知"))}">${[["all", "全部"], ["unread", "未读"], ["schedule", "定时任务"]].map(([key, text]) => `<button type="button" data-inbox-filter="${key}" aria-pressed="${inboxFilter === key}">${esc(attnT(text))}</button>`).join("")}</div>`
+    + (scheduleInboxError ? `<div class="inbox-error">${esc(attnT("定时任务通知加载失败"))} <button type="button" class="inbox-retry">${esc(attnT("重试"))}</button></div>` : "")
+    + (rows.length ? rows.map((r) => `<button type="button" class="inbox-row${r.read ? " is-read" : ""}" data-inbox-id="${esc(r.id)}" data-state="${r.state}"><span class="i-dot" aria-hidden="true"></span><span class="i-copy"><span class="i-title" data-i18n-skip>${esc(r.title === "安全审批" ? attnT(r.title) : r.title)}</span><span class="i-status">${esc(attnT(r.status))}${r.read ? " · " + esc(attnT("已读")) : ""}${time(r.at)}</span></span></button>`).join("")
+      : `<div class="inbox-empty">${esc(attnT(inboxFilter === "unread" ? "没有未读通知" : inboxFilter === "schedule" ? "暂无定时任务通知" : "暂无通知"))}</div>`)
+    + `<button type="button" class="inbox-runs">${esc(attnT("查看定时任务运行记录"))}</button>`;
   if (panel._inboxHtml === html) return;
   panel._inboxHtml = html;
   panel.innerHTML = html;
@@ -383,13 +441,18 @@ if (typeof document !== "undefined" && inboxToggle && inboxPanel) {
     inboxPanel.hidden = !open;
     inboxToggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
-      inboxReadRows.clear();
-      markInboxRead();
+      syncAttentionInbox();
       await loadScheduleInbox();
-      if (!inboxPanel.hidden) markInboxRead();
     }
   });
   inboxPanel.addEventListener("click", (event) => {
+    const filter = event.target.closest("[data-inbox-filter]");
+    if (filter) { inboxFilter = filter.dataset.inboxFilter; syncAttentionInbox(); return; }
+    if (event.target.closest(".inbox-retry")) { loadScheduleInbox(); return; }
+    if (event.target.closest(".inbox-runs")) {
+      inboxPanel.hidden = true; inboxToggle.setAttribute("aria-expanded", "false");
+      automState.tab = "runs"; automState.runTaskId = ""; openPageView("autom"); return;
+    }
     if (event.target.closest(".inbox-read-all")) { markInboxRead(); return; }
     const row = event.target.closest("[data-inbox-id]");
     if (!row) return;
@@ -401,6 +464,7 @@ if (typeof document !== "undefined" && inboxToggle && inboxPanel) {
       if (run) {
         markInboxRead(scheduleInboxRows.filter((r) => r.id === row.dataset.inboxId));
         if (run.session_id) openSession(run.session_id);
+        else { automState.tab = "runs"; automState.runTaskId = ""; openPageView("autom"); }
       }
       return;
     }
@@ -412,6 +476,7 @@ if (typeof document !== "undefined" && inboxToggle && inboxPanel) {
     openAttn(row.dataset.inboxId);
   });
   loadScheduleInbox();
+  if (typeof setInterval === "function") setInterval(() => { if (!document.hidden) loadScheduleInbox(); }, 30000);
   document.addEventListener("pointerdown", (event) => {
     if (!inboxPanel.hidden && !event.target.closest(".inbox-wrap")) {
       inboxPanel.hidden = true;

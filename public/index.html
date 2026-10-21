@@ -281,6 +281,12 @@
   .inbox-row .i-title { display: block; overflow: hidden; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
   .inbox-row .i-status { display: block; margin-top: 3px; color: var(--owb-text-3); font-size: 11px; }
   .inbox-empty { padding: 18px 10px; color: var(--owb-text-3); font-size: 12px; text-align: center; }
+  .inbox-filters { display:flex; gap:6px; padding:0 10px 8px; }
+  .inbox-filters button { border:0; border-radius:var(--radius-full); padding:5px 10px; background:transparent; color:var(--owb-text-2); font:inherit; font-size:12px; cursor:pointer; }
+  .inbox-filters button[aria-pressed="true"] { background:var(--owb-bg-hover); color:var(--owb-brand-text); }
+  .inbox-runs { width:100%; border:0; border-top:1px solid var(--owb-border); background:transparent; padding:10px; color:var(--owb-brand-text); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+  .inbox-error { padding:8px 10px; color:var(--owb-err); font-size:12px; }
+  .inbox-retry { border:0; background:transparent; color:var(--owb-brand-text); font:inherit; cursor:pointer; }
   /* 侧栏上那两条工作线（办公 / 工程）。分的是「这次干哪种活儿」：办公是做表写稿出图发消息
      （鼠标流），工程是写代码跑脚本查日志（键盘流，连着本机的 openworkbuddy 命令行）。放在「新建任务」
      底下、任务列表上头，而不是塞进设置页：两条线各记各的会话，切一下标签下面整列历史跟着换，
@@ -1287,7 +1293,13 @@
   /* 带去处的提示（「某某在等你回答，点这里过去」）要能点；普通提示照旧点穿 */
   #owb-toast.act.show { pointer-events: auto; cursor: pointer; }
   #owb-toast.act:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 2px; }
-  #chat-search { display: none; position: absolute; top: 50px; right: 20px; z-index: 50; background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-menu); padding: 6px 8px; gap: 6px; align-items: center; }
+  #chat-search { display:none; flex:0 0 auto; flex-direction:column; padding:8px 20px; gap:6px; border-bottom:1px solid var(--owb-border); background:var(--owb-bg); }
+  #search-conversation[hidden] { display:none; }
+  .cs-controls { display:flex; align-items:center; gap:6px; width:100%; }
+  #chat-search .cs-controls input { width:auto; flex:1; min-width:0; color:var(--owb-text); }
+  #cs-results { max-height:min(180px, 25vh); width:100%; overflow:auto; }
+  #chat-search .cs-result { display:block; width:100%; padding:6px 8px; text-align:left; font:inherit; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #chat-search .cs-result[aria-current="true"] { color:var(--owb-brand-text); background:var(--owb-bg-hover); }
   #chat-search input { margin: 0; width: 200px; border: none; outline: none; background: none; font-size: 14px; }
   #chat-search button { border: none; background: none; cursor: pointer; color: var(--owb-text-2); padding: 3px 6px; border-radius: var(--radius-sm); }
   #chat-search button:hover { background: var(--owb-bg-hover); }
@@ -3124,7 +3136,7 @@
   <div class="topbar">
     <button id="toggle-side" class="icon-btn" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
     <div class="title" id="session-title">新任务</div>
-    <div class="right"><div class="inbox-wrap"><button type="button" class="icon-btn" id="inbox-toggle" title="收件箱" aria-label="收件箱" aria-expanded="false" aria-controls="attention-inbox"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span id="inbox-count" hidden></span></button><div id="attention-inbox" role="region" aria-label="收件箱" hidden></div></div><button id="toggle-files" title="查看这个任务的文件"><svg class="i" aria-hidden="true"><use href="#i-file"></use></svg> <span id="session-file-count">文件</span></button></div>
+    <div class="right"><button type="button" class="icon-btn" id="search-conversation" title="搜索当前对话" aria-label="搜索当前对话" aria-expanded="false" aria-controls="chat-search" hidden><svg class="i" aria-hidden="true"><use href="#i-search"></use></svg></button><div class="inbox-wrap"><button type="button" class="icon-btn" id="inbox-toggle" title="收件箱" aria-label="收件箱" aria-expanded="false" aria-controls="attention-inbox"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span id="inbox-count" hidden></span></button><div id="attention-inbox" role="region" aria-label="收件箱" hidden></div></div><button id="toggle-files" title="查看这个任务的文件"><svg class="i" aria-hidden="true"><use href="#i-file"></use></svg> <span id="session-file-count">文件</span></button></div>
   </div>
   <div id="chat-scroll"><div id="goal-card" style="display:none"></div><div class="chat-col" id="chat-col"></div></div>
   <button id="to-bottom" title="回到最新"><svg class="i" aria-hidden="true"><use href="#i-arrow-down"></use></svg></button>

@@ -245,7 +245,47 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
     ok(!unread().some(r => r.id === "__schedule__:storage-full"), "本机存储满了，内存中的已读仍生效");
     context.currentUser = { username: "another-owner" };
     await B.loadScheduleInbox();
-    ok([...storage.keys()].every(k => k.startsWith("owb-schedule-inbox-v2:")), "已读状态按当前账号隔离");
+    ok([...storage.keys()].every(k => /^(owb-schedule-inbox-v2:|owb-task-inbox-v1:)/.test(k)), "已读状态按当前账号隔离");
+  });
+
+  await section("收件箱记录：普通任务不消失、账号隔离、来源关联排期可见", async () => {
+    const storage = new Map();
+    let runs = [];
+    const context = {
+      currentUser: { username: "fixture-one" }, sessions: [{ id: "done", title: "完成通知" }], cliLiveRows: [], runningSessions: new Set(), sessionId: "",
+      renderHistory() {}, syncTitleCount() {}, saveSessions() {}, stripSceneTag: s => s,
+      localStorage: { getItem: k => storage.get(k) || null, setItem: (k, v) => storage.set(k, v) },
+      fetch: async () => ({ ok: true, json: async () => runs }),
+    };
+    const source = ATTN + "\n;({ loadScheduleInbox, attentionInboxRows, attnFlag, attnSeen, attnForget, markInboxRead })";
+    const A = vm.runInNewContext(source, context);
+    A.attnFlag("done", "unseen");
+    A.attnSeen("done");
+    ok(A.attentionInboxRows().some(r => r.id === "done" && r.read), "点开普通任务后仍保留已读通知");
+    const B = vm.runInNewContext(source, { ...context });
+    ok(B.attentionInboxRows().some(r => r.id === "done" && r.read), "刷新页面仍能找到普通任务的已读通知");
+    A.attnFlag("done", "unseen");
+    ok(A.attentionInboxRows().some(r => r.id === "done" && !r.read), "同一任务再次完成会产生新的未读提醒");
+    const other = vm.runInNewContext(source, { ...context, currentUser: { username: "fixture-two" } });
+    eq(other.attentionInboxRows().length, 0, "另一个账号看不到普通任务通知存档");
+    await A.loadScheduleInbox();
+    runs = [{ id: "linked", name: "对话排期", source_linked: true, session_id: "execution", ended_at: "2026-10-21T10:00:00Z", ok: true }, { id: "legacy", name: "旧版记录", ended_at: "2026-10-21T09:00:00Z", ok: false }];
+    await A.loadScheduleInbox();
+    ok(A.attentionInboxRows().some(r => r.id === "__schedule__:linked" && !r.read), "写回来源对话的定时结果仍有通知和独立执行入口");
+    ok(A.attentionInboxRows().some(r => r.id === "__schedule__:legacy"), "没有执行会话的旧版定时记录也能找到");
+    A.attnForget("done");
+    const C = vm.runInNewContext(source, { ...context });
+    ok(!C.attentionInboxRows().some(r => r.id === "done"), "删除任务一并移除通知存档");
+    ok(!/inboxReadRows\.clear\(|if \(!inboxPanel.hidden\) markInboxRead\(\)/.test(ATTN), "打开收件箱不会清记录或把全部通知自动已读");
+    storage.set("owb-schedule-inbox-v2:migration-owner", JSON.stringify({ seen: [] }));
+    const D = vm.runInNewContext(source, { ...context, currentUser: { username: "migration-owner" } });
+    await D.loadScheduleInbox();
+    eq(D.attentionInboxRows().filter(r => !r.read).length, 0, "升级时补入旧关联排期，不把历史重新变成一堆未读");
+    runs = [{ id: "fresh-linked", source_linked: true, session_id: "fresh-execution", ended_at: "2026-10-21T11:00:00Z", ok: true }, ...runs];
+    await D.loadScheduleInbox();
+    ok(D.attentionInboxRows().some(r => r.id === "__schedule__:fresh-linked" && !r.read), "升级后的新关联排期仍正常提醒");
+    context.currentUser = { username: "fixture-three" };
+    ok(!A.attentionInboxRows().some(r => r.id.startsWith("__schedule__:")), "账号切换后立即隐藏上一账号的排期缓存");
   });
 
   await section("收件箱批量已读与轻量记录", () => {

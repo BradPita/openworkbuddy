@@ -3067,7 +3067,7 @@ const WIN_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" 
   + "<body style='margin:0;width:900px'><div id='session-title'></div>"
   + "<div id='chat-scroll' style='height:600px;flex:none'><div class='chat-col' id='chat-col'></div></div>"
   + "<button id='to-bottom'></button><button id='to-top'></button>"
-  + "<div id='preview-panel'></div><div id='files-panel'></div><input id='cs-input'><span id='cs-count'></span></body>";
+  + "<div id='preview-panel'></div><div id='files-panel'></div><div class='main'><div class='topbar'><button id='search-conversation'></button></div></div></body>";
 const WIN_STUBS = TRAIL_STUBS + "\n" + [
   "var chatScroll = document.getElementById('chat-scroll');",
   "var closeAssistView = () => {}, stopCliWatch = () => {}, attnSeen = () => {}, resetCtxMeter = () => {}, closePreview = () => {}, renderCtxMeter = () => {};",
@@ -3250,6 +3250,8 @@ const WIN_CHECKS = `
   }
 
   // ---------- 4. ⌘F 搜到收着的那几轮 ----------
+  document.getElementById("search-conversation").click();
+  ok("对话搜索有可点击的入口，搜索栏位于页内且带输入标签", document.getElementById("chat-search").previousElementSibling.matches(".topbar") && document.getElementById("cs-input").getAttribute("aria-label") === "搜索当前对话");
   const search = (w) => { document.getElementById("cs-input").value = w; runChatSearch(); return document.getElementById("cs-count").textContent; };
   await open("S_LONG");
   ok("搜只在第 3 问里出现的词（ZETA，大小写不论）：补画到第 3 轮，搜得到", search("ZETA") === "1/1" && no(csMatches[0].closest(".turn")) === 3 && nos() === range(3, 25), nos());
@@ -3257,6 +3259,15 @@ const WIN_CHECKS = `
   ok("  └ 回复正文里的词（omega）也搜得到", search("omega") === "1/1" && no(csMatches[0].closest(".turn")) === 3);
   await open("S_LONG");
   ok("  └ 只在眼前几轮里的词不补画", search("第20问") === "1/1" && turnsHidden() === 16, "收着 " + turnsHidden());
+  search("第");
+  const snippets = [...document.querySelectorAll("#cs-results .cs-result")];
+  ok("搜索结果列出匹配片段", snippets.length > 1 && snippets[0].textContent.includes("第"));
+  snippets[1].click();
+  ok("点匹配片段直接跳转并高亮，计数跟着改变", csIdx === 1 && csMatches[1].classList.contains("search-hit") && document.getElementById("cs-count").textContent.startsWith("2/"));
+  document.getElementById("cs-prev").click();
+  ok("上一处与下一处可连续定位", csIdx === 0);
+  await open("S_LONG");
+  ok("切换对话清除搜索词与旧结果，避免串到上一条对话", !csMatches.length && !document.querySelector("#cs-results .cs-result") && !document.getElementById("cs-input").value);
   {
     const undo = mutate(runChatSearch, [["if (first >= 0) showOlderTurns(more._older.turns.length - first);", ""]]);
     let r;
@@ -14268,6 +14279,14 @@ const LANE_CHECKS = `
   nextAttn(); await settle();
   ok("注意力·题都答完了：下一站是出错的那条", __OPENED[1] === "a2", JSON.stringify(__OPENED));
   ok("注意力·点过去了，出错那颗就熄", !dot("a2") && dot("a3").matches(".hdot.unseen"), row("a2").innerHTML);
+  document.getElementById("inbox-toggle").click(); await settle();
+  ok("收件箱·重新打开保留普通任务已读记录", !!document.querySelector('[data-inbox-id="a2"].is-read'));
+  ok("收件箱·只打开面板不会读掉其他通知", attentionInboxRows().some(r => r.id === "a3" && !r.read));
+  document.querySelector('[data-inbox-filter="unread"]').click();
+  ok("收件箱·未读筛选隐藏已读记录", !document.querySelector('[data-inbox-id="a2"]') && !!document.querySelector('[data-inbox-id="a3"]'));
+  document.querySelector('[data-inbox-filter="all"]').click();
+  ok("收件箱·切回全部可再次打开已读消息", !!document.querySelector('[data-inbox-id="a2"]'));
+  document.getElementById("inbox-toggle").click();
   sessionId = "";
   attnForget("a3");
   ok("注意力·会话删了：它名下的账一起清", !dot("a3") && !sessionAttn.has("a3"));

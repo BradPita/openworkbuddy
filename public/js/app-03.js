@@ -1411,6 +1411,9 @@ const PAGE_VIEWS = {
   trace: { icon: "activity", title: "执行追踪", wide: true, render: () => renderTracePage() },
 };
 function openPageView(kind) {
+  closeChatSearch(false);
+  const searchButton = document.getElementById("search-conversation");
+  if (searchButton) searchButton.hidden = true;
   const v = PAGE_VIEWS[kind];
   if (!v) return;
   if (pageKind === kind) { v.render(); return; } // 同页重进 = 刷新内容
@@ -2129,7 +2132,7 @@ function renderAutomForm(box, tpl) {
   };
 }
 async function renderAutomRuns(page) {
-  const { list: runs, error: runsErr } = await getList("/api/schedules/runs?limit=100");
+  const { list: runs, error: runsErr } = await getList("/api/schedules/runs?limit=300");
   if (runsErr) {
     page.innerHTML = `<div class="hub-empty">${ic("scroll-text")} 运行记录<br><br>${esc(runsErr)}</div>`;
     return;
