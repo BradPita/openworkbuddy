@@ -24,7 +24,7 @@ const path = require("path");
 const { EventEmitter } = require("events");
 
 const ROOT = path.join(__dirname, "..");
-const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), "utf8");
+const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), "utf8").replace(/\r\n/g, "\n");
 const EM = read("electron-main.js");
 
 let pass = 0, fail = 0, finished = false;
