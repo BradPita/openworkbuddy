@@ -214,7 +214,8 @@ jobs:
             - **双击无反应 / No window**：查看 `~/OpenWorkBuddy/logs/boot.log`（Windows：`%USERPROFILE%\OpenWorkBuddy\logs\boot.log`）。分享日志前请删去个人路径、账号和凭据。
             - **黑屏 / Blank window**：在数据目录的 `config.json` 中，将 `server.disable_gpu` 设为 `true`，然后重启。
             - **数据目录 / Data directory**：默认 `~/OpenWorkBuddy`，可用 `OPENWORKBUDDY_HOME` 更改。卸载应用不会删除此目录。
-            - **升级 / Upgrade**：备份数据目录，关闭应用，下载同架构的新安装包覆盖安装。免安装版换成新文件。源码用户执行 `git pull`、`npm ci` 后重启。
+            - **升级 / Upgrade**：先备份数据目录并关闭应用。安装包用户下载同架构的新包覆盖安装，免安装版换成新文件。源码用户先检查 `git status`；只有工作区干净且分支可快进时，执行 `git pull --ff-only`、`npm ci` 后重启。有本地改动或分叉时保留原目录，按安装指南处理。
+              Back up the data directory and close the app. Replace the installed or portable build with the new package for your architecture. Source users: check `git status` first; only run `git pull --ff-only` and `npm ci` in a clean working tree whose branch can fast-forward. Preserve a modified or diverged checkout and follow the installation guide.
 
             [中文安装与启动](https://github.com/CatCatUncle/openworkbuddy/blob/main/docs/%E5%AE%89%E8%A3%85%E4%B8%8E%E5%90%AF%E5%8A%A8.md) · [English user guide](https://catcatuncle.github.io/openworkbuddy/guides/user.html) · [中文用户指南](https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html) · [开发者 / Developer guide](https://catcatuncle.github.io/openworkbuddy/guides/developer.html)
 
