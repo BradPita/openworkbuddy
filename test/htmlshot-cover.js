@@ -369,12 +369,18 @@ try { navigator.sendBeacon("http://127.0.0.1:${P}/beacon", "x"); } catch (e) {}
   {
     await cover(ANIM);
     const w = coverWinNow();
-    let paints = 0;
-    const onPaint = () => { paints++; };
+    ok(w && !w.webContents.isPainting(), "交付截图时已经停止主动绘制");
+    const paints = [];
+    // Intel Chromium 偶尔在 stopPainting 后才递送已提交的空白清理帧。
+    // 只允许这一帧：仍在画、旧页面的像素、持续重画都会失败。
+    const onPaint = (_event, _rect, image) => {
+      paints.push({ painting: w.webContents.isPainting(), url: w.webContents.getURL(), rgb: px(image.toPNG()) });
+    };
     w.webContents.on("paint", onPaint);
     await sleep(5000);
     if (!w.isDestroyed()) w.webContents.removeListener("paint", onPaint);
-    ok(w && paints === 0, "截完 5 秒：0 次重画", paints);
+    ok(w && paints.length <= 1 && paints.every(p => !p.painting && p.url === "about:blank" && p.rgb.every(c => c >= 250)),
+      "截完 5 秒：没有持续重画（最多一帧已提交的空白清理帧）", paints);
     const p = await plainWin(ANIM);
     let n = 0;
     p.webContents.on("paint", () => { n++; });

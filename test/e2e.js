@@ -11001,7 +11001,9 @@ async function testDetectCache() {
     detect: async () => { calls++; await new Promise((r) => setTimeout(r, 60)); return { id: "e2e-slow", installed: true, path: "x", version: "1" }; },
     run: async () => ({ finalText: "" }),
   };
-  engines.BACKENDS.push(stub);
+  // 缓存用例只测受控探针；开发机装的真实 CLI 可能冷启动数秒，不能算进 60ms 桩的完成时间。
+  const originalBackends = engines.BACKENDS.splice(0, engines.BACKENDS.length, stub);
+  engines._detectCache.clear();
   try {
     await engines.detectAll({}, { force: true });      // 冷探一次（顺便把缓存里别的键洗掉）
     const base = calls;
@@ -11025,7 +11027,8 @@ async function testDetectCache() {
     const t2 = Date.now();
     await engines.detectAll({});
     assert(Date.now() - t2 < 30, "后台重探的时候，别的请求跟着干等");
-    await new Promise((r) => setTimeout(r, 150));
+    assert(ent.refreshing && typeof ent.refreshing.then === "function", "过期缓存没有启动后台重探");
+    await ent.refreshing;
     assert.strictEqual(calls, base + 3, `过期后该在后台重探一遍，实际探了 ${calls - base - 2} 遍`);
     assert(Date.now() - engines._detectCache.get("{}").at < 1000, "后台探完没换进缓存，下一个人还拿旧的");
     ent.at -= 31 * 60 * 1000; // 半小时以上的老黄历不再顶着用
@@ -11044,8 +11047,8 @@ async function testDetectCache() {
       assert.deepStrictEqual(both.map((e) => e.id), ["e2e-slow", "e2e-slow2"], "并行探完顺序乱了");
     } finally { engines.BACKENDS.splice(0, engines.BACKENDS.length, ...real); }
   } finally {
-    engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
-    await engines.detectAll({}, { force: true }); // 别把桩留在缓存里影响后面的用例
+    engines.BACKENDS.splice(0, engines.BACKENDS.length, ...originalBackends);
+    engines._detectCache.clear(); // 别把桩留在缓存里，也不为清理测试去探用户真正的 CLI
   }
   const srv = srcLib.src("server");
   assert(/force: req\.query\.force === "1"/.test(srv), "/api/engines 没把「重新检测」透传成 force，用户点了也只会拿到缓存");
