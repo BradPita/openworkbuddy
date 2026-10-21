@@ -201,6 +201,11 @@ jobs:
             - **macOS「无法验证」**：先将应用拖到「应用程序」。关闭提示，进入 **系统设置 → 隐私与安全性 → 仍要打开**，按系统要求确认。
               **macOS “cannot be verified”**: move the app to Applications, dismiss the prompt, then use **System Settings → Privacy & Security → Open Anyway**.
               [Apple 操作说明 / Apple instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+
+              <p><img src="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/docs/images/macos-open-anyway.png" width="860" alt="macOS 系统设置 → 隐私与安全性 → 仍要打开 OpenWorkBuddy / macOS System Settings → Privacy &amp; Security → Open Anyway"></p>
+
+              如图，在 **系统设置 → 隐私与安全性** 的「安全性」区域找到 OpenWorkBuddy，点击 **「仍要打开」**，再按系统提示确认。此入口通常在尝试打开应用并被拦截后出现。
+              In **System Settings → Privacy & Security**, find OpenWorkBuddy under Security, click **Open Anyway**, then confirm when prompted. This option usually appears after an attempt to open the app is blocked.
             - **macOS「已损坏」**：重新下载；仍有问题时检查签名及启动日志，见下方安装指南。这个提示不能只按「无法验证」处理。
               **macOS “is damaged”**: download a fresh copy, then check the signature and startup log using the installation guide if needed.
             - **Windows SmartScreen**：核对来源后选择 **更多信息 → 仍要运行**。组织设备还可能受管理员策略限制。
