@@ -8711,7 +8711,7 @@ async function testConfigExternalEdit() {
     assert(after2.models[0].api_key === "sk-在编辑器里粘进去的", "手粘的 Key 在第二次存盘之后仍旧在");
   } finally {
     booted.child.kill("SIGKILL");
-    fs.rmSync(home, { recursive: true, force: true });
+    await dropTempHome(home, true, booted.child);
   }
   console.log("✅ 手改 config.json 不再被界面存盘盖掉：粘的 Key 和手加的整块都在 · 界面那次改动照样落盘 · 日志说清了合并（负对照：没外改时不喊合并）");
 }
@@ -8909,7 +8909,7 @@ async function testKeyGuard() {
     assert(!/efghij/.test(au.body), "掩码给多了：中间那段是 Key 的正身，露出来就等于半个明文");
   } finally {
     booted.child.kill("SIGKILL");
-    fs.rmSync(home, { recursive: true, force: true });
+    await dropTempHome(home, true, booted.child);
   }
 
   console.log("✅ Key 这一路：落盘 0600（.bak 同待遇·老机器开机就修好·流水账不连坐）· 环境变量不串门（官方域名照认·OPENWORKBUDDY_KEY_<渠道> 点名生效·本机不唠叨）· 撞 401 跟「测一下」一个口径 · 换 Key 进审计且只留掩码");
@@ -9673,7 +9673,7 @@ async function testBackupRoundTrip() {
     assert(offAuto.code === 200 && (await autoOf()).every_days === 0, "关不掉自动备份");
   } finally {
     booted.child.kill();
-    fs.rmSync(home, { recursive: true, force: true });
+    await dropTempHome(home, true, booted.child);
   }
   console.log("✅ 备份来回：打包→下载→传回新机器→恢复走得通，绝对路径/../、软链接、形状不对的包一律原地拒且不留尸体；自动备份默认关、开了当场备一份");
 }
@@ -13485,7 +13485,7 @@ async function testIntranet() {
       assert((onDisk() || {}).intranet === false, '字符串 "true" 不该被当成打开：intranet=' + JSON.stringify((onDisk() || {}).intranet));
     } finally {
       child.kill("SIGKILL");
-      fs.rmSync(home, { recursive: true, force: true });
+      await dropTempHome(home, true, child);
     }
   }
 
@@ -14637,7 +14637,7 @@ async function testAdminModelsPage() {
     console.log(`✅ 后台「模型与 Key」：${used.length} 个图标名在 admin.html sprite 里全找得到（反向对照通过）· 真 /api/settings 带齐 ${s.providers.length} 渠道 × ${s.models.length} 模型 + platform_owner/active_model/failover_model/media_models · 没填 Key 的 has_key 全 false 且真 Key 不出门 · 替身与真接口字段对齐`);
   } finally {
     child.kill("SIGKILL");
-    fs.rmSync(home, { recursive: true, force: true });
+    await dropTempHome(home, true, child);
   }
 }
 function testKeySourcesGate() {
