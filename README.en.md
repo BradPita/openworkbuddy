@@ -193,13 +193,16 @@ One sentence set this up. It runs whether or not anyone is at the machine, and e
 
 How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
 
-## AI short-drama infinite canvas
+## Creative infinite canvas
 
-Script, characters, scenes, shots, reference images, video, voice and the edit timeline all sit on one canvas. The wires aren't decoration — they are what the next generation actually reads for character, first frame and sound. Change one shot and only that shot re-runs.
+Start with an image, video or set of assets. Describe, connect references, generate and continue with variations or video directly from each card. Short-drama workflows also organize scripts, characters, scenes, shots, voice and the edit timeline. Connections become real generation inputs.
 
 <p align="center">
- <img src="docs/images/case-canvas.jpg" width="960" alt="OpenWorkBuddy infinite canvas: character sheet, location plate and shot first-frames on one board, with purple wires labelled 「生成」 pointing at what the next generation actually reads">
+ <img src="docs/images/canvas-start.png" width="960" alt="OpenWorkBuddy canvas example: start an image or video, import assets and open Agent when needed">
 </p>
+
+<details>
+<summary>Example: a 75-second AI short-drama episode</summary>
 
 **A whole AI short-drama episode from one sentence**: ask for "an episode of 《不烧心》 as a vertical short drama" and it goes script → character sheets → storyboard → first frames → shot videos → final cut. This 75-second episode was made that way (click the cover to watch).
 
@@ -207,9 +210,11 @@ Script, characters, scenes, shots, reference images, video, voice and the edit t
  <a href="docs/videos/ai-short-drama-ep01.mp4"><img src="docs/images/ai-short-drama-poster.jpg" width="300" alt="Cover of the AI short drama 《不烧心》 EP01, vertical cut — click to play the 75-second episode"></a>
 </p>
 
-Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, `Shift`/`⌘`+click to add or drop nodes from the selection, and `@` any node or asset from the chat box at the bottom.
+</details>
 
-Enter prompts directly on image, video and voice cards. New cards appear in the current viewport; empty prompts never start generation. Connect several reference images at once, duplicate cards with their references, align selections and navigate with the optional minimap. See the [canvas guide](docs/无限画布使用.md) (Chinese).
+Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, `Shift`/`⌘`+click to add or drop nodes from the selection, and expand Agent to reference nodes or assets with `@`.
+
+Edit models, references and prompts on cards, compare versions and open Agent when needed. Empty prompts never start generation. Duplicate with references, arrange selections, navigate with the optional minimap and export the canvas together with its assets. See the [canvas guide](docs/无限画布使用.md) (Chinese).
 
 ## Put it on a server for your team: multi-user, self-hosted
 
@@ -257,7 +262,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
-- **Oct 22** Edit prompts on cards, block empty generation, connect reference images in batches, duplicate with references, arrange selections and navigate with a minimap; fix context-menu deletion and reduce large-canvas redraws
+- **Oct 22** Rework canvas entry points, media cards and on-demand Agent; edit references and model settings inline, continue images as variations or videos, compare versions and export the canvas with its assets; fix context-menu deletion and reduce redraws
 - **Oct 21** Keep read notifications, find scheduled results in the inbox, and jump to conversation search matches from a visible search button
 - **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
 - **Oct 20** Installed apps register a bundled-runtime CLI; Windows checks cover Unicode/space paths and the launch directory. Rerun `npm link` after moving a source checkout

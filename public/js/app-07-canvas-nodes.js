@@ -71,7 +71,7 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
   const def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note;
   // ai_generated：这张卡是分镜草稿落下来的（见 canvasPlaceCommitted），头上挂一枚「AI 生成」——
   // 人改过也不摘：它说的是「最初谁写的」，让人知道这段文字没人从头审过
-  const header = (title, subtitle = def.subtitle) => `<header class="canvas-node-head"><span class="canvas-node-icon">${ic(def.icon)}</span><div><b>${esc(title || def.label)}</b><small>${esc(subtitle)}</small></div>${payload && payload.ai_generated ? '<span class="canvas-ai-badge" title="这张卡由对话模型生成">AI 生成</span>' : ""}<button class="canvas-node-settings" data-canvas-settings title="打开设置" aria-label="打开设置">${ic("settings")}</button><button class="canvas-node-remove" data-canvas-remove title="删除节点" aria-label="删除节点">${ic("x")}</button></header>`;
+  const header = (title, subtitle = def.subtitle) => `<header class="canvas-node-head"><span class="canvas-node-icon">${ic(def.icon)}</span><div><b>${esc(title || def.label)}</b><small>${esc(subtitle)}</small></div>${payload && payload.ai_generated ? '<span class="canvas-ai-badge" title="这张卡由对话模型生成">AI 生成</span>' : ""}<button class="canvas-node-settings" data-canvas-settings title="${esc(canvasT("打开设置"))}" aria-label="${esc(canvasT("打开设置"))}">${ic("settings")}</button><button class="canvas-node-remove" data-canvas-remove title="${esc(canvasT("删除节点"))}" aria-label="${esc(canvasT("删除节点"))}">${ic("x")}</button></header>`;
   // 这个版本认不出的类型：照原样显示，只读。可能是新版本建的，也可能是别的分支建的。
   // 要紧的是别把它画成一张可编辑的空白笔记——那样用户随手一打字，就把人家节点的
   // payload 盖成 { text: "..." } 了。服务端已经保证读写不丢这种节点
@@ -111,26 +111,17 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
     const copy = `<div class="canvas-shot-prompt">${esc(payload.prompt || "还没有镜头提示词")}</div><div class="canvas-shot-line">${esc(payload.line || "无人声")}</div>`;
     return `<article class="canvas-node canvas-node-shot">${header(payload.id || payload.title || "新镜头", `${payload.shot_size || "镜头"} · ${payload.duration || "4"}s`)}<div class="canvas-node-body">${shotMedia ? canvasMediaRow(shotMedia, copy, shotRatio) : copy}${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="image" ${imageBusy ? "disabled" : ""}>${imageBusy ? "生成中…" : payload.first_frame ? "重跑首帧" : "生成首帧"}</button><button class="ui-btn ui-btn--sm ui-btn--ghost" data-canvas-generate="video" ${videoBusy || !payload.first_frame ? "disabled" : ""}>${videoBusy ? "生成中…" : "生成视频"}</button>${payload.first_frame ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(payload.first_frame)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
   }
-  if (kind === "agent") return `<article class="canvas-node canvas-node-agent">${header(payload.title || "Agent任务", payload.role || "本项目 Agent") }<div class="canvas-node-body"><div class="canvas-agent-status">${esc(payload.status || "待执行")}</div><div class="canvas-node-copy">${esc(payload.task || "描述要让 Agent 完成的创作任务")}</div><button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-agent>${ic("sparkles")}运行这个任务</button></div></article>`;
-  if (kind === "video") {
-    const busy = canvasState.busy.has(`${nodeId}:video`), mediaPath = String(payload.video || canvasMediaPath(payload) || "").trim(), frame = String(payload.first_frame || "").trim();
-    const preview = mediaPath ? `<video class="canvas-video-preview" data-canvas-media-path="${esc(mediaPath)}" src="${esc(canvasFileUrl(mediaPath))}" ${canvasAspectAttr(mediaPath, canvasRatioOf(payload.aspect_ratio, 16 / 9))} controls preload="metadata"></video>` : `<div class="canvas-video-empty">${ic("play")}<span>生成结果会显示在这里</span></div>`;
-    const refs = [frame ? `首帧 · ${frame.split(/[\\/]/).pop()}` : "首帧 · 未设置", payload.last_frame ? `尾帧 · ${String(payload.last_frame).split(/[\\/]/).pop()}` : "尾帧 · 可选", payload.reference_video ? `参考视频 · ${String(payload.reference_video).split(/[\\/]/).pop()}` : "参考视频 · 可选"];
-    return `<article class="canvas-node canvas-node-video">${header(payload.title || "Video", `${payload.model || "视频生成"} · ${payload.aspect_ratio || "16:9"}`)}<div class="canvas-node-body"><div class="canvas-video-stage">${preview}</div><textarea class="canvas-video-prompt" data-canvas-inline-key="prompt" rows="2" placeholder="描述任何你想生成的内容…">${esc(payload.prompt || "")}</textarea><div class="canvas-video-refs">${refs.map((ref) => `<span>${esc(ref)}</span>`).join("")}</div><div class="canvas-video-settings"><span>${esc(payload.model || "默认模型")}</span><span>${esc(payload.aspect_ratio || "16:9")}</span><span>${esc(payload.resolution || "1080p")}</span><span>${esc(payload.duration || "5s")}</span></div>${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-generate="video" ${busy ? "disabled" : ""}>${busy ? "生成中…" : mediaPath ? "重新生成" : "生成视频"}</button>${mediaPath ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
-  }
-  if (kind === "image" || kind === "audio") {
-    const mediaPath = canvasMediaPath(payload), mediaAvailable = canvasMediaAvailable(mediaPath), media = kind === "image" && mediaPath && mediaAvailable
+  if (kind === "agent") return `<article class="canvas-node canvas-node-agent">${header(payload.title || "Agent任务", payload.role || "本项目 Agent") }<div class="canvas-node-body"><div class="canvas-agent-status">${esc(payload.status || "待执行")}</div><div class="canvas-node-copy">${esc(payload.task || "描述要让 Agent 完成的创作任务")}</div><button class="ui-btn ui-btn--sm ui-btn--default" data-canvas-agent>${ic("sparkles")}运行这个任务</button></div></article>`;
+  if (["image", "video", "audio"].includes(kind)) {
+    const mediaPath = String(kind === "video" ? payload.video || canvasMediaPath(payload) : canvasMediaPath(payload)).trim();
+    const available = !!mediaPath && canvasMediaAvailable(mediaPath), busy = canvasState.busy.has(`${nodeId}:${kind}`);
+    const preview = available ? kind === "image"
       ? `<img class="canvas-node-preview canvas-image-preview" data-canvas-image-preview data-canvas-media-path="${esc(mediaPath)}" src="${esc(canvasFileUrl(mediaPath, 640))}" ${canvasAspectAttr(mediaPath, 1)} alt="${esc(payload.title || def.label)}" title="双击放大预览">`
-      : kind === "audio" && mediaPath && mediaAvailable
-        ? canvasAudioPreview(mediaPath)
-        : "";
-    const missing = mediaPath && !mediaAvailable ? `<div class="canvas-media-missing" title="${esc(mediaPath)}">工作区里找不到这个文件，请在右侧重新选择或上传。</div>` : "";
-    const action = canvasT(kind === "audio" ? "生成配音" : mediaPath && mediaAvailable ? "重新生成" : "生成图片");
-    const busy = canvasState.busy.has(`${nodeId}:${kind}`);
-    const promptKey = kind === "image" ? "prompt" : "text";
-    const promptLabel = canvasT(kind === "image" ? "图片提示词" : "配音文本");
-    const input = `<label class="canvas-card-prompt-label"><span>${esc(promptLabel)}</span><textarea class="canvas-video-prompt canvas-card-prompt" data-canvas-inline-key="${promptKey}" rows="3" aria-label="${esc(promptLabel)}">${esc(payload[promptKey] ?? (kind === "image" ? payload.text : payload.prompt) ?? "")}</textarea></label>`;
-    return `<article class="canvas-node canvas-node-media canvas-node-${kind}">${header(payload.title || def.label, kind === "image" ? "参考素材 · 图片生成" : "可直接播放")}<div class="canvas-node-body">${media}${missing}${input}${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : action}</button>${mediaPath && mediaAvailable ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
+      : kind === "video" ? `<video class="canvas-video-preview" data-canvas-media-path="${esc(mediaPath)}" src="${esc(canvasFileUrl(mediaPath))}" ${canvasAspectAttr(mediaPath, canvasRatioOf(payload.aspect_ratio, 16 / 9))} controls preload="metadata"></video>` : canvasAudioPreview(mediaPath) : "";
+    const promptKey = kind === "audio" ? "text" : "prompt", label = canvasT(kind === "audio" ? "配音文本" : kind === "video" ? "描述画面与动作" : "描述你想要的画面");
+    const hint = canvasT(kind === "audio" ? "写下要朗读的内容…" : kind === "video" ? "描述主体动作、镜头运动或画面变化…" : "主体、场景、风格；有参考图时描述要修改的地方…");
+    const action = canvasT(busy ? "生成中…" : available ? "按当前描述生成" : kind === "image" ? "生成图片" : kind === "video" ? "生成视频" : "生成配音");
+    return `<article class="canvas-node canvas-node-media canvas-node-${kind}${available ? " is-has-media" : ""}">${header(payload.title || def.label)}<div class="canvas-node-body">${preview ? `<div class="canvas-card-result">${preview}<span>${esc(canvasT("当前结果"))}</span></div>` : ""}${mediaPath && !available ? `<div class="canvas-media-missing">${esc(canvasT("找不到素材文件，请重新选择。"))}</div>` : ""}<div class="canvas-card-editor">${canvasCardInputs(nodeId, payload, kind)}<label class="canvas-card-prompt-label"><span>${esc(label)}</span><textarea class="canvas-video-prompt canvas-card-prompt" data-canvas-inline-key="${promptKey}" rows="3" placeholder="${esc(hint)}" aria-label="${esc(label)}">${esc(payload[promptKey] ?? "")}</textarea></label>${canvasCardSettings(kind, payload)}${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--default canvas-card-generate" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${ic(busy ? "loader-circle" : "sparkles")}${esc(action)}</button>${available ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div>${canvasCardNextActions(kind, payload, nodeId)}</div></article>`;
   }
   if (kind === "timeline") {
     // 这一格以前只有一颗「交给 Agent」，按下去得到的是一段文字方案，不是一条片子。
@@ -138,7 +129,7 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
     const film = String(payload.subtitled || payload.video || "").trim();
     const running = canvasState.composeJob && !canvasState.composeJob.done;
     const preview = film ? `<video class="canvas-video-preview" data-canvas-media-path="${esc(film)}" src="${esc(canvasFileUrl(film))}" ${canvasAspectAttr(film, canvasDramaRatio())} controls preload="metadata"></video>` : "";
-    return `<article class="canvas-node canvas-node-timeline">${header(payload.title || "最终剪辑", film ? `成片 · ${payload.shots ? payload.shots + " 镜" : "已合成"}` : "把镜头按顺序拼成成片")}<div class="canvas-node-body">${preview || `<p>${esc(payload.description || "按分镜顺序逐镜合轨、拼接、垫配乐、烧字幕，全在本机跑。")}</p>`}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-compose ${running ? "disabled" : ""}>${running ? "正在合成…" : film ? "重新合成" : "合成成片"}</button>${film ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(film)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost" data-canvas-agent>交给本项目 Agent</button></div>${film ? `<p class="canvas-node-hint">${esc(film)}</p>` : ""}</div></article>`;
+    return `<article class="canvas-node canvas-node-timeline">${header(payload.title || "最终剪辑", film ? `成片 · ${payload.shots ? payload.shots + " 镜" : "已合成"}` : "把镜头按顺序拼成成片")}<div class="canvas-node-body">${preview || `<p>${esc(payload.description || "按分镜顺序逐镜合轨、拼接、垫配乐、烧字幕，全在本机跑。")}</p>`}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--default" data-canvas-compose ${running ? "disabled" : ""}>${running ? "正在合成…" : film ? "重新合成" : "合成成片"}</button>${film ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(film)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost" data-canvas-agent>交给本项目 Agent</button></div>${film ? `<p class="canvas-node-hint">${esc(film)}</p>` : ""}</div></article>`;
   }
   if (kind === "script") {
     // 「生成分镜表」只出草稿、不落盘：草稿先进预览表给人改，点「放到画布上」才提交（见 canvasDraftStoryboard）。
@@ -297,12 +288,19 @@ function canvasRefreshNode(node, dupIds) {
   if (!root) return;
   // 卡上正改着字的那一格先收起来，重画完放回去（见 canvasInlineHold）
   const inline = typeof canvasInlineHold === "function" ? canvasInlineHold(node) : null;
+  const active = document.activeElement, key = root.contains(active) ? active?.dataset?.canvasInlineKey || active?.dataset?.canvasCardKey : null;
+  const focus = key ? { key, inline: !!active.dataset.canvasInlineKey, start: active.selectionStart, end: active.selectionEnd } : null;
   root.innerHTML = canvasNodeHtml(canvasKind(node), canvasPayload(node), node.id); canvasBindNode(node, root);
   root.classList.toggle("is-selected", canvasState.selectedAll || canvasState.selectedIds.has(node.id) || canvasState.selected === node.id);
   if (canvasKind(node) === "shot" && typeof canvasDupShotIds === "function") root.classList.toggle("is-dup-id", (dupIds || canvasDupShotIds()).has(canvasShotFileKey(canvasPayload(node).id)));
   // 连接点和卡上直接改（见 canvasDecorateNode）：每次重画都重新挂
   if (typeof canvasDecorateNode === "function") canvasDecorateNode(node, root, inline);
   canvasWatchAspect(node, root); canvasFitSoon(node);
+  if (focus) {
+    const field = root.querySelector(`[${focus.inline ? "data-canvas-inline-key" : "data-canvas-card-key"}="${focus.key}"]`);
+    field?.focus({ preventScroll: true });
+    if (field && typeof focus.start === "number") { try { field.setSelectionRange(focus.start, focus.end); } catch {} }
+  }
 }
 
 /* ---------- 预览按原比例摆，卡片的高跟着内容走 ----------
@@ -377,7 +375,7 @@ function canvasFitFlush() {
     if (!content) { canvasFitQueue.add(node); return null; }
     const kind = canvasKind(node), def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note, size = node.size();
     // 图片卡跟着实际内容收紧，空输入框下面也不留一大块空白。
-    const floor = kind === "image" ? 120 : def.height;
+    const floor = ["image", "video", "audio"].includes(kind) ? 120 : def.height;
     const h = Math.max(floor, Math.ceil(content + card.offsetHeight - card.clientHeight));
     return Math.abs(h - size.height) >= 1 ? { node, h, size } : null;
   }).filter(Boolean);

@@ -85,7 +85,9 @@ function canvasViewportArea(page = document.getElementById("assist-page")) {
   const viewport = page?.querySelector("#canvas-viewport"); if (!viewport) return null;
   const rect = viewport.getBoundingClientRect();
   let right = Math.min(rect.right, window.innerWidth), bottom = Math.min(rect.bottom, window.innerHeight);
-  const top = Math.max(0, rect.top), left = Math.max(0, rect.left);
+  let top = Math.max(0, rect.top); const left = Math.max(0, rect.left);
+  const tools = page.querySelector(".canvas-toolbar");
+  if (tools?.offsetParent !== null) { const r = tools?.getBoundingClientRect(); if (r?.height && r.bottom > top && r.top < bottom) top = r.bottom + 12; }
   const inspector = page.querySelector(".canvas-layout:not(.canvas-inspector-hidden) .canvas-inspector");
   if (inspector?.offsetParent !== null && inspector?.offsetWidth) right = Math.min(right, inspector.getBoundingClientRect().left - 12);
   page.querySelectorAll(".canvas-chat, .canvas-timeline").forEach((el) => {
@@ -94,6 +96,20 @@ function canvasViewportArea(page = document.getElementById("assist-page")) {
     if (r.height && r.left < right && r.right > left && r.top > top && r.top < bottom) bottom = r.top - 12;
   });
   return { left, top, width: Math.max(120, right - left), height: Math.max(120, bottom - top), offsetX: left - rect.left, offsetY: top - rect.top, rect };
+}
+
+function canvasEnsureNodeVisible(node, page = document.getElementById("assist-page")) {
+  const area = canvasViewportArea(page), paper = canvasState.paper; if (!node || !area || !paper) return;
+  const b = node.getBBox(), pad = 16;
+  const scale = Math.max(.12, Math.min(canvasState.scale, (area.width - pad * 2) / b.width, (area.height - pad * 2) / b.height));
+  const left = canvasState.x + b.x * scale, top = canvasState.y + b.y * scale;
+  const outside = left < area.offsetX + pad || left + b.width * scale > area.offsetX + area.width - pad || top < area.offsetY + pad || top + b.height * scale > area.offsetY + area.height - pad;
+  if (!outside && scale === canvasState.scale) return;
+  canvasState.scale = scale;
+  canvasState.x = area.offsetX + (area.width - b.width * scale) / 2 - b.x * scale;
+  canvasState.y = area.offsetY + (area.height - b.height * scale) / 2 - b.y * scale;
+  paper.scale(scale, scale); paper.translate(canvasState.x, canvasState.y);
+  const label = page.querySelector("#canvas-zoom"); if (label) label.textContent = Math.round(scale * 100) + "%";
 }
 
 function canvasFitToBox(page, box, padding = 64, minScale = .12) {
@@ -173,8 +189,9 @@ function canvasRenderSelectionTools() {
   const images = selected.every((node) => !!canvasUpstreamImage({ node, kind: canvasKind(node), path: canvasMediaPath(canvasPayload(node)) }));
   const targets = images ? graph.getElements().filter((node) => !canvasState.selectedIds.has(node.id) && ["image", "shot", "character", "location"].includes(canvasKind(node))) : [];
   const references = images ? `<select data-canvas-reference-target aria-label="${esc(canvasT("批量连接参考图"))}"><option value="">${canvasT("作为参考图…")}</option><option value="__new__">${canvasT("新建图片节点")}</option>${targets.map((node) => `<option value="${esc(node.id)}">${esc(canvasNodeLabel(node))}</option>`).join("")}</select>` : "";
-  box.innerHTML = `<span>${esc(canvasT("已选 {n} 个", { n: count }))}</span><select data-canvas-arrange aria-label="${esc(canvasT("整理选中节点"))}"><option value="">${canvasT("整理选中节点")}</option><option value="left">${canvasT("左对齐")}</option><option value="top">${canvasT("顶部对齐")}</option><option value="space-x">${canvasT("水平等距")}</option><option value="space-y">${canvasT("垂直等距")}</option></select>${references}<button type="button" class="canvas-tool-button" data-canvas-duplicate-selection title="${esc(canvasT("复制节点与参考"))}" aria-label="${esc(canvasT("复制节点与参考"))}">${ic("copy")}</button><button type="button" class="canvas-tool-button" data-canvas-delete-selection title="${esc(canvasT("删除选中节点"))}" aria-label="${esc(canvasT("删除选中节点"))}">${ic("trash-2")}</button>`;
+  box.innerHTML = `<span>${esc(canvasT("已选 {n} 个", { n: count }))}</span><select data-canvas-arrange aria-label="${esc(canvasT("整理选中节点"))}"><option value="">${canvasT("整理选中节点")}</option><option value="left">${canvasT("左对齐")}</option><option value="top">${canvasT("顶部对齐")}</option><option value="space-x">${canvasT("水平等距")}</option><option value="space-y">${canvasT("垂直等距")}</option></select>${references}<button type="button" class="canvas-tool-button" data-canvas-duplicate-selection title="${esc(canvasT("复制节点与参考"))}" aria-label="${esc(canvasT("复制节点与参考"))}">${ic("copy")}</button><button type="button" class="canvas-tool-button" data-canvas-export-selection title="${esc(canvasT("导出选中节点与素材"))}" aria-label="${esc(canvasT("导出选中节点与素材"))}">${ic("download")}</button><button type="button" class="canvas-tool-button" data-canvas-delete-selection title="${esc(canvasT("删除选中节点"))}" aria-label="${esc(canvasT("删除选中节点"))}">${ic("trash-2")}</button>`;
   box.querySelector("[data-canvas-arrange]").addEventListener("change", (evt) => { canvasArrangeSelection(evt.target.value); evt.target.value = ""; });
+  box.querySelector("[data-canvas-export-selection]")?.addEventListener("click", () => canvasExportSelection(true));
   box.querySelector("[data-canvas-delete-selection]").addEventListener("click", () => canvasDeleteSelection());
   box.querySelector("[data-canvas-duplicate-selection]").addEventListener("click", () => canvasDuplicateSelection());
   box.querySelector("[data-canvas-reference-target]")?.addEventListener("change", (evt) => { const target = evt.target.value; evt.target.value = ""; if (target) canvasConnectReferences(target); });

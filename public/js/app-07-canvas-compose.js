@@ -53,7 +53,7 @@ function canvasComposeHtml(p) {
   const job = canvasState.composeJob, plan = canvasState.composePlan;
   const shots = p.shots || [];
   const canCompose = shots.length > 0 && shots.every((r) => r.video && r.video.ok);
-  const button = (label, extra) => `<button class="ui-btn ui-btn--xs ui-btn--brand" data-cp-compose ${extra || ""}>${esc(label)}</button>`;
+  const button = (label, extra) => `<button class="ui-btn ui-btn--xs ui-btn--default" data-cp-compose ${extra || ""}>${esc(label)}</button>`;
 
   if (job && !job.done) {
     const at = Math.max(1, Number(job.at) || 1), total = Math.max(1, Number(job.total) || 1);
@@ -118,7 +118,7 @@ function canvasComposeHtml(p) {
         ? `<label class="cp-compose-sub"><input type="checkbox" data-cp-compose-bgm ${canvasState.composeBgm ? "checked" : ""}>垫上配乐<code>${esc(plan.music.title || plan.music.base)}</code><span class="cp-why">${plan.music.duck ? "说话的时候自动压低" : "固定音量垫在台词底下"}</span></label>`
         : `<div class="cp-compose-tip">加配乐：放一个「声音」节点，用途写「配乐」，拖入音乐文件。</div>`)
       + `<div class="cp-compose-out">会写出 <code>${esc(plan.outputs.film)}</code>${plan.outputs.subtitled ? ` 和 <code>${esc(plan.outputs.subtitled)}</code>` : ""}${plan.outputs.srt ? ` 和 <code>${esc(plan.outputs.srt)}</code>` : ""}${(plan.outputs.clips || []).length ? ` · 中间片段放在 <code>${esc(plan.outputs.dir)}/</code>` : ""}。同名的旧成片不会被盖掉。</div>`
-      + `<div class="cp-compose-act"><button class="ui-btn ui-btn--xs ui-btn--brand" data-cp-compose-go ${plan.ready ? "" : "disabled"}>开始合成${eta ? `（${eta}）` : ""}</button></div>`
+      + `<div class="cp-compose-act"><button class="ui-btn ui-btn--xs ui-btn--default" data-cp-compose-go ${plan.ready ? "" : "disabled"}>开始合成${eta ? `（${eta}）` : ""}</button></div>`
       + `</div>`;
   }
   if (!canCompose) return "";
@@ -254,7 +254,7 @@ function canvasEstimateItem(node, kind) {
   if (kind === "audio") return { tool: "text_to_speech", input: { text: String(p.text || p.line || p.description || "").trim() } };
   // 时长是视频的计价单位：卡上 / 新建短剧定的秒数不带进来，估出来的就是模型默认那一档
   if (kind === "video") return { tool: "generate_video", input: { prompt: String(p.motion_prompt || p.prompt || p.description || "").trim(), ...(typeof canvasVideoSpec === "function" ? canvasVideoSpec(p, canvasKind(node)) : {}), ...model } };
-  return { tool: "generate_image", input: { prompt: String(p.prompt || p.description || p.text || "").trim(), ...model } };
+  return { tool: "generate_image", input: { prompt: String(p.prompt || p.description || p.text || "").trim(), ...(p.size ? { size: p.size } : {}), ...model } };
 }
 // ¥ 两位小数；不到一分钱的（配音按字计，一句几厘）两位会写成 ¥0.00，看着像不要钱，所以多留几位
 function canvasFormatYuan(v) {
@@ -794,7 +794,7 @@ function canvasRenderBroken(page, world) {
     <p>未按空画布显示，以免自动保存覆盖原件。原件未改动。</p>
     <div class="canvas-broken-acts">
       <button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-broken-retry>重新读一次</button>
-      ${count ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-broken-restore>用本机这份恢复（${count} 个节点）</button>` : ""}
+      ${count ? `<button class="ui-btn ui-btn--sm ui-btn--default" data-canvas-broken-restore>用本机这份恢复（${count} 个节点）</button>` : ""}
     </div>
     <p class="canvas-broken-tip">${count ? "本机副本是这台机器上次打开时的样子，可能比项目里那份旧一点。" : "这台机器上没有本机副本，所以只能先修文件本身。"}把 .openworkbuddy 目录里的 canvas 备份（.bak / .坏了-*.bak）拷回去，也能救。</p>
   </div></div>`;
@@ -902,6 +902,7 @@ function canvasRestoreOrSeed(remote = null) {
   }
   // 刚从「新建短剧」表单过来的，填的画幅、时长、风格、模型记在这张起手剧本卡上（见 canvasCreateBoard）
   const seed = typeof canvasTakeSeedDrama === "function" ? canvasTakeSeedDrama() : null;
+  if (!seed) return;
   const script = canvasAddNode("script", { title: "一句话概念", text: "", ...(seed || {}) }, { x: 100, y: 110 }, { persist: false, skipSelect: true });
   const storyboard = canvasAddNode("storyboard", {}, { x: 510, y: 110 }, { persist: false, skipSelect: true });
   if (script && storyboard) canvasConnect(script, storyboard); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(false); canvasPersist();

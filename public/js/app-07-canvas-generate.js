@@ -15,8 +15,9 @@ function canvasRunInternal(node) {
     : kind === "script" ? `请使用 /short-drama 把下面剧本拆成角色、场景和可执行镜头，并用 canvas_manage 写入当前项目画布，生成可审核的创作计划：\n${p.text || ""}`
       : kind === "timeline" ? "请检查这部短剧的镜头顺序、配音和字幕有没有问题，指出哪一镜该调。拼成片不用你敲 ffmpeg：画布「最终剪辑」节点上的「合成成片」按钮会按分镜顺序逐镜合轨、拼接、垫配乐、烧字幕，跑的就是 short-drama 那套命令。"
         : kind === "agent" ? `请执行这个本项目 Agent 任务，并把计划、产物和需要我确认的地方写回当前画布：\n角色：${p.role || "导演 Agent"}\n任务：${p.task || ""}\n审批规则：${p.approval || "先给方案，等我确认"}`
-          : `请基于这个${CANVAS_NODE_DEFS[kind]?.label || "节点"}参与短剧制作：${p.title || p.name || p.id || "未命名"}\n${p.description || p.text || p.prompt || ""}`;
+          : `请基于这个${CANVAS_NODE_DEFS[kind]?.label || "节点"}继续创作：${p.title || p.name || p.id || "未命名"}\n${p.description || p.text || p.prompt || ""}`;
   const input = document.getElementById("canvas-chat-input");
+  if (typeof canvasSetChatOpen === "function") canvasSetChatOpen(true);
   if (!input) { canvasToast("画布对话框还没有准备好，请刷新页面后重试。", "circle-x", "err"); return; }
   if (node) {
     const reference = { key: `node:${node.id}`, label: canvasNodeLabel(node), kind, path: canvasMediaPath(p) || canvasEmbeddedImage(p, kind), nodeId: node.id };
@@ -28,12 +29,13 @@ function canvasRunInternal(node) {
 
 function canvasUpstreamInputs(node) {
   if (!node || !canvasState.graph) return [];
-  return canvasState.graph.getLinks().filter((link) => link.get("target")?.id === node.id).map((link) => {
+  const links = canvasState.graph.getConnectedLinks ? canvasState.graph.getConnectedLinks(node, { inbound: true }) : canvasState.graph.getLinks().filter((link) => link.get("target")?.id === node.id);
+  return links.map((link) => {
     const source = canvasState.graph.getCell(link.get("source")?.id);
     if (!source) return null;
     const kind = canvasKind(source), payload = canvasPayload(source);
     const path = String(canvasMediaPath(payload) || canvasEmbeddedImage(payload, kind) || payload.first_frame || "").trim();
-    return { node: source, nodeId: source.id, kind, label: canvasNodeLabel(source), relation: canvasLinkRelation(link, source, node), path };
+    return { node: source, nodeId: source.id, linkId: link.id, kind, label: canvasNodeLabel(source), relation: canvasLinkRelation(link, source, node), path };
   }).filter(Boolean);
 }
 
@@ -273,7 +275,9 @@ async function canvasUseVersion(nodeId, kind, rel) {
   if (!node || !file || !["image", "video", "audio"].includes(kind)) return;
   canvasHistoryFlush();
   const field = canvasOutputField(kind);
-  node.set("canvasPayload", { ...canvasPayload(node), [field]: file });
+  const mediaNode = ["image", "video", "audio"].includes(canvasKind(node));
+  const selectedOutput = mediaNode ? { path: file, url: file, ...(kind === "video" ? { video: file } : kind === "audio" ? { audio: file } : {}) } : { [field]: file };
+  node.set("canvasPayload", { ...canvasPayload(node), ...selectedOutput });
   const mirror = canvasState.graph.getElements().find((item) => canvasKind(item) === kind && canvasPayload(item).sourceId === node.id);
   if (mirror) { mirror.set("canvasPayload", { ...canvasPayload(mirror), path: file, url: file, title: file.split(/[\\/]/).pop() }); canvasRefreshNode(mirror); }
   canvasRefreshNode(node); canvasPersist(); canvasRenderInspector(false);
@@ -311,28 +315,20 @@ function canvasUpsertResult(source, kind, file) {
 }
 
 function canvasCreateDramaWorkflow() {
-  const existing = canvasState.graph?.getElements?.() || [];
-  const isEmptyStarter = existing.length === 2 && existing.every((node) => ["script", "storyboard"].includes(canvasKind(node)))
-    && existing.some((node) => canvasPayload(node).title === "一句话概念");
-  // 起手卡上可能记着「新建短剧」填的画幅、时长、风格、模型：清掉之前先拿下来，放到新的剧本卡上
-  const starter = isEmptyStarter ? canvasPayload(existing.find((node) => canvasKind(node) === "script")) : {};
-  const drama = Object.fromEntries(CANVAS_DRAMA_KEYS.filter((k) => starter[k] != null && starter[k] !== "").map((k) => [k, starter[k]]));
-  if (isEmptyStarter) canvasState.graph.clear();
-  const base = 120 + (canvasState.next % 2) * 40;
-  const note = canvasAddNode("note", { title: "创作方向", text: "" }, { x: base, y: 100 }, { skipSelect: true });
-  const script = canvasAddNode("script", { title: "短剧剧本", text: "", ...drama }, { x: base + 430, y: 100 }, { skipSelect: true });
-  const character = canvasAddNode("character", { name: "主角", role: "主角", description: "" }, { x: base + 430, y: 440 }, { skipSelect: true });
-  const location = canvasAddNode("location", { name: "核心场景", description: "" }, { x: base + 790, y: 440 }, { skipSelect: true });
-  const storyboard = canvasAddNode("storyboard", {}, { x: base + 860, y: 100 }, { skipSelect: true });
-  const timeline = canvasAddNode("timeline", {}, { x: base + 1290, y: 100 }, { skipSelect: true });
-  if (note && script) canvasConnect(note, script);
-  if (script && character) canvasConnect(script, character);
-  if (script && location) canvasConnect(script, location);
-  if (script && storyboard) canvasConnect(script, storyboard);
-  if (storyboard && timeline) canvasConnect(storyboard, timeline);
-  canvasState.selectedAll = false; canvasState.selectedIds = new Set(); canvasState.selected = null; canvasRenderInspector(false); canvasPersist();
-  window.setTimeout(() => canvasFitAll(document.getElementById("assist-page")), 0);
-  canvasToast("短剧创作骨架已建立：先编辑剧本，再连接角色、场景和镜头。", "sparkles");
+  const graph = canvasState.graph; if (!graph) return;
+  if (canvasState.inlineEdit) canvasInlineCommit();
+  canvasHistoryFlush(); graph.startBatch("canvas-edit");
+  let script;
+  try {
+    const base = canvasNewNodePosition("script");
+    script = canvasAddNode("script", { title: "短剧剧本", text: "" }, base, { persist: false, skipSelect: true });
+    const storyboard = canvasAddNode("storyboard", {}, { x: base.x + 440, y: base.y }, { persist: false, skipSelect: true });
+    const timeline = canvasAddNode("timeline", {}, { x: base.x + 870, y: base.y }, { persist: false, skipSelect: true });
+    canvasConnect(script, storyboard, "split"); canvasConnect(storyboard, timeline);
+  } finally { graph.stopBatch("canvas-edit"); }
+  canvasSetSelection([script.id], script.id); canvasFitFlush(); canvasPersist(); canvasHistoryFlush();
+  canvasFitAll(document.getElementById("assist-page")); canvasFocusNodeInput(script);
+  canvasToast(canvasT("先写剧本，再生成分镜草稿；角色与场景会随确认后的分镜加入。"), "sparkles");
 }
 
 function canvasChatDisplayText(value) {
@@ -361,6 +357,7 @@ function canvasChatReferenceMarkup(item, removable = false) {
 }
 
 function canvasChatAppend(role, text, extraClass = "", references = []) {
+  if (typeof canvasSetChatOpen === "function" && role === "user") canvasSetChatOpen(true);
   const log = document.getElementById("canvas-chat-log"); if (!log) return;
   const item = document.createElement("div"); item.className = `canvas-chat-message ${role === "user" ? "is-user" : "is-agent"} ${extraClass}`.trim();
   const refs = references.length ? `<span class="canvas-chat-message-refs">${references.map((reference) => canvasChatReferenceMarkup(reference)).join("")}</span>` : "";
@@ -413,7 +410,7 @@ function canvasMediaModelField(label, cap, value = "") {
     const id = String(item.model || item.name), labelText = item.name && item.name !== id ? `${item.name} · ${id}` : id;
     return `<option value="${esc(id)}" ${id === current ? "selected" : ""}>${esc(labelText)}</option>`;
   }).join("");
-  return `<label class="canvas-inspector-field"><span>${label}</span><select data-inspect-key="model">${currentOption}<option value="" ${!current ? "selected" : ""}>跟随设置默认模型${models.length ? "" : "（请先在设置中配置）"}</option>${options}</select></label>`;
+  return `<label class="canvas-inspector-field"><span>${label}</span><select data-inspect-key="model">${currentOption}<option value="" ${!current ? "selected" : ""}>${esc(canvasT(models.length ? "默认模型" : "默认模型（未配置）"))}</option>${options}</select></label>`;
 }
 
 function canvasRenderChatReferences() {
@@ -448,7 +445,7 @@ async function canvasChatAttachFile(file) {
     const kind = canvasFileKindFromFile(file);
     if (!["image", "video", "audio"].includes(kind)) throw new Error("只支持图片、视频或音频文件");
     const name = await canvasUploadWorkspaceFile(file);
-    const node = canvasAddNode(kind, { title: file.name, path: name, url: name, role: "对话附件", tags: "参考" }, { x: 140 + (canvasState.next % 3) * 390, y: 180 + Math.floor(canvasState.next / 3) * 280 });
+    const node = canvasAddNode(kind, { title: file.name, path: name, url: name, role: "对话附件", tags: "参考" });
     if (node) { const reference = { key: `node:${node.id}`, label: file.name, kind, path: name, nodeId: node.id }; reference.use = canvasChatReferenceDefaultUse(reference); canvasState.chatReferences.set(reference.key, reference); canvasRenderChatReferences(); canvasLoadLibrary(); canvasChatAppend("agent", `已把「${file.name}」加入画布，请选择它作为人物、背景、动作或其他参考。`, "is-status is-complete"); }
   } catch (error) { canvasChatAppend("agent", `附件加入失败：${String(error.message || error).slice(0, 120)}`, "is-status is-error"); }
 }
@@ -476,6 +473,8 @@ function canvasChatHasDraft() {
 }
 
 function canvasSyncChatSendButton() {
+  const status = document.querySelector("[data-canvas-chat-status]");
+  if (status) status.textContent = canvasT(canvasState.chatBusy ? "正在处理 · 可展开查看或停止" : "需要帮助时，让 Agent 一起创作");
   const button = document.querySelector("[data-canvas-chat-send]"); if (!button) return;
   const draft = canvasChatHasDraft();
   button.classList.toggle("is-stop", canvasState.chatBusy && !draft);
@@ -584,7 +583,7 @@ async function canvasChatRun() {
   if (requestedModel) await fetch(`/api/session/${encodeURIComponent(sessionId)}/model`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: requestedModel }) }).catch(() => {});
   const referenceContext = canvasReferenceContext(references);
   const mode = document.querySelector("[data-canvas-chat-mode]")?.value || "craft";
-  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点，只去掉一条线用 disconnect（节点都留着）；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。生图、生视频、配音都花钱，不要直接调用 generate_image / generate_video / text_to_speech：先把提示词和型号写进节点，再用 canvas_manage 的 propose 交一份待生成清单（节点 + 类型），回复里说清每项用什么型号；画布会摆出清单和报价，我点「开跑」才生成。" + referenceContext + "\n用户指令：" + userText;
+  const directive = "你正在控制当前 OpenWorkBuddy 项目的创作无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点，只去掉一条线用 disconnect（节点都留着）；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。生图、生视频、配音都花钱，不要直接调用 generate_image / generate_video / text_to_speech：先把提示词和型号写进节点，再用 canvas_manage 的 propose 交一份待生成清单（节点 + 类型），回复里说清每项用什么型号；画布会摆出清单和报价，我点「开跑」才生成。" + referenceContext + "\n用户指令：" + userText;
   let answer = "", assistant = null, sawDone = false, followed = false;
   const turn = canvasTurnStart(sessionId, directive, mode, userText);
   const write = (value) => {
@@ -883,10 +882,16 @@ async function canvasGenerate(node, kind) {
   // 以前兜底是 upstream[0]——上游第一个是谁全看连线顺序，多半是角色的定妆照。
   // 拿定妆照当首帧生出来的片子跟这一镜没关系，而这一枪是花钱的。宁可在这儿停下说「还没有首帧」。
   const frameFrom = upstreamInputs.find((item) => item.relation === "first_frame")
-    || upstreamInputs.find((item) => item.kind === "image");
+    || upstreamInputs.find((item) => item.kind === "image" && ["generate", "reference", "input"].includes(item.relation));
   let firstFrame = p.first_frame || (kind === "video" && frameFrom ? canvasUpstreamImage(frameFrom) : "");
-  if (!collected && kind === "video" && !firstFrame && canvasKind(node) === "shot") {
+  const lastInput = upstreamInputs.find((item) => item.relation === "last_frame");
+  const lastFrame = p.last_frame || (kind === "video" && lastInput ? canvasUpstreamImage(lastInput) : "");
+  const assignedFrame = upstreamInputs.some((item) => item.relation === "first_frame" || item.relation === "last_frame");
+  if (!collected && kind === "video" && !firstFrame && (canvasKind(node) === "shot" || lastFrame || assignedFrame)) {
     canvasToast("这个视频节点还没有首帧，请先生成首帧或连接一个参考图节点。", "triangle-alert", "err"); return { ok: false, error: "缺首帧" };
+  }
+  if (!collected && kind === "video" && lastInput && !lastFrame) {
+    canvasToast(canvasT("尾帧引用还没有可用图片，请先生成或替换它。"), "triangle-alert", "err"); return { ok: false, error: "缺尾帧" };
   }
   // 起手模板里那句占位文字原样没改就开枪，买回来的就是一张「这张图要保持的主体、风格与构图…」。
   // 定妆照那条已经这么拦了（castKind 那一段），图 / 视频 / 配音三种节点身上的默认文案一样得拦：
@@ -931,9 +936,9 @@ async function canvasGenerate(node, kind) {
   // 收回来的那一单按当时发出去的参数记（提示词这期间可能改过）；台账里没存参数的老记录才现算
   const input = collected && collected.input && typeof collected.input === "object" ? { ...collected.input } : kind === "image"
     // 参考图这一栏自己也把一道关：节点上随手填的 reference 也可能不是图，四个位子本来就不够几个角色分
-    ? { prompt, reference_images: [...new Set([p.reference, p.first_frame, ...upstream].map((v) => String(v || "").trim()).filter((v) => v && CANVAS_REF_IMAGE_EXT.test(v.split(/[?#]/)[0])))].slice(0, 4), ...(model ? { model } : {}), filename: canvasOutputFilename(p, "image", nodeKind) }
+    ? { prompt, reference_images: [...new Set([p.reference, p.first_frame, ...upstream].map((v) => String(v || "").trim()).filter((v) => v && CANVAS_REF_IMAGE_EXT.test(v.split(/[?#]/)[0])))].slice(0, 4), ...(model ? { model } : {}), ...(p.size ? { size: p.size } : {}), filename: canvasOutputFilename(p, "image", nodeKind) }
     : kind === "video"
-      ? { prompt, first_frame: firstFrame, ...(p.last_frame ? { last_frame: p.last_frame } : {}), ...canvasVideoSpec(p, nodeKind), ...(model ? { model } : {}), filename: canvasOutputFilename(p, "video", nodeKind) }
+      ? { prompt, first_frame: firstFrame, ...(lastFrame ? { last_frame: lastFrame } : {}), ...canvasVideoSpec(p, nodeKind), ...(model ? { model } : {}), filename: canvasOutputFilename(p, "video", nodeKind) }
       : { text: prompt, ...(voice ? { voice } : {}), filename: canvasOutputFilename(p, "audio", nodeKind) };
   const castLabel = castKind === "character" ? "定妆照" : castKind === "location" ? "场景图" : CANVAS_NODE_DEFS[kind].label;
   canvasState.busy.add(key); canvasRefreshNode(node); canvasRenderInspector(false);
@@ -1052,7 +1057,7 @@ async function canvasGenerate(node, kind) {
     else canvasToast(`${said}${swapped}`, swapped ? "triangle-alert" : "circle-check");
     // 人还在这张画布这一页才开右侧预览。离开画布去看对话时 canvasState 不拆（图、画布名都还在），
     // 光看上面的 here 认不出来，结果一枪几分钟的视频生完，预览面板直接弹在他正看着的那条对话上
-    if (typeof previewFile === "function" && viewKind() === viewAtStart
+    if (!["image", "video", "audio"].includes(nodeKind) && typeof previewFile === "function" && viewKind() === viewAtStart
       && canvasState.canvasName === board && canvasState.workspaceName === project) previewFile(canvasResolvedFileName(file));
     // 回写分镜表没成也算「做好了」：画布上这一格确实有了，重跑只会再花一次钱
     return { ok: true };

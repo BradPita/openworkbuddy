@@ -46,6 +46,7 @@ function canvasDramaModel(p, kind, nodeKind) {
 }
 
 function canvasBindNode(node, root) {
+  canvasBindCardControls(node, root);
   // 卡上的 ×：跟 Delete 键一个脾气，不问、直接删这一张，提示上挂「撤销」（见 canvasDeleteSelection）
   root.querySelector("[data-canvas-remove]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDeleteSelection(node, true); });
   root.querySelector("[data-canvas-settings]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = true; canvasRenderInspector(); });
@@ -119,7 +120,7 @@ function canvasBindNode(node, root) {
   edit?.addEventListener("input", () => { node.set("canvasPayload", { ...canvasPayload(node), text: edit.textContent || "" }); canvasRenderInspector(false); canvasPersist(); });
   // 换了一份表，上一份的风格作废（检查器里那一栏读的是它），再去读新那份的
   root.querySelector("[data-canvas-board]")?.addEventListener("change", (evt) => { const next = { ...canvasPayload(node), board: evt.target.value }; delete next.style; node.set("canvasPayload", next); canvasRenderInspector(false); canvasPersist(); if (typeof canvasBoardStyleLoad === "function") canvasBoardStyleLoad(node).catch(() => {}); });
-  root.addEventListener("contextmenu", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasOpenContextMenu(evt.clientX, evt.clientY, node); });
+  root.addEventListener("contextmenu", (evt) => { if (evt.target.closest("input,textarea,select,[contenteditable=true]")) return; evt.preventDefault(); evt.stopPropagation(); canvasOpenContextMenu(evt.clientX, evt.clientY, node); });
 }
 
 /**
@@ -607,12 +608,14 @@ function canvasFocusNodeInput(node, key) {
 function canvasAddNode(kind, payload = {}, position, options = {}) {
   const page = document.getElementById("assist-page"), J = typeof joint !== "undefined" ? joint : null; if (!page || !canvasState.graph || !canvasState.paper || !J) return null;
   // 新加的镜头没给编号就取下一个空号；恢复存档（带 options.id）、展开分镜表（自带编号）都不动
+  if (!options.id && !options.skipSelect && typeof canvasMediaDefaults === "function") payload = { ...canvasMediaDefaults(kind), ...payload };
   if (kind === "shot" && !options.id && !String((payload && payload.id) || "").trim()) payload = { ...payload, id: canvasNextShotId() };
   if (!options.skipSelect && canvasState.inlineEdit) canvasInlineCommit();
   const def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note, Type = canvasType(J); canvasState.next++;
   const node = new Type({ id: options.id, position: position || canvasNewNodePosition(kind), size: { width: def.width, height: def.height }, z: 2 });
   node.set({ canvasKind: kind, canvasPayload: canvasNormalizeNodePayload(kind, payload) }); canvasState.graph.addCell(node); canvasRefreshNode(node);
   if (!options.skipSelect) { canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = false; canvasRenderInspector(false); }
+  if (!options.skipSelect && !options.id) { canvasFitFlush(); canvasEnsureNodeVisible(node, page); }
   if (options.persist !== false) canvasPersist();
   if (!options.skipSelect && !options.id && options.focus !== false) {
     const p = canvasPayload(node), text = p.prompt || p.text || p.description || p.task || "";
@@ -626,6 +629,7 @@ function canvasUpdateSelected(key, value, rerender = true) {
   const node = canvasSelectedNode(); if (!node) return;
   const next = { ...canvasPayload(node), [key]: value };
   if (key === "url") next.path = value;
+  if (typeof canvasMediaDefaults === "function") canvasMediaDefaults(canvasKind(node), { [key]: value });
   node.set("canvasPayload", next); if (rerender) canvasRefreshNode(node); canvasPersist();
 }
 
@@ -634,7 +638,8 @@ function canvasRenderInspector(focus = true) {
   const box = document.getElementById("canvas-inspector"); if (!box) return; const node = canvasSelectedNode();
   canvasState.graph?.getElements().forEach((item) => {
     const view = canvasState.paper && item.findView(canvasState.paper), root = view && view.el && view.el.querySelector(".canvas-joint-node");
-    root?.classList.toggle("is-selected", canvasState.selectedAll || canvasState.selectedIds.has(item.id) || item.id === canvasState.selected);
+    const selected = canvasState.selectedAll || canvasState.selectedIds.has(item.id) || item.id === canvasState.selected;
+    if (root && root.classList.contains("is-selected") !== selected) { root.classList.toggle("is-selected", selected); canvasFitSoon(item); }
   });
   // 底部时间线那几格跟着亮：在画布上点了另一张卡，时间线上还亮着上一格，人会当成选的是那一镜
   document.querySelectorAll("#canvas-timeline .ctl-cell[data-ctl-shot]").forEach((el) => el.classList.toggle("is-selected", canvasState.selectedIds.has(el.dataset.ctlShot)));
@@ -672,7 +677,7 @@ function canvasRenderInspector(focus = true) {
   const defaultTarget = allNodes[0], defaultRelation = defaultTarget ? canvasDefaultRelation(node, defaultTarget) : "input";
   // 每颗「生成」旁边挂一个预估价（异步填，见 canvasFillPrices）：点之前就知道这一下大概多少钱
   const price = (k) => `<small class="canvas-price" data-canvas-price="${k}"></small>`;
-  const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="image">${ic("image")}生成首帧</button>${price("image")}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>${p.first_frame ? price("video") : ""}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="audio">${ic("volume-2")}生成配音</button>${price("audio")}` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>${price(kind)}` : "";
+  const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--default" data-inspect-generate="image">${ic("image")}生成首帧</button>${price("image")}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>${p.first_frame ? price("video") : ""}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="audio">${ic("volume-2")}生成配音</button>${price("audio")}` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--default" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>${price(kind)}` : "";
   // 「换一版」：同参数默认沿用上次的产物不花钱，真要一张不一样的走这里——版本号 +1、带 no_cache，照价扣费。
   // 只在已经有产物的时候出现：还没生过的，点「生成」就是新的一版
   const rerolls = kind === "shot"
@@ -684,7 +689,7 @@ function canvasRenderInspector(focus = true) {
   const 原焦点 = document.activeElement;
   const 要放回 = 原焦点 && box.contains(原焦点) && 原焦点.dataset && 原焦点.dataset.inspectKey
     ? { key: 原焦点.dataset.inspectKey, start: 原焦点.selectionStart, end: 原焦点.selectionEnd } : null;
-  box.innerHTML = `<div class="canvas-inspector-head"><div><small>节点属性</small><h3>${esc(unknownKind ? kind : def.label)}</h3></div><button class="canvas-node-remove" data-inspect-close title="关闭设置">${ic("x")}</button></div><div class="canvas-inspector-fields">${fields}</div>${canvasGenerationInspector(p)}${canvasHistoryInspector(node)}<div class="canvas-inspector-section"><span class="canvas-inspector-section-title">工作流连接</span><div class="canvas-connect-row"><select data-connect-target><option value="">连接到下游节点…</option>${allNodes.map((item) => `<option value="${item.id}">${esc(canvasNodeLabel(item))}</option>`).join("")}</select><select data-connect-relation title="这个节点为下游提供什么">${canvasRelationOptions(defaultRelation, node, defaultTarget)}</select><button class="ui-btn ui-btn--sm ui-btn--outline" data-connect>${ic("link")}连接</button></div>${connected.length ? `<div class="canvas-connected-list">${connected.map(({ link, target }) => `<span title="${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))}">${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))} · ${esc(canvasNodeLabel(target) || "节点")}<button type="button" class="canvas-disconnect" data-canvas-disconnect="${esc(link.id)}" title="断开这条线" aria-label="断开这条线">${ic("x")}</button></span>`).join("")}</div>` : '<p class="canvas-inspector-hint">选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。</p>'}</div><div class="canvas-inspector-actions">${generateActions}${["agent", "shot", "script", "scene", "storyboard", "timeline"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-agent>${ic("sparkles")}交给本项目 Agent</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost canvas-inspector-delete" data-inspect-delete>删除节点</button></div>${rerollRow}`;
+  box.innerHTML = `<div class="canvas-inspector-head"><div><small>节点属性</small><h3>${esc(unknownKind ? kind : def.label)}</h3></div><button class="canvas-node-remove" data-inspect-close title="关闭设置">${ic("x")}</button></div><div class="canvas-inspector-fields">${fields}</div>${canvasGenerationInspector(p)}${canvasHistoryInspector(node)}<div class="canvas-inspector-section"><span class="canvas-inspector-section-title">工作流连接</span><div class="canvas-connect-row"><select data-connect-target><option value="">连接到下游节点…</option>${allNodes.map((item) => `<option value="${item.id}">${esc(canvasNodeLabel(item))}</option>`).join("")}</select><select data-connect-relation title="这个节点为下游提供什么">${canvasRelationOptions(defaultRelation, node, defaultTarget)}</select><button class="ui-btn ui-btn--sm ui-btn--outline" data-connect>${ic("link")}连接</button></div>${connected.length ? `<div class="canvas-connected-list">${connected.map(({ link, target }) => `<span title="${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))}">${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))} · ${esc(canvasNodeLabel(target) || "节点")}<button type="button" class="canvas-disconnect" data-canvas-disconnect="${esc(link.id)}" title="断开这条线" aria-label="断开这条线">${ic("x")}</button></span>`).join("")}</div>` : '<p class="canvas-inspector-hint">选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。</p>'}</div><div class="canvas-inspector-actions">${generateActions}${["agent", "shot", "script", "scene", "storyboard", "timeline"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--default" data-inspect-agent>${ic("sparkles")}交给本项目 Agent</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost canvas-inspector-delete" data-inspect-delete>删除节点</button></div>${rerollRow}`;
   box.querySelectorAll("[data-inspect-key]").forEach((field) => {
     const update = () => canvasUpdateSelected(field.dataset.inspectKey, field.value);
     field.addEventListener("input", update); field.addEventListener("change", update);

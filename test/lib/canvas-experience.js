@@ -8,7 +8,7 @@ const canvasFixture = (nodes, edges) => `
       await new Promise((r) => setTimeout(r, 250));
       localStorage.clear();
       window.__store.jia = { main: { version: 2, updatedAt: 1000, edges: ${JSON.stringify(edges || [])}, nodes: ${JSON.stringify(nodes)} } };
-      window.__active = "jia"; canvasState.canvasName = "main"; canvasState.handsOnAt = 0; canvasState.nodeGesture = null;
+      window.__active = "jia"; canvasState.canvasName = "main"; canvasState.cardDefaults = null; canvasState.chatOpen = false; canvasState.handsOnAt = 0; canvasState.nodeGesture = null;
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       localStorage.setItem("openworkbuddy.canvas.name", "main");
       await renderCanvasPage();
@@ -20,6 +20,13 @@ const canvasNodeFixture = (id, kind, payload, x, y) => ({ id, kind, payload, pos
 async function runCanvasExperience({ run, win, ok }) {
   const 摆画布 = canvasFixture, 卡片 = canvasNodeFixture;
   const 同 = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const saveScreenshot = async (suffix = "") => {
+    if (!process.env.CANVAS_SCREENSHOT) return;
+    await run(`if (document.getElementById("owb-toast")) document.getElementById("owb-toast").style.display = "none"; true`);
+    const rect = await run(`(() => { const r = document.getElementById("assist-page").getBoundingClientRect(); return { x: Math.ceil(r.x), y: Math.ceil(r.y), width: Math.floor(r.width), height: Math.floor(r.height) }; })()`);
+    const file = process.env.CANVAS_SCREENSHOT.replace(/\.png$/, suffix + ".png");
+    fs.writeFileSync(file, (await win.webContents.capturePage(rect)).toPNG());
+  };
   console.log("\n— 五十二、卡片直接输入、空内容不生成、新节点在当前视口 —");
   const 卡上输入 = await run(`
     (async () => {
@@ -133,11 +140,116 @@ async function runCanvasExperience({ run, win, ok }) {
   ok(性能体验.导航.显示 && 性能体验.导航.正确图层 && 性能体验.导航.不被遮住 && 性能体验.导航.轮廓 === 160 && 性能体验.导航.移了 && 性能体验.导航.准确 && 性能体验.导航.可关闭, "小地图按需打开，展示全部轮廓，点击准确跳转并可关闭；不被底部对话框遮住", 性能体验.导航);
   console.log("  增量同步测量（本机 Chromium，160 张笔记卡）:", JSON.stringify(性能体验.同步));
 
+  console.log("\n— 五十五、通用创作入口、卡片参数、参考输入、结果衔接与版本对比 —");
+  const 流程 = await run(`(async () => {
+    ${摆画布([])}
+    const page = document.getElementById("assist-page");
+    const start = { 空: canvasState.graph.getElements().length === 0, 起步: !page.querySelector("#canvas-start").hidden, 收起: page.querySelector(".canvas-chat-body").hidden, 按钮: getComputedStyle(page.querySelector(".canvas-quick-add")).display };
+    const allStarts = page.querySelectorAll("[data-canvas-start]");
+    page.querySelector('[data-canvas-start="image"]').click();
+    const added = canvasSelectedNode(), addedRoot = canvasWireRoot(added.id);
+    start.添加 = canvasKind(added) === "image" && document.activeElement === addedRoot.querySelector("textarea") && page.querySelector("#canvas-start").hidden;
+    const prompt = addedRoot.querySelector("textarea"); prompt.value = "海边灯塔，柔和夕阳"; prompt.dispatchEvent(new Event("input", { bubbles: true })); prompt.setSelectionRange(3, 6);
+    canvasRefreshNode(added);
+    const rebuilt = canvasWireRoot(added.id).querySelector("textarea");
+    start.光标 = document.activeElement === rebuilt && rebuilt.selectionStart === 3 && rebuilt.selectionEnd === 6 && rebuilt.value === "海边灯塔，柔和夕阳";
+    page.querySelector("[data-canvas-chat-open]").click(); start.展开 = !page.querySelector(".canvas-chat-body").hidden; page.querySelector("[data-canvas-chat-toggle]").click(); start.再收起 = page.querySelector(".canvas-chat-body").hidden;
+    const model = canvasWireRoot(added.id).querySelector('[data-canvas-card-key="model"]'); model.add(new Option("指定图模型", "image-test")); model.value = "image-test"; model.dispatchEvent(new Event("change", { bubbles: true }));
+    const size = canvasWireRoot(added.id).querySelector('[data-canvas-card-key="size"]'); size.value = "1536x1024"; size.dispatchEvent(new Event("change", { bubbles: true }));
+    const advanced = canvasWireRoot(added.id).querySelector(".canvas-card-advanced"); start.高级默认收起 = !advanced.open;
+    window.__runs = []; window.__bodies = []; window.__failRun = null; window.__dropRun = null; window.__holdRun = null; window.__echoName = true;
+    await canvasGenerate(added, "image");
+    const sentImage = window.__bodies.find((b) => b.url === "/api/tool/run").body.input;
+    const gen = { 估价尺寸: canvasEstimateItem(added, "image").input.size, 型号: sentImage.model, 尺寸: sentImage.size, 内容: sentImage.prompt, 数量: canvasState.graph.getElements().length };
+    canvasCreateFromResult(added, "video"); const video = canvasSelectedNode();
+    const next = { 原图: canvasMediaPath(canvasPayload(added)), 空: canvasPayload(video).prompt === "", 聚焦: document.activeElement === canvasWireRoot(video.id).querySelector("textarea"), 输入: canvasUpstreamInputs(video).map((i) => i.relation), 未跑: window.__runs.length === 1 };
+    const last = canvasAddNode("image", { title: "尾帧素材", path: "end.png" }, undefined, { skipSelect: true });
+    canvasAddCardReference(video, last);
+    const videoRoot = canvasWireRoot(video.id), vp = videoRoot.querySelector("textarea"); vp.value = "镜头缓慢推进"; vp.dispatchEvent(new Event("input", { bubbles: true }));
+    for (const [key, value] of [["duration", "10s"], ["aspect_ratio", "9:16"], ["resolution", "720p"]]) { const field = videoRoot.querySelector('[data-canvas-card-key="' + key + '"]'); field.value = value; field.dispatchEvent(new Event("change", { bubbles: true })); }
+    window.__bodies = []; await canvasGenerate(video, "video");
+    const sentVideo = window.__bodies.find((b) => b.url === "/api/tool/run").body.input;
+    gen.视频 = { 首帧: sentVideo.first_frame, 尾帧: sentVideo.last_frame, 时长: sentVideo.duration, 画幅: sentVideo.aspect_ratio, 分辨率: sentVideo.resolution };
+    const root = canvasWireRoot(video.id), refs = root.querySelectorAll("[data-canvas-card-disconnect]");
+    const disconnect = refs[0].dataset.canvasCardDisconnect; root.querySelector('[data-canvas-card-disconnect="' + disconnect + '"]').click();
+    next.移除 = canvasUpstreamInputs(video).length === 1 && canvasWireRoot(video.id).querySelectorAll("[data-canvas-card-disconnect]").length === 1;
+    canvasHistoryFlush(); canvasUndo(); next.撤销移除 = canvasUpstreamInputs(canvasState.graph.getCell(video.id)).length === 2;
+    const liveImage = canvasState.graph.getCell(added.id);
+    liveImage.set("canvasPayload", { ...canvasPayload(liveImage), generation_runs: [{ kind: "image", output: "old_v1.png", version: 1 }, { kind: "image", output: "new_v2.png", version: 2 }], path: "new_v2.png", url: "new_v2.png", first_frame: "new_v2.png" });
+    canvasRefreshNode(liveImage); canvasCompareVersions(liveImage);
+    const compare = document.querySelector(".canvas-compare"); const version = { 打开: !!compare, 两列: compare?.querySelectorAll("section").length };
+    compare?.querySelector("[data-compare-close]").click(); version.关闭 = !document.querySelector(".canvas-compare");
+    await canvasUseVersion(liveImage.id, "image", "old_v1.png"); version.路径 = canvasMediaPath(canvasPayload(liveImage));
+    canvasSetSelection([video.id]); await Promise.resolve();
+    version.素材收紧 = getComputedStyle(canvasWireRoot(liveImage.id).querySelector(".canvas-card-editor")).display === "none";
+    canvasSetSelection([liveImage.id]); await Promise.resolve(); version.选中可改 = getComputedStyle(canvasWireRoot(liveImage.id).querySelector(".canvas-card-editor")).display !== "none";
+    await canvasFlushRemoteWrite(); return { start, gen, next, version };
+  })()`);
+  ok(流程.start.空 && 流程.start.起步 && 流程.start.收起 && ["flex", "inline-flex"].includes(流程.start.按钮), "空画布显示创作入口和有样式的常用工具，Agent 默认收起", 流程.start);
+  ok(流程.start.添加 && 流程.start.光标, "从入口创建图片立即写提示词，卡片重画保留文字和光标选择", 流程.start);
+  ok(流程.start.展开 && 流程.start.再收起 && 流程.start.高级默认收起, "Agent 按需展开，高级参数默认收起，不占满主工作区", 流程.start);
+  ok(流程.gen.型号 === "image-test" && 流程.gen.尺寸 === "1536x1024" && 流程.gen.估价尺寸 === 流程.gen.尺寸 && 流程.gen.内容 === "海边灯塔，柔和夕阳" && 流程.gen.数量 === 1, "卡上模型与尺寸真正进入生成请求，结果留在原卡上", 流程.gen);
+  ok(流程.next.空 && 流程.next.聚焦 && 流程.next.未跑 && 流程.next.输入[0] === "first_frame", "从图片继续做视频：自动接好首帧，聚焦新描述，不自动扣费", 流程.next);
+  ok(流程.gen.视频.首帧 === 流程.next.原图 && 流程.gen.视频.尾帧 === "end.png" && 流程.gen.视频.时长 === "10s" && 流程.gen.视频.画幅 === "9:16" && 流程.gen.视频.分辨率 === "720p", "两张图片自动分配首尾帧，卡上时长、画幅和分辨率照实发送", 流程.gen.视频);
+  ok(流程.next.移除 && 流程.next.撤销移除, "在卡片移除参考立即更新，撤销恢复对应连线", 流程.next);
+  ok(流程.version.打开 && 流程.version.两列 === 2 && 流程.version.关闭 && 流程.version.路径 === "old_v1.png", "生成版本可并排对比，切换版本更新真正展示的文件路径", 流程.version);
+  ok(流程.version.素材收紧 && 流程.version.选中可改, "已有素材不选中时收紧成预览卡，选中后原地编辑", 流程.version);
+
+  const 语言 = await run(`(async () => { const node = canvasSelectedNode(), text = canvasPayload(node).prompt; I18N.setLang("en"); await new Promise(requestAnimationFrame); const root = canvasWireRoot(node.id), english = /Generate/.test(root.querySelector("[data-canvas-generate]").textContent), same = root.querySelector("textarea").value === text; I18N.setLang("zh"); return { english, same }; })()`);
+  ok(语言.english && 语言.same, "切换语言会更新 SVG 卡片内的操作文字，用户提示词保持原文", 语言);
+
+  const 简化 = await run(`(async () => {
+    ${摆画布([])}
+    canvasState.cardDefaults = null;
+    const first = canvasAddNode("image");
+    const model = canvasWireRoot(first.id).querySelector('[data-canvas-card-key="model"]');
+    model.add(new Option("常用图模型", "usual-image")); model.value = "usual-image"; model.dispatchEvent(new Event("change", { bubbles: true }));
+    const second = canvasAddNode("image");
+    const remembered = canvasPayload(second).model === "usual-image" && canvasPayload(second).prompt === "";
+    const wrongVideo = canvasAddNode("video", { prompt: "画面渐变", last_frame: "only-last.png" });
+    window.__bodies = []; const rejected = await canvasGenerate(wrongVideo, "video");
+    const planned = canvasAddNode("video", { prompt: "镜头推进" }); canvasConnect(second, planned, "first_frame");
+    const plannedResult = await canvasGenerate(planned, "video");
+    const frame = !plannedResult.ok && plannedResult.error === "缺首帧" && !rejected.ok && rejected.error === "缺首帧" && !window.__bodies.some((b) => b.url === "/api/tool/run");
+    const before = canvasState.graph.getElements().length; canvasCreateDramaWorkflow();
+    const script = canvasSelectedNode(), nodes = canvasState.graph.getElements();
+    const drama = nodes.length === before + 3 && canvasKind(script) === "script" && canvasPayload(script).text === "" && !nodes.some((n) => ["character", "location"].includes(canvasKind(n))) && canvasState.inlineEdit?.nodeId === script.id;
+    canvasInlineCancel(); await canvasFlushRemoteWrite(); return { remembered, frame, drama };
+  })()`);
+  ok(简化.remembered && 简化.frame && 简化.drama, "新卡沿用最近模型但不带旧提示词；尾帧不能单独发单；短剧先写剧本，无需手填角色", 简化);
+
+  const 图片群 = Array.from({ length: 120 }, (_, i) => 卡片("imgperf" + i, "image", { title: "图片 " + i, prompt: "待创作 " + i }, i % 12 * 400, Math.floor(i / 12) * 450));
+  const 卡片开销 = await run(`(async () => {
+    let scans = 0; const original = window.canvasCardReferenceCandidates;
+    window.canvasCardReferenceCandidates = (...args) => { scans++; return original(...args); };
+    try {
+      ${摆画布(图片群)}
+      const before = scans, graph = canvasState.graph;
+      const roots = graph.getElements().map((node) => canvasWireRoot(node.id).firstElementChild);
+      const snap = canvasSnapshot(); snap.nodes[50].payload.prompt = "只更新一张图片卡";
+      canvasApplySnapshot(snap, { fromRemote: true });
+      const kept = graph.getElements().filter((node, i) => canvasWireRoot(node.id).firstElementChild === roots[i]).length;
+      const select = canvasWireRoot("imgperf50").querySelector("[data-canvas-card-reference]"); select.dispatchEvent(new Event("focus"));
+      return { before, after: scans, kept, options: select.options.length };
+    } finally { window.canvasCardReferenceCandidates = original; }
+  })()`);
+  ok(卡片开销.before === 0 && 卡片开销.after === 1 && 卡片开销.kept === 119 && 卡片开销.options === 120, "120 张生成卡加载不逐卡扫描参考候选；展开一次才计算一次，单卡更新保留其他 119 张 DOM", 卡片开销);
+
+  await run(`document.querySelector(".input-wrap").style.display = "none"; chatCol.classList.add("wide-page"); document.getElementById("chat-scroll").scrollTop = 0; true`);
+  const 尺寸前 = win.getSize(); win.setSize(940, 900);
+  const 窄窗 = await run(`(async () => { ${摆画布([])} await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); const p = document.getElementById("assist-page"), v = p.querySelector("#canvas-viewport").getBoundingClientRect(), tools = p.querySelector(".canvas-tool-cluster").getBoundingClientRect(), head = p.querySelector(".canvas-head").getBoundingClientRect(); return { 不溢出: tools.right <= v.right && tools.left >= v.left, 不遮挡: tools.top >= head.bottom, 有样式: getComputedStyle(p.querySelector(".canvas-quick-add")).borderTopStyle === "none" }; })()`);
+  ok(窄窗.不溢出 && 窄窗.不遮挡 && 窄窗.有样式, "窄窗口按实际画布宽度收起工具文字，工具栏不溢出、不遮挡顶部项目操作", 窄窗);
+  await saveScreenshot("-narrow");
+  win.setSize(...尺寸前);
+
   if (process.env.CANVAS_SCREENSHOT) {
     await run(`document.querySelector(".input-wrap").style.display = "none"; chatCol.classList.add("wide-page"); document.getElementById("chat-scroll").scrollTop = 0; true`);
     await run(`(async () => { ${摆画布([卡片("demo1", "image", { title: "人物参考", prompt: "人物穿浅色外套，柔和日光" }, 40, 60), 卡片("demo2", "image", { title: "场景参考", prompt: "傍晚海边，远处灯塔" }, 430, 60), 卡片("demo3", "image", { title: "新画面", prompt: "保持同一个人物，在海边回头，电影感构图" }, 820, 60)], [{ source: { id: "demo1" }, target: { id: "demo3" }, relation: "reference" }, { source: { id: "demo2" }, target: { id: "demo3" }, relation: "reference" }])} canvasFitAll(document.getElementById("assist-page")); if (!canvasState.minimapOpen) document.querySelector("[data-canvas-minimap]").click(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); await new Promise((r) => setTimeout(r, 60)); })()`);
-    const rect = await run(`(() => { const r = document.getElementById("assist-page").getBoundingClientRect(); return { x: Math.ceil(r.x), y: Math.ceil(r.y), width: Math.floor(r.width), height: Math.floor(r.height) }; })()`);
-    fs.writeFileSync(process.env.CANVAS_SCREENSHOT, (await win.webContents.capturePage(rect)).toPNG());
+    await saveScreenshot();
+    await run(`document.documentElement.dataset.theme = "dark"; I18N.setLang("en"); true`);
+    await new Promise((done) => setTimeout(done, 160)); await saveScreenshot("-dark-en");
+    await run(`(async () => { I18N.setLang("zh"); document.documentElement.dataset.theme = "light"; ${摆画布([])} document.getElementById("owb-toast")?.classList.remove("show"); const select = document.querySelector("[data-canvas-workspace-select]"); if (select) select.innerHTML = '<option value="jia">示例项目</option>'; document.querySelector("[data-canvas-board-select]").innerHTML = '<option value="main">主画布</option>'; canvasState.minimap.el.hidden = true; canvasState.minimapOpen = false; await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); })()`);
+    await saveScreenshot("-start");
   }
 }
 

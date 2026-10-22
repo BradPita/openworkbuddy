@@ -25,7 +25,7 @@ function canvasJobStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY
 function canvasSyncedStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.synced:${scope}`; }
 
 const CANVAS_NODE_DEFS = {
-  note: { label: "笔记", icon: "notebook-pen", width: 340, height: 205, subtitle: "自由记录想法与任务", group: "策划" },
+  note: { label: "文字", icon: "notebook-pen", width: 340, height: 205, subtitle: "自由记录想法与任务", group: "策划" },
   script: { label: "剧本", icon: "file-text", width: 360, height: 250, subtitle: "故事、对白、创作目标", group: "策划" },
   agent: { label: "Agent任务", icon: "bot", width: 360, height: 220, subtitle: "可审核、可重跑的协作任务", group: "策划" },
   character: { label: "角色", icon: "user", width: 340, height: 300, subtitle: "人物设定与参考", group: "世界设定" },
@@ -33,8 +33,8 @@ const CANVAS_NODE_DEFS = {
   storyboard: { label: "分镜表", icon: "clapperboard", width: 350, height: 235, subtitle: "short-drama 业务节点", group: "分镜制作" },
   scene: { label: "场次", icon: "film", width: 380, height: 255, subtitle: "场次下的镜头集合", group: "分镜制作" },
   shot: { label: "镜头", icon: "video", width: 360, height: 260, subtitle: "可生成、可重跑的最小单元", group: "分镜制作" },
-  image: { label: "参考图", icon: "image", width: 340, height: 220, subtitle: "角色、场景或首帧", group: "素材与生成" },
-  video: { label: "视频片段", icon: "video", width: 380, height: 390, subtitle: "生成结果或本地素材", group: "素材与生成" },
+  image: { label: "图片", icon: "image", width: 340, height: 220, subtitle: "角色、场景或首帧", group: "素材与生成" },
+  video: { label: "视频", icon: "video", width: 380, height: 390, subtitle: "生成结果或本地素材", group: "素材与生成" },
   audio: { label: "声音", icon: "music", width: 320, height: 220, subtitle: "对白、配音或音乐", group: "素材与生成" },
   timeline: { label: "剪辑时间线", icon: "film", width: 380, height: 240, subtitle: "本项目 AI 剪辑时间线", group: "交付" },
 };
@@ -59,7 +59,7 @@ let canvasState = {
   // 卡右边那颗连接点（见 canvasPortDown）：wire 是正从它往外拖的那根线，portMenu 是点一下弹出来的「接一张新卡」菜单；
   // inlineEdit 是正在卡上直接改的那一格 { nodeId, key, draft, … }——卡整张重画时靠它把没改完的字放回去
   wire: null, portMenu: null, inlineEdit: null, contextMenuClose: null, editSaveTimer: null, saveHandler: null,
-  minimap: null, minimapOpen: false,
+  minimap: null, minimapOpen: false, chatOpen: false, compareClose: null, workspaceObserver: null, languageHandler: null, cardDefaults: null,
   // remoteContentKey：服务器上那份画布的内容指纹。屏幕上这份跟它一样就不再往上写（见 canvasPersist）
   remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remotePoll: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // fitting：正在按内容给卡量高、给长高的卡让位。这期间的挪动不存盘（见 canvasFitFlush）
@@ -350,17 +350,20 @@ function canvasVersionOf(file, payload, kind) {
  */
 function canvasOutputVersions(payload, kind, node, board) {
   const p = payload || {}, field = canvasOutputField(kind), rows = new Map();
-  const add = (rel, extra) => {
+  const add = (rel, extra, owned = false) => {
     const r = String(rel || "").trim();
     if (!r || /^(https?:|data:)/i.test(r)) return;
-    const version = canvasVersionOf(r, p, kind);
+    let version = canvasVersionOf(r, p, kind);
+    // 明确记在本节点生成记录里的版本不依赖标题匹配：重命名卡片后历史仍属于它。
+    if (version < 0 && owned) { const match = /_v(\d+)\.[^./\\]+$/i.exec(r); version = match ? Number(match[1]) : 0; }
     if (version < 0) return;
     rows.set(r, { ...(rows.get(r) || {}), ...(extra || {}), rel: r, version });
   };
-  add(p[field]);
+  add(p[field], null, true);
+  if (node && ["image", "video", "audio"].includes(canvasKind(node))) add(p.path || p.url, null, true);
   for (const run of Array.isArray(p.generation_runs) ? p.generation_runs : []) {
     if (!run || run.kind !== kind) continue;
-    add(run.output); add(run.replaced);
+    add(run.output, null, true); add(run.replaced, null, true);
   }
   const state = typeof canvasState === "object" && canvasState ? canvasState : {};
   const dir = canvasOutputSubdir(board);
@@ -504,12 +507,12 @@ function canvasDefaultPayload(kind) {
     // 「记录灵感、任务或需要补充的内容…」——起手模板铺出来的那张就是这样
     case "storyboard": return { board: "" };
     case "shot": return { id: "S1-01", title: "新镜头", shot_size: "中景", duration: "4", prompt: "", motion_prompt: "", line: "", speaker: "" };
-    case "image": return { title: "参考图", url: "", role: "参考素材", tags: "", prompt: "" };
-    case "video": return { title: "Video", url: "", role: "生成结果", tags: "", prompt: "", model: "", aspect_ratio: "16:9", resolution: "1080p", duration: "5s" };
+    case "image": return { title: "图片", url: "", role: "参考素材", tags: "", prompt: "" };
+    case "video": return { title: "视频", url: "", role: "生成结果", tags: "", prompt: "", model: "", aspect_ratio: "16:9", resolution: "1080p", duration: "5s" };
     case "audio": return { title: "声音", url: "", role: "对白/音乐", tags: "", text: "", voice: "" };
-    case "timeline": return { title: "最终剪辑", description: "把镜头按顺序交给本项目 Agent 生成时间线。" };
+    case "timeline": return { title: "最终剪辑", description: "" };
     case "scene": return { id: "S1", place: "未命名场景", time: "" };
-    default: return { title: "新笔记", text: "" };
+    default: return { title: "文字", text: "" };
   }
 }
 

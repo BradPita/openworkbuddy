@@ -336,6 +336,34 @@ async function main() {
     // 只读源码，不 require：tools.js 一加载就要绑工作区、起一串别的模块
     const toolSrc = fs.readFileSync(mod("tools"), "utf8");
     ok(/"connect", "disconnect", "delete"/.test(toolSrc) && /用 disconnect 断开一条连线/.test(toolSrc), "工具说明里有 disconnect，Agent 才知道能只断线不删节点");
+    console.log("\n【11】导出画布与素材：选中范围带上游，路径精确，文件流式打包");
+    const JSZip = require("jszip");
+    const { canvasExportPlan } = require("../src/domains/media/canvas-export");
+    put("导出/同名.png"); put("另一个目录/同名.png"); put("导出/输出.mp4");
+    const exportState = { version: 2, nodes: [node("ex-source", "image", { path: "导出/同名.png" }), node("ex-target", "video", { path: "导出/输出.mp4", first_frame: "导出/同名.png", last_frame: "丢失.png" }), node("ex-other", "image", { path: "另一个目录/同名.png" })], edges: [{ source: { id: "ex-source" }, target: { id: "ex-target" }, relation: "first_frame" }] };
+    store.canvasWriteState(exportState, "导出测");
+    const plan = canvasExportPlan(WS, exportState, ["ex-target"]);
+    ok(plan.snapshot.nodes.length === 2 && plan.snapshot.edges.length === 1 && plan.files.length === 2, "选中视频导出会带上其参考图和连接，不夹带无关节点", plan.manifest);
+    ok(plan.files.every((file) => !file.archive.startsWith("另一个目录")) && plan.manifest.missing.some((file) => file.reference === "丢失.png"), "同名文件不猜路径，缺失素材如实列入清单");
+    const absoluteInside = canvasExportPlan(WS, board([node("absolute", "image", { path: path.join(WS, "导出", "同名.png") })]));
+    ok(absoluteInside.files.length === 1 && absoluteInside.files[0].archive === "导出/同名.png", "项目内绝对路径可折成相对路径，Windows 盘符不误判为 URL");
+    let refused = false; try { canvasExportPlan(WS, exportState, ["不存在"]); } catch { refused = true; }
+    ok(refused, "节点已变化时拒绝导出，不悄悄扩大成整张画布");
+    const outside = WS + "-outside.png";
+    try {
+      fs.writeFileSync(outside, "synthetic outside file");
+      fs.symlinkSync(outside, path.join(WS, "越界链接.png"));
+      const unsafe = canvasExportPlan(WS, board([node("unsafe", "image", { path: outside, reference: "越界链接.png" })]));
+      ok(unsafe.files.length === 0 && unsafe.manifest.missing.length === 2, "工作区外绝对路径与越界符号链接均不打包");
+    } finally { fs.rmSync(outside, { force: true }); }
+    const preflight = await call("GET", "/api/canvas/export?name=导出测&check=1&nodeIds=" + JSON.stringify(["ex-target"]));
+    ok(preflight.code === 200 && preflight.json.nodes === 2 && preflight.json.files === 2, "下载前可先确认范围、数量与缺失文件", preflight.json);
+    const zipResponse = await fetch(`http://127.0.0.1:${port}/api/canvas/export?name=${encodeURIComponent("导出测")}&nodeIds=${encodeURIComponent(JSON.stringify(["ex-target"]))}`);
+    const zip = await JSZip.loadAsync(Buffer.from(await zipResponse.arrayBuffer()));
+    const exported = JSON.parse(await zip.file("canvas.json").async("string"));
+    ok(zipResponse.status === 200 && /application\/zip/.test(zipResponse.headers.get("content-type")) && exported.nodes.length === 2 && !!zip.file("导出/同名.png") && !zip.file("另一个目录/同名.png"), "真实下载 ZIP 包含可读画布 JSON 和对应素材，保留相对目录");
+    const manifest = JSON.parse(await zip.file("manifest.json").async("string"));
+    ok(manifest.files.length === 2 && manifest.missing.length === 1 && !JSON.stringify(manifest.files).includes(WS), "清单不写内部绝对路径，缺失一项有一条明确记录");
   } finally {
     server.close();
   }

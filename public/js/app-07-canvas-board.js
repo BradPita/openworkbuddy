@@ -138,7 +138,7 @@ function canvasAskNewBoardName() {
       + `<label><span>统一风格（可留空）</span><input name="style" maxlength="300" autocomplete="off" placeholder="例如：冷蓝夜色，胶片颗粒"></label>`
       + `<label><span>生图模型</span>${modelSelect("imageModel", "image")}<small class="canvas-drama-price" data-drama-price="image"></small></label>`
       + `<label><span>生视频模型</span>${modelSelect("videoModel", "video")}<small class="canvas-drama-price" data-drama-price="video"></small></label>`
-      + `<div class="canvas-create-board-error" aria-live="polite"></div><div class="canvas-create-board-actions"><button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-canvas-create-cancel>取消</button><button type="submit" class="ui-btn ui-btn--brand ui-btn--sm">创建</button></div></form>`;
+      + `<div class="canvas-create-board-error" aria-live="polite"></div><div class="canvas-create-board-actions"><button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-canvas-create-cancel>取消</button><button type="submit" class="ui-btn ui-btn--default ui-btn--sm">创建</button></div></form>`;
     const finish = (value) => { overlay.remove(); document.removeEventListener("keydown", onKey); resolve(value); };
     const onKey = (event) => { if (event.key === "Escape" && !imeKey(event)) finish(""); }; // 画布名称里拼音打一半按 Esc：取消拼字，不是把整张表关了
     // 单价：换一个模型问一次。问的时候那一格先空着，回来时模型已经又换了就不写（写上去的是上一个的价）
@@ -263,7 +263,7 @@ function canvasOpenDraftPreview(out, ctx) {
     + (warnings.length ? `<ul class="canvas-draft-warnings">${warnings.slice(0, 8).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : "")
     + `<div class="canvas-draft-scroll"><table class="canvas-draft-table"><colgroup><col class="canvas-draft-col-id"><col class="canvas-draft-col-size"><col><col><col class="canvas-draft-col-sec"><col class="canvas-draft-col-tail"></colgroup><thead><tr><th>镜头号</th><th>景别</th><th>画面</th><th>台词</th><th>时长</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
     + `<div class="canvas-draft-meta"><span data-draft-count></span>${tokens > 0 ? `<span data-draft-usage>${esc(canvasT("本次用了 {n} token", { n: tokens }))}</span>` : ""}</div>`
-    + `<div class="canvas-create-board-error" data-draft-error aria-live="polite"></div><div class="canvas-create-board-actions"><button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-draft-cancel>取消</button><button type="submit" class="ui-btn ui-btn--brand ui-btn--sm" data-draft-commit>放到画布上</button></div></form>`;
+    + `<div class="canvas-create-board-error" data-draft-error aria-live="polite"></div><div class="canvas-create-board-actions"><button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-draft-cancel>取消</button><button type="submit" class="ui-btn ui-btn--default ui-btn--sm" data-draft-commit>放到画布上</button></div></form>`;
   const form = overlay.querySelector("form"), errBox = overlay.querySelector("[data-draft-error]"), commit = overlay.querySelector("[data-draft-commit]");
   let busy = false;
   // 场次数、镜头数跟着删行走；一镜都不剩就不许提交（分镜表每场至少一镜，交上去也是 400）
@@ -961,7 +961,7 @@ function canvasLoadLegacySaved() {
 
 function canvasDecorateLink(link, relation) {
   if (!link) return;
-  const text = canvasRelationLabel(relation);
+  const text = canvasT(canvasRelationLabel(relation));
   link.set("canvasRelation", relation);
   link.labels([{ position: .5, attrs: { text: { text, fill: "var(--owb-brand-text)", fontSize: 10, fontWeight: 650 }, rect: { fill: "var(--owb-bg)", stroke: "var(--owb-border)", strokeWidth: 1, rx: 7, ry: 7 } } }]);
 }

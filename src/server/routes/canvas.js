@@ -27,6 +27,26 @@ const app = express.Router({ caseSensitive: true });
 
 // 无限画布的项目内状态：浏览器负责渲染，Agent 通过 canvas_manage 工具改同一份 JSON。
 // 不把它放到 localStorage 作为唯一真源，否则 Agent 改完节点浏览器永远看不到。
+// 画布与素材一起导出；权限和项目隔离沿用外层已登录的工作区路由。
+function canvasExportDownload(req, res) {
+  try {
+    const { canvasExportPlan, canvasExportStream } = require("../../domains/media/canvas-export");
+    const name = canvasSafeName(req.body?.name || req.query.name || "main"), state = canvasReadState(name, {});
+    const ids = req.body?.nodeIds ?? (req.query.nodeIds ? JSON.parse(String(req.query.nodeIds)) : undefined);
+    if (ids != null && (!Array.isArray(ids) || ids.length > 1000 || ids.some((id) => typeof id !== "string"))) return res.status(400).json({ error: "节点列表无效" });
+    const plan = canvasExportPlan(getWorkspaceDir(), state, ids);
+    if (req.query.check === "1") return res.json({ nodes: plan.snapshot.nodes.length, files: plan.files.length, bytes: plan.files.reduce((sum, file) => sum + file.bytes, 0), missing: plan.manifest.missing });
+    const stream = canvasExportStream(plan);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="openworkbuddy-canvas.zip"; filename*=UTF-8''${encodeURIComponent(name + ".zip")}`);
+    stream.on("error", (error) => { if (!res.headersSent) res.status(500).json({ error: error.message }); else res.destroy(error); });
+    res.on("close", () => stream.destroy());
+    stream.pipe(res);
+  } catch (error) { res.status(400).json({ error: error.message }); }
+}
+app.post("/api/canvas/export", canvasExportDownload);
+app.get("/api/canvas/export", canvasExportDownload);
+
 app.get("/api/canvas/list", (_req, res) => {
   // 回收站一起给：界面在画布下拉里列出来，点一下就恢复。读不出来也不该连画布列表一起挂
   let trash = [];
