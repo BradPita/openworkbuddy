@@ -314,6 +314,8 @@ async function agentMcpChecks() {
   jev.askMetered = async () => ({ ok: false, error: "测试桩：不发网络" });
   const { createAgentRuntime } = require(mod("agent"));
   const seen = { calls: 0, signal: null, byAbort: false };
+  const ctrl = new AbortController();
+  let tAbort = 0, abortTimer = null;
   const mgr = {
     toolDefs: () => [{ name: "mcp__srv__hang", description: "[MCP:srv] 慢工具", input_schema: { type: "object", properties: {} } }],
     isMcpTool: (n) => String(n).startsWith("mcp__"),
@@ -322,6 +324,8 @@ async function agentMcpChecks() {
     call: (name, input, o = {}) => new Promise((res) => {
       seen.calls++;
       seen.signal = o.signal || null;
+      // 等工具真正进入挂起状态再点停止，慢机器上的初始化不能提前吃掉这 300ms。
+      abortTimer = setTimeout(() => { tAbort = Date.now(); ctrl.abort(); }, 300);
       const t = setTimeout(() => res({ content: "慢工具的结果", isError: false }), 5000);
       const s = o.signal;
       if (!s) return;
@@ -339,9 +343,6 @@ async function agentMcpChecks() {
   fs.mkdirSync(dir, { recursive: true });
   try {
     const rt = createAgentRuntime({ config: { agent: { max_steps: 3, tool_timeout_ms: 30000 }, security: { gateway: false } }, llm, mcpManager: mgr, experts: [] });
-    const ctrl = new AbortController();
-    let tAbort = 0;
-    setTimeout(() => { tAbort = Date.now(); ctrl.abort(); }, 300);
     await tools.withWorkspace(dir, () => rt.runTask({ history: [{ role: "user", content: "用 MCP 工具查一下" }], emit: () => {}, stopSignal: ctrl.signal, taskLabel: "停止测试" }));
     const after = Date.now() - tAbort;
     eq(seen.calls, 1, "任务真的走到了 MCP 工具那一步");
@@ -349,6 +350,7 @@ async function agentMcpChecks() {
     ok(seen.byAbort, "工具是被停止信号叫停的，不是等满时限自己回的");
     ok(tAbort > 0 && after < 1500, "按下停止 1.5 秒内任务就收了（不等那 5 秒）", after + "ms");
   } finally {
+    clearTimeout(abortTimer);
     jev.askMetered = realAsk;
   }
 }

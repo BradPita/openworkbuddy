@@ -371,16 +371,21 @@ try { navigator.sendBeacon("http://127.0.0.1:${P}/beacon", "x"); } catch (e) {}
     const w = coverWinNow();
     ok(w && !w.webContents.isPainting(), "交付截图时已经停止主动绘制");
     const paints = [];
-    // Intel Chromium 偶尔在 stopPainting 后才递送一帧已提交的合成结果。
-    // 只允许这一帧：主动绘制没停、旧页面没卸载、持续重画都会失败。
+    // stopPainting 后合成队列仍可能递送多帧。先等队列安静 250ms（最多等 2 秒），
+    // 再严格观察 5 秒零重画；全程都必须是停止绘制的空白页，不能靠放宽帧数掩盖持续绘制。
+    let lastPaint = Date.now();
     const onPaint = () => {
+      lastPaint = Date.now();
       paints.push({ painting: w.webContents.isPainting(), url: w.webContents.getURL() });
     };
     w.webContents.on("paint", onPaint);
+    const settleDeadline = Date.now() + 2000;
+    while (Date.now() < settleDeadline && Date.now() - lastPaint < 250) await sleep(25);
+    const settled = Date.now() - lastPaint >= 250, settledCount = paints.length;
     await sleep(5000);
     if (!w.isDestroyed()) w.webContents.removeListener("paint", onPaint);
-    ok(w && paints.length <= 1 && paints.every(p => !p.painting && p.url === "about:blank"),
-      "截完 5 秒：没有持续重画（最多一帧已提交的合成结果）", paints);
+    ok(w && settled && paints.length === settledCount && paints.every(p => !p.painting && p.url === "about:blank"),
+      "合成队列清空后 5 秒零重画，全程停止绘制并停在空白页", { settled, initialFrames: settledCount, laterFrames: paints.length - settledCount, paints });
     const p = await plainWin(ANIM);
     let n = 0;
     p.webContents.on("paint", () => { n++; });
