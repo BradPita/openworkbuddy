@@ -163,9 +163,12 @@ const CODE = Object.fromEntries(SCAN.map((rel) => [rel, codeOf(rel, read(rel))])
   const missed = BAIT.filter(([s, want]) => (macWordHits("bait.js", STRIP.stripComments(s)).length > 0) !== want).map(([s]) => s);
   ok(missed.length === 0, "反向对照：四句老写法都抓到，注释和变量名里的不误报", missed);
   const canvas = "public/js/app-07-canvas.js";
-  const oldCanvas = CODE[canvas].split("${modKeyName()}").join("⌘").split('${accelDisplay("Mod+Z")}').join("Ctrl/Cmd+Z");
-  ok(oldCanvas !== CODE[canvas] && macWordHits(canvas, oldCanvas).length >= 2,
-    "反向对照：把画布工具栏改回「Shift/⌘」「Ctrl/Cmd+Z」，扫得出来");
+  const oldCanvas = [
+    CODE[canvas].split('${accelDisplay("Mod+Z")}').join("Ctrl/Cmd+Z"),
+    CODE[canvas].split('${accelDisplay("Shift+Mod+Z")}').join("Ctrl/Cmd+Shift+Z"),
+  ];
+  ok(oldCanvas.every((source) => source !== CODE[canvas] && macWordHits(canvas, source).length > 0),
+    "反向对照：分别把撤销、重做改回写死 Cmd 的提示，两处都扫得出来");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
