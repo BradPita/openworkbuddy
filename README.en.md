@@ -197,6 +197,10 @@ How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chin
 
 Start with an image, video or set of assets. Describe, connect references, generate and continue with variations or video directly from each card. Short-drama workflows also organize scripts, characters, scenes, shots, voice and the edit timeline. Connections become real generation inputs.
 
+Edit character and location descriptions and choose an image model directly on their cards. Invalid model IDs are caught before submission; choosing the default overrides an inherited script model. [Usage and troubleshooting](docs/无限画布使用.md#角色定妆照与场景图).
+
+Ark portrait errors stay on the card. Use approved asset IDs for reference generation; video frame uploads preserve original bytes. [Portrait assets and generation modes](docs/无限画布使用.md#火山视频提示输入图片可能包含真人).
+
 <p align="center">
  <img src="docs/images/canvas-start.png" width="960" alt="OpenWorkBuddy canvas example: start an image or video, import assets and open Agent when needed">
 </p>
@@ -262,7 +266,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
-- **Oct 22** Redesign canvas entry and media cards: edit prompts, references and models inline; create image variations or videos, compare versions and export assets. Collapse Agent by default, fix deletion and reduce redraws
+- **Oct 23** Select models on cards; fix missing-tool claims by local engines. Keep shot outputs and errors inline, show start feedback, support approved Ark assets, preserve original frames, compare versions and export assets
 - **Oct 21** Keep read notifications, find scheduled results in the inbox, and jump to conversation search matches from a visible search button
 - **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
 - **Oct 20** Installed apps register a bundled-runtime CLI; Windows checks cover Unicode/space paths and the launch directory. Rerun `npm link` after moving a source checkout

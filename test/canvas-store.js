@@ -31,6 +31,22 @@ const OWB = path.join(WS, ".openworkbuddy");
 // src/tools/ 不在 mod 表里（见 test/lib/mod.js 开头），按路径拿
 const store = require(path.join(ROOT, "src", "tools", "canvas.js"));
 store.bindWorkspace(() => WS);
+{
+  const media = { list: [
+    { cap: "image", name: "图片测试", model: "image-test", base_url: "https://media.invalid/v1", api_key: "private-test-credential", default: true, extra_secret: "hidden" },
+    { cap: "video", name: "视频测试", model: "video-test", base_url: "https://video.invalid/v1", api_key: "private-video-credential" },
+    { cap: "tts", name: "未填凭据", model: "tts-test" },
+  ] };
+  const got = store.canvasManage({ operation: "get" }, { media });
+  const context = JSON.parse(got.content).generation;
+  ok(context.confirmation === "canvas_proposal" && context.models.find((item) => item.cap === "video").models[0].configured, "画布 get 告诉本机引擎视频模型已配置，执行入口是生成清单");
+  ok(!/private-test|private-video|media\.invalid|video\.invalid|extra_secret|hidden/.test(got.content), "生成能力只返回白名单元数据，不泄露凭据、地址或额外配置");
+  ok(!context.models.find((item) => item.cap === "tts").models[0].configured && context.models.find((item) => item.cap === "image").models[0].default, "缺配音凭据与已有图像、视频配置分别报告");
+  const legacy = store.canvasMediaCapabilities({ video: { model: "legacy-video", api_key: "private-legacy", base_url: "https://legacy.invalid" } });
+  ok(legacy.find((item) => item.cap === "video").models[0].configured, "兼容旧版默认媒体配置");
+  const note = store.canvasMediaPrompt(media);
+  ok(note.includes("video-test") && note.includes("canvas_manage propose") && note.includes("不表示用户没有配置模型") && !/private-|https:/.test(note), "本机引擎获得型号与报价执行路径，不能从工具缺席推断没配模型");
+}
 const routes = require(mod("routes/canvas"));
 
 /** 工作区里的文件清单，口径跟 tools.js outputFiles 一样：相对路径、不含 .openworkbuddy */

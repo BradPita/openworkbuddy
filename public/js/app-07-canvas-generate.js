@@ -129,7 +129,9 @@ function canvasGenerationInputs(node) {
 
 function canvasGenerationSummary(payload) {
   const run = payload?.generation;
-  const waiting = canvasPendingJobsRow(payload);
+  const names = { image: "图片", video: "视频", audio: "配音" };
+  const errors = Object.entries(payload?.generation_errors || {}).filter(([kind, value]) => names[kind] && value?.message).map(([kind, value]) => `<div class="canvas-generation-error" role="status">${ic("triangle-alert")}<span><b>${esc(canvasT(names[kind]))} · ${esc(canvasT("上次生成失败"))}</b>${esc(value.message)}</span></div>`).join("");
+  const waiting = errors + canvasPendingJobsRow(payload);
   if (!run || !run.output) return waiting;
   const model = run.model ? ` · ${run.model}` : "";
   const inputs = Array.isArray(run.inputs) ? run.inputs.length : 0;
@@ -308,10 +310,9 @@ function canvasUpsertResult(source, kind, file) {
     existing.set("canvasPayload", { ...canvasPayload(existing), path: file, url: file, title: String(file).split(/[\\/]/).pop() });
     canvasRefreshNode(existing); canvasPersist(); return existing;
   }
-  const pos = source.position(), sourceSize = source.size();
-  const result = canvasAddNode(kind, { title: String(file).split(/[\\/]/).pop(), path: file, url: file, sourceId: source.id }, { x: pos.x + sourceSize.width + 48, y: pos.y }, { skipSelect: true });
-  if (result) canvasConnect(source, result);
-  return result;
+  // 镜头卡已经展示首帧、视频和配音；只有用户主动做变体时才需要另一张创作卡。
+  // 老结果卡可能已被其他节点引用，继续更新它；新生成不再自动复制一张同图卡。
+  return source;
 }
 
 function canvasCreateDramaWorkflow() {
@@ -405,12 +406,15 @@ function canvasMediaModelField(label, cap, value = "") {
   const cache = typeof settingsCache !== "undefined" ? settingsCache : null;
   const models = Array.isArray(cache?.media_models) ? cache.media_models.filter((item) => item && item.cap === cap && (item.model || item.name)) : [];
   const current = String(value || "");
-  const currentOption = current && !models.some((item) => String(item.model || item.name) === current) ? `<option value="${esc(current)}" selected>${esc(current)}（当前值）</option>` : "";
+  const currentOption = current && !models.some((item) => String(item.name || item.model) === current) ? `<option value="${esc(current)}" selected>${esc(current)} · ${esc(canvasT(models.some((item) => [item.model, item.name].some((value) => String(value || "").toLowerCase() === current.toLowerCase())) ? "当前值" : "未配置，请重选"))}</option>` : "";
   const options = models.map((item) => {
-    const id = String(item.model || item.name), labelText = item.name && item.name !== id ? `${item.name} · ${id}` : id;
+    // 用配置名称点名渠道，同一型号挂在两个渠道时也能准确选择；服务端按名称优先解析。
+    const id = String(item.name || item.model), labelText = item.model && item.model !== id ? `${id} · ${item.model}` : id;
     return `<option value="${esc(id)}" ${id === current ? "selected" : ""}>${esc(labelText)}</option>`;
   }).join("");
-  return `<label class="canvas-inspector-field"><span>${label}</span><select data-inspect-key="model">${currentOption}<option value="" ${!current ? "selected" : ""}>${esc(canvasT(models.length ? "默认模型" : "默认模型（未配置）"))}</option>${options}</select></label>`;
+  const def = models.find((item) => item.default) || models[0];
+  const defaultLabel = def ? `${canvasT("默认模型")} · ${def.name && def.name !== def.model ? `${def.name} · ${def.model}` : def.model || def.name}` : canvasT("默认模型（未配置）");
+  return `<label class="canvas-inspector-field"><span>${label}</span><select data-inspect-key="model" aria-label="${esc(label)}">${currentOption}<option value="" ${!current ? "selected" : ""}>${esc(defaultLabel)}</option>${options}</select></label>`;
 }
 
 function canvasRenderChatReferences() {
@@ -868,6 +872,7 @@ async function canvasGenerate(node, kind) {
   }
   const p = canvasPayload(node), upstream = canvasUpstreamImages(node), upstreamInputs = canvasUpstreamInputs(node);
   const nodeKind = canvasKind(node);
+  const referenceAssets = kind === "video" ? [...new Set((Array.isArray(p.reference_assets) ? p.reference_assets : String(p.reference_assets || "").split(/[\s,，]+/)).map((value) => String(value || "").trim()).filter(Boolean))] : [];
   // 角色 / 场景节点生的是定妆照和场景图：它们是后面每一镜的参考图，不是镜头本身，
   // 所以提示词、文件名、写回哪个字段，三样都跟镜头那条不一样。
   const castKind = kind === "image" && (nodeKind === "character" || nodeKind === "location") ? nodeKind : "";
@@ -887,10 +892,10 @@ async function canvasGenerate(node, kind) {
   const lastInput = upstreamInputs.find((item) => item.relation === "last_frame");
   const lastFrame = p.last_frame || (kind === "video" && lastInput ? canvasUpstreamImage(lastInput) : "");
   const assignedFrame = upstreamInputs.some((item) => item.relation === "first_frame" || item.relation === "last_frame");
-  if (!collected && kind === "video" && !firstFrame && (canvasKind(node) === "shot" || lastFrame || assignedFrame)) {
+  if (!collected && kind === "video" && !firstFrame && !referenceAssets.length && (canvasKind(node) === "shot" || lastFrame || assignedFrame)) {
     canvasToast("这个视频节点还没有首帧，请先生成首帧或连接一个参考图节点。", "triangle-alert", "err"); return { ok: false, error: "缺首帧" };
   }
-  if (!collected && kind === "video" && lastInput && !lastFrame) {
+  if (!collected && kind === "video" && !referenceAssets.length && lastInput && !lastFrame) {
     canvasToast(canvasT("尾帧引用还没有可用图片，请先生成或替换它。"), "triangle-alert", "err"); return { ok: false, error: "缺尾帧" };
   }
   // 起手模板里那句占位文字原样没改就开枪，买回来的就是一张「这张图要保持的主体、风格与构图…」。
@@ -932,13 +937,18 @@ async function canvasGenerate(node, kind) {
       ? [canvasStyledPrompt(ownPrompt, style), canvasIsPlaceholderPrompt(p.line) ? "" : `对白/旁白：${p.line}`, context].filter(Boolean).join("\n")
       : ownPrompt;
   const model = kind === "audio" ? "" : canvasDramaModel(p, kind, nodeKind);
+  const modelProblem = !collected ? canvasMediaModelProblem(kind, model) : "";
+  if (modelProblem) {
+    canvasToast(modelProblem, "triangle-alert", "err", { label: canvasT("模型设置"), run: () => openModal("settings", "models") });
+    return { ok: false, error: modelProblem };
+  }
   if (!prompt && !collected) { canvasToast(kind === "audio" ? "请先填写对白或音乐说明。" : "请先填写生成提示词。", "triangle-alert", "err"); return { ok: false, error: "缺提示词" }; }
   // 收回来的那一单按当时发出去的参数记（提示词这期间可能改过）；台账里没存参数的老记录才现算
   const input = collected && collected.input && typeof collected.input === "object" ? { ...collected.input } : kind === "image"
     // 参考图这一栏自己也把一道关：节点上随手填的 reference 也可能不是图，四个位子本来就不够几个角色分
     ? { prompt, reference_images: [...new Set([p.reference, p.first_frame, ...upstream].map((v) => String(v || "").trim()).filter((v) => v && CANVAS_REF_IMAGE_EXT.test(v.split(/[?#]/)[0])))].slice(0, 4), ...(model ? { model } : {}), ...(p.size ? { size: p.size } : {}), filename: canvasOutputFilename(p, "image", nodeKind) }
     : kind === "video"
-      ? { prompt, first_frame: firstFrame, ...(lastFrame ? { last_frame: lastFrame } : {}), ...canvasVideoSpec(p, nodeKind), ...(model ? { model } : {}), filename: canvasOutputFilename(p, "video", nodeKind) }
+      ? { prompt, ...(referenceAssets.length ? { reference_assets: referenceAssets } : { first_frame: firstFrame, ...(lastFrame ? { last_frame: lastFrame } : {}) }), ...canvasVideoSpec(p, nodeKind), ...(model ? { model } : {}), filename: canvasOutputFilename(p, "video", nodeKind) }
       : { text: prompt, ...(voice ? { voice } : {}), filename: canvasOutputFilename(p, "audio", nodeKind) };
   const castLabel = castKind === "character" ? "定妆照" : castKind === "location" ? "场景图" : CANVAS_NODE_DEFS[kind].label;
   canvasState.busy.add(key); canvasRefreshNode(node); canvasRenderInspector(false);
@@ -1028,6 +1038,10 @@ async function canvasGenerate(node, kind) {
     node = live;
     // 这一格收到了：节点上「在等的那一单」划掉
     const next = canvasDropJob(canvasRecordGeneration(node, kind, input, file, result, Date.now() - startedAt), kind);
+    if (next.generation_errors) {
+      const errors = { ...next.generation_errors }; delete errors[kind];
+      if (Object.keys(errors).length) next.generation_errors = errors; else delete next.generation_errors;
+    }
     if (nodeKind === "shot") {
       if (kind === "image") next.first_frame = file;
       if (kind === "video") next.video = file;
@@ -1077,6 +1091,13 @@ async function canvasGenerate(node, kind) {
     // 收回来的那一单没放上去（服务端明说没成、上游也没收单）：这一笔划掉，可以放心重跑。
     // 「换一版」发的这一枪没成，不动节点上记着的上一单——那一单的下落还没人看过
     if (collected) canvasMarkJob(id, kind, null, node);
+    const current = canvasState.canvasName === board && canvasState.workspaceName === project
+      ? canvasState.graph?.getCell(id) || (!graphAtStart ? node : null) : null;
+    if (current) {
+      const payload = canvasPayload(current);
+      current.set("canvasPayload", { ...payload, generation_errors: { ...payload.generation_errors, [kind]: { message: msg, at: Date.now() } } });
+      canvasPersist();
+    }
     canvasToast(`${castLabel}生成失败：${msg}`, "circle-x", "err");
     return { ok: false, error: msg };
   } finally {

@@ -9,6 +9,12 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 23** Show immediate feedback when starting a generation list, recover from startup errors and time out stalled quote requests. Keep generation failures on cards. Stop duplicating shot outputs; merge unused old copies with undo. Preserve video-frame bytes, explain Ark portrait rejections without automatic resubmission, and accept approved asset IDs in explicit reference mode without mixing local frame inputs.
+
+- **Oct 22** Fix local engines mistaking withheld direct-generation tools for missing video configuration. Supply model IDs and the canvas proposal workflow through instructions and canvas reads, without credentials. Treat video and speech separately and retain confirmation before paid generation.
+
+- **Oct 22** Add inline descriptions and image-model selection to character and location cards. Show the default model, let an explicit default override stale script settings, and catch invalid or missing model configuration before submission. Refresh cards after model settings change and cover request parameters and result writeback in a real browser.
+
 - **Oct 22** Reworked canvas entry points and media cards: edit prompts, models, references and advanced options inline; compact existing assets when unselected; continue images as variations or videos, assign first/last frames explicitly and compare versions after renaming. Agent opens on demand; drama workflows start with the script. Added streaming canvas-and-asset export, incremental synchronization, frame-coalesced navigation and regression coverage for interaction and export boundaries.
 
 - **Oct 21** Opening the inbox no longer marks everything read. Keep up to 300 task notifications per account across reloads, include linked scheduled results, and filter all/unread/scheduled notifications. Add a visible conversation search button and clickable match snippets, retain previous/next navigation and older-message search, and clear stale results when switching conversations.

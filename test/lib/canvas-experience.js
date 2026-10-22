@@ -27,6 +27,96 @@ async function runCanvasExperience({ run, win, ok }) {
     const file = process.env.CANVAS_SCREENSHOT.replace(/\.png$/, suffix + ".png");
     fs.writeFileSync(file, (await win.webContents.capturePage(rect)).toPNG());
   };
+  console.log("\n— 角色与场景：直接选模型、旧型号预检、设定编辑与结果写回 —");
+  const 定妆模型 = await run(`(async () => {
+    ${摆画布([卡片("script-model", "script", { title: "剧本", image_model: "retired-image-model" }, 20, 20)])}
+    const oldSettings = settingsCache;
+    try {
+      settingsCache = { ...settingsCache, media_models: [{ cap: "image", name: "图像甲", model: "cast-model-a", default: true }, { cap: "image", name: "图像乙", model: "cast-model-b" }, { cap: "video", name: "视频甲", model: "video-model-a" }] };
+      const role = canvasAddNode("character"), roleId = role.id;
+      let root = canvasWireRoot(role.id), field = root.querySelector('[data-canvas-inline-key="description"]');
+      const out = { 可编辑: !!field && document.activeElement === field, 空设定: field.value === "", 继承旧值: root.querySelector('[data-canvas-card-key="model"]').value, 有设置入口: !!root.querySelector("[data-canvas-model-settings]") };
+      field.value = "短发，浅色外套，三十岁"; field.dispatchEvent(new Event("input", { bubbles: true }));
+      window.__runs = []; window.__bodies = []; window.__failRun = null; window.__dropRun = null; window.__holdRun = null;
+      const invalid = await canvasGenerate(role, "image"); out.旧值拦截 = !invalid.ok && window.__runs.length === 0 && invalid.error.includes("retired-image-model");
+      root = canvasWireRoot(roleId); const model = root.querySelector('[data-canvas-card-key="model"]');
+      out.只列图像 = ![...model.options].some((option) => option.value === "video-model-a");
+      model.value = "图像乙"; model.dispatchEvent(new Event("change", { bubbles: true }));
+      await canvasGenerate(role, "image");
+      const sent = window.__bodies.find((b) => b.url === "/api/tool/run").body.input;
+      out.指定请求 = sent.model === "图像乙" && sent.prompt.includes("短发，浅色外套，三十岁"); out.角色结果 = !!canvasPayload(role).reference;
+      const location = canvasAddNode("location", { description: "午后茶馆，木桌与柔和斜光" });
+      const locModel = canvasWireRoot(location.id).querySelector('[data-canvas-card-key="model"]');
+      locModel.value = ""; locModel.dispatchEvent(new Event("change", { bubbles: true }));
+      out.默认覆盖继承 = canvasDramaModel(canvasPayload(location), "image", "location") === "";
+      window.__bodies = []; await canvasGenerate(location, "image");
+      out.场景结果 = !!canvasPayload(location).image && !window.__bodies.find((b) => b.url === "/api/tool/run").body.input.model;
+      settingsCache = { ...settingsCache, media_models: [] }; document.dispatchEvent(new Event("owb-media-models"));
+      root = canvasWireRoot(roleId); out.配置变动刷新 = !!root.querySelector(".canvas-card-model-problem");
+      window.__runs = []; const missing = await canvasGenerate(role, "image"); out.未配置拦截 = !missing.ok && window.__runs.length === 0;
+      settingsCache = { ...settingsCache, media_models: [{ cap: "image", name: "图像乙", model: "cast-model-b", default: true }] }; document.dispatchEvent(new Event("owb-media-models"));
+      out.配置恢复 = !canvasWireRoot(roleId).querySelector(".canvas-card-model-problem");
+      await canvasFlushRemoteWrite(); const saved = canvasLoadSaved().nodes.find((n) => n.id === roleId);
+      out.保存 = saved.payload.model === "图像乙" && saved.payload.description === "短发，浅色外套，三十岁";
+      return out;
+    } finally { settingsCache = oldSettings; document.dispatchEvent(new Event("owb-media-models")); }
+  })()`);
+  ok(定妆模型.可编辑 && 定妆模型.空设定 && 定妆模型.有设置入口 && 定妆模型.继承旧值 === "retired-image-model", "角色卡直接填写设定、选择模型，明确展示继承的旧型号", 定妆模型);
+  ok(定妆模型.旧值拦截 && 定妆模型.只列图像 && 定妆模型.未配置拦截, "无效型号和未配置模型在提交前拦截，不发生成请求", 定妆模型);
+  ok(定妆模型.指定请求 && 定妆模型.角色结果 && 定妆模型.场景结果 && 定妆模型.默认覆盖继承, "卡上选的模型与设定真正进入请求，默认选择覆盖旧继承值，结果写回角色和场景", 定妆模型);
+  ok(定妆模型.配置变动刷新 && 定妆模型.配置恢复 && 定妆模型.保存, "模型配置变动立即刷新卡片，型号与人物设定持久保存", 定妆模型);
+  console.log("\n— 镜头结果不重复铺卡、失败留痕、合并旧副本可撤销 —");
+  const 镜头结果 = await run(`(async () => {
+    ${摆画布([卡片("shot-result", "shot", { id: "S1-01", prompt: "窗边人物回头", first_frame: "frame.png" }, 30, 50)])}
+    const shot = canvasState.graph.getCell("shot-result");
+    window.__runs = []; window.__bodies = []; window.__failRun = () => ({ status: 200, body: { ok: false, isError: true, retryable: false, content: "火山拒绝了输入人像：InputImageSensitiveContentDetected.PrivacyInformation" } });
+    const failed = await canvasGenerate(shot, "video");
+    const out = { 失败: !failed.ok, 不重发: window.__runs.length === 1, 错误可见: !!canvasWireRoot(shot.id).querySelector(".canvas-generation-error"), 首帧保留: canvasPayload(shot).first_frame === "frame.png" };
+    await canvasFlushRemoteWrite(); out.失败留存 = !!canvasLoadSaved().nodes.find((n) => n.id === shot.id).payload.generation_errors.video;
+    window.__failRun = null; await canvasGenerate(shot, "video");
+    out.成功清错 = !canvasPayload(shot).generation_errors?.video && !canvasWireRoot(shot.id).querySelector(".canvas-generation-error");
+    out.没有重复卡 = canvasState.graph.getElements().length === 1 && !!canvasPayload(shot).video;
+    await canvasGenerate(shot, "image"); out.首帧不复制 = canvasState.graph.getElements().length === 1;
+    const file = canvasPayload(shot).first_frame, title = file.split("/").pop();
+    const plain = canvasAddNode("image", { sourceId: shot.id, path: file, url: file, title }, undefined, { skipSelect: true }); canvasConnect(shot, plain);
+    const used = canvasAddNode("image", { sourceId: shot.id, path: file, url: file, title }, undefined, { skipSelect: true }); canvasConnect(shot, used);
+    const target = canvasAddNode("video", { prompt: "缓慢推进" }, undefined, { skipSelect: true }); canvasConnect(used, target, "first_frame");
+    const edited = canvasAddNode("image", { sourceId: shot.id, path: file, url: file, title: "用户改过的标题" }, undefined, { skipSelect: true }); canvasConnect(shot, edited);
+    const manual = canvasAddNode("image", { path: file, url: file, title }, undefined, { skipSelect: true });
+    const old = canvasAddNode("image", { sourceId: shot.id, path: "old.png", url: "old.png", title: "old.png" }, undefined, { skipSelect: true }); canvasConnect(shot, old);
+    canvasHistoryFlush(); document.querySelector("[data-canvas-merge-results]").click();
+    out.只合并副本 = !canvasState.graph.getCell(plain.id) && [used, target, edited, manual, old, shot].every((n) => canvasState.graph.getCell(n.id));
+    out.结果不丢 = canvasPayload(shot).first_frame === file && !!canvasPayload(shot).video;
+    canvasUndo(); out.可撤销 = !!canvasState.graph.getCell(plain.id) && canvasState.graph.getConnectedLinks(canvasState.graph.getCell(plain.id)).length === 1;
+    return out;
+  })()`);
+  ok(镜头结果.失败 && 镜头结果.不重发 && 镜头结果.错误可见 && 镜头结果.首帧保留 && 镜头结果.失败留存, "上游拒绝显示在镜头卡并保存，不自动重发、不抹掉已有首帧", 镜头结果);
+  ok(镜头结果.成功清错 && 镜头结果.没有重复卡 && 镜头结果.首帧不复制, "再次成功后清除旧错误，镜头视频和首帧只留在原卡，不再自动复制结果节点", 镜头结果);
+  ok(镜头结果.只合并副本 && 镜头结果.结果不丢 && 镜头结果.可撤销, "合并重复结果保留被引用、已编辑、手动素材和旧版本，操作可撤销", 镜头结果);
+  const 审核素材 = await run(`(async () => {
+    ${摆画布([])}
+    const video = canvasAddNode("video", { prompt: "图片1里的虚拟人物向镜头挥手", first_frame: "本地旧首帧.png" });
+    let root = canvasWireRoot(video.id); root.querySelector(".canvas-card-advanced").open = true;
+    const input = root.querySelector('[data-canvas-inline-key="reference_assets"]'); input.value = "asset://asset-test-character\\nasset://asset-test-scene"; input.dispatchEvent(new Event("input", { bubbles: true }));
+    window.__runs = []; window.__bodies = []; window.__failRun = null;
+    await canvasGenerate(video, "video"); const body = window.__bodies.find((row) => row.url === "/api/tool/run").body.input;
+    root = canvasWireRoot(video.id);
+    return { 引用: body.reference_assets, 不发旧首帧: !("first_frame" in body) && !("last_frame" in body), 提示清楚: root.textContent.includes("不发送本地首尾帧") && root.textContent.includes("素材参考模式"), 旧首帧保留: canvasPayload(video).first_frame === "本地旧首帧.png" };
+  })()`);
+  ok(审核素材.引用?.length === 2 && 审核素材.不发旧首帧 && 审核素材.提示清楚 && 审核素材.旧首帧保留, "卡片可填写已审核素材 ID，明确参考模式且不混发本地旧首尾帧，原始引用仍保留", 审核素材);
+  const 清单响应 = await run(`(async () => {
+    ${摆画布([卡片("proposal-click", "image", { prompt: "山间晨光" }, 20, 20)])}
+    const oldRun = canvasRunProposal, oldFetch = window.fetch;
+    const p = { id: "proposal-click-error", scope: canvasScope(), name: canvasState.canvasName, items: [{ node_id: "proposal-click", kind: "image" }] }; canvasState.proposal = p;
+    let release; canvasRunProposal = () => new Promise((resolve, reject) => { release = () => reject(new Error("启动测试失败")); });
+    try {
+      await canvasRenderProposal(p); const button = document.querySelector('[data-canvas-bar="proposal"] button'); button.click();
+      const waiting = button.disabled && button.textContent === "正在准备…"; release(); await new Promise((r) => setTimeout(r, 30));
+      const restored = [...document.querySelectorAll('[data-canvas-bar="proposal"] button')].find((b) => b.textContent === "开跑");
+      return { 立即反馈: waiting, 恢复按钮: !!restored && !restored.disabled, 错误: document.getElementById("owb-toast").textContent.includes("启动测试失败") };
+    } finally { canvasRunProposal = oldRun; window.fetch = oldFetch; canvasState.proposal = null; canvasHideBar("proposal"); }
+  })()`);
+  ok(清单响应.立即反馈 && 清单响应.恢复按钮 && 清单响应.错误, "真实点击开跑立即进入准备状态，启动抛错后显示原因并恢复按钮", 清单响应);
   console.log("\n— 五十二、卡片直接输入、空内容不生成、新节点在当前视口 —");
   const 卡上输入 = await run(`
     (async () => {

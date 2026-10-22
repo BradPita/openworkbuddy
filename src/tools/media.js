@@ -256,7 +256,7 @@ async function shrinkForVisionAsync(abs) {
  *
  * 返回 { err }（一整句可以原样发给模型的话）或 { b64, mime, note, abs }。
  */
-async function readImageInput(rel, resolveFile, what) {
+async function readImageInput(rel, resolveFile, what, { original = false } = {}) {
   const s = String(rel == null ? "" : rel).trim();
   if (!s) return { err: `缺少${what}的路径（工作空间里的相对路径，先 list_files 看看真实文件名）` };
   let p;
@@ -264,9 +264,12 @@ async function readImageInput(rel, resolveFile, what) {
   if (!fs.existsSync(p)) return { err: `找不到${what} ${s}。用户上传的图在工作空间里，先 list_files 看看真实文件名。` };
   if (fs.statSync(p).isDirectory()) return { err: `${s} 是个目录，不是图片。` };
   if (!IMAGE_EXT.test(p)) return { err: `${s} 不是图片（支持 png / jpg / webp / gif / bmp）。文本文件用 read_file。` };
-  const { b64, mime, note } = await shrinkForVisionAsync(p);
+  // 视频首尾帧必须保持模型原始产物；视觉模型的缩图策略会重编码并破坏可信素材识别。
+  const { b64, mime, note } = original
+    ? { b64: fs.readFileSync(p).toString("base64"), mime: IMAGE_MIME[path.extname(p).slice(1).toLowerCase()] || "image/png", note: "" }
+    : await shrinkForVisionAsync(p);
   if (b64.length > 12 * 1048576) {
-    return { err: `${path.basename(p)} 太大了（编码后约 ${Math.round(b64.length / 1048576)}MB），上游收不下。先缩小再用。` };
+    return { err: `${path.basename(p)} 太大了（编码后约 ${Math.round(b64.length / 1048576)}MB），超过当前传输上限。${original ? "请生成较小尺寸的原始图片，不要压缩可信人像原图。" : "先缩小再用。"}` };
   }
   return { b64, mime, note, abs: p };
 }
@@ -856,6 +859,13 @@ async function generateVideo(media, input, opts = {}) {
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "缺少 prompt（视频内容描述）", isError: true };
 
+  const proto = mediaModels.videoProtoOf(cfg);
+  if (input.reference_assets != null && !Array.isArray(input.reference_assets)) return { content: "reference_assets 必须是已审核素材 ID 的数组。", isError: true };
+  const assets = [...new Set((input.reference_assets || []).map((value) => String(value || "").trim()).filter(Boolean))];
+  if (assets.some((value) => !/^asset:\/\/asset-[A-Za-z0-9_-]{1,160}$/.test(value))) return { content: "素材 ID 格式错误：请复制火山已审核素材的 asset://asset-…，不能填即梦分身 ID 或图片网址。", isError: true };
+  if (assets.length && (proto !== "ark" || !/(?:seedance-2-[05]|^ep-)/i.test(cfg.model))) return { content: "素材 ID 参考生成需要火山方舟 Seedance 2.0 / 2.5，当前型号不支持此入口。", isError: true };
+  if (assets.length + (input.first_frame ? 1 : 0) + (input.last_frame ? 1 : 0) > 9) return { content: "参考图片与素材 ID 合计最多 9 项，请减少引用。", isError: true };
+
   // 首尾帧。两道检查都放在发请求之前——视频是按条计费的异步任务，
   // 「型号只收图却只给了文字」这种错到上游才发现，钱已经掏了、还要等几分钟才看到失败。
   if (input.last_frame && !input.first_frame) {
@@ -863,11 +873,11 @@ async function generateVideo(media, input, opts = {}) {
   }
   let firstUri = null, lastUri = null;
   if (input.first_frame) {
-    const fr = await readImageInput(input.first_frame, opts.resolveFile, "首帧图");
+    const fr = await readImageInput(input.first_frame, opts.resolveFile, "首帧图", { original: true });
     if (fr.err) return { content: typeof opts.resolveFile === "function" ? fr.err : "这个环境下生视频喂不了首尾帧（当前调用没有文件解析器）。去掉 first_frame 就是纯文生视频。", isError: true };
     firstUri = imageDataUri(fr);
     if (input.last_frame) {
-      const lf = await readImageInput(input.last_frame, opts.resolveFile, "尾帧图");
+      const lf = await readImageInput(input.last_frame, opts.resolveFile, "尾帧图", { original: true });
       if (lf.err) return { content: lf.err, isError: true };
       lastUri = imageDataUri(lf);
     }
@@ -888,7 +898,6 @@ async function generateVideo(media, input, opts = {}) {
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
   const auth = { Authorization: `Bearer ${mediaKey(cfg)}` };
   const headers = { "Content-Type": "application/json", ...auth };
-  const proto = mediaModels.videoProtoOf(cfg);
   const protoCn = mediaModels.VIDEO_PROTO_CN[proto] || "这条渠道";
   // 尾帧只有万相 kf2v 和方舟收，另外三家的接口里根本没有这个字段。硬发过去是两种下场：
   // 被忽略——片子照出、钱照扣，人对着成片纳闷尾帧怎么没生效；或者整单报「不认识的参数」。
@@ -898,7 +907,7 @@ async function generateVideo(media, input, opts = {}) {
   }
   // 时长 / 画幅 / 分辨率：按型号表夹紧之后的那一份（media-models.js 的 videoPlan）。
   // 预扣额度、记账用的也是它（unitsFor），三处口径一致。参数写坏了在这里就退回，不发请求、不花钱
-  const plan = mediaModels.videoPlan(cfg, input, { firstFrame: !!firstUri });
+  const plan = mediaModels.videoPlan(cfg, input, { firstFrame: !!firstUri && !assets.length });
   if (plan.err) return { content: plan.err, isError: true };
   const vs = plan.send;
   const fname = safeOutName(input.filename, ".mp4", "video");
@@ -981,12 +990,19 @@ async function generateVideo(media, input, opts = {}) {
         // 文字那一项原样不动：`--watermark false` 是写在提示词里的指令，挪个位置就失效了
         body: JSON.stringify({ model: cfg.model, content: [
           { type: "text", text: (/--watermark\b/.test(prompt) ? prompt : `${prompt} --watermark false`) + arkFlags },
-          ...(firstUri ? [{ type: "image_url", image_url: { url: firstUri }, role: "first_frame" }] : []),
-          ...(lastUri ? [{ type: "image_url", image_url: { url: lastUri }, role: "last_frame" }] : []),
+          ...(firstUri ? [{ type: "image_url", image_url: { url: firstUri }, role: assets.length ? "reference_image" : "first_frame" }] : []),
+          ...(lastUri ? [{ type: "image_url", image_url: { url: lastUri }, role: assets.length ? "reference_image" : "last_frame" }] : []),
+          ...assets.map((url) => ({ type: "image_url", image_url: { url }, role: "reference_image" })),
         ] }),
       }, 60000);
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
+      if (!r.ok || !j.id) {
+        const code = String(j.error?.code || "");
+        if (code === "InputImageSensitiveContentDetected.PrivacyInformation" || code === "InputVideoSensitiveContentDetected.PrivacyInformation") {
+          return { content: `火山拒绝了输入人像：素材被判定可能包含真人。请使用同账号受信任的模型原始产物，或按官方教程将素材审核入库后使用。错误码：${code}。`, isError: true, retryable: false };
+        }
+        return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
+      }
       upstream = j.id; took(j.id);
       videoUrl = await poll(() => videoTaskCheck(proto, base, auth, j.id, askJson));
     } else if (proto === "zhipu") {

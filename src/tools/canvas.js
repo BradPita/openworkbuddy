@@ -390,6 +390,28 @@ const CANVAS_QUOTE_FIRST_NOTE = "请先报价：画布任务里不直接生成�
   "先用 canvas_manage 的 update 把提示词（要指定型号就写 payload.model）写进节点，再用 operation \"propose\" 交待生成清单" +
   "（items: [{node_id, kind: image|video|audio}]）。画布上会摆出清单、型号和报价，用户点「开跑」才生成、扣费。";
 
+/** 只交付能力和准确型号，绝不把渠道地址、凭据或原配置递给模型。配置存在不等于上游已验证可用。 */
+function canvasMediaCapabilities(media = {}) {
+  const list = Array.isArray(media.list) ? media.list : [];
+  return ["image", "video", "tts"].map((cap) => {
+    const rows = list.filter((item) => item && item.cap === cap);
+    const def = media[cap] || {};
+    if (!rows.length && def.model) rows.push({ ...def, default: true });
+    return { cap, models: rows.map((item) => ({ name: String(item.name || item.model || ""), model: String(item.model || ""), default: !!item.default,
+      configured: !!(item.model && item.base_url && item.api_key) })) };
+  });
+}
+
+function canvasMediaPrompt(media) {
+  return "\n## 当前画布的生成能力\n" +
+    "以下是服务端读取的模型配置，不是一次上游连接测试：" + JSON.stringify(canvasMediaCapabilities(media)) + "\n" +
+    "当前会话为先确认报价而不直接提供 generate_image / generate_video / text_to_speech；工具列表里没有它们不表示用户没有配置模型。" +
+    "先用 canvas_manage get 核对 generation.models，再把准确型号和提示词写入节点，用 canvas_manage propose 提交生成清单。" +
+    "用户在画布确认后由应用调用这些模型并写回结果；不要因缺少直接生成工具而要求用户重新配置已有模型。" +
+    "视频和配音分别判断：缺配音不阻止准备视频生成清单，缺首帧则先准备首帧生成，已有配置的真实调用仍可能因额度、权限或上游错误失败。" +
+    "问答或规划模式只说明能力和计划，不写节点、不提交生成清单。";
+}
+
 // 每类节点能生什么：跟画布上的生成按钮一致（canvasGenerate）。图：镜头首帧、图片、定妆照、场景图；视频：镜头、视频；配音：镜头、音频
 const CANVAS_PROPOSE_KINDS = { image: ["shot", "image", "character", "location"], video: ["shot", "video"], audio: ["shot", "audio"] };
 const CANVAS_PROPOSE_MAX = 60;
@@ -522,7 +544,7 @@ function canvasMovedNote(moved) {
 }
 /**
  * @param {object} input 工具入参
- * @param {{ base?: string, platform?: string }} [ctx] base：本对话的成果文件夹（相对工作区根），没有就是空；
+ * @param {{ base?: string, platform?: string, media?: object }} [ctx] base：本对话的成果文件夹（相对工作区根），没有就是空；
  *   platform：按哪家系统查画布名（默认本机，测试里传 "win32"）
  */
 function canvasManage(input = {}, ctx = {}) {
@@ -540,7 +562,8 @@ function canvasManage(input = {}, ctx = {}) {
   // 读不出来要当场告诉 agent，而不是递给它一张空画布——递空的，它会「好心」地
   // 重新建一遍节点，一存就把原文件盖了
   try { state = canvasReadState(canvasName); } catch (e) { return { content: e.message, isError: true }; }
-  if (op === "get") return { content: JSON.stringify({ canvas_name: canvasName, version: state.version, updatedAt: state.updatedAt, nodes: state.nodes, edges: state.edges }), isError: false };
+  if (op === "get") return { content: JSON.stringify({ canvas_name: canvasName, version: state.version, updatedAt: state.updatedAt, nodes: state.nodes, edges: state.edges,
+    ...(ctx.media ? { generation: { confirmation: "canvas_proposal", note: CANVAS_QUOTE_FIRST_NOTE, models: canvasMediaCapabilities(ctx.media) } } : {}) }), isError: false };
   if (op === "propose") return canvasPropose(input, state, canvasName);
   if (op === "clear") {
     // 先存快照再清：存不下来就不清——清掉了却没留底，用户那一下「撤销」就是空的
@@ -617,5 +640,5 @@ module.exports = {
   canvasList, canvasManage, canvasRebasePaths, canvasStamp,
   canvasTrashPut, canvasTrashList, canvasTrashRead, canvasTrashRestore,
   CANVAS_SNAP_KEEP, canvasSnapshotSave, canvasSnapshotList, canvasSnapshotRestore, canvasSnapshotBeforeDelete,
-  CANVAS_QUOTE_FIRST, CANVAS_QUOTE_FIRST_NOTE, canvasSessionOf, canvasProposalRead, canvasProposalDrop, canvasProposalTrim
+  CANVAS_QUOTE_FIRST, CANVAS_QUOTE_FIRST_NOTE, canvasMediaCapabilities, canvasMediaPrompt, canvasSessionOf, canvasProposalRead, canvasProposalDrop, canvasProposalTrim
 };

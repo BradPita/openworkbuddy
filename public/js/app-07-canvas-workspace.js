@@ -68,6 +68,7 @@ function canvasBindWorkspace(page) {
   page.querySelectorAll("[data-canvas-recipe]").forEach((button) => button.addEventListener("click", canvasCreateRecipe));
   page.querySelector("[data-canvas-import]")?.addEventListener("click", choose);
   page.querySelector("[data-canvas-export]")?.addEventListener("click", () => canvasExportSelection());
+  page.querySelector("[data-canvas-merge-results]")?.addEventListener("click", canvasMergeResultCopies);
   const input = page.querySelector("[data-canvas-import-file]");
   input?.addEventListener("change", () => { canvasImportMedia(input.files); input.value = ""; });
   page.querySelector("[data-canvas-chat-toggle]")?.addEventListener("click", () => canvasSetChatOpen(!canvasState.chatOpen, !canvasState.chatOpen));
@@ -107,7 +108,39 @@ function canvasBindWorkspace(page) {
     canvasRenderInspector(false);
   };
   document.addEventListener("owb-lang", canvasState.languageHandler);
+  canvasState.mediaModelsHandler = () => {
+    if (!page.isConnected || canvasState.graph !== graph) return;
+    graph.getElements().filter((node) => ["image", "video", "character", "location", "shot"].includes(canvasKind(node))).forEach((node) => canvasRefreshNode(node));
+    canvasRenderInspector(false);
+  };
+  document.addEventListener("owb-media-models", canvasState.mediaModelsHandler);
   canvasSetChatOpen(canvasState.chatOpen); canvasWorkspaceEmpty();
+}
+
+function canvasMergeResultCopies() {
+  const graph = canvasState.graph; if (!graph) return;
+  const incoming = new Map(), outgoing = new Set();
+  graph.getLinks().forEach((link) => {
+    const from = canvasEndpointId(link.get("source")), to = canvasEndpointId(link.get("target"));
+    outgoing.add(from); if (!incoming.has(to)) incoming.set(to, []); incoming.get(to).push(from);
+  });
+  const copies = graph.getElements().filter((node) => {
+    const kind = canvasKind(node), p = canvasPayload(node), source = p.sourceId && graph.getCell(p.sourceId);
+    if (!["image", "video", "audio"].includes(kind) || !source || canvasKind(source) !== "shot" || outgoing.has(node.id)) return false;
+    const file = String(p.path || p.url || "");
+    if (!file || file !== canvasCurrentOutput(canvasPayload(source), kind, "shot") || p.title !== file.split(/[\\/]/).pop()) return false;
+    if (!(incoming.get(node.id) || []).every((from) => from === source.id)) return false;
+    const defaults = canvasDefaultPayload(kind);
+    return Object.entries(p).every(([key, value]) => ["title", "path", "url", "sourceId"].includes(key) || Object.hasOwn(defaults, key) && value === defaults[key]);
+  });
+  if (!copies.length) return canvasToast(canvasT("没有可合并的重复结果；已编辑或被下游引用的卡片会保留。"), "info");
+  canvasHistoryFlush(); graph.startBatch("canvas-edit");
+  try { copies.forEach((node) => node.remove()); }
+  finally { graph.stopBatch("canvas-edit"); }
+  canvasState.selectedIds = new Set([...canvasState.selectedIds].filter((id) => graph.getCell(id)));
+  if (!graph.getCell(canvasState.selected)) canvasState.selected = [...canvasState.selectedIds][0] || null;
+  canvasRenderInspector(false); canvasPersist(); canvasHistoryFlush();
+  canvasToast(canvasT("已合并 {n} 张重复结果卡，原始文件和镜头结果保留。", { n: copies.length }), "circle-check", undefined, { label: canvasT("撤销"), run: () => canvasUndo() });
 }
 
 function canvasMediaDefaults(kind, update) {
@@ -133,10 +166,12 @@ function canvasCardSettings(kind, payload) {
   const size = select("size", "尺寸", [["", "模型默认"], ["1024x1024", "1024 × 1024"], ["1536x1024", "1536 × 1024"], ["1024x1536", "1024 × 1536"]], payload.size || "");
   const duration = select("duration", "时长", [["5s", "5s"], ["10s", "10s"], ["15s", "15s"]], payload.duration || "5s");
   const resolution = select("resolution", "分辨率", [["720p", "720p"], ["1080p", "1080p"]], payload.resolution || "1080p");
+  const assets = kind === "video" ? `<label class="canvas-card-assets"><span>${esc(canvasT("火山已审核素材 ID"))}</span><textarea data-canvas-inline-key="reference_assets" rows="2" placeholder="asset://asset-…">${esc(Array.isArray(payload.reference_assets) ? payload.reference_assets.join("\n") : payload.reference_assets || "")}</textarea><small>${esc(canvasT("可选，每行一项。填写后仅发送审核素材，不发送本地首尾帧，也不锁定起止帧。"))}</small></label>` : "";
   const voice = kind === "audio" ? `<label class="canvas-card-voice"><span>${esc(canvasT("音色"))}</span><input data-canvas-card-key="voice" value="${esc(payload.voice || "")}" placeholder="${esc(canvasT("默认音色"))}" aria-label="${esc(canvasT("音色"))}"></label>` : "";
-  const advanced = kind === "video" ? ratio + duration + resolution : kind === "image" ? `<span title="${esc(canvasT("自定义尺寸仅在模型支持时生效"))}">${size}</span>` : "";
-  const summary = kind === "video" ? `${payload.aspect_ratio || "16:9"} · ${payload.duration || "5s"}` : canvasT("尺寸与高级参数");
-  return `<div class="canvas-card-settings">${model}${voice}${advanced ? `<details class="canvas-card-advanced"><summary>${esc(summary)}${ic("chevron-down")}</summary><div>${advanced}</div></details>` : ""}</div>`;
+  const advanced = kind === "video" ? ratio + duration + resolution + assets : kind === "image" ? `<span title="${esc(canvasT("自定义尺寸仅在模型支持时生效"))}">${size}</span>` : "";
+  const summary = kind === "video" ? `${payload.aspect_ratio || "16:9"} · ${payload.duration || "5s"}${payload.reference_assets?.length ? ` · ${canvasT("素材参考模式")}` : ""}` : canvasT("尺寸与高级参数");
+  const problem = canvasMediaModelProblem(kind, payload.model || "");
+  return `<div class="canvas-card-settings">${model}${model ? `<button type="button" class="canvas-card-model-settings" data-canvas-model-settings>${ic("settings")}${esc(canvasT("模型设置"))}</button>` : ""}${voice}${advanced ? `<details class="canvas-card-advanced"><summary>${esc(summary)}${ic("chevron-down")}</summary><div>${advanced}</div></details>` : ""}${problem ? `<p class="canvas-card-model-problem" role="status">${esc(problem)}</p>` : ""}</div>`;
 }
 
 function canvasCardReferenceCandidates(target) {
@@ -242,6 +277,7 @@ function canvasCreateFromResult(source, kind) {
 
 function canvasBindCardControls(node, root) {
   canvasBindCardInputs(node, root);
+  root.querySelector("[data-canvas-model-settings]")?.addEventListener("click", () => openModal("settings", "models"));
   root.querySelectorAll(".canvas-card-advanced summary").forEach((summary) => summary.addEventListener("pointerdown", (event) => event.stopPropagation()));
   root.querySelectorAll(".canvas-card-advanced").forEach((details) => details.addEventListener("toggle", () => canvasFitSoon(node)));
   root.querySelectorAll("[data-canvas-card-key]").forEach((field) => {
@@ -251,6 +287,7 @@ function canvasBindCardControls(node, root) {
       canvasHistoryFlush(); const key = field.dataset.canvasCardKey;
       node.set("canvasPayload", { ...canvasPayload(node), [key]: field.value }); canvasMediaDefaults(canvasKind(node), { [key]: field.value });
       canvasPersist(); canvasInspectorSyncField(node, key);
+      if (key === "model") canvasRefreshNode(node);
     });
   });
   root.querySelectorAll("[data-canvas-next]").forEach((button) => button.addEventListener("click", () => canvasCreateFromResult(node, button.dataset.canvasNext)));

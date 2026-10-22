@@ -2701,7 +2701,7 @@ function modePrompt(mode) {
     try {
       // claude 那边实际用的档位：engine_options 里手填的 permissionMode 最大（见 claude-code.js）；只读那一趟除外
       const claudeMode = readOnly ? guard.claudeMode : opts.permissionMode || guard.claudeMode;
-      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang, engine: backend.id, claudeMode, foreignCwd: !!importCwd });
+      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang, engine: backend.id, claudeMode, foreignCwd: !!importCwd, canvasSession: canvasStore.canvasSessionOf(sessionId) });
       await filesOut.ready; // 开跑前的基线必须先落定，否则引擎第一步写的文件会被当成「本来就有」
       const runWith = (resumeId) => backend.run({
         prompt: enginePrompt(history, resumeId, cwd),
@@ -2941,6 +2941,7 @@ function modePrompt(mode) {
       modeLine,
       stopLoss,
       bridgedLine(bridged),
+      extra.canvasSession ? canvasStore.canvasMediaPrompt(mediaModels.resolve(config)) : "",
       // 引擎起的子进程带着 NODE_PATH（jsonl.js 的 engineNodePath），指到程序自带的 node_modules
       mode !== "ask" && mode !== "plan" &&
         "要出 PPT / Word / Excel：node 脚本里直接 require(\"pptxgenjs\") / require(\"docx\") / require(\"exceljs\")，本软件自带，不用 npm install。得用 require，import 写法找不到它们。",

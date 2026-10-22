@@ -739,6 +739,7 @@ const TOOL_DEFS = [
         prompt: { type: "string", description: "视频内容描述（画面/动作/镜头）" },
         first_frame: { type: "string", description: "首帧图的相对路径（可选）。给了就是图生视频：画面从这张图长出来，角色和场景不会跑偏。需要配的是 i2v 型号。" },
         last_frame: { type: "string", description: "尾帧图的相对路径（可选，必须同时给 first_frame）。首尾都定住就是「从这张变到那张」，转场类镜头用它。只有通义万相 kf2v 和火山方舟 Seedance 两家收尾帧，别家的渠道会在发请求之前报错。" },
+        reference_assets: { type: "array", items: { type: "string" }, description: "火山 Seedance 2.0 / 2.5 已审核素材 ID，如 asset://asset-…。只能引用当前账号有权限且状态 Active 的素材；应用不会替你上传或审核。填写后使用素材参考生成，first_frame/last_frame 也仅作参考，不再严格锁定首尾帧；按输入顺序在提示词中以图片1、图片2引用。" },
         filename: { type: "string", description: "保存文件名（可选，默认 video_时间戳.mp4）" },
         duration: { type: "integer", description: "时长，整数秒（可选）。不写按模型默认；模型出不了这个时长就取最近的一档，结果里会写明实际秒数。按实际秒数计费。" },
         aspect_ratio: { type: "string", description: "画幅（可选），如 16:9、9:16、1:1。给了首帧图时画幅跟着图走，这个不发。" },
@@ -4318,7 +4319,7 @@ async function executeToolCore(name, input, opts = {}) {
     switch (name) {
       case "canvas_manage":
         // 带上本对话的成果文件夹：agent 写进节点的相对路径是从那儿算的，画布要的是从根算的
-        return canvasManage(input, { base: baseRel, platform: plat });
+        return canvasManage(input, { base: baseRel, platform: plat, media: opts.media });
       case "run_node": {
         if (orgBlocksShell()) return shellBlocked("run_node");
         if (sec.runtime_node === false) {

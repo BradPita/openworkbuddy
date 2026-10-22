@@ -38,11 +38,22 @@ function canvasStyledPrompt(text, style) {
 // 「新建短剧」定的只管这部戏的卡（镜头、角色、场景）：通用图片 / 视频卡的检查器写的是「跟随设置默认模型」，
 // 拿短剧那个去跑就是说一套做一套
 function canvasDramaModel(p, kind, nodeKind) {
-  if (p && p.model) return String(p.model);
+  // 显式选择「默认模型」也覆盖剧本里的旧值；未设置过的卡片才继承剧本。
+  if (p && Object.hasOwn(p, "model")) return String(p.model || "");
   if (kind !== "image" && kind !== "video") return "";
   if (nodeKind !== "shot" && nodeKind !== "character" && nodeKind !== "location") return "";
   const drama = typeof canvasDramaSettings === "function" ? canvasDramaSettings() : null;
   return String((drama && (kind === "image" ? drama.imageModel : drama.videoModel)) || "");
+}
+
+function canvasMediaModelProblem(kind, model) {
+  const cache = typeof settingsCache !== "undefined" ? settingsCache : null;
+  if (!Array.isArray(cache?.media_models) || !["image", "video"].includes(kind)) return "";
+  const models = cache.media_models.filter((item) => item && item.cap === kind && (item.model || item.name));
+  if (!models.length) return canvasT("尚未配置生成模型，请到设置 → 模型添加对应的图像或视频模型。");
+  const wanted = String(model || "").trim().toLowerCase();
+  if (wanted && !models.some((item) => [item.model, item.name].some((value) => String(value || "").trim().toLowerCase() === wanted))) return canvasT("模型「{n}」未配置，请在卡片上重新选择模型，或选择默认模型。", { n: model });
+  return "";
 }
 
 function canvasBindNode(node, root) {
@@ -663,6 +674,7 @@ function canvasRenderInspector(focus = true) {
   if (kind === "agent") fields = canvasField("任务名称", "title", p.title || "Agent任务") + canvasField("Agent角色", "role", p.role || "导演 Agent") + canvasField("任务说明", "task", p.task || "", "textarea", "例如：根据剧本生成 6 个镜头并等待我审核") + canvasField("完成状态", "status", p.status || "待执行");
   if (kind === "character") fields = canvasField("角色名", "name", p.name || "") + canvasField("身份", "role", p.role || "") + canvasField("人物设定", "description", p.description || "", "textarea") + canvasField("音色", "voice", p.voice || "", "text", "配音用的音色名，全程不换，例如 alloy / nova / Cherry") + canvasFilePicker("参考图", "image/*", p.reference || "", "character-reference");
   if (kind === "location") fields = canvasField("场景名", "name", p.name || "") + canvasField("场景设定", "description", p.description || "", "textarea");
+  if (kind === "character" || kind === "location") fields += canvasMediaModelField("生图模型", "image", canvasDramaModel(p, "image", kind));
   if (kind === "storyboard") fields = `<label class="canvas-inspector-field"><span>分镜表</span><select data-inspect-board>${canvasState.boards.map((b) => `<option value="${esc(b.name)}" ${p.board === b.name ? "selected" : ""}>${esc(b.title || b.name)}</option>`).join("") || '<option value="">还没有分镜表</option>'}</select></label>`
     // 指着一份分镜表时才能改风格：改完写回那份表的 style（见 canvasBoardStyleSync）
     + (p.board ? canvasField("统一风格", "style", p.style || "", "text", "可留空，例如：冷蓝夜色，胶片颗粒") : "");
@@ -671,6 +683,7 @@ function canvasRenderInspector(focus = true) {
   if (kind === "image") fields = canvasField("名称", "title", p.title || def.label) + canvasField("素材用途", "role", p.role || "参考素材") + canvasTagField(p.tags) + canvasMediaModelField("生图模型", "image", p.model || "") + canvasAssetField("素材路径/URL（工作区）", p.url || p.path || "", kind) + canvasFilePicker("上传素材", "image/*", p.url || p.path || "", "image-media") + canvasField("生成/使用说明", "prompt", p.prompt || "", "textarea");
   if (kind === "video") fields = canvasField("名称", "title", p.title || "Video") + canvasMediaModelField("生视频模型", "video", p.model || "") + canvasField("画面比例", "aspect_ratio", p.aspect_ratio || "16:9") + canvasField("分辨率", "resolution", p.resolution || "1080p") + canvasField("时长", "duration", p.duration || "5s") + canvasAssetField("首帧（可选）", p.first_frame || "", "image", "first_frame") + canvasAssetField("尾帧（可选）", p.last_frame || "", "image", "last_frame") + canvasAssetField("参考视频（可选）", p.reference_video || "", "video", "reference_video") + canvasAssetField("已有视频（可选）", p.url || p.path || "", kind) + canvasFilePicker("上传参考视频", "video/*", p.url || p.path || "", "video-media") + canvasField("生成提示词", "prompt", p.prompt || "", "textarea");
   if (kind === "audio") fields = canvasField("名称", "title", p.title || "声音") + canvasField("素材用途", "role", p.role || "对白/音乐") + canvasTagField(p.tags) + canvasAssetField("音频路径/URL（工作区）", p.url || p.path || "", "audio") + canvasFilePicker("上传音频", "audio/*", p.url || p.path || "", "audio-media") + canvasField("音色", "voice", p.voice || "", "text", "留空就用设置里配的默认音色") + canvasField("对白/音乐说明", "text", p.text || "", "textarea");
+  if (kind === "shot" || kind === "video") fields += canvasField(canvasT("火山已审核素材 ID"), "reference_assets", Array.isArray(p.reference_assets) ? p.reference_assets.join("\n") : p.reference_assets || "", "textarea", "asset://asset-…") + `<p class="canvas-inspector-hint">${esc(canvasT("可选，每行一项。填写后仅发送审核素材，不发送本地首尾帧，也不锁定起止帧。"))}</p>`;
   if (kind === "timeline") fields = canvasField("名称", "title", p.title || "最终剪辑") + canvasField("剪辑目标", "description", p.description || "", "textarea");
   const allNodes = canvasState.graph.getElements().filter((item) => item.id !== node.id);
   const connected = canvasState.graph.getLinks().filter((link) => link.get("source")?.id === node.id).map((link) => ({ link, target: canvasState.graph.getCell(link.get("target")?.id) })).filter((item) => item.target);

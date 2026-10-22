@@ -6516,6 +6516,7 @@ const modelMenu = setupPicker("model-btn", "model-menu");
 async function refreshSettingsCache() {
   const wasPerChat = wsPerChat();
   const wasRoot = settingsCache && settingsCache.workspace_dir;
+  const wasMedia = JSON.stringify(settingsCache?.media_models || []);
   settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
   if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
   if (settingsCache && Array.isArray(settingsCache.moved_on_boot) && settingsCache.moved_on_boot.length) bootMoved = settingsCache.moved_on_boot;
@@ -6532,6 +6533,7 @@ async function refreshSettingsCache() {
     renderModelMenu();
     renderWsMenu();
     syncNavByRole();
+    if (JSON.stringify(settingsCache.media_models || []) !== wasMedia) document.dispatchEvent(new Event("owb-media-models"));
   }
 }
 /**

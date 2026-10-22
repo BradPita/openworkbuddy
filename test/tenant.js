@@ -195,7 +195,8 @@ function call(method, url, { body, cookie } = {}) {
   const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
   return new Promise((resolve, reject) => {
     const req = require("http").request(
-      { host: "127.0.0.1", port, method, path: url,
+      // 同步读盘探针可能超过 keep-alive 空闲期，不复用已被服务端关闭的测试连接。
+      { host: "127.0.0.1", port, method, path: url, agent: false,
         headers: { ...(payload ? { "content-type": "application/json", "content-length": payload.length } : {}),
                    ...(cookie ? { cookie } : {}) } },
       (res) => {

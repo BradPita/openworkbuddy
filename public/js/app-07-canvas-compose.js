@@ -265,14 +265,15 @@ function canvasFormatYuan(v) {
 }
 async function canvasEstimate(items) {
   // 返回 { est } 或 { error }：估价失败不猜原因，把服务端那句原话带回去
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const r = await fetch("/api/tool/estimate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
+    const r = await fetch("/api/tool/estimate", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
     const data = await r.json().catch(() => null);
     if (r.ok !== false && data && data.ok !== false && Array.isArray(data.items)) return { est: data };
     return { error: String((data && data.error) || (r.status ? "HTTP " + r.status : "没有返回报价")) };
   } catch (e) {
-    return { error: String((e && e.message) || e) };
-  }
+    return { error: controller.signal.aborted ? canvasT("报价请求超时，请检查服务状态后重试。") : String((e && e.message) || e) };
+  } finally { clearTimeout(timer); }
 }
 
 /**
@@ -515,7 +516,14 @@ async function canvasRenderProposal(p) {
   const show = (price) => {
     if (canvasState.proposal !== p) return;   // 估价那会儿横幅已经点掉、换掉了
     canvasShowBar("proposal", { kind: "warn", icon: "sparkles", text: canvasT("Agent 列了待生成清单：{list}。{price}", { list, price }), actions: [
-      { label: "开跑", run: (button) => { button.disabled = true; canvasRunProposal(p); } },
+      { label: "开跑", run: async (button) => {
+        button.disabled = true; button.textContent = canvasT("正在准备…");
+        try { await canvasRunProposal(p); }
+        catch (error) {
+          canvasToast(canvasT("生成清单未能启动：{n}", { n: String(error.message || error).slice(0, 160) }), "circle-x", "err");
+          if (canvasState.proposal === p && canvasScope() === p.scope) canvasRenderProposal(p);
+        } finally { if (button.isConnected) { button.disabled = false; button.textContent = canvasT("开跑"); } }
+      } },
       { label: "不要", run: () => canvasDropProposal(p) },
     ] });
   };

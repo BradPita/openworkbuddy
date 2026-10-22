@@ -1219,7 +1219,9 @@ async function testMediaImageInputGate() {
         return j(400, { error: { message: "Unrecognized request argument supplied: image" } });
       }
       if (/video-synthesis/.test(req.url)) return j(200, { output: { task_id: "t1" } });
-      if (/contents\/generations\/tasks$/.test(req.url)) return j(200, { id: "ark1" });
+      if (/contents\/generations\/tasks$/.test(req.url)) return mode === "privacy"
+        ? j(400, { error: { code: "InputImageSensitiveContentDetected.PrivacyInformation", message: "The input image may contain real person" } })
+        : j(200, { id: "ark1" });
       return j(200, { data: [{ b64_json: Buffer.from("fake-png").toString("base64") }] });
     });
   });
@@ -1234,6 +1236,36 @@ async function testMediaImageInputGate() {
   const fresh = () => { seen.length = 0; };
 
   try {
+    // 对照：看图允许压缩；视频必须保持原始字节，否则可信人像产物可能失效。
+    const original = Buffer.concat([fs.readFileSync(path.join(dir, "参考.png")), Buffer.alloc(1024 * 1024, 1)]);
+    fs.writeFileSync(path.join(dir, "原始首帧.png"), original);
+    const bridge = require(path.join(__dirname, "..", "src", "platform", "electron-bridge"));
+    const wasRemote = bridge.isRemote, wasCall = bridge.call; let shrinks = 0;
+    try {
+      bridge.isRemote = () => true; bridge.call = async () => { shrinks++; return { jpg: Buffer.from("compressed-test"), width: 1200, height: 1800 }; };
+      await require(modPath("tools"))._internals.readImageInput("原始首帧.png", resolveFile, "对照图");
+      assert.strictEqual(shrinks, 1, "对照图片未触发视觉压缩，这条字节保真测试没有检测能力");
+      shrinks = 0; fresh();
+      const raw = await generateVideo(vidArk, { prompt: "人物回头", first_frame: "原始首帧.png", filename: "raw.mp4" }, { saveDir: dir, resolveFile });
+      assert(!raw.isError, raw.content);
+      const uri = seen[0].body.content.find((item) => item.type === "image_url").image_url.url;
+      assert(Buffer.from(uri.split(",")[1], "base64").equals(original) && shrinks === 0, "视频首帧被压缩或重编码，原始字节不一致");
+    } finally { bridge.isRemote = wasRemote; bridge.call = wasCall; }
+    mode = "privacy"; fresh();
+    const rejected = await generateVideo(vidArk, { prompt: "人物回头", first_frame: "参考.png", filename: "refused.mp4" }, { saveDir: dir, resolveFile });
+    assert(rejected.isError && rejected.retryable === false && rejected.content.includes("火山拒绝了输入人像") && rejected.content.includes("InputImageSensitiveContentDetected.PrivacyInformation"), "人像审核错误必须中文说明、保留错误码并禁止自动重试");
+    assert(seen.length === 1 && !fs.existsSync(path.join(dir, "refused.mp4")), "被拒绝的请求仍轮询或留下了假成片");
+    mode = "accept";
+    fresh();
+    const assetVideo = { video: { ...vidArk.video, model: "doubao-seedance-2-0-fast-260128" } };
+    const assetRun = await generateVideo(assetVideo, { prompt: "图片1中的虚拟人物走进房间", reference_assets: ["asset://asset-test-character"], filename: "asset.mp4" }, { saveDir: dir, resolveFile });
+    assert(!assetRun.isError, assetRun.content);
+    assert(seen[0].body.content.filter((item) => item.type === "image_url").every((item) => item.role === "reference_image") && seen[0].body.content.some((item) => item.image_url?.url === "asset://asset-test-character"), "已审核素材没有按 reference_image 原样传给火山");
+    fresh();
+    const badAsset = await generateVideo(assetVideo, { prompt: "p", reference_assets: ["https://not-an-asset.invalid"] }, { saveDir: dir, resolveFile });
+    assert(badAsset.isError && !seen.length, "格式错误的素材引用仍然发到了上游");
+    const wrongProvider = await generateVideo(vidDs, { prompt: "p", reference_assets: ["asset://asset-test-character"] }, { saveDir: dir, resolveFile });
+    assert(wrongProvider.isError && !seen.length, "火山素材 ID 被发给了其他渠道");
     // ── 1. 不传新字段：请求体里连这几个键都不许出现 ──────────────────────────
     fresh();
     const b0 = await generateImage(img, { prompt: "一只猫", filename: "r0.png" }, 5000, dir, resolveFile);
@@ -19120,12 +19152,17 @@ async function testDramaCast() {
       canvasKind: () => "", canvasPayload: () => ({}),
     };
     const keys = Object.keys(sandbox);
-    const ui = new Function(...keys, fe.slice(hFrom, hTo) + "\n" + fe.slice(from, to) + "\nreturn canvasNodeHtml;")(...keys.map((k) => sandbox[k]));
+    const modelHelpers = ["canvasCardSettings", "canvasMediaModelField", "canvasMediaModelProblem", "canvasDramaModel"].map((name) => {
+      const match = new RegExp("function " + name + "\\([\\s\\S]*?\\n}").exec(fe);
+      assert(match, "缺少真实卡片模型函数：" + name); return match[0];
+    }).join("\n");
+    const ui = new Function(...keys, modelHelpers + "\n" + fe.slice(hFrom, hTo) + "\n" + fe.slice(from, to) + "\nreturn canvasNodeHtml;")(...keys.map((k) => sandbox[k]));
 
     const blank = ui("character", { name: "阿岚", role: "主角", description: "红衣女孩" }, "c1");
     assert(/data-canvas-generate="image"/.test(blank) && /生成定妆照/.test(blank),
       "★角色节点上没有生成定妆照的按钮★ 这一档只能自己去文件夹里挑图：" + blank.slice(0, 400));
     assert(!/disabled/.test(blank), "没在跑却把按钮禁了：" + blank.slice(0, 400));
+    assert(/data-canvas-inline-key="description"/.test(blank) && /data-canvas-card-key="model"/.test(blank), "人物设定和模型必须直接在卡片上编辑");
 
     const has = ui("character", { name: "阿岚", description: "红衣女孩", reference: "素材/角色_阿岚_定妆.png" }, "c1");
     assert(/重生成定妆照/.test(has), "已经有图了，按钮该写「重生成」：" + has.slice(0, 400));

@@ -288,6 +288,11 @@ async function e2e() {
         ok(/canvasStore\.canvasSessionOf\(sessionId\) && canvasStore\.CANVAS_QUOTE_FIRST\.includes\(n\)/.test(agentSrc)
           && /runViaEngine\(\{[\s\S]{0,300}?lang, sessionId,/.test(agentSrc),
           "本机 Claude Code / Codex 跑画布任务：生成工具不借过去（桥那头分不出会话，拦不住，只能不借）");
+        ok(/canvasSession: canvasStore\.canvasSessionOf\(sessionId\)/.test(agentSrc) && /extra\.canvasSession \? canvasStore\.canvasMediaPrompt\(mediaModels\.resolve\(config\)\)/.test(agentSrc),
+          "本机引擎画布系统说明同时收到真实媒体配置摘要与生成清单入口");
+        const cv = await tools.executeTool("canvas_manage", { operation: "get" }, { media, security: { gateway: false }, baseDir: OUT, sessionId: "s_canvas_test_model_context" });
+        const generation = JSON.parse(cv.content).generation;
+        ok(generation && generation.confirmation === "canvas_proposal" && generation.models.some((m) => m.cap === "image" && m.models.length), "工具执行入口把同一份媒体配置传给画布 get，桥接不会丢失能力清单");
       }
 
       // ── 配音 ────────────────────────────────────────────────

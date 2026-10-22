@@ -59,7 +59,7 @@ let canvasState = {
   // 卡右边那颗连接点（见 canvasPortDown）：wire 是正从它往外拖的那根线，portMenu 是点一下弹出来的「接一张新卡」菜单；
   // inlineEdit 是正在卡上直接改的那一格 { nodeId, key, draft, … }——卡整张重画时靠它把没改完的字放回去
   wire: null, portMenu: null, inlineEdit: null, contextMenuClose: null, editSaveTimer: null, saveHandler: null,
-  minimap: null, minimapOpen: false, chatOpen: false, compareClose: null, workspaceObserver: null, languageHandler: null, cardDefaults: null,
+  minimap: null, minimapOpen: false, chatOpen: false, compareClose: null, workspaceObserver: null, languageHandler: null, mediaModelsHandler: null, cardDefaults: null,
   // remoteContentKey：服务器上那份画布的内容指纹。屏幕上这份跟它一样就不再往上写（见 canvasPersist）
   remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remotePoll: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // fitting：正在按内容给卡量高、给长高的卡让位。这期间的挪动不存盘（见 canvasFitFlush）
