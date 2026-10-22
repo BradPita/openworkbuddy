@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 23** Compute batch card growth before moving nodes, preventing repeated displacement, leftover overlaps and excessive link updates while preserving manual overlaps. Keep failures and pending jobs visible on compact result cards. Retain feedback while quotes load and cancel startup if the project changes during confirmation.
+
 - **Oct 23** Show immediate feedback when starting a generation list, recover from startup errors and time out stalled quote requests. Keep generation failures on cards. Stop duplicating shot outputs; merge unused old copies with undo. Preserve video-frame bytes, explain Ark portrait rejections without automatic resubmission, and accept approved asset IDs in explicit reference mode without mixing local frame inputs.
 
 - **Oct 22** Fix local engines mistaking withheld direct-generation tools for missing video configuration. Supply model IDs and the canvas proposal workflow through instructions and canvas reads, without credentials. Treat video and speech separately and retain confirmation before paid generation.

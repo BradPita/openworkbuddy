@@ -218,7 +218,7 @@ Ark portrait errors stay on the card. Use approved asset IDs for reference gener
 
 Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, `Shift`/`⌘`+click to add or drop nodes from the selection, and expand Agent to reference nodes or assets with `@`.
 
-Edit models, references and prompts on cards, compare versions and open Agent when needed. Empty prompts never start generation. Duplicate with references, arrange selections, navigate with the optional minimap and export the canvas together with its assets. See the [canvas guide](docs/无限画布使用.md) (Chinese).
+Edit models, references and prompts on cards, compare versions and open Agent when needed. Empty prompts never start generation. Growing cards move their neighbors once; compact result cards retain visible failure details. Duplicate with references, arrange selections, navigate with the optional minimap and export the canvas together with its assets. See the [canvas guide](docs/无限画布使用.md) (Chinese).
 
 ## Put it on a server for your team: multi-user, self-hosted
 

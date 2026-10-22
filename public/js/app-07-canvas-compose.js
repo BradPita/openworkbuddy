@@ -269,6 +269,7 @@ async function canvasEstimate(items) {
   try {
     const r = await fetch("/api/tool/estimate", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
     const data = await r.json().catch(() => null);
+    if (controller.signal.aborted) throw new Error("quote-timeout");
     if (r.ok !== false && data && data.ok !== false && Array.isArray(data.items)) return { est: data };
     return { error: String((data && data.error) || (r.status ? "HTTP " + r.status : "没有返回报价")) };
   } catch (e) {
@@ -403,20 +404,21 @@ async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
   // 返回开没开跑：确认框上点了「先不了」、或者另一批正在跑，都是 false（Agent 清单的横幅凭它决定收不收）
   // 确认框开着的时候再点一次，不能叠出第二个确认、更不能绕过确认直接开跑
   if (canvasState.batch || canvasState.confirming) return false;
+  const where = { board: canvasState.canvasName, project: canvasState.workspaceName }, hadGraph = !!canvasState.graph;
   if (typeof canvasConfirmBatch === "function") {
     canvasState.confirming = true;
     let go = false;
     try { go = await canvasConfirmBatch(kind, queue); } finally { canvasState.confirming = false; }
-    if (!go || canvasState.batch) return false;
+    // 报价和确认都可能等很久，必须仍在发起时的项目里，不能拿同名节点去另一张画布生成。
+    if (!go || canvasState.batch || canvasState.canvasName !== where.board || canvasState.workspaceName !== where.project) return false;
   }
   canvasState.batch = { kind, total: queue.length, at: 0, label: "", stop: false };
+  if (canvasState.proposal?.launching && typeof canvasShowBar === "function") canvasShowBar("proposal", { icon: "loader-circle", text: canvasT("正在生成清单中的项目，进度见进度栏。") });
   canvasRenderProgress();
   let ok = 0;
   const failed = [];
   // 没收到结果、或者上游收过单之后才出错的：不进「重试失败的」——重试就是再下一单
   const parked = [];
-  // 记下是哪张画布发起的：重试按钮要认这个，换到别的画布上点，不能拿同名 id 去那张图上开枪
-  const where = { board: canvasState.canvasName, project: canvasState.workspaceName }, hadGraph = !!canvasState.graph;
   let moved = false, next = 0;
   const limit = Math.max(1, Math.min(queue.length, typeof canvasBatchLimit === "function" ? canvasBatchLimit() : 2));
   const worker = async () => {
@@ -514,15 +516,20 @@ async function canvasRenderProposal(p) {
     return canvasT("{count}（{models}）", { count, models: models.join(" / ") });
   }).filter(Boolean).join(canvasT("、"));
   const show = (price) => {
-    if (canvasState.proposal !== p) return;   // 估价那会儿横幅已经点掉、换掉了
+    if (canvasState.proposal !== p || p.launching) return;   // 估价返回时不能盖掉已启动的清单
     canvasShowBar("proposal", { kind: "warn", icon: "sparkles", text: canvasT("Agent 列了待生成清单：{list}。{price}", { list, price }), actions: [
       { label: "开跑", run: async (button) => {
+        if (p.launching) return;
+        p.launching = true;
         button.disabled = true; button.textContent = canvasT("正在准备…");
         try { await canvasRunProposal(p); }
         catch (error) {
           canvasToast(canvasT("生成清单未能启动：{n}", { n: String(error.message || error).slice(0, 160) }), "circle-x", "err");
-          if (canvasState.proposal === p && canvasScope() === p.scope) canvasRenderProposal(p);
-        } finally { if (button.isConnected) { button.disabled = false; button.textContent = canvasT("开跑"); } }
+        } finally {
+          p.launching = false;
+          if (canvasState.proposal === p && canvasScope() === p.scope && !canvasState.batch) canvasRenderProposal(p);
+          else if (button.isConnected) { button.disabled = false; button.textContent = canvasT("开跑"); }
+        }
       } },
       { label: "不要", run: () => canvasDropProposal(p) },
     ] });
@@ -590,7 +597,7 @@ async function canvasRunProposal(p) {
     canvasRenderProposal(p);   // 横幅留着、按钮恢复：看完结果还能再点
     return;
   }
-  canvasHideBar("proposal");
+  canvasShowBar("proposal", { icon: "loader-circle", text: canvasT("正在准备生成，请稍候…") });
   // done：这一趟开过枪的那几类。整类都在等上一单的也算——那几格已经下过单，留在清单上再点就是买两次
   let started = false; const done = new Set();
   for (const g of groups) {

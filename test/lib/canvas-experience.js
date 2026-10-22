@@ -27,6 +27,29 @@ async function runCanvasExperience({ run, win, ok }) {
     const file = process.env.CANVAS_SCREENSHOT.replace(/\.png$/, suffix + ".png");
     fs.writeFileSync(file, (await win.webContents.capturePage(rect)).toPNG());
   };
+  console.log("\n— 同批卡片长高：一次让位、不漏卡、不改人工叠放 —");
+  const 批量让位 = await run(`(() => {
+    const graph = canvasState.graph; let writes = 0, reads = 0;
+    const make = (id, x, y, height) => { let p = { x, y }; return { id, position(x, y) { if (x !== undefined) { writes++; p = { x, y }; } else reads++; return { ...p }; }, size: () => ({ width: 100, height }) }; };
+    const column = Array.from({ length: 120 }, (_, i) => make(i, 0, i * 120, 200));
+    const separate = make("separate", 300, 120, 100), overlay = make("overlay", 0, 20, 50);
+    try {
+      canvasState.graph = { getElements: () => [...column, separate, overlay] };
+      canvasMakeRoom(column.map((node, i) => ({ node, oldBottom: i * 120 + 100 })));
+      const counts = { writes, reads }, positions = column.map((node) => node.position().y);
+      canvasMakeRoom([]);
+      return { ...counts, 连续无重叠: positions.every((y, i) => y === i * 220), 独立列不动: separate.position().y === 120, 人工重叠不动: overlay.position().y === 20 };
+    } finally { canvasState.graph = graph; }
+  })()`);
+  ok(批量让位.连续无重叠 && 批量让位.独立列不动 && 批量让位.人工重叠不动, "120 张卡同时长高后整列不重叠，保留其他列和人工叠放", 批量让位);
+  ok(批量让位.writes === 119 && 批量让位.reads === 122, "让位先计算再更新，每张卡最多挪一次，不反复触发连线重排", 批量让位);
+  const 收起状态 = await run(`(async () => {
+    ${摆画布([卡片("compact-error", "image", { path: "frame.png", generation_errors: { image: { message: "图像服务暂时不可用", at: 1 } } }, 20, 20)])}
+    canvasSetSelection([]); canvasFitFlush();
+    const root = canvasWireRoot("compact-error"), error = root.querySelector(".canvas-generation-error");
+    return { 错误可见: error.getBoundingClientRect().height > 0, 编辑器收起: getComputedStyle(root.querySelector(".canvas-card-editor")).display === "none", 没有重复: root.querySelectorAll(".canvas-generation-error").length === 1 };
+  })()`);
+  ok(收起状态.错误可见 && 收起状态.编辑器收起 && 收起状态.没有重复, "已有结果的卡未选中时仍显示失败原因，编辑器继续收起", 收起状态);
   console.log("\n— 角色与场景：直接选模型、旧型号预检、设定编辑与结果写回 —");
   const 定妆模型 = await run(`(async () => {
     ${摆画布([卡片("script-model", "script", { title: "剧本", image_model: "retired-image-model" }, 20, 20)])}
@@ -117,6 +140,37 @@ async function runCanvasExperience({ run, win, ok }) {
     } finally { canvasRunProposal = oldRun; window.fetch = oldFetch; canvasState.proposal = null; canvasHideBar("proposal"); }
   })()`);
   ok(清单响应.立即反馈 && 清单响应.恢复按钮 && 清单响应.错误, "真实点击开跑立即进入准备状态，启动抛错后显示原因并恢复按钮", 清单响应);
+  const 清单报价等待 = await run(`(async () => {
+    ${摆画布([卡片("proposal-wait", "image", { prompt: "山间晨光" }, 20, 20)])}
+    const oldFetch = window.fetch, oldAsk = window.askConfirm, held = [], before = window.__runs.length;
+    const p = { id: "proposal-wait", scope: canvasScope(), name: canvasState.canvasName, items: [{ node_id: "proposal-wait", kind: "image" }] }; canvasState.proposal = p;
+    window.fetch = (url, options) => String(url).includes("/api/tool/estimate") && held.length < 2 ? new Promise((resolve) => held.push(resolve)) : oldFetch(url, options);
+    window.askConfirm = async () => false;
+    try {
+      const rendering = canvasRenderProposal(p), button = document.querySelector('[data-canvas-bar="proposal"] button'); button.click();
+      const out = { 准备提示: document.querySelector('[data-canvas-bar="proposal"]').textContent.includes("正在准备生成"), 两次报价: held.length === 2 };
+      const quote = { ok: true, json: async () => ({ ok: true, items: [{ known: false }], total: 0, unknownCount: 1 }) };
+      held[0](quote); await rendering;
+      out.迟到报价不盖状态 = document.querySelector('[data-canvas-bar="proposal"]').textContent.includes("正在准备生成") && !document.querySelector('[data-canvas-bar="proposal"] button');
+      held[1](quote); for (let i = 0; i < 30 && p.launching; i++) await new Promise((r) => setTimeout(r, 10));
+      out.取消可重试 = [...document.querySelectorAll('[data-canvas-bar="proposal"] button')].some((b) => b.textContent === "开跑" && !b.disabled);
+      out.没有生成 = window.__runs.length === before; return out;
+    } finally { window.fetch = oldFetch; window.askConfirm = oldAsk; canvasState.proposal = null; canvasHideBar("proposal"); }
+  })()`);
+  ok(清单报价等待.准备提示 && 清单报价等待.两次报价 && 清单报价等待.迟到报价不盖状态 && 清单报价等待.取消可重试 && 清单报价等待.没有生成, "真实清单流程等待报价时保留准备状态，迟到报价不能重开按钮，取消后可重试且不提交生成", 清单报价等待);
+  const 确认切项目 = await run(`(async () => {
+    ${摆画布([卡片("quote-project", "image", { prompt: "山间晨光" }, 20, 20)])}
+    const oldAsk = window.askConfirm, workspace = canvasState.workspaceName, before = window.__runs.length; let confirm;
+    window.askConfirm = () => new Promise((resolve) => { confirm = resolve; });
+    try {
+      const running = canvasRunQueue("image", [canvasState.graph.getCell("quote-project")]);
+      for (let i = 0; i < 100 && !confirm; i++) await new Promise((r) => setTimeout(r, 10));
+      if (!confirm) throw new Error("没有进入报价确认");
+      canvasState.workspaceName = "other-project"; confirm(true);
+      return { 未启动: !(await running), 没有生成: window.__runs.length === before, 没有批次: !canvasState.batch, 解除确认: !canvasState.confirming };
+    } finally { window.askConfirm = oldAsk; canvasState.workspaceName = workspace; }
+  })()`);
+  ok(确认切项目.未启动 && 确认切项目.没有生成 && 确认切项目.没有批次 && 确认切项目.解除确认, "报价确认期间切换项目，确认后也不向新项目的同名节点发起生成", 确认切项目);
   console.log("\n— 五十二、卡片直接输入、空内容不生成、新节点在当前视口 —");
   const 卡上输入 = await run(`
     (async () => {

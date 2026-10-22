@@ -84,6 +84,8 @@
       "素材参考模式": "Asset reference mode",
       "可选，每行一项。填写后仅发送审核素材，不发送本地首尾帧，也不锁定起止帧。": "Optional, one per line. Sends only approved assets, without local frame images or locked start/end frames.",
       "正在准备…": "Preparing…",
+      "正在准备生成，请稍候…": "Preparing generation. Please wait…",
+      "正在生成清单中的项目，进度见进度栏。": "Generating the listed items. See the progress bar.",
       "合并重复结果": "Merge duplicate results",
       "没有可合并的重复结果；已编辑或被下游引用的卡片会保留。": "No duplicate results to merge. Edited cards and cards used downstream are preserved.",
       "已合并 {n} 张重复结果卡，原始文件和镜头结果保留。": "Merged {n} duplicate result cards. Original files and shot outputs are preserved.",

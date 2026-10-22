@@ -121,7 +121,7 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
     const promptKey = kind === "audio" ? "text" : "prompt", label = canvasT(kind === "audio" ? "配音文本" : kind === "video" ? "描述画面与动作" : "描述你想要的画面");
     const hint = canvasT(kind === "audio" ? "写下要朗读的内容…" : kind === "video" ? "描述主体动作、镜头运动或画面变化…" : "主体、场景、风格；有参考图时描述要修改的地方…");
     const action = canvasT(busy ? "生成中…" : available ? "按当前描述生成" : kind === "image" ? "生成图片" : kind === "video" ? "生成视频" : "生成配音");
-    return `<article class="canvas-node canvas-node-media canvas-node-${kind}${available ? " is-has-media" : ""}">${header(payload.title || def.label)}<div class="canvas-node-body">${preview ? `<div class="canvas-card-result">${preview}<span>${esc(canvasT("当前结果"))}</span></div>` : ""}${mediaPath && !available ? `<div class="canvas-media-missing">${esc(canvasT("找不到素材文件，请重新选择。"))}</div>` : ""}<div class="canvas-card-editor">${canvasCardInputs(nodeId, payload, kind)}<label class="canvas-card-prompt-label"><span>${esc(label)}</span><textarea class="canvas-video-prompt canvas-card-prompt" data-canvas-inline-key="${promptKey}" rows="3" placeholder="${esc(hint)}" aria-label="${esc(label)}">${esc(payload[promptKey] ?? "")}</textarea></label>${canvasCardSettings(kind, payload)}${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--default canvas-card-generate" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${ic(busy ? "loader-circle" : "sparkles")}${esc(action)}</button>${available ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div>${canvasCardNextActions(kind, payload, nodeId)}</div></article>`;
+    return `<article class="canvas-node canvas-node-media canvas-node-${kind}${available ? " is-has-media" : ""}">${header(payload.title || def.label)}<div class="canvas-node-body">${preview ? `<div class="canvas-card-result">${preview}<span>${esc(canvasT("当前结果"))}</span></div>` : ""}${mediaPath && !available ? `<div class="canvas-media-missing">${esc(canvasT("找不到素材文件，请重新选择。"))}</div>` : ""}<div class="canvas-card-editor">${canvasCardInputs(nodeId, payload, kind)}<label class="canvas-card-prompt-label"><span>${esc(label)}</span><textarea class="canvas-video-prompt canvas-card-prompt" data-canvas-inline-key="${promptKey}" rows="3" placeholder="${esc(hint)}" aria-label="${esc(label)}">${esc(payload[promptKey] ?? "")}</textarea></label>${canvasCardSettings(kind, payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--default canvas-card-generate" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${ic(busy ? "loader-circle" : "sparkles")}${esc(action)}</button>${available ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div>${canvasGenerationSummary(payload)}${canvasCardNextActions(kind, payload, nodeId)}</div></article>`;
   }
   if (kind === "timeline") {
     // 这一格以前只有一颗「交给 Agent」，按下去得到的是一段文字方案，不是一条片子。
@@ -400,22 +400,26 @@ function canvasFitFlush() {
  */
 function canvasMakeRoom(grown) {
   if (!grown.length || !canvasState.graph) return;
-  const all = canvasState.graph.getElements();
-  const queue = grown.slice().sort((a, b) => a.node.position().y - b.node.position().y);
-  for (let guard = 0; queue.length && guard < 1000; guard++) {
-    const { node, oldBottom } = queue.shift();
-    const p = node.position(), s = node.size(), bottom = p.y + s.height;
-    if (bottom <= oldBottom) continue;
-    all.forEach((m) => {
-      if (m === node) return;
-      const mp = m.position(), ms = m.size();
-      if (mp.x >= p.x + s.width || mp.x + ms.width <= p.x || mp.y < oldBottom - 1) return;
-      if (mp.y >= bottom + 16) return;
-      const gap = Math.min(48, Math.max(16, mp.y - oldBottom));
-      m.position(mp.x, Math.round(bottom + gap));
-      queue.push({ node: m, oldBottom: mp.y + ms.height });
-    });
+  const previous = new Map(grown.map(({ node, oldBottom }) => [node, oldBottom]));
+  // 先拍下这一批改高之前的位置，按原来的上下关系只算一遍。
+  // 边推边入队会反复处理同一张卡：一列同时长高时，几百张卡能触发几十万次位置更新。
+  const rows = canvasState.graph.getElements().map((node) => {
+    const p = node.position(), s = node.size();
+    return { node, x: p.x, y: p.y, top: p.y, width: s.width, height: s.height, oldBottom: previous.get(node) ?? p.y + s.height };
+  }).sort((a, b) => a.top - b.top);
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i], bottom = row.y + row.height;
+    if (bottom <= row.oldBottom) continue;
+    for (let j = i + 1; j < rows.length; j++) {
+      const next = rows[j];
+      // 原先重叠的是人工排布，保留；不在同一列的卡也不挪。
+      if (next.x >= row.x + row.width || next.x + next.width <= row.x || next.top < row.oldBottom - 1 || next.y >= bottom + 16) continue;
+      const gap = Math.min(48, Math.max(16, next.top - row.oldBottom));
+      next.y = Math.round(bottom + gap);
+    }
   }
+  // Joint 每次改位置都会更新连线，全部算完后，每张卡最多写一次。
+  rows.forEach((row) => { if (row.y !== row.top) row.node.position(row.x, row.y); });
 }
 
 function canvasSnapshot() {
