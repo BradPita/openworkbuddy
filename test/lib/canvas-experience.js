@@ -158,6 +158,18 @@ async function runCanvasExperience({ run, win, ok }) {
     } finally { window.fetch = oldFetch; window.askConfirm = oldAsk; canvasState.proposal = null; canvasHideBar("proposal"); }
   })()`);
   ok(清单报价等待.准备提示 && 清单报价等待.两次报价 && 清单报价等待.迟到报价不盖状态 && 清单报价等待.取消可重试 && 清单报价等待.没有生成, "真实清单流程等待报价时保留准备状态，迟到报价不能重开按钮，取消后可重试且不提交生成", 清单报价等待);
+  const 清单完成 = await run(`(async () => {
+    ${摆画布([卡片("proposal-finish", "image", { prompt: "山间晨光" }, 20, 20)])}
+    const oldAsk = window.askConfirm, before = window.__runs.length;
+    const p = { id: "proposal-finish", scope: canvasScope(), name: canvasState.canvasName, items: [{ node_id: "proposal-finish", kind: "image" }] }; canvasState.proposal = p;
+    window.askConfirm = async () => true;
+    try {
+      await canvasRenderProposal(p); document.querySelector('[data-canvas-bar="proposal"] button').click();
+      for (let i = 0; i < 200 && p.launching; i++) await new Promise((r) => setTimeout(r, 10));
+      return { 已结束: !p.launching, 只生成一次: window.__runs.length === before + 1, 状态收起: !canvasState.proposal && !document.querySelector('[data-canvas-bar="proposal"]'), 记录关闭: canvasState.proposalGone.has(p.id) };
+    } finally { window.askConfirm = oldAsk; canvasState.proposal = null; canvasHideBar("proposal"); }
+  })()`);
+  ok(清单完成.已结束 && 清单完成.只生成一次 && 清单完成.状态收起 && 清单完成.记录关闭, "真实开跑完成后清单与状态条一起收起，finally 不再把已完成清单画回来", 清单完成);
   const 确认切项目 = await run(`(async () => {
     ${摆画布([卡片("quote-project", "image", { prompt: "山间晨光" }, 20, 20)])}
     const oldAsk = window.askConfirm, workspace = canvasState.workspaceName, before = window.__runs.length; let confirm;

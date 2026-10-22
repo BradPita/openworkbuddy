@@ -568,7 +568,7 @@ async function canvasProposalPost(p, kinds) {
 function canvasDropProposal(p) {
   if (!(canvasState.proposalGone instanceof Set)) canvasState.proposalGone = new Set();
   canvasState.proposalGone.add(p.id);
-  if (canvasState.proposal === p) canvasHideBar("proposal");
+  if (canvasState.proposal === p) { canvasState.proposal = null; canvasHideBar("proposal"); }
   return canvasProposalPost(p);
 }
 
