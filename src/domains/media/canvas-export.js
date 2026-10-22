@@ -36,12 +36,14 @@ function canvasExportPlan(root, state, selection) {
     // 导出不根据同名文件猜路径，也不下载外部 URL。
     if (!path.isAbsolute(ref) && /^[a-z][a-z\d+.-]*:/i.test(ref)) { missing.push({ reference: ref, reason: "外部地址未打包" }); continue; }
     const full = path.resolve(rootReal, ref.replace(/\\/g, "/")), rel = path.relative(rootReal, full);
-    if (!rel || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) { missing.push({ reference: ref, reason: "不在当前项目内" }); continue; }
     try {
       const real = fs.realpathSync(full), resolved = path.relative(rootReal, real);
-      if (!resolved || resolved === ".." || resolved.startsWith(".." + path.sep) || path.isAbsolute(resolved)) throw new Error("文件指向项目外");
+      if (!resolved || resolved === ".." || resolved.startsWith(".." + path.sep) || path.isAbsolute(resolved)) { missing.push({ reference: ref, reason: "不在当前项目内" }); continue; }
       const stat = fs.statSync(real); if (!stat.isFile()) throw new Error("不是文件");
-      const archive = rel.split(path.sep).join("/");
+      // macOS 的 /var 与 /private/var、项目的目录别名可能指向同一处。
+      // 越界以真实路径判定；原路径在项目内时仍保留原目录结构。
+      const archiveRel = !rel || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel) ? resolved : rel;
+      const archive = archiveRel.split(path.sep).join("/");
       if (!seen.has(archive)) { files.push({ path: real, archive, bytes: stat.size }); seen.add(archive); }
     } catch { missing.push({ reference: ref, reason: "文件不存在或无法读取" }); }
   }

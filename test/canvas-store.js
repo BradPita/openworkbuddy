@@ -347,6 +347,12 @@ async function main() {
     ok(plan.files.every((file) => !file.archive.startsWith("另一个目录")) && plan.manifest.missing.some((file) => file.reference === "丢失.png"), "同名文件不猜路径，缺失素材如实列入清单");
     const absoluteInside = canvasExportPlan(WS, board([node("absolute", "image", { path: path.join(WS, "导出", "同名.png") })]));
     ok(absoluteInside.files.length === 1 && absoluteInside.files[0].archive === "导出/同名.png", "项目内绝对路径可折成相对路径，Windows 盘符不误判为 URL");
+    const alias = WS + "-alias";
+    try {
+      fs.symlinkSync(WS, alias, "junction");
+      const aliased = canvasExportPlan(WS, board([node("alias", "image", { path: path.join(alias, "导出", "同名.png") })]));
+      ok(aliased.files.length === 1 && aliased.files[0].archive === "导出/同名.png", "项目目录别名指向同一真实文件时可导出，不把合法素材误判为越界");
+    } finally { fs.rmSync(alias, { force: true }); }
     let refused = false; try { canvasExportPlan(WS, exportState, ["不存在"]); } catch { refused = true; }
     ok(refused, "节点已变化时拒绝导出，不悄悄扩大成整张画布");
     const outside = WS + "-outside.png";
