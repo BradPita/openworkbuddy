@@ -3242,8 +3242,8 @@ async function testMcpLazyConnect() {
  *   ② 超时了也要把攒下来的半截输出打出来，最后那行「✓ …」就是卡死的位置。
  *   ③ 用 SIGKILL 收尸：SIGTERM 对 electron 常常不灵，杀不干净就又留一个孤儿进程。
  *
- * 预算按本机实测的 5~10 倍给（前端 21 秒 / 后台 7 秒 / 部署 8 秒），CI 机器慢也够用，
- * 真卡住时又比六个小时快两个数量级。
+ * 每个子套件都有固定总上限；前端另有「无进展」和总时长两道看门狗，
+ * 套件增长后整轮较慢不等于卡住，但某一屏停住仍要尽早报错。
  */
 function runChild(bin, args, opts) {
   const { spawnSync } = require("child_process");
@@ -3280,7 +3280,7 @@ async function testFrontendSvgFigures() {
   }
   const { status, out, tail } = runChild(electronBin, [path.join(__dirname, "frontend.js")], {
     label: "前端 SVG 测试",
-    timeout: 300000,
+    timeout: 540000, // 子进程内：无进展 2 分钟、全套 8 分钟；留 1 分钟让它交回诊断并退出
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
   });
   if (status !== 0) throw new Error("前端 SVG 测试未通过：\n" + tail(12));

@@ -21,7 +21,7 @@ jobs:
   # 硬塞进 matrix 会把 Windows 那份包直接打没——而那份恰恰是开发机造不出来、最需要发的。
   test:
     runs-on: macos-15-intel # 标准 Intel 机器，避开 ARM64 运行机器容量不足；完整测试仍保留
-    timeout-minutes: 40 # 卡住要红，别挂满 6 小时把整次发版拖死（同 test.yml）
+    timeout-minutes: 50 # 全集预算同 test.yml；单套件仍有独立看门狗，卡住不会一直等
     steps:
       # 要完整 git log 的理由同 test.yml：npm test 里有一道闸门拿 git log 核对 README 的日期
       - uses: actions/checkout@v5

@@ -44,19 +44,25 @@ process.on("exit", () => { try { fs.rmSync(BROWSER_PROFILE, { recursive: true, f
 // 连着五次 CI 各挂了一个多小时才被人手动取消。父进程那边现在有超时会强杀，但强杀只拿得到
 // 一具尸体——「卡在哪一屏」「electron 到底起没起来」都问不出来。所以这里自己留三样东西：
 // app 有没有 ready、最后跑完的是哪一屏、以及超时当场把这两句吐到 stderr 再退。
-const WATCH_MS = Number(process.env.OPENWORKBUDDY_TEST_WATCHDOG_MS || 240000);
+const WATCH_MS = Number(process.env.OPENWORKBUDDY_TEST_WATCHDOG_MS || 480000);
+const STALL_MS = Number(process.env.OPENWORKBUDDY_TEST_STALL_MS || 120000);
+const WATCH_START = Date.now();
 let READY = false;
 let LAST_LINE = "（一屏都还没跑完）";
+let LAST_PROGRESS = WATCH_START;
 const _log = console.log.bind(console);
-console.log = (...a) => { LAST_LINE = a.map(String).join(" ").trim(); _log(...a); };
-const WATCHDOG = setTimeout(() => {
+console.log = (...a) => { LAST_LINE = a.map(String).join(" ").trim(); LAST_PROGRESS = Date.now(); _log(...a); };
+// 断言增长后整套会变慢，但某一屏停住仍要尽早报错；两种上限分别计时。
+const WATCHDOG = setInterval(() => {
+  const elapsed = Date.now() - WATCH_START, stalled = Date.now() - LAST_PROGRESS;
+  if (elapsed < WATCH_MS && stalled < STALL_MS) return;
   console.error(
-    `❌ 前端测试卡死：${Math.round(WATCH_MS / 1000)} 秒没跑完。` +
+    `❌ 前端测试超时：累计 ${Math.round(elapsed / 1000)} 秒，连续 ${Math.round(stalled / 1000)} 秒无进展。` +
     `app.whenReady ${READY ? "已经回来了" : "从来没回来——这台机器上 electron 根本起不来"}；` +
     `最后跑完的一步：${LAST_LINE}`
   );
   process.exit(1);
-}, WATCH_MS);
+}, Math.max(1, Math.min(1000, WATCH_MS, STALL_MS)));
 
 // 这几个跑的都是离屏/隐藏窗口，人眼看不到任何界面，但 macOS 照样往程序坞里塞一个 Electron 图标
 // 一跳一跳的，跑一次测试抢一次注意力。声明成后台附属进程，图标就不出现了（窗口本来也没显示）。
@@ -17829,7 +17835,8 @@ const ROWACT_CHECKS = `
 })()`;
 
 function mkWin(opts) {
-  const w = new BrowserWindow(opts);
+  // 离屏用例也要按前台节奏跑：后台节流会把短计时器和 rAF 拉长，慢速 CI 上整套误超时。
+  const w = new BrowserWindow({ ...opts, webPreferences: { ...opts.webPreferences, backgroundThrottling: false } });
   RENDERER_LOG.length = 0;
   w.webContents.on("console-message", (ev, level, message, line, sourceId) => {
     const m = ev && typeof ev === "object" && "message" in ev ? ev : { level, message, lineNumber: line, sourceId };
@@ -19395,7 +19402,7 @@ app.whenReady().then(async () => {
     for (const m of (errs.length ? errs : RENDERER_LOG.slice(-5))) console.error("   渲染进程 console：" + m.message + (m.line ? "（行 " + m.line + "）" : ""));
     code = 1;
   } finally {
-    clearTimeout(WATCHDOG);
+    clearInterval(WATCHDOG);
     if (!win.isDestroyed()) win.destroy();
     app.exit(code);
   }
