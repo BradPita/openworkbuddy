@@ -59,6 +59,16 @@ const section = (t) => console.log("\n" + t);
 const sorted = (a) => [...a].sort().join(",");
 const SH = process.platform !== "win32"; // owb 脚本是 sh 写的
 
+// 这里核对任务根，不把「当前机器能转 PNG」当成前提。无浏览器时工具会明确交付 SVG。
+function diagramLanded(dir, name, text) {
+  try {
+    const svg = fs.readFileSync(path.join(dir, name + ".svg"), "utf8"), png = path.join(dir, name + ".png");
+    if (!/<svg[\s>]/i.test(svg) || !String(text).includes(name + ".svg")) return false;
+    if (fs.existsSync(png)) return fs.readFileSync(png).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    return String(text).includes("已交付 SVG");
+  } catch { return false; }
+}
+
 /** 照 CLI 的样子拉起 MCP 服务器：发 initialize 再发一条请求（id 2），stdin 一关它答完就走 */
 function mcpOnce(server, req, extraEnv = {}, cwd) {
   const input = [
@@ -260,7 +270,16 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       ok(sv.env.OPENWORKBUDDY_BRIDGE_ROOT === rootA && sv.env.OPENWORKBUDDY_BRIDGE_LIB_ROOT === libA && !("OPENWORKBUDDY_BRIDGE_LIB_MOUNT" in sv.env),
         "MCP 配置里带上了这趟任务的根和资料库根；没挂子目录就不写挂载", sv.env);
       const c = mcpCall(sv, "gen_diagram", JSON.parse(dot("经MCP.png")));
-      ok(c.ok && fs.existsSync(path.join(rootA, "任务_根", "经MCP.png")), "MCP 调出来的图落在这趟任务的根下面", c);
+      ok(c.ok && diagramLanded(path.join(rootA, "任务_根"), "经MCP", c.text), "MCP 调出来的图落在这趟任务的根下面", c);
+      ok(!diagramLanded(path.join(HOME, "workspace", "任务_根"), "经MCP", c.text), "反向对照：换成错误的默认工作区，图表落盘判据不能通过");
+      const probe = path.join(HOME, "图表校验"); fs.mkdirSync(probe);
+      mk(path.join(probe, "回退.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>');
+      ok(diagramLanded(probe, "回退", "已生成 回退.svg；已交付 SVG"), "无 PNG 时必须真实写出 SVG 并明确说明回退");
+      ok(!diagramLanded(probe, "回退", "已生成 回退.svg"), "未说明 PNG 回退不能冒充完整交付");
+      mk(path.join(probe, "回退.png"), "这不是图片");
+      ok(!diagramLanded(probe, "回退", "已生成 回退.svg；已交付 SVG"), "有 PNG 文件却不是 PNG 时仍判失败");
+      fs.unlinkSync(path.join(probe, "回退.png")); mk(path.join(probe, "回退.svg"), "");
+      ok(!diagramLanded(probe, "回退", "已生成 回退.svg；已交付 SVG"), "空 SVG 文件不能通过落盘检查");
       // 取素材：只从这个人的资料库复制进这一趟的目录
       const li = mcpCall(sv, "library_import", { name: "甲方合同.md" });
       const got = path.join(rootA, "任务_根", "甲方合同.md");
@@ -270,7 +289,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
         "★甲取不到乙的、也取不到机器主人的★ 按名字、带 ../ 都不行", bad.map((x) => [x.name, x.r.ok, x.r.text.slice(0, 80)]));
       if (SH) {
         const g = owb(a.shim, ["gen_diagram", dot("经owb.png")]);
-        ok(g.code === 0 && fs.existsSync(path.join(rootA, "任务_根", "经owb.png")), "owb 调出来的图也落在这趟任务的根下面", g);
+        ok(g.code === 0 && diagramLanded(path.join(rootA, "任务_根"), "经owb", g.out), "owb 调出来的图也落在这趟任务的根下面", g);
         ok(!fs.existsSync(path.join(HOME, "workspace", "任务_根")), "数据目录下的默认工作区里没有这趟任务的东西");
         const l = owb(a.shim, ["library_list"]);
         ok(l.code === 0 && /甲方合同\.md/.test(l.out) && /客户A\/需求\.md/.test(l.out), "甲列资料库：看得见自己的", l.out);
@@ -306,7 +325,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
         const l = owb(o.shim, ["library_list"]);
         ok(l.code === 0 && /主人的\.md/.test(l.out) && !/甲方合同|乙方报价/.test(l.out), "反向对照：什么都不传就是数据目录下那份", l.out);
         const g = owb(o.shim, ["gen_diagram", dot("老路.png")]);
-        ok(g.code === 0 && fs.existsSync(path.join(HOME, "workspace", "任务_老", "老路.png")), "反向对照：什么都不传，产物落数据目录下的 workspace", g);
+        ok(g.code === 0 && diagramLanded(path.join(HOME, "workspace", "任务_老"), "老路", g.out), "反向对照：什么都不传，产物落数据目录下的 workspace", g);
       } finally { o.cleanup(); }
     }
 
