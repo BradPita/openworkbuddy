@@ -3186,11 +3186,12 @@ function modePrompt(mode) {
     // 记忆和项目块夹在中间，换一句话问、换一个项目，后面的语言/模式连同前缀缓存一起作废。
     // stableSystem 的长度一路带给 L.chat（systemStableLen），Anthropic 通道在这里打缓存断点
     const stableSystem = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + modePrompt(mode);
-    const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened }));
+    const quoteFirst = canvasStore.canvasSessionOf(sessionId);
+    const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened }))
+      + (quoteFirst ? canvasStore.canvasMediaPrompt(mediaModels.resolve(config)) : "");
     const systemStableLen = stableSystem.length;
     // 画布任务（s_canvas_ 会话）不摆生图 / 生视频 / 配音：那边先交清单、用户点「开跑」才生成。
     // 摆着就是让模型先调一次、吃一条「请先报价」再改道；硬调了也照样拦（tools.js executeToolCore）
-    const quoteFirst = canvasStore.canvasSessionOf(sessionId);
     const tools = toolList(depth, mode, user).filter((t) => !(quoteFirst && canvasStore.CANVAS_QUOTE_FIRST.includes(t.name)));
     // 这一轮真摆给模型的工具名。只读档（ask/plan）清单外的一律不执行（见 runOne）：以前全靠「不摆写工具」，
     // 模型硬编一个 write_file 照样写成功；探索子智能体跑的就是 ask 档，不拦它的只读是一句空话

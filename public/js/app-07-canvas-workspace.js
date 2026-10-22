@@ -171,7 +171,7 @@ function canvasCardSettings(kind, payload) {
   const advanced = kind === "video" ? ratio + duration + resolution + assets : kind === "image" ? `<span title="${esc(canvasT("自定义尺寸仅在模型支持时生效"))}">${size}</span>` : "";
   const summary = kind === "video" ? `${payload.aspect_ratio || "16:9"} · ${payload.duration || "5s"}${payload.reference_assets?.length ? ` · ${canvasT("素材参考模式")}` : ""}` : canvasT("尺寸与高级参数");
   const problem = canvasMediaModelProblem(kind, payload.model || "");
-  return `<div class="canvas-card-settings">${model}${model ? `<button type="button" class="canvas-card-model-settings" data-canvas-model-settings>${ic("settings")}${esc(canvasT("模型设置"))}</button>` : ""}${voice}${advanced ? `<details class="canvas-card-advanced"><summary>${esc(summary)}${ic("chevron-down")}</summary><div>${advanced}</div></details>` : ""}${problem ? `<p class="canvas-card-model-problem" role="status">${esc(problem)}</p>` : ""}</div>`;
+  return `<div class="canvas-card-settings">${model}${model ? `<button type="button" class="canvas-card-model-settings" data-canvas-model-settings>${ic("settings")}${esc(canvasT("模型设置"))}</button>` : ""}${voice}${advanced ? `<details class="canvas-card-advanced"><summary>${esc(summary)}${ic("chevron-down")}</summary><div>${advanced}</div></details>` : ""}${problem ? `<p class="canvas-card-model-problem" role="status">${esc(problem)}</p>${payload.model && !canvasMediaModelProblem(kind, "") ? `<button type="button" class="canvas-card-model-settings" data-canvas-model-default>${ic("rotate-ccw")}${esc(canvasT("使用当前默认模型"))}</button>` : ""}` : ""}</div>`;
 }
 
 function canvasCardReferenceCandidates(target) {
@@ -277,6 +277,10 @@ function canvasCreateFromResult(source, kind) {
 
 function canvasBindCardControls(node, root) {
   canvasBindCardInputs(node, root);
+  root.querySelector("[data-canvas-model-default]")?.addEventListener("click", () => {
+    canvasHistoryFlush(); node.set("canvasPayload", { ...canvasPayload(node), model: "" });
+    canvasMediaDefaults(canvasKind(node), { model: "" }); canvasPersist(); canvasRefreshNode(node); canvasRenderInspector(false);
+  });
   root.querySelector("[data-canvas-model-settings]")?.addEventListener("click", () => openModal("settings", "models"));
   root.querySelectorAll(".canvas-card-advanced summary").forEach((summary) => summary.addEventListener("pointerdown", (event) => event.stopPropagation()));
   root.querySelectorAll(".canvas-card-advanced").forEach((details) => details.addEventListener("toggle", () => canvasFitSoon(node)));

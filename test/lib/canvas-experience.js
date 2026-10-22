@@ -50,6 +50,20 @@ async function runCanvasExperience({ run, win, ok }) {
     return { 错误可见: error.getBoundingClientRect().height > 0, 编辑器收起: getComputedStyle(root.querySelector(".canvas-card-editor")).display === "none", 没有重复: root.querySelectorAll(".canvas-generation-error").length === 1 };
   })()`);
   ok(收起状态.错误可见 && 收起状态.编辑器收起 && 收起状态.没有重复, "已有结果的卡未选中时仍显示失败原因，编辑器继续收起", 收起状态);
+  const 当前默认 = await run(`(async () => {
+    ${摆画布([卡片("foreign-model", "image", { prompt: "山间晨光", model: "another-install-model" }, 20, 20)])}
+    const old = settingsCache;
+    try {
+      settingsCache = { ...settingsCache, media_models: [{ cap: "image", name: "本窗口模型", model: "current-image-model", default: true }] };
+      document.dispatchEvent(new Event("owb-media-models")); window.__runs = []; window.__bodies = [];
+      canvasWireRoot("foreign-model").querySelector("[data-canvas-model-default]").click();
+      const node = canvasState.graph.getCell("foreign-model"), root = canvasWireRoot(node.id);
+      const out = { 默认已保存: canvasPayload(node).model === "", 不生成: window.__runs.length === 0, 警告消失: !root.querySelector(".canvas-card-model-problem"), 显示正确: root.querySelector('[data-canvas-card-key="model"]').selectedOptions[0].textContent.includes("current-image-model") };
+      await canvasGenerate(node, "image"); out.请求跟随默认 = !window.__bodies.find((row) => row.url === "/api/tool/run").body.input.model;
+      await canvasFlushRemoteWrite(); out.落盘 = canvasLoadSaved().nodes.find((item) => item.id === node.id).payload.model === ""; return out;
+    } finally { settingsCache = old; document.dispatchEvent(new Event("owb-media-models")); }
+  })()`);
+  ok(当前默认.默认已保存 && 当前默认.不生成 && 当前默认.警告消失 && 当前默认.显示正确 && 当前默认.请求跟随默认 && 当前默认.落盘, "错误型号一键改用本窗口默认模型，展示与请求一致、持久保存且切换本身不生成", 当前默认);
   console.log("\n— 角色与场景：直接选模型、旧型号预检、设定编辑与结果写回 —");
   const 定妆模型 = await run(`(async () => {
     ${摆画布([卡片("script-model", "script", { title: "剧本", image_model: "retired-image-model" }, 20, 20)])}

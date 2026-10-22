@@ -79,6 +79,7 @@
       "按当前描述生成": "Generate from this description",
       "当前结果": "Current result",
       "找不到素材文件，请重新选择。": "Asset file not found. Select it again.",
+      "使用当前默认模型": "Use the current default model",
       "默认模型（未配置）": "Default model (not configured)",
       "火山已审核素材 ID": "Approved Ark asset IDs",
       "素材参考模式": "Asset reference mode",

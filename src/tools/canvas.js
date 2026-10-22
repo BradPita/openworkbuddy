@@ -406,10 +406,28 @@ function canvasMediaPrompt(media) {
   return "\n## 当前画布的生成能力\n" +
     "以下是服务端读取的模型配置，不是一次上游连接测试：" + JSON.stringify(canvasMediaCapabilities(media)) + "\n" +
     "当前会话为先确认报价而不直接提供 generate_image / generate_video / text_to_speech；工具列表里没有它们不表示用户没有配置模型。" +
-    "先用 canvas_manage get 核对 generation.models，再把准确型号和提示词写入节点，用 canvas_manage propose 提交生成清单。" +
+    "以 canvas_manage get 返回的 generation.models 为本窗口唯一的型号来源；不要读取其他目录或安装版的 config.json 猜型号，也不要读取密钥。用户没有点名型号时，payload.model 写空字符串，使用当前应用默认模型。" +
+    "只有用户明确指定已登记的其他型号时才写入该型号，再用 canvas_manage propose 提交生成清单。" +
     "用户在画布确认后由应用调用这些模型并写回结果；不要因缺少直接生成工具而要求用户重新配置已有模型。" +
     "视频和配音分别判断：缺配音不阻止准备视频生成清单，缺首帧则先准备首帧生成，已有配置的真实调用仍可能因额度、权限或上游错误失败。" +
     "问答或规划模式只说明能力和计划，不写节点、不提交生成清单。";
+}
+
+/** Agent 只能点名当前应用登记的模型，不能从别的安装目录读一份配置塞进当前画布。 */
+function canvasModelProblem(kind, payload, media) {
+  if (!media || !payload || typeof payload !== "object") return "";
+  const inventory = canvasMediaCapabilities(media);
+  const fields = kind === "script" ? [["image_model", "image"], ["video_model", "video"]]
+    : ["image", "character", "location"].includes(kind) ? [["model", "image"]]
+      : kind === "video" ? [["model", "video"]] : kind === "shot" ? [["model", "image|video"]] : [];
+  for (const [key, caps] of fields) {
+    const value = String(payload[key] || "").trim(); if (!value) continue;
+    const models = inventory.filter((item) => caps.split("|").includes(item.cap)).flatMap((item) => item.models);
+    if (models.some((item) => [item.name, item.model].some((name) => name.trim().toLowerCase() === value.toLowerCase()))) continue;
+    return `当前应用没有配置模型「${value}」，未写入画布。请用 canvas_manage get 返回的 generation.models 核对型号；${key} 设为空字符串即可跟随当前应用默认模型。` +
+      `已登记的型号：${models.map((item) => item.name === item.model ? item.model : `${item.name}（${item.model}）`).join("、") || "无"}。不要读取其他安装目录的 config.json 来推断本窗口的配置。`;
+  }
+  return "";
 }
 
 // 每类节点能生什么：跟画布上的生成按钮一致（canvasGenerate）。图：镜头首帧、图片、定妆照、场景图；视频：镜头、视频；配音：镜头、音频
@@ -581,6 +599,7 @@ function canvasManage(input = {}, ctx = {}) {
     // 拦在这儿最多是加不进去，一个字节都不会少
     if (state.nodes.length >= CANVAS_MAX_NODES) return { content: `画布 ${canvasName} 已经有 ${state.nodes.length} 个节点，到上限 ${CANVAS_MAX_NODES} 了，加不进去。先删掉些用不上的，或者换一张画布（canvas_name 换个名字就是新的一张）。`, isError: true };
     const payload = input.payload && typeof input.payload === "object" ? { ...input.payload } : {};
+    const problem = canvasModelProblem(kind, payload, ctx.media); if (problem) return { content: problem, isError: true };
     const moved = canvasRebasePaths(payload, ctx.base);
     state.nodes.push({ id, kind, payload, position: { x: Number(input.position?.x) || 120 + (state.nodes.length % 4) * 390, y: Number(input.position?.y) || 120 + Math.floor(state.nodes.length / 4) * 300 } });
     state = canvasWriteState(state, canvasName); return { content: `已添加${kind}节点 ${id} 到画布 ${canvasName}。${canvasMovedNote(moved)}`, isError: false };
@@ -590,6 +609,7 @@ function canvasManage(input = {}, ctx = {}) {
     let moved = [];
     if (input.payload && typeof input.payload === "object") {
       const patch = { ...input.payload };
+      const problem = canvasModelProblem(node.kind, patch, ctx.media); if (problem) return { content: problem, isError: true };
       moved = canvasRebasePaths(patch, ctx.base);
       node.payload = { ...node.payload, ...patch };
     }

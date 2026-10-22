@@ -197,7 +197,7 @@ How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chin
 
 Start with an image, video or set of assets. Describe, connect references, generate and continue with variations or video directly from each card. Short-drama workflows also organize scripts, characters, scenes, shots, voice and the edit timeline. Connections become real generation inputs.
 
-Edit character and location descriptions and choose an image model directly on their cards. Invalid model IDs are caught before submission; choosing the default overrides an inherited script model. [Usage and troubleshooting](docs/无限画布使用.md#角色定妆照与场景图).
+Edit character and location descriptions and choose an image model directly on their cards. Unspecified models follow the current app’s default; Agent writes with unregistered model IDs are rejected. Invalid model IDs are caught before submission; choosing the default overrides an inherited script model. [Usage and troubleshooting](docs/无限画布使用.md#角色定妆照与场景图).
 
 Ark portrait errors stay on the card. Use approved asset IDs for reference generation; video frame uploads preserve original bytes. [Portrait assets and generation modes](docs/无限画布使用.md#火山视频提示输入图片可能包含真人).
 
@@ -265,6 +265,8 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent/agent.js`, with tools in `src/agent/tools.js` and `src/tools/`. Sessions, config and usage are stored locally under `data/`; task files go to the project workspace. See [code architecture](docs/代码架构.md) for layers and [implementation details](docs/实现细节.md) for a task walkthrough (both Chinese).
 
 ## What's new
+
+- **Oct 23** Keep canvas models scoped to the current app; restore defaults on cards and prevent API or local engines from guessing model IDs from another installation
 
 - **Oct 23** Select models on cards; fix missing-tool claims by local engines. Keep shot outputs and errors inline, show start feedback, support approved Ark assets, preserve original frames, compare versions and export assets
 - **Oct 21** Keep read notifications, find scheduled results in the inbox, and jump to conversation search matches from a visible search button

@@ -44,8 +44,19 @@ store.bindWorkspace(() => WS);
   ok(!context.models.find((item) => item.cap === "tts").models[0].configured && context.models.find((item) => item.cap === "image").models[0].default, "缺配音凭据与已有图像、视频配置分别报告");
   const legacy = store.canvasMediaCapabilities({ video: { model: "legacy-video", api_key: "private-legacy", base_url: "https://legacy.invalid" } });
   ok(legacy.find((item) => item.cap === "video").models[0].configured, "兼容旧版默认媒体配置");
+  const modelCall = (operation, kind, payload, node_id = "model-guard") => store.canvasManage({ operation, canvas_name: "型号检查", kind, node_id, payload }, { media });
+  const initial = modelCall("add", "image", { model: "foreign-install-model", prompt: "山间晨光" });
+  ok(initial.isError && initial.content.includes("未写入画布") && initial.content.includes("image-test") && !store.canvasReadState("型号检查").nodes.length, "Agent 从别处读来的未登记型号不写入画布，错误给出本窗口真实型号");
+  ok(!modelCall("add", "image", { model: "", prompt: "山间晨光" }).isError, "未点名型号时允许跟随当前应用默认模型");
+  const before = fs.readFileSync(path.join(WS, ".openworkbuddy", "canvases", "型号检查.json"), "utf8");
+  const rejected = modelCall("update", "image", { model: "foreign-install-model", prompt: "不该写入" });
+  ok(rejected.isError && fs.readFileSync(path.join(WS, ".openworkbuddy", "canvases", "型号检查.json"), "utf8") === before, "更新时型号不匹配整笔拒绝，已有提示词和文件字节不变");
+  ok(!modelCall("update", "image", { model: "图片测试" }).isError && !modelCall("update", "image", { model: "IMAGE-TEST" }).isError, "可用配置名称或不区分大小写的准确型号选择本窗口模型");
+  ok(modelCall("add", "script", { image_model: "foreign-install-model" }, "model-script").isError && modelCall("add", "video", { model: "image-test" }, "model-video").isError, "剧本继承型号同样校验，视频不能误用图像型号");
+  const otherApp = store.canvasManage({ operation: "add", canvas_name: "另一份配置", kind: "image", node_id: "other-app", payload: { model: "foreign-install-model" } }, { media: { list: [{ cap: "image", model: "foreign-install-model", default: true }] } });
+  ok(!otherApp.isError, "相同型号在另一份应用配置中登记后可以正常选择，不按型号名称一刀切禁用");
   const note = store.canvasMediaPrompt(media);
-  ok(note.includes("video-test") && note.includes("canvas_manage propose") && note.includes("不表示用户没有配置模型") && !/private-|https:/.test(note), "本机引擎获得型号与报价执行路径，不能从工具缺席推断没配模型");
+  ok(note.includes("video-test") && note.includes("canvas_manage propose") && note.includes("唯一的型号来源") && note.includes("空字符串") && note.includes("不表示用户没有配置模型") && !/private-|https:/.test(note), "本机引擎获得型号与报价执行路径，不能从工具缺席推断没配模型");
 }
 const routes = require(mod("routes/canvas"));
 
