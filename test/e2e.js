@@ -14061,12 +14061,12 @@ function testReleasePipeline() {
   // 锁文件只留一份：两份长期手工对齐必然漂，上一份 pnpm-lock.yaml 过期五周、缺 7 个包
   assert(!fs.existsSync(path.join(root, "pnpm-lock.yaml")), "pnpm-lock.yaml 又回来了——只维护 package-lock.json");
 
-  // 放行说明：macOS 15 起右键「打开」那条通道被苹果取消了，弹窗里只剩「完成 / 移到废纸篓」。
-  // 还写 xattr -cr 也不行：它清掉全部扩展属性，过于粗暴，只该删 quarantine 那一条
+  // 安装说明出现 xattr 时，只允许定向清理 quarantine；图形放行路径在下方单独检查。
+  // 画布也有「右键」操作，不能因整篇 README 提到它，就强制安装说明放清理命令。
   const docs = ["README.md", "README.en.md", "docs/安装与启动.md", ".github/workflows/release.yml", "docs/推广/发布日文案.md"];
   for (const d of docs) {
     const t = fs.readFileSync(path.join(root, d), "utf8");
-    if (!/xattr|right-click|右键/.test(t)) continue;
+    if (!/\bxattr\b/.test(t)) continue;
     assert(!/xattr -cr/.test(t), d + " 里还写着 xattr -cr（该只删 com.apple.quarantine）");
     assert(/quarantine/.test(t), d + " 提了放行却没给 xattr -dr com.apple.quarantine");
     assert(/macOS 14|Sequoia|Open Anyway|仍要打开/.test(t), d + " 没说明 macOS 15 起右键「打开」已经不管用");
@@ -19011,6 +19011,9 @@ async function testDramaCompose() {
 async function testDramaCast() {
   const pipeline = require(modPath("drama-pipeline"));
   const node = (id, kind, payload) => ({ id, kind, payload, position: { x: 0, y: 0 } });
+  const translate = /function canvasT\([\s\S]*?\n}/.exec(srcLib.src("canvas"));
+  assert(translate, "找不到画布翻译函数");
+  const canvasT = new Function(translate[0] + "\nreturn canvasT;")();
 
   // ── ① 算得对：「参考图」里挑的定妆照就是定妆照 ─────────────────────────
   {
@@ -19105,6 +19108,7 @@ async function testDramaCast() {
     const hFrom = fe.indexOf("const CANVAS_ASPECTS = new Map();"), hTo = fe.indexOf("\nfunction canvasWatchAspect(");
     assert(hFrom > 0 && hTo > hFrom, "抠不出预览比例那几个函数（改名了？）");
     const sandbox = {
+      canvasT,
       esc: (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])),
       ic: (n) => `<i>${n}</i>`,
       canvasState: { busy: new Set() },
@@ -19151,6 +19155,7 @@ async function testDramaCast() {
     const boardWrites = []; // 回写分镜表那一步收到了什么（字段 → 文件）
     const mk = (kind, payload) => { const p = { ...payload }; return { id: "c1", kind, p, set(_k, v) { Object.keys(this.p).forEach((k) => delete this.p[k]); Object.assign(this.p, v); } }; };
     const sandbox = {
+      canvasT,
       canvasState: { busy: new Set(), selected: null },
       canvasKind: (n) => n.kind, canvasPayload: (n) => n.p,
       canvasUpstreamImages: () => [], canvasUpstreamInputs: () => [], canvasGenerationContext: () => "",

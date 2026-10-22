@@ -262,7 +262,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
-- **Oct 22** Rework canvas entry points, media cards and on-demand Agent; edit references and model settings inline, continue images as variations or videos, compare versions and export the canvas with its assets; fix context-menu deletion and reduce redraws
+- **Oct 22** Redesign canvas entry and media cards: edit prompts, references and models inline; create image variations or videos, compare versions and export assets. Collapse Agent by default, fix deletion and reduce redraws
 - **Oct 21** Keep read notifications, find scheduled results in the inbox, and jump to conversation search matches from a visible search button
 - **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
 - **Oct 20** Installed apps register a bundled-runtime CLI; Windows checks cover Unicode/space paths and the launch directory. Rerun `npm link` after moving a source checkout
