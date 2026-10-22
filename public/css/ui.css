@@ -1677,7 +1677,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-start h2 { margin: 8px 0 10px; color: var(--owb-text); font-size: 28px; font-weight: 650; line-height: 1.25; letter-spacing: -.025em; }
 .canvas-start > p { margin: 0 0 24px; color: var(--owb-text-2); font-size: 13px; line-height: 1.6; }
 .canvas-start-options { display: grid; gap: 9px; }
-.canvas-start-options > button { display: grid; grid-template-columns: 38px minmax(0, 1fr) 20px; grid-template-rows: auto auto; align-items: center; gap: 3px 12px; min-height: 72px; padding: 13px 16px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg); color: var(--owb-text); box-shadow: var(--shadow-surface); font: inherit; text-align: left; cursor: pointer; transition: border-color .12s, background .12s; }
+.canvas-start-options > button { display: grid; grid-template-columns: 38px minmax(0, 1fr) 20px; grid-template-rows: auto auto; align-items: center; gap: 3px 12px; min-height: 72px; padding: 13px 16px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg); color: var(--owb-text); box-shadow: var(--shadow-surface); font: inherit; text-align: left; cursor: pointer; transition: border-color .12s var(--owb-ease), background .12s var(--owb-ease); }
 .canvas-start-options > button > .i:first-child { grid-row: 1 / 3; width: 20px; height: 20px; padding: 9px; box-sizing: content-box; border-radius: var(--radius-md); background: var(--owb-brand-weak); color: var(--owb-brand-text); }
 .canvas-start-options > button > b { font-size: 14px; font-weight: 600; }
 .canvas-start-options > button > small { grid-column: 2; color: var(--owb-text-3); font-size: 12px; }
