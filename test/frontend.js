@@ -3528,7 +3528,11 @@ const WIN_CHECKS = `
       await toZero();
     });
     await withKit("noGate", async (K) => {
-      await atBottom("S_HUGE"); K.goTop(); await still();
+      await atBottom("S_HUGE"); K.goTop();
+      // 隐藏窗口的合成线程可能连续几帧不推进，三帧位置相同不代表这趟滚动已经结束。
+      // 等真实的错误行为出现：去掉人手判断后，程序滚进一屏以内就会误补历史。
+      const deadline = performance.now() + 4000;
+      while (turnsHidden() === 50 && performance.now() < deadline) await sleep(20);
       ok("★反向对照★ 自动补不看人手：点 ↑ 滚的半路被补画插一脚（收着 " + turnsHidden() + " 轮、停在 " + Math.round(chatScroll.scrollTop) + "）", turnsHidden() < 50);
     });
     await withKit("noUp", async (K) => {
