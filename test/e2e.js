@@ -16653,14 +16653,16 @@ exit 1
     assert.strictEqual(loggedOut.json.users, "", "断开后仍显示旧的已授权用户");
     assert(beforeLogout.equals(fs.readFileSync(path.join(home, "config.json"))), "取消本人身份连接误改了机器人或应用凭证");
 
-    for (const endpoint of ["/api/feishu/qr/cancel", "/api/feishu/lark-cli/logout"]) {
+    for (const endpoint of ["/api/feishu/qr/cancel", "/api/feishu/lark-cli/logout", "concurrent"]) {
       fs.rmSync(path.join(bin, "pending-child"), { force: true });
       const start = await req("POST", "/api/feishu/qr/start", {});
       assert.strictEqual(start.code, 200, "扫码测试进程未启动");
       for (let i = 0; i < 100 && !fs.existsSync(path.join(bin, "pending-child")); i++) await new Promise((r) => setTimeout(r, 10));
       assert(fs.existsSync(path.join(bin, "pending-child")), "没有产生模拟原生 CLI 的子进程，不能验证进程树清理");
-      const cancel = await req("POST", endpoint, {});
-      assert.strictEqual(cancel.code, 200, "停止扫码失败");
+      const replies = endpoint === "concurrent"
+        ? await Promise.all([req("POST", "/api/feishu/qr/cancel", {}), req("POST", "/api/feishu/lark-cli/logout", {})])
+        : [await req("POST", endpoint, {})];
+      for (const cancel of replies) assert.strictEqual(cancel.code, 200, "停止扫码失败");
       await new Promise((r) => setTimeout(r, 2200));
       assert(!fs.existsSync(path.join(bin, "login")), "包装器退出后子进程仍完成了登录");
       assert.strictEqual((await req("GET", "/api/feishu/qr/status")).json.state, "idle", "停止后仍保留旧扫码状态");

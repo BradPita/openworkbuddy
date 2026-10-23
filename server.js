@@ -5703,10 +5703,14 @@ app.get("/api/feishu/app/create/status", (_req, res) => {
 
 // 设备码流程：start 拿二维码 → 用户在飞书里扫 → 后台那条 --device-code 自己会跑完 → status 变 ok
 let larkQr = null; // { device_code, url, expires_at, state, error, child }
-let larkQrEpoch = 0, larkLoggingOut = false;
+let larkQrEpoch = 0, larkLoggingOut = false, larkQrStop = null;
+function stopLarkQr() {
+  if (!larkQrStop) larkQrStop = stopLarkQrNow().finally(() => { larkQrStop = null; });
+  return larkQrStop;
+}
 /** 先收掉整棵扫码进程树，避免 npm 包装器退出后，原生 CLI 仍在后台完成登录。 */
-async function stopLarkQr() {
-  const child = larkQr && larkQr.child;
+async function stopLarkQrNow() {
+  const qr = larkQr, child = qr && qr.child;
   larkQr = null;
   if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
   let timer, onClose;
@@ -5718,6 +5722,10 @@ async function stopLarkQr() {
     await Promise.race([closed, new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error("扫码进程尚未退出，请稍后重试")), 3000);
     })]);
+  } catch (e) {
+    // 没停下来就保留句柄供重试，不能把仍在运行的授权进程遗忘。
+    if (!larkQr && child.exitCode === null && child.signalCode === null) larkQr = qr;
+    throw e;
   } finally { clearTimeout(timer); child.removeListener("close", onClose); }
 }
 
