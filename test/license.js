@@ -35,6 +35,7 @@ const express = require(path.join(ROOT, "node_modules/express"));
 const license = require(mod("license")); // 不带 .js 在 macOS 上会读到 LICENSE，见【12】
 const { sign } = require(path.join(ROOT, "scripts/issue-license"));
 const account = require(mod("account"));
+const gather = (opts = {}) => license.gather({ ...opts, seatCount: () => account.seatCount() });
 const org = require(mod("org"));
 const vkeys = require(mod("vkeys"));
 const admin = require(mod("admin"));
@@ -297,23 +298,25 @@ async function login(username, password) {
 
   // gather：从这台机器上真去数
   console.log("\n【5b】gather：账号、组织、中转 Key 从真账本里数，IM 要配全才算");
-  let f = license.gather({ config: {}, host: "" });
+  ok(/计数器/.test(why(() => license.gather({}))), "未注入账号计数器明确报错，不把缺依赖当成零账号");
+  eq(license.gather({ seatCount: () => 7 }).users, 7, "授权检查使用调用方传入的实时账号计数");
+  let f = gather({ config: {}, host: "" });
   eq([f.users, f.orgs, f.relay_keys, f.wecom, f.feishu, f.dingtalk, f.host], [0, 1, 0, false, false, false, ""], "空机器：0 账号、1 个默认组织、0 把 Key");
-  eq(license.gather({ config: { im: { wecom_app: { corp_id: "ww1", secret: "s" } } } }).wecom, true, "企业微信应用配全了：算接了");
-  eq(license.gather({ config: { im: { wecom_app: { corp_id: "ww1", secret: "" } } } }).wecom, false, "只填了 corp_id 没填 secret：不算（设置页的默认值就是一堆空串）");
-  eq(license.gather({ config: { im: { wecom_bot_webhook: "https://example.invalid/hook" } } }).wecom, true, "企业微信群机器人也算");
-  eq(license.gather({ config: { im: { feishu: { app_id: "cli_x", app_secret: "y" } } } }).feishu, true, "飞书 app_id + app_secret：算接了");
-  eq(license.gather({ config: { im: { feishu: { app_id: "cli_x", app_secret: "" } } } }).feishu, false, "飞书只填一半：不算");
-  eq(license.gather({ config: { im: { dingtalk_webhook: "https://example.invalid/robot" } } }).dingtalk, true, "钉钉 webhook：算接了");
-  eq(license.gather({ host: " [::1] " }).host, "::1", "IPv6 的方括号和空格去掉，才对得上回环名单");
-  eq(keys(license.gather({ host: "[::1]" })), "", "  ← 所以 [::1] 不算对外开放");
+  eq(gather({ config: { im: { wecom_app: { corp_id: "ww1", secret: "s" } } } }).wecom, true, "企业微信应用配全了：算接了");
+  eq(gather({ config: { im: { wecom_app: { corp_id: "ww1", secret: "" } } } }).wecom, false, "只填了 corp_id 没填 secret：不算（设置页的默认值就是一堆空串）");
+  eq(gather({ config: { im: { wecom_bot_webhook: "https://example.invalid/hook" } } }).wecom, true, "企业微信群机器人也算");
+  eq(gather({ config: { im: { feishu: { app_id: "cli_x", app_secret: "y" } } } }).feishu, true, "飞书 app_id + app_secret：算接了");
+  eq(gather({ config: { im: { feishu: { app_id: "cli_x", app_secret: "" } } } }).feishu, false, "飞书只填一半：不算");
+  eq(gather({ config: { im: { dingtalk_webhook: "https://example.invalid/robot" } } }).dingtalk, true, "钉钉 webhook：算接了");
+  eq(gather({ host: " [::1] " }).host, "::1", "IPv6 的方括号和空格去掉，才对得上回环名单");
+  eq(keys(gather({ host: "[::1]" })), "", "  ← 所以 [::1] 不算对外开放");
   const vk = vkeys.create({ name: "测试用", org: org.DEFAULT_ORG, by: "laoban" });
-  eq(license.gather({}).relay_keys, 1, "发了一把中转 Key：数得到");
+  eq(gather({}).relay_keys, 1, "发了一把中转 Key：数得到");
   vkeys.revoke(vk.key.id, "laoban");
-  eq(license.gather({}).relay_keys, 0, "停用之后不算：停掉的 Key 不是有人在用的证据");
+  eq(gather({}).relay_keys, 0, "停用之后不算：停掉的 Key 不是有人在用的证据");
   vkeys.remove(vk.key.id);
   const vk2 = vkeys.create({ name: "分公司发的", org: "org_branch_test", by: "laoban" });
-  eq(license.gather({}).relay_keys, 1, "★别的组织发的 Key 也数得到：整台机器在对外发，不只默认组织★");
+  eq(gather({}).relay_keys, 1, "★别的组织发的 Key 也数得到：整台机器在对外发，不只默认组织★");
   vkeys.remove(vk2.key.id);
   {
     // 数不出来时退回 0，页面照样出得来；但必须留一句，不然「没迹象」和「没数成」分不清
@@ -322,7 +325,7 @@ async function login(username, password) {
     const realWarn = console.warn;
     account.seatCount = () => { throw new Error("users.json 读不出来"); };
     console.warn = (m) => warns.push(String(m));
-    try { f = license.gather({}); } finally { account.seatCount = realSeat; console.warn = realWarn; }
+    try { f = gather({}); } finally { account.seatCount = realSeat; console.warn = realWarn; }
     eq(f.users, 0, "账号数不出来：退回 0，不抛");
     ok(warns.some((w) => w.includes("账号") && w.includes("users.json 读不出来")), "★  ← 但日志里留了一句，写着哪一项、原话是什么★", warns);
   }
@@ -640,16 +643,16 @@ async function login(username, password) {
     console.log("\n【9b】账号数跟成员页的席位一个口径：停用的不算，等审核的算");
     const bossUser = account._internals.loadUsers().users.find((u) => u.username === "laoban");
     const used = () => account.memberStats(org.DEFAULT_ORG).used + account.memberStats(fen.id).used;
-    let n9 = license.gather({}).users;
+    let n9 = gather({}).users;
     eq(n9, used(), "从真账本数出来的账号数 = 各组织成员页「占席位」加起来");
     r = await call("POST", "/api/admin/members", { cookie: boss, body: { username: "lizhi", role: "member" } });
-    eq(license.gather({}).users, n9 + 1, "新加一个成员：多数一个");
+    eq(gather({}).users, n9 + 1, "新加一个成员：多数一个");
     account.setMember(bossUser, "lizhi", { status: "disabled" });
-    eq(license.gather({}).users, n9, "★停用（离职）之后：不再算进账号数★");
+    eq(gather({}).users, n9, "★停用（离职）之后：不再算进账号数★");
     eq(account.userCount(), n9 + 1, "  ← 账号本身还在（userCount 照样数得到），只是不占席位");
     account.setMember(bossUser, "lizhi", { status: "pending" });
-    eq(license.gather({}).users, n9 + 1, "等审核的算：随时会被点头放进来");
-    eq(license.gather({}).users, used(), "  ← 每一步都跟成员页的口径一致");
+    eq(gather({}).users, n9 + 1, "等审核的算：随时会被点头放进来");
+    eq(gather({}).users, used(), "  ← 每一步都跟成员页的口径一致");
     account.setMember(bossUser, "lizhi", { status: "disabled" });
     r = await call("GET", "/api/admin/license", { cookie: boss });
     eq(r.json.users, n9, "后台授权页拿到的账号数也是这个口径");

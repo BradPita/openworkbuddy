@@ -20,7 +20,7 @@
  *   ① 每条本地边都解析得到文件——tryRequire 吞错、Worker / preload 路径写错，require 图和打包闸门都看不见，
  *      搬家时最容易静悄悄坏的就是这些
  *   ② 每个代码文件都有层（新加一个文件不知道该放哪，这里就红）；老布局的 lib/ engines/ routes/ 不许再长出来
- *   ③ 白名单只减不增：同层的 lazy 环 3 个、「require 一个也会被 spawn 的脚本」2 条，条数写死；
+ *   ③ 白名单只减不增：同层依赖环 0 个、「require 一个也会被 spawn 的脚本」0 条，条数写死；
  *      名单里的那一项已经不存在了也红——修好了就从名单里删掉
  *   ④ 层级违规（上行、L5 横向、非入口 require 入口、白名单外的环、白名单外的 require-spawn）：一条就挂。
  *      层按文件的真实路径算（目录重整已收尾，不再有「要搬去哪」的虚拟落位）
@@ -75,12 +75,8 @@ function judge(fromRel, toRel) {
 }
 
 // ── 白名单（一期）：只减不增，条数在下面写死 ──────────────────────────────────
-// 同层的 lazy 环：二期拆（license.gather 改注入 accounts；parseFrontmatter 抽到 util；workspace ALS 抽出 tools.js）
-const CYCLE_ALLOW = [
-  ["src/domains/account/account.js", "src/domains/account/license.js"],
-  ["src/core/ext/plugins.js", "src/core/ext/skills.js"],
-  ["src/agent/mcp.js", "src/agent/tools.js"],
-];
+// 历史三处循环已拆除；保持零例外，新增依赖环必须先拆开。
+const CYCLE_ALLOW = [];
 // require 一个也会被 spawn 的脚本。原先 agent.js、bridge.js 为了借工具名单 require tool-bridge，
 // 名单抽进 src/engines/lendable.js 之后一条都不剩；要加先想清楚那个脚本被 require 时顶层会干什么
 const SPAWN_ALLOW = [];
@@ -279,7 +275,7 @@ const pathLoaded = new Set(edges.filter((e) => PATH_KINDS.has(e.kind)).map((e) =
 const reqSpawn = edges.filter((e) => REQ_KINDS.has(e.kind) && pathLoaded.has(e.to) && layerOf(e.to) && layerOf(e.to).rank !== 6);
 const reqSpawnPairs = [...new Set(reqSpawn.map((e) => `${e.from} → ${e.to}`))];
 const allowedSpawn = (e) => SPAWN_ALLOW.some(([a, b]) => a === e.from && b === e.to);
-ok(CYCLE_ALLOW.length <= 3 && SPAWN_ALLOW.length === 0, `白名单条数没涨（环 ${CYCLE_ALLOW.length} ≤ 3、require-spawn ${SPAWN_ALLOW.length} = 0）`);
+ok(CYCLE_ALLOW.length === 0 && SPAWN_ALLOW.length === 0, `白名单条数没涨（环 ${CYCLE_ALLOW.length} = 0、require-spawn ${SPAWN_ALLOW.length} = 0）`);
 // 名单里的环拆掉了才算过期；被一个更大的新环吞进去不算过期（那个大环在 ④ 里按白名单外的环列出来）
 const staleCycles = CYCLE_ALLOW.filter((w) => !cycles.some((c) => w.every((x) => c.includes(x))));
 ok(staleCycles.length === 0, `白名单里的 ${CYCLE_ALLOW.length} 个环都还在（拆掉了就从名单里删）`, staleCycles);

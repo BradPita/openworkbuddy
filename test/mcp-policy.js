@@ -15,6 +15,50 @@ let passed = 0;
 async function check(name, fn) { await fn(); passed++; console.log("✓ " + name); }
 
 (async () => {
+  await check("连接器独立读取共享工作区，并发素材与默认缓存互不串用", () => {
+    require("child_process").execFileSync(process.execPath, ["-e", `
+      const assert = require("assert/strict"), path = require("path"), fs = require("fs");
+      const workspace = require(${JSON.stringify(mod("workspace"))});
+      const mcp = require(${JSON.stringify(mod("mcp"))});
+      const toolsPath = ${JSON.stringify(mod("tools"))};
+      const root = ${JSON.stringify(path.join(HOME, "workspace-context"))};
+      const initial = workspace.setWorkspaceDir(path.join(root, "default"));
+      assert(!require.cache[toolsPath], "连接器加载了整个工具执行器");
+      const manager = new mcp.McpManager();
+      assert.equal(manager._cacheFile(), path.join(initial, mcp.TOOLS_CACHE_REL));
+      (async () => {
+        await Promise.all(Array.from({ length: 12 }, (_, i) => workspace.withWorkspace(path.join(root, "task-" + i), async () => {
+          const own = workspace.getWorkspaceDir();
+          await new Promise(resolve => setTimeout(resolve, 1 + i % 3));
+          assert.equal(workspace.getWorkspaceDir(), own);
+          assert.equal(workspace.getDefaultWorkspaceDir(), initial);
+          assert.equal(manager._cacheFile(), path.join(initial, mcp.TOOLS_CACHE_REL));
+          const out = mcp.renderContent([{ type: "audio", mimeType: "audio/wav", data: Buffer.from("fixture-" + i).toString("base64") }]);
+          assert.equal(out.media.length, 1);
+          assert.equal(out.media[0].file, path.join(own, out.media[0].path));
+          assert.equal(fs.readFileSync(out.media[0].file, "utf8"), "fixture-" + i);
+          await assert.rejects(workspace.withWorkspace(path.join(own, "nested"), async () => { throw new Error("fixture"); }));
+          assert.equal(workspace.getWorkspaceDir(), own);
+          workspace.withWorkspace("", () => assert.equal(workspace.getWorkspaceDir(), own));
+          workspace.withWorkspace(path.join(own, "scope"), () => {
+            workspace.enterWorkspace(path.join(own, "entered"));
+            assert.equal(workspace.getWorkspaceDir(), path.join(own, "entered"));
+          });
+          assert.equal(workspace.getWorkspaceDir(), own);
+        })));
+        assert.equal(workspace.getWorkspaceDir(), initial);
+        assert(!require.cache[toolsPath], "素材落盘又加载了整个工具执行器");
+        const tools = require(toolsPath);
+        for (const key of ["getWorkspaceDir", "getDefaultWorkspaceDir", "setWorkspaceDir", "withWorkspace", "enterWorkspace"])
+          assert.equal(tools[key], workspace[key], "工具没有复用共享上下文：" + key);
+        await tools.withWorkspace(path.join(root, "via-tools"), async () => {
+          await Promise.resolve();
+          assert.equal(workspace.getWorkspaceDir(), tools.getWorkspaceDir());
+        });
+        assert.equal(workspace.getWorkspaceDir(), initial);
+      })().catch(e => { console.error(e); process.exitCode = 1; });
+    `], { timeout: 20000, stdio: "pipe", env: process.env });
+  });
   const p = { fixture: { default: "allow", tools: { read: "allow", write: "ask", remove: "deny" } } };
   await check("工具权限优先于连接器默认；只读档仍先问", () => {
     assert.equal(policy.effective(p, "fixture", "write", "bypass"), "ask");

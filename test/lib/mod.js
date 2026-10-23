@@ -165,6 +165,8 @@ const TABLE = Object.freeze({
   "skill-gate": "src/agent/gates/skill-gate.js",
   "skill-guard": "src/core/safety/skill-guard.js",
   skills: "src/core/ext/skills.js",
+  "skill-frontmatter": "src/util/skill-frontmatter.js",
+  workspace: "src/platform/workspace.js",
   spaces: "src/domains/account/spaces.js",
   "static-compress": "src/server/static-compress.js",
   store: "src/platform/store.js",

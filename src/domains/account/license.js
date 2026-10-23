@@ -140,9 +140,9 @@ function verify(code, { keys = PUBLIC_KEYS, now = new Date() } = {}) {
  * 这台机器上看得见的事实。单独一步是为了让 signalsOf 是纯函数：测试直接喂数字，
  * 不用真去造 12 个账号、配一套企业微信。
  */
-function gather({ config, host } = {}) {
-  // 用到才 require：account.js 在 /api/auth/state 里也会回头 require 本文件
-  const account = require("./account");
+function gather({ config, host, seatCount } = {}) {
+  // 由调用方传入实时计数器，授权模块不再反向加载账号与登录路由。
+  if (typeof seatCount !== "function") throw new Error("授权检查缺少账号计数器");
   const org = require("./org");
   const vkeys = require("./vkeys");
   const im = (config && config.im) || {};
@@ -156,7 +156,7 @@ function gather({ config, host } = {}) {
   return {
     // 占席位的账号：停用（离职）的不算，等审核的算。跟成员页的席位同一个口径，
     // 不然买了 10 席、走了 2 个人，首页就对着付过钱的人说「超了」
-    users: safe("账号", () => account.seatCount(), 0),
+    users: safe("账号", seatCount, 0),
     orgs: safe("组织", () => org.listOrgs().length, 1),
     // 不带 org：整台机器上所有组织发的 Key 都算，分公司发的也是这台机器在对外发
     relay_keys: safe("中转 Key", () => vkeys.list().filter((k) => k.enabled !== false).length, 0),

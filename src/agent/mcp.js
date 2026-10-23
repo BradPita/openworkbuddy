@@ -24,6 +24,7 @@ const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const { buildChildEnv } = require("../platform/child-env");
+const workspace = require("../platform/workspace");
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -35,14 +36,13 @@ const TOOLS_CACHE_REL = ".openworkbuddy/mcp-tools-cache.json";
 const MEDIA_REL = ".openworkbuddy/mcp-media";
 
 /**
- * 工作区根。tools.js 很重，只在真要读写盘时才懒加载——也免得模块加载时绕成一个环（anySignal 那儿同一个顾虑）。
+ * 只读共享的工作区上下文，连接器启动不需要加载工具执行器。
  * which="default"：默认工作区。工具表缓存是整台机器一份的（连接器配置就是整台机器一份），不跟着某个租户/项目的任务走。
  * 否则：当前这条异步链的工作区。图片跟着这一单任务落，租户之间看不见彼此的图。
  */
 function workspaceRoot(which) {
   try {
-    const t = require("./tools");
-    return which === "default" ? t.getDefaultWorkspaceDir() : t.getWorkspaceDir();
+    return which === "default" ? workspace.getDefaultWorkspaceDir() : workspace.getWorkspaceDir();
   } catch {
     return "";
   }

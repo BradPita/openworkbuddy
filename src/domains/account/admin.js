@@ -490,7 +490,7 @@ function createAdminRouter(deps = {}) {
   // ---------- 商业授权 ----------
   // 授权是整台机器的事，不是哪个组织的：看和改都只给平台管理员（个人桌面版上就是机主本人）。
   // 别的组织的管理员连这一页都不该有——他们是这台服务器的租户，不是持证人
-  const licenseFacts = () => license.gather({ config: deps.readConfig ? deps.readConfig() : {}, host: deployHost });
+  const licenseFacts = () => license.gather({ config: deps.readConfig ? deps.readConfig() : {}, host: deployHost, seatCount: () => account.seatCount() });
   router.get("/api/admin/license", platformOnly, guarded(() => license.status(licenseFacts())));
   router.post("/api/admin/license/declare", account.adminOnly, platformOnly, guarded((req) =>
     license.declare(String((req.body || {}).kind || ""), req.user, licenseFacts())));

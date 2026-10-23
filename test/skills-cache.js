@@ -88,6 +88,24 @@ const count = (fn) => {
 const find = (name) => skills.loadSkills().find((s) => s.name === name);
 
 (async () => {
+  {
+    const parse = require(mod("skill-frontmatter")).parseFrontmatter;
+    const cases = [
+      ["  Plain body  ", { name: "", description: "", content: "Plain body" }],
+      ["---\nname: 'fixture'\ndescription: >\n  first line\n\n  second line\nmetadata:\n  name: ignored\n---\n Body ", { name: "fixture", description: "first line second line", content: "Body" }],
+      ["---\r\nname: fixture\r\ndescription: |-\r\n  line one\r\n  line two\r\n---\r\nBody", { name: "fixture", description: "line one line two", content: "Body" }],
+    ];
+    ok(skills.parseFrontmatter === parse, "技能管理继续导出共享解析器，已有调用保持兼容");
+    for (const [input, expected] of cases) ok(JSON.stringify(parse(input)) === JSON.stringify(expected), "共享技能解析保留正文、顶层字段、折行和换行规则");
+    require("child_process").execFileSync(process.execPath, ["-e", `
+      const assert = require("assert/strict");
+      const plugins = require(${JSON.stringify(mod("plugins"))});
+      const result = plugins.loadPlugin(${JSON.stringify(path.join(PLUGINS, "cache-plugin"))});
+      assert.equal(result.skills.length, 2);
+      assert(!require.cache[${JSON.stringify(mod("skills"))}], "插件读取元数据反向加载了技能管理模块");
+    `], { timeout: 20000, env: process.env, stdio: "pipe" });
+    ok(true, "独立加载插件及其技能不再反向加载技能管理模块");
+  }
   // ─────────────────────────────────────────────────────────────
   console.log("\n① 假引擎连跑 10 轮：第 2～10 轮每轮的 readFileSync 不超过第 1 轮");
   // ─────────────────────────────────────────────────────────────

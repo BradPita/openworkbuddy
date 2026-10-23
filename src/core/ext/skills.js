@@ -23,9 +23,10 @@ const guard = require("../safety/skill-guard");
 // 外挂的第二把尺子。没装就是一串 null，merge 会原样把自带那份还回来。见 toolward.js
 const toolward = require("../safety/toolward");
 const log = require("../../platform/log");
+const { parseFrontmatter } = require("../../util/skill-frontmatter");
 
 const SKILLS_DIR = dataPath("skills");
-// 跟 plugins.js 的 PLUGINS_DIR 同一个定义。这里不 require plugins.js：它反过来要 require 本文件（parseFrontmatter）
+// 插件目录也参与技能缓存签名；只读目录状态不需要加载插件管理模块。
 const PLUGINS_DIR = dataPath("plugins");
 // 技能开关表（已添加 ≠ 已启用）落在这儿。文件还没有也照样进签名：它一出现，技能表就得重算
 const STATE_FILE = path.join(SKILLS_DIR, ".state.json");
@@ -177,29 +178,6 @@ function safeName(name) {
   return n;
 }
 
-function parseFrontmatter(raw) {
-  const m = String(raw).match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  const out = { name: "", description: "", content: String(raw).trim() };
-  if (m) {
-    out.content = m[2].trim();
-    const lines = m[1].split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      const kv = lines[i].match(/^(\w+):\s*(.*)$/); // 只认顶层键，metadata 下的缩进行不会误匹配
-      if (!kv || (kv[1] !== "name" && kv[1] !== "description")) continue;
-      let val = kv[2].trim();
-      // YAML 折行块（Claude 系 SKILL.md 常见 description: >）：吸收后续缩进行拼成一行
-      if (/^[>|][+-]?$/.test(val)) {
-        const parts = [];
-        while (i + 1 < lines.length && (!lines[i + 1].trim() || /^\s+\S/.test(lines[i + 1]))) {
-          parts.push(lines[++i].trim());
-        }
-        val = parts.filter(Boolean).join(" ");
-      }
-      out[kv[1]] = val.replace(/^["']|["']$/g, "");
-    }
-  }
-  return out;
-}
 
 /** 按名字找技能目录（优先 frontmatter name 匹配，回退目录名匹配） */
 function findSkillDir(name) {

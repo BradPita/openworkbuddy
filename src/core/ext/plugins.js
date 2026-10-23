@@ -23,6 +23,7 @@
 const fs = require("fs");
 const path = require("path");
 const { dataPath } = require("../../platform/paths");
+const { parseFrontmatter } = require("../../util/skill-frontmatter");
 
 const SPEC_VERSION = "1.0.0";
 const PLUGIN_SCHEMA = `https://agent-plugins.org/schemas/${SPEC_VERSION}/plugin.schema.json`;
@@ -151,7 +152,6 @@ function discoverSkills(root, warnings) {
     if (!mst.isFile()) { warnings.push(`技能「${e.name}」的 SKILL.md 不是普通文件，已跳过`); continue; }
     if (!containedIn(root, md)) { warnings.push(`技能「${e.name}」的 SKILL.md 跑到了插件目录外，已跳过`); continue; }
 
-    const { parseFrontmatter } = require("./skills");
     let fm;
     try { fm = parseFrontmatter(fs.readFileSync(md, "utf8")); } catch (err) { warnings.push(`技能「${e.name}」读取失败：${err.message}，已跳过`); continue; }
     if (!fm.name && !fm.description) {

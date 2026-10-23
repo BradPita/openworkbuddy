@@ -48,48 +48,10 @@ const {
   canvasManage
 } = CANVAS;
 
-// 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
-let workspaceDir = dataPath("workspace");
-
-/**
- * 多租户的工作目录隔离就在这三行上。
- *
- * 走的是 AsyncLocalStorage 而不是「给每个函数加一个 root 参数」：workspaceDir 在这个文件里
- * 被读了二十来处（safePath、outputFiles、executeTool、图片视频落盘、shell 的 cwd、备份历史…），
- * 而 agent.js / im.js / cli.js 又各自 getWorkspaceDir() 了十几次。挨个加参数要改五十多个调用点，
- * 漏一个就是一个「A 公司的模型能读到 B 公司文件」的洞——而这种洞不会报错，只会安静地发生。
- *
- * ALS 的语义正好对上：一次 HTTP 请求 / 一次任务从头到尾是同一条异步链，在链头 run() 一下，
- * 链上所有的 ws() 自动读到同一个根，包括 await 之后、setTimeout 里、子函数里。
- * 没设过就退回默认根 —— 单机个人版一行行为都没变。
- */
+// 工具和连接器共用同一份工作区上下文，读取目录不再触发整个工具模块加载。
 const { AsyncLocalStorage } = require("async_hooks");
-const wsStore = new AsyncLocalStorage();
-function ws() {
-  return wsStore.getStore() || workspaceDir;
-}
-/** 在指定工作目录根下跑一段（同步或异步都行）。root 为空 = 用默认根 */
-function withWorkspace(root, fn) {
-  if (!root) return fn();
-  return wsStore.run(path.resolve(root), fn);
-}
-/**
- * 把**当前这条异步链**的工作目录换掉，一直到这条链跑完。
- *
- * 跟 withWorkspace 是一回事，区别只在写法：withWorkspace 要求把后面的代码整段包进回调里。
- * /api/chat 那个处理函数从鉴权到收尾三百多行，为了换个根把它整体缩进一层，
- * 得到的是一份没人看得懂的 diff 和一堆没必要的合并冲突。
- *
- * 安全性上两者一样：express 每个请求各自一条异步链，enterWith 只染当前这条，
- * 别的请求、后台定时任务都串不进来。
- */
-function enterWorkspace(root) {
-  if (!root) return;
-  wsStore.enterWith(path.resolve(root));
-}
-function getWorkspaceDir() {
-  return ws();
-}
+const { getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, winCanonCase } = require("../platform/workspace");
+const ws = getWorkspaceDir;
 
 /**
  * 组织级的工具策略（企业管理后台「客户端安全 / 网络设置」那两页配的东西）。
@@ -170,34 +132,6 @@ function shellBlocked(tool) {
 function netBlocked(url, why) {
   security.audit("网络拦截", String(url), "拦截");
   return { content: `这个地址没抓成：${why}。要放行找组织管理员改「企业设置 → 网络设置」。`, isError: true };
-}
-/**
- * 全局**默认**根（= config.workspace_dir）。租户请求里 getWorkspaceDir() 返回的是租户根，
- * 所以凡是要跟「服务器的默认目录」比对、或者要写回 config 的地方，必须用这个，别用上面那个——
- * 用错了就是分公司管理员点一下设置，把总部所有人的成果目录搬走。
- */
-function getDefaultWorkspaceDir() {
-  return workspaceDir;
-}
-/** 改的是**默认**根（config.workspace_dir）。租户根不走这里，走 withWorkspace */
-function setWorkspaceDir(dir, platform = process.platform) {
-  if (!dir || !path.isAbsolute(dir)) throw new Error("工作空间必须是绝对路径，如 D:\\我的工作区");
-  fs.mkdirSync(dir, { recursive: true }); // 无权限/非法路径会在这里抛错
-  workspaceDir = winCanonCase(path.resolve(dir), platform);
-  return workspaceDir;
-}
-/**
- * Windows：用户手敲的 d:\work 和盘上的 D:\Work 是同一个目录，字符串却不一样。存盘上真实的大小写，
- * 后面拿它跟模型给的绝对路径、跟 realpath 出来的路径比，才不会互相对不上。
- * 只认「只差大小写」的那种：realpath 还会把 subst 盘、网络盘、目录链接展开成另一条路，
- * 那是用户自己选的写法，换掉了设置页上显示的就不是用户填的那个了。别的系统原样返回
- */
-function winCanonCase(p, platform = process.platform) {
-  if (platform !== "win32") return p;
-  try {
-    const real = fs.realpathSync.native(p);
-    return real.toLowerCase() === p.toLowerCase() ? real : p;
-  } catch { return p; }
 }
 /**
  * p 是不是 root 本身或在它里面。Windows 的文件名不分大小写：工作区存的是 d:\work、模型写的是 D:\work\a.md，
@@ -1188,7 +1122,7 @@ function tenantRoots() {
   const org = require("../domains/account/org");
   const out = [org.tenantsDir(), require("../domains/account/spaces").accountsDir()];
   try {
-    for (const o of org._internals.load().orgs) if (o && o.id !== org.DEFAULT_ORG && o.root_dir) out.push(org.rootDirOf(o, workspaceDir));
+    for (const o of org._internals.load().orgs) if (o && o.id !== org.DEFAULT_ORG && o.root_dir) out.push(org.rootDirOf(o, getDefaultWorkspaceDir()));
   } catch {}
   return out;
 }
@@ -1203,7 +1137,7 @@ function sandboxOpts(sec) {
     // 成员的任务（用自己那份工作目录的：租户里的、默认组织除老主人以外的）：别人的、属主的工作区和项目都藏，
     // hideAround 只留通往自己那份的一支；属主的任务：只藏各组织的和各账号的
     const member = roots.some((r) => sandbox.isUnder(root, r));
-    hide = member ? [...roots, dataPath("workspace"), dataPath("projects"), workspaceDir, ...ownerDirsFn()] : roots;
+    hide = member ? [...roots, dataPath("workspace"), dataPath("projects"), getDefaultWorkspaceDir(), ...ownerDirsFn()] : roots;
     hide = sandbox.hideAround(hide, root);
   }
   // 手改 config.json 写进来的：不是绝对路径的扔掉，别让一条错字把整个沙箱拖成立不起来
