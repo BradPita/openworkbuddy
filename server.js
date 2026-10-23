@@ -5703,11 +5703,50 @@ app.get("/api/feishu/app/create/status", (_req, res) => {
 
 // 设备码流程：start 拿二维码 → 用户在飞书里扫 → 后台那条 --device-code 自己会跑完 → status 变 ok
 let larkQr = null; // { device_code, url, expires_at, state, error, child }
+let larkQrEpoch = 0, larkLoggingOut = false;
+/** 先收掉整棵扫码进程树，避免 npm 包装器退出后，原生 CLI 仍在后台完成登录。 */
+async function stopLarkQr() {
+  const child = larkQr && larkQr.child;
+  larkQr = null;
+  if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  let timer, onClose;
+  const closed = new Promise((resolve) => { onClose = resolve; child.once("close", onClose); });
+  try {
+    const win = require("./src/platform/win");
+    await win.treeWatch(child.pid).kill("SIGKILL");
+    win.killTree(child, "SIGKILL");
+    await Promise.race([closed, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("扫码进程尚未退出，请稍后重试")), 3000);
+    })]);
+  } finally { clearTimeout(timer); child.removeListener("close", onClose); }
+}
+
+app.post("/api/feishu/lark-cli/logout", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "飞书本人身份连接归本机主人管理", platform_only: true });
+  if (larkLoggingOut) return res.status(409).json({ error: "正在取消连接，请稍候" });
+  larkLoggingOut = true;
+  ++larkQrEpoch;
+  try {
+    await stopLarkQr();
+    fs.mkdirSync(LARK_TMP, { recursive: true });
+    const r = await larkRun(["auth", "logout", "--json"], { timeout: 15000 });
+    const j = larkJson(r.stdout);
+    if (!r.ok || !j || j.loggedOut !== true) return res.status(400).json({ error: "未能确认本机登录态已清除，请重试。" });
+    res.json({ ok: true, logged_out: true });
+  } catch {
+    res.status(400).json({ error: "取消连接失败，请稍后重试。" });
+  } finally { larkLoggingOut = false; }
+});
+
 app.post("/api/feishu/qr/start", async (req, res) => {
+  if (larkLoggingOut) return res.status(409).json({ error: "正在取消连接，请稍候再扫码" });
+  const epoch = ++larkQrEpoch;
   fs.mkdirSync(LARK_TMP, { recursive: true });
-  if (larkQr && larkQr.child) { try { larkQr.child.kill(); } catch {} }
+  try { await stopLarkQr(); } catch { return res.status(400).json({ error: "上一轮扫码尚未停止，请重试" }); }
+  if (epoch !== larkQrEpoch) return res.status(409).json({ error: "这次扫码已取消" });
   const domains = String((req.body && req.body.domains) || "im,docs,drive,calendar,task");
   const r = await larkRun(["auth", "login", "--no-wait", "--json", "--domain", domains], { timeout: 60000 });
+  if (epoch !== larkQrEpoch) return res.status(409).json({ error: "这次扫码已取消" });
   const j = larkJson(r.stdout);
   if (!j || !j.verification_url || !j.device_code) {
     const msg = (r.stderr || r.stdout || "").slice(0, 300);
@@ -5723,6 +5762,7 @@ app.post("/api/feishu/qr/start", async (req, res) => {
     dataUri = "data:image/png;base64," + fs.readFileSync(path.join(LARK_TMP, png)).toString("base64");
     fs.unlinkSync(path.join(LARK_TMP, png));
   } catch {}
+  if (epoch !== larkQrEpoch) return res.status(409).json({ error: "这次扫码已取消" });
 
   // 阻塞式轮询交给后台子进程，前端只问我们自己的 status
   const child = larkExec(
@@ -5734,7 +5774,7 @@ app.post("/api/feishu/qr/start", async (req, res) => {
       else { larkQr.state = "ok"; larkQr.result = larkJson(stdout) || {}; }
     },
   );
-  if (child) child.on("error", (e) => { if (larkQr) { larkQr.state = "error"; larkQr.error = e.message; } });
+  if (child) child.on("error", (e) => { if (larkQr && epoch === larkQrEpoch) { larkQr.state = "error"; larkQr.error = e.message; } });
   larkQr = { device_code: j.device_code, url: j.verification_url, expires_at: Date.now() + (j.expires_in || 600) * 1000, state: "pending", child };
   res.json({ ok: true, url: j.verification_url, qr: dataUri, expires_in: j.expires_in || 600 });
 });
@@ -5745,14 +5785,16 @@ app.get("/api/feishu/qr/status", async (_req, res) => {
     larkQr.state = "error"; larkQr.error = "二维码超时失效，重新点一次生成";
   }
   if (larkQr.state !== "ok") return res.json({ state: larkQr.state, error: larkQr.error || null });
+  const qr = larkQr;
   const who = larkJson((await larkRun(["whoami"], { timeout: 15000 })).stdout) || {};
-  res.json({ state: "ok", identity: who.identity || "", app_id: who.appId || "", user: larkQr.result && larkQr.result.user_name || "" });
+  if (qr !== larkQr) return res.json({ state: "idle" });
+  res.json({ state: "ok", identity: who.identity || "", app_id: who.appId || "", user: qr.result && qr.result.user_name || "" });
 });
 
-app.post("/api/feishu/qr/cancel", (_req, res) => {
-  if (larkQr && larkQr.child) { try { larkQr.child.kill(); } catch {} }
-  larkQr = null;
-  res.json({ ok: true });
+app.post("/api/feishu/qr/cancel", async (_req, res) => {
+  ++larkQrEpoch;
+  try { await stopLarkQr(); res.json({ ok: true }); }
+  catch { res.status(400).json({ error: "扫码进程尚未停止，请重试" }); }
 });
 
 // ---- 缓存清理：界面缓存(Electron chromium) + 各项目 .tmp 临时脚本；不动会话记录/工作区文件/登录态 ----

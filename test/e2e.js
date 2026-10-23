@@ -16548,14 +16548,37 @@ async function testLarkSecretNotClobbered() {
   // 假 lark-cli：只认 --version 和 config show，其余一律失败（真 CLI 也不该被这条测试碰）
   const PLAIN = "P".repeat(32);
   fs.writeFileSync(path.join(bin, "mode"), "masked");
+  fs.writeFileSync(path.join(bin, "login"), "fixture-user");
   fs.writeFileSync(path.join(bin, "lark-cli"), `#!/bin/sh
 MODE=$(cat "$(dirname "$0")/mode")
+USERS=""
+if [ -f "$(dirname "$0")/login" ]; then USERS="fixture-user"; fi
 if [ "$1" = "--version" ]; then echo "1.0.68"; exit 0; fi
+if [ "$1" = "auth" ] && [ "$2" = "logout" ]; then
+  if [ "$MODE" = "logout-fail" ]; then echo '{"loggedOut":false}'; exit 0; fi
+  rm -f "$(dirname "$0")/login"
+  echo '{"loggedOut":true}'
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+  if [ "$3" = "--no-wait" ]; then
+    echo '{"verification_url":"https://open.feishu.cn/fixture","device_code":"fixture-device","expires_in":30}'
+    exit 0
+  fi
+  if [ "$3" = "--device-code" ]; then
+    (sleep 2; echo fixture-user > "$(dirname "$0")/login") &
+    echo $! > "$(dirname "$0")/pending-child"
+    wait
+    echo '{"user_name":"fixture-user"}'
+    exit 0
+  fi
+fi
+if [ "$1" = "auth" ] && [ "$2" = "qrcode" ]; then exit 0; fi
 if [ "$1" = "config" ] && [ "$2" = "show" ]; then
   if [ "$MODE" = "masked" ]; then
-    printf '{\\n  "appId": "cli_fakelocked",\\n  "appSecret": "****",\\n  "brand": "feishu"\\n}\\n\\n  Config file path: /tmp/fake\\n'
+    printf '{\\n  "appId": "cli_fakelocked",\\n  "appSecret": "****",\\n  "brand": "feishu",\\n  "users": "%s"\\n}\\n\\n  Config file path: /tmp/fake\\n' "$USERS"
   else
-    printf '{\\n  "appId": "cli_fakeplain",\\n  "appSecret": "${PLAIN}",\\n  "brand": "feishu"\\n}\\n\\n  Config file path: /tmp/fake\\n'
+    printf '{\\n  "appId": "cli_fakeplain",\\n  "appSecret": "${PLAIN}",\\n  "brand": "feishu",\\n  "users": "%s"\\n}\\n\\n  Config file path: /tmp/fake\\n' "$USERS"
   fi
   exit 0
 fi
@@ -16616,7 +16639,35 @@ exit 1
     assert.strictEqual(now.app_id, "cli_fakeplain", "明文那条没把 app_id 换过来");
     assert.strictEqual(now.app_secret, PLAIN, "明文那条没把 secret 换过来");
 
+    const beforeLogout = fs.readFileSync(path.join(home, "config.json"));
+    fs.writeFileSync(path.join(bin, "mode"), "logout-fail");
+    const failedLogout = await req("POST", "/api/feishu/lark-cli/logout", {});
+    assert.strictEqual(failedLogout.code, 400, "CLI 未确认注销，不能报告断开成功");
+    assert(fs.existsSync(path.join(bin, "login")), "失败时不应伪造清除登录态");
+    fs.writeFileSync(path.join(bin, "mode"), "plain");
+    const logout = await req("POST", "/api/feishu/lark-cli/logout", {});
+    assert.strictEqual(logout.code, 200, "本人身份断开接口失败");
+    assert(logout.json.ok && logout.json.logged_out, "未确认本机登录态已清除");
+    assert(!fs.existsSync(path.join(bin, "login")), "CLI 的登录态没有真正清除");
+    const loggedOut = await req("GET", "/api/feishu/lark-cli");
+    assert.strictEqual(loggedOut.json.users, "", "断开后仍显示旧的已授权用户");
+    assert(beforeLogout.equals(fs.readFileSync(path.join(home, "config.json"))), "取消本人身份连接误改了机器人或应用凭证");
+
+    for (const endpoint of ["/api/feishu/qr/cancel", "/api/feishu/lark-cli/logout"]) {
+      fs.rmSync(path.join(bin, "pending-child"), { force: true });
+      const start = await req("POST", "/api/feishu/qr/start", {});
+      assert.strictEqual(start.code, 200, "扫码测试进程未启动");
+      for (let i = 0; i < 100 && !fs.existsSync(path.join(bin, "pending-child")); i++) await new Promise((r) => setTimeout(r, 10));
+      assert(fs.existsSync(path.join(bin, "pending-child")), "没有产生模拟原生 CLI 的子进程，不能验证进程树清理");
+      const cancel = await req("POST", endpoint, {});
+      assert.strictEqual(cancel.code, 200, "停止扫码失败");
+      await new Promise((r) => setTimeout(r, 2200));
+      assert(!fs.existsSync(path.join(bin, "login")), "包装器退出后子进程仍完成了登录");
+      assert.strictEqual((await req("GET", "/api/feishu/qr/status")).json.state, "idle", "停止后仍保留旧扫码状态");
+    }
+
     console.log("✅ lark-cli 导凭证：钥匙串掩码一律拒绝且不动原凭证 · 如实回报「锁住」并给凭证页直链 · 明文照常导入");
+    console.log("✅ 飞书本人身份断开：调用官方注销、失败不报成功、重读后未授权，机器人凭证原样保留");
   } finally {
     try { child.kill(); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}

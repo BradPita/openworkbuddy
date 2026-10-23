@@ -266,6 +266,8 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 23** Edit text models directly; disconnect the local Feishu user identity; prevent scheduled Feishu results from being sent again through another bot after a delivery receipt
+
 - **Oct 23** Keep canvas models scoped to the current app; restore defaults on cards and prevent API or local engines from guessing model IDs from another installation
 
 - **Oct 23** Select models on cards; fix missing-tool claims by local engines. Keep shot outputs and errors inline, show start feedback, support approved Ark assets, preserve original frames, compare versions and export assets

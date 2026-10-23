@@ -11,6 +11,7 @@ const { dataPath } = require("../../platform/paths");
 const jsonStore = require("../../platform/store");
 const { judgeRun, explainRunError, verdictMessage, needsSecondOpinion } = require("./task-verdict");
 const pushGate = require("./push-gate");
+const delivery = require("./schedule-delivery");
 
 const STORE = dataPath("schedules.json");
 
@@ -568,12 +569,12 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       // 每次执行用全新会话，避免历史无限增长
       // 末尾那句交代「最后的回复会推出去」：不说的话「叫我起床」这类任务，agent 会满世界找发消息的工具
       // （翻 lark-cli、翻连接器），找不到就回一句「发不出去」——而结果本来就会推到连好的微信 / 群机器人上
-      const history = [{ role: "user", content: item.task + PUSH_NOTE }];
+      const history = [{ role: "user", content: item.task + PUSH_NOTE + "\n" + delivery.NOTE }];
       // stopped 是 runTask 自己报的「撞上限 / 模型挂死 / 手动停止」。以前这里把它解构掉了，
       // 于是一个跑满 25 步被强制收尾的任务，运行记录里照样是个 ✅——活没干完却显示干成了。
       // 替谁跑就报谁的名字：身份、账单、工作目录、命令行开关都跟着他走（见 server.js accountedRuntime）。
       // 原来不报，一律顶着平台管理员跑——别家组织的成员排一条任务，到点就在总部的工作目录里执行
-      const { finalText, stopped } = await runtime.runTask({ history, ...(item.user ? { user: item.user } : {}), ...((rec && rec.opts) || {}) });
+      const { finalText, stopped } = await delivery.withDelivery({}, () => runtime.runTask({ history, ...(item.user ? { user: item.user } : {}), ...((rec && rec.opts) || {}) }));
       const v = judgeRun({ result: finalText, stopped });
       if (v.ok) {
         // 判据放行了，但它从来没回答过「这件事到底办了没有」——正文一长它就主动让路。

@@ -4350,8 +4350,9 @@ async function executeToolCore(name, input, opts = {}) {
         const box = await sandboxFor(sec);
         if (box.error) { security.audit("命令拦截", cmd + "（系统沙箱没立起来）", "拦截"); return { content: box.error, isError: true }; }
         security.audit("命令执行", cmd, "放行");
-        if (input.background) return startBackground(cmd, fileBase, opts, input.keep === true, box);
-        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "", box);
+        return await require("../core/automation/schedule-delivery").runShell(input, () => input.background
+          ? startBackground(cmd, fileBase, opts, input.keep === true, box)
+          : runShell(cmd, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "", box));
       }
       case "shell_output": {
         const who = bgOwner(opts);

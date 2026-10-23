@@ -1005,7 +1005,7 @@ function repaintMedia(box, s) {
 }
 
 /**
- * 有「添加模型」那张表单正开着吗？开着就别重画。
+ * 模型或渠道表单正开着时，不用目录刷新覆盖正在输入的内容。
  *
  * 精选目录是现拉的，拉回来会把这一屏再画一遍。人点了「添加看图模型」、正在下拉里翻型号，
  * 目录恰好这时到了——整张卡重画，表单连同刚选好的那一行一起没了，按钮看着还在，
@@ -1013,7 +1013,7 @@ function repaintMedia(box, s) {
  * 重画本来就是为了「把目录补上」这点好处，不值得拿人填了一半的东西去换。
  */
 function mediaFormOpen(root) {
-  return !!root && [...root.querySelectorAll(".mm-form")].some((f) => f.style.display !== "none");
+  return !!root && [...root.querySelectorAll(".mm-form, .ca-form, #prov-form")].some((f) => f.style.display !== "none");
 }
 
 function renderMediaPane(box, s) {
@@ -2329,21 +2329,32 @@ function bindModels(pane, s, po) {
       else { sel.value = "__custom__"; cust.value = m.model; }
     }
     cust.style.display = sel.value === "__custom__" ? "" : "none";
+    f.querySelector(".ca-name").focus({ preventScroll: true });
+    f.scrollIntoView({ block: "nearest", behavior: "smooth" });
   };
   pane.querySelectorAll(".ca-new").forEach((b) => (b.onclick = () => { editM = -1; showModelForm(b.dataset.chan, null); }));
   pane.querySelectorAll(".ca-cancel").forEach((b) => (b.onclick = () => (b.closest(".ca-form").style.display = "none")));
+  const editFromRow = (a, duplicate) => {
+    const key = duplicate ? "cdup" : "cedit", index = +a.dataset[key];
+    const m = s.models[index];
+    // 总览使用自己的表单；旧模型未挂渠道时也能从总览编辑，不要求先展开别处。
+    const chan = a.closest("#chat-overview") || !m.channel ? "__all__" : m.channel;
+    if (!pane.querySelector(`.ca-form[data-chan="${chan}"]`)) {
+      openCaps.add("chat");
+      paintModels(pane, s);
+      pane.querySelector(`#chat-overview [data-${key}="${index}"]`).click();
+      return;
+    }
+    editM = duplicate ? -1 : index;
+    showModelForm(chan, duplicate ? { ...m, name: "" } : m);
+  };
   pane.querySelectorAll("a[data-cedit]").forEach((a) => (a.onclick = (e) => {
-    e.preventDefault();
-    editM = +a.dataset.cedit;
-    const m = s.models[editM];
-    showModelForm(m.channel || "", m);
+    e.preventDefault(); editFromRow(a, false);
   }));
   // 复制一个：同渠道换个模型名即成新模型（OpenRouter 底下加第二个模型就是这个动作）
   pane.querySelectorAll("a[data-cdup]").forEach((a) => (a.onclick = (e) => {
     e.preventDefault();
-    editM = -1;
-    const m = s.models[+a.dataset.cdup];
-    showModelForm(m.channel || "", { ...m, name: "" });
+    editFromRow(a, true);
   }));
   pane.querySelectorAll("a[data-cdel]").forEach((a) => (a.onclick = async (e) => {
     e.preventDefault();
@@ -4318,6 +4329,7 @@ function renderDataPane(pane, s) {
 }
 // 飞书扫码授权面板：靠本机 lark-cli 跑飞书官方设备码流程
 let larkQrPoll = null;
+let larkQrRender = 0;
 /** 直达这个应用「凭证与基础信息」页，省得用户自己在开放平台里翻 */
 function larkConsoleLink(appId, brand) {
   if (!/^cli_[A-Za-z0-9]+$/.test(String(appId || ""))) return "";
@@ -4337,7 +4349,9 @@ function larkChip(pane, [cls, txt]) {
 async function renderLarkQr(pane) {
   const box = pane.querySelector("#fs-qr-body");
   if (!box) return;
+  const renderId = ++larkQrRender;
   const st = await fetch("/api/feishu/lark-cli").then(r => r.json()).catch(() => ({ installed: false }));
+  if (renderId !== larkQrRender || !box.isConnected) return;
   larkChip(pane, !st.installed ? ["off", "未装 lark-cli"] : !st.configured ? ["warn", "未绑定应用"] : st.users ? ["ok", "已授权"] : ["warn", "未授权"]);
   const btn = (id, txt, primary) => `<button class="${primary ? "btn-brand" : ""}" id="${id}" style="margin-right:6px">${txt}</button>`;
   if (!st.installed) {
@@ -4361,13 +4375,28 @@ async function renderLarkQr(pane) {
   }
   const fsAppId = (pane.querySelector("#im-feishu-app_id") || {}).value;
   box.innerHTML = `lark-cli v${esc(st.version)} · 应用 <code>${esc(st.app_id)}</code>${st.users ? ` · 已授权：${esc(st.users)}` : " · 还没有用户授权"}
-    <div style="margin-top:8px">${btn("lk-login", st.users ? "重新扫码授权" : "扫码授权", true)}${
+    <div style="margin-top:8px">${btn("lk-login", st.users ? "重新扫码授权" : "扫码授权", true)}${st.users ? btn("lk-logout", "取消连接") : ""}${
       st.has_secret && fsAppId !== st.app_id ? btn("lk-import", "把这个应用的凭证填进飞书卡") : ""}<span class="ok-msg" id="lk-msg"></span></div>
     ${st.secret_locked && fsAppId !== st.app_id ? `<div class="d" style="font-size:12px;margin-top:6px">
       这个应用的 App Secret 被 lark-cli 锁在系统钥匙串里，搬不过来（它只进不出）。想拿它当机器人的话：
       ${larkConsoleLink(st.app_id, st.brand)}复制 App Secret，粘到飞书卡的「粘一段过来自动识别」里。</div>` : ""}
     <div id="lk-qr" style="margin-top:10px"></div>`;
   const msg = box.querySelector("#lk-msg");
+  const logout = box.querySelector("#lk-logout");
+  if (logout) logout.onclick = async () => {
+    if (!(await askConfirm({ title: "取消飞书本人身份连接？", hint: "清除本机 lark-cli 当前应用的本人登录态，停止待完成的扫码；机器人连接和应用凭证保留。", note: "飞书服务端的应用授权仍会保留，可在飞书授权管理中撤销。", ok: "取消连接", danger: true }))) return;
+    ++larkQrRender;
+    logout.disabled = true;
+    box.querySelector("#lk-login").disabled = true;
+    clearInterval(larkQrPoll); larkQrPoll = null;
+    msg.textContent = "正在取消连接…";
+    const d = await fetch("/api/feishu/lark-cli/logout", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "请求失败" }));
+    if (d.ok && d.logged_out) { await renderLarkQr(pane); toast("已取消飞书本人身份连接"); }
+    else {
+      logout.disabled = false; box.querySelector("#lk-login").disabled = false;
+      setMsg(msg, "circle-x", d.error || "取消连接失败", "err");
+    }
+  };
   const imp = box.querySelector("#lk-import");
   if (imp) imp.onclick = async (e) => {
     e.target.disabled = true; msg.textContent = "导入中…"; msg.style.color = "";
@@ -4399,6 +4428,7 @@ async function renderLarkQr(pane) {
     clearInterval(larkQrPoll);
     larkQrPoll = setInterval(async () => {
       const s2 = await fetch("/api/feishu/qr/status").then(r => r.json()).catch(() => null);
+      if (renderId !== larkQrRender) return;
       const line = qr.querySelector("#lk-qr-st");
       if (!s2 || !line) { clearInterval(larkQrPoll); larkQrPoll = null; return; }
       if (s2.state === "ok") {

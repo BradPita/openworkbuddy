@@ -402,6 +402,62 @@ const out = (...answers) => ({ ok: true, answers });
     ok(/上一次真推出去的那条/.test((cfg.agent || {})["_push_gate_说明"] || ""), "  └ 也写清楚判错了不会漏");
   }
 
+  console.log("\n⑧ 同一次任务的飞书送达回执去重");
+  {
+    const D = require("../src/core/automation/schedule-delivery");
+    const command = "lark-cli im +messages-send --text fixture";
+    const sent = { content: 'stdout:\n{"ok":true,"data":{"message_id":"om_fixture"}}\nexit code: 0', isError: false };
+    eq(D.sendCount(command), 1, "识别飞书发送命令");
+    eq(D.sendCount(command + " --help"), 0, "看帮助不是发送");
+    eq(D.sendCount("echo 'lark-cli im +messages-send'"), 0, "打印命令不是发送");
+    eq(D.sendCount("lark-cli im +messages-mget --message-ids fixture"), 0, "核对原消息不被发送去重拦住");
+    eq(D.receipt(sent), "sent", "按平台 message_id 确认成功");
+    eq(D.receipt({ content: 'stderr:\n{"ok":false,"error":{"type":"api","code":10003}}\nexit code: 1' }), "idle", "平台明确拒绝可以修正重试");
+    eq(D.receipt({ content: "timeout", isError: true }), "unknown", "超时没有回执，不当成没发出");
+    let attempts = 0;
+    const send = async () => { attempts++; return sent; };
+    await D.withDelivery({}, async () => {
+      const first = D.runShell({ command }, send);
+      const parallel = await D.runShell({ command: command + " --profile other" }, send);
+      ok(parallel.isError && /在途/.test(parallel.content), "并行换机器人发送也被在途锁挡住");
+      await first;
+      const second = await D.runShell({ command: command + " --profile other --as bot" }, send);
+      ok(second.isError && /成功回执/.test(second.content), "成功后不许换应用或身份重复发");
+    });
+    eq(attempts, 1, "同次任务实际发送一次");
+    await D.withDelivery({}, async () => {
+      await D.runShell({ command }, async () => ({ content: "network timeout", isError: true }));
+      ok((await D.runShell({ command }, send)).isError, "结果不明禁止盲目重发");
+    });
+    await D.withDelivery({}, async () => {
+      await D.runShell({ command }, async () => ({ content: 'stderr:\n{"ok":false,"error":{"type":"validation"}}', isError: true }));
+      ok(!(await D.runShell({ command }, send)).isError, "明确未发出的参数错误可修正重试");
+    });
+    await D.withDelivery({}, async () => {
+      ok((await D.runShell({ command, background: true }, send)).isError, "发送不能放后台丢失回执");
+      ok((await D.runShell({ command: command + "; " + command }, send)).isError, "不能在一条命令里换机器人批量发");
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pushgate-")); TMP_DIRS.push(dir);
+    let rounds = 0, executions = 0;
+    const s = createScheduler({ storePath: path.join(dir, "schedules.json"), runtime: { runTask: async ({ history }) => {
+      rounds++;
+      ok(history[0].content.includes(D.NOTE), "每次定时任务提示里都有单目标发送规则");
+      const run = async () => { executions++; return sent; };
+      await D.runShell({ command }, run);
+      const duplicate = await D.runShell({ command: command + " --profile other" }, run);
+      ok(duplicate.isError, "真实调度器为每次执行建立独立送达范围");
+      return { finalText: "已完成", stopped: "" };
+    } } });
+    s.stop();
+    try {
+      const t = s.add({ name: "送达检查", cron: "0 8 * * *", task: "生成日报" });
+      await s.runOne(t.id, "手动"); await s.runOne(t.id, "手动");
+      eq(rounds, 2, "下一轮定时任务仍会执行");
+      eq(executions, 2, "每轮只发送一次，上一轮回执不会误拦下一轮");
+    } finally { s.stop(); }
+    ok(!D.current(), "任务结束后没有全局残留身份或送达状态");
+  }
+
   finished = true;
   console.log(`\n${fail ? "✗ 挂了" : "全部通过"}：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);

@@ -2508,6 +2508,8 @@ function modePrompt(mode) {
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
   async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId, sec, taskLabel, engineImport }) {
+    const delivery = require("../core/automation/schedule-delivery");
+    const deliveryState = delivery.current();
     // 从本机导入的会话接着聊：在它原来的文件夹里跑（server 那边核过属主、核过文件夹还在）。
     // 那是用户自己的项目，不替用户建目录；不是现成的目录就照常落在任务文件夹里
     const importCwd = engineImport && typeof engineImport.cwd === "string" && path.isAbsolute(engineImport.cwd)
@@ -2600,12 +2602,12 @@ function modePrompt(mode) {
         } catch (e) { console.warn(`[agent] 视频收单的台账没写上，这一单要是没交到手就没人接着收了：${(e && e.message) || e}`); }
       };
       try {
-        const r = await withReplyBase(cwd, () => executeTool(name, args, {
+        const r = await delivery.withDelivery(deliveryState, () => withReplyBase(cwd, () => executeTool(name, args, {
           ...execOpts({ depth: 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit: callId ? wrapped : undefined, onSubmitted }),
           knownTools: (bridged && bridged.lent) || [],
           visionFallback: undefined,
           keepUpstreamOnStop: true,
-        }));
+        })));
         // 交到手了，或者上游明说失败：台账删掉。停了的、带着任务号出错的留着，收尾时接着收
         if (pending && !(r && r.isError && (r.stopped || r.submitted))) harvest.dropEntry(pending);
         return r;

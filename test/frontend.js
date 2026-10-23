@@ -4408,6 +4408,9 @@ const IMPANE_SRC = [
   APP03_KS,
   APP05.slice(IM0, IM1),
 ].join("\n");
+const LARK0 = APP05.indexOf("// 飞书扫码授权面板");
+if (LARK0 < 0 || LARK0 >= IM0) throw new Error("飞书本人身份面板源码定位失败");
+const LARK_SRC = APP05.slice(LARK0, IM0);
 // ---- HTML 转义：属性里塞得进引号就等于能改属性 ----
 // 全站三百多处是 attr="${esc(x)}"，esc 漏掉引号的时候，一条带引号的普通命令
 // （echo "hi"）就能把属性截断，模型输出里的一个 markdown 链接更是直通 href="..."。
@@ -6811,6 +6814,52 @@ const GATE_CHECKS = `
     && mpo.querySelectorAll("#prov-list .ch-card.open").length === 0
     && mpo.querySelector("#chat-overview").textContent.includes("主力"),
     "摊开的渠道卡 " + mpo.querySelectorAll("#prov-list .ch-card.open").length);
+  {
+    window.toasts = [];
+    const overview = mpo.querySelector("#chat-overview");
+    overview.querySelector(".row-more").click();
+    overview.querySelector("[data-cedit='0']").click();
+    const editor = overview.querySelector(".ca-form");
+    ok("渠道全收着时，总览点编辑直接打开总览表单，不再要求先展开渠道",
+      getComputedStyle(editor).display !== "none" && !toasts.length && !mpo.querySelector("#prov-list .ch-card.open"));
+    ok("编辑带回原模型和渠道，光标落在别名框",
+      editor.querySelector(".ca-name").value === "主力" && editor.querySelector(".ca-chan").value === "or"
+      && editor.querySelector(".ca-custom").value === "gpt-5.2" && document.activeElement === editor.querySelector(".ca-name"));
+    editor.querySelector(".ca-name").value = "尚未保存";
+    ok("目录更新能识别正在编辑的文本模型，不能覆盖输入", mediaFormOpen(mpo));
+    editor.querySelector(".ca-cancel").click();
+    overview.querySelector(".row-more").click();
+    overview.querySelector("[data-cdup='0']").click();
+    ok("总览复制也直接打开表单：保留型号和渠道、清空别名，不修改原记录",
+      getComputedStyle(editor).display !== "none" && editor.querySelector(".ca-name").value === ""
+      && editor.querySelector(".ca-chan").value === "or" && overview.querySelector(".mrow-name").textContent === "主力");
+    editor.querySelector(".ca-cancel").click();
+    ok("取消后表单收起，目录可以恢复刷新", !mediaFormOpen(mpo));
+    const isolated = document.createElement("div"); document.body.appendChild(isolated);
+    const previousPane = modelsPaneEl, caps0 = [...openCaps], chans0 = [...openChans], posts0 = posts;
+    try {
+      const state = await (await fetch("/api/settings")).json();
+      state.models.push({ name: "旧模型", model: "custom-fixture" });
+      openCaps.delete("chat");
+      renderModelsPane(isolated, state);
+      isolated.querySelector('[data-cedit="2"]').click();
+      const form = isolated.querySelector('#chat-overview .ca-form');
+      ok("未挂渠道的旧模型也能编辑：自动打开总览，不要求先找渠道",
+        getComputedStyle(form).display !== "none" && form.querySelector(".ca-name").value === "旧模型");
+      form.querySelector(".ca-name").value = "旧模型改名";
+      await new Promise((r) => setTimeout(r, 0));
+      ok("精选目录异步回到页面时保留正在编辑的文本", form.isConnected && form.querySelector(".ca-name").value === "旧模型改名");
+      posts = [];
+      await form.querySelector(".ca-save").onclick();
+      const saved = posts.find((x) => x.url === "/api/settings" && x.body.models);
+      ok("编辑保存更新原条目，不误增一条也不覆盖其他模型", saved && saved.body.models.length === 3
+        && saved.body.models[2].name === "旧模型改名" && saved.body.models[2].model === "custom-fixture"
+        && saved.body.models[0].name === "主力" && saved.body.models[1].name === "备用");
+    } finally {
+      isolated.remove(); modelsPaneEl = previousPane; posts = posts0;
+      openCaps.clear(); caps0.forEach((k) => openCaps.add(k)); openChans.clear(); chans0.forEach((k) => openChans.add(k));
+    }
+  }
   // 六格路由图：对话那一格得写出「主用谁 + 还压着几个备选」。老版本一格只写得下一个名字，
   // 一格一个名字就永远看不出有没有备份
   const rtChat = mpo.querySelector('.model-route-grid .rt[data-goto="chat"]');
@@ -8692,6 +8741,39 @@ const IMPANE_CHECKS = `
     const two = [...old.querySelectorAll(".t")].map(px);
     ok("反向对照：字段名写成 .t 时两行一样大，分不出层", two[0] === two[1] && two[0] === 15, two.join("/"));
     old.remove();
+  }
+
+  // 本人身份是独立登录态：测试真面板函数，网络与确认选择用夹具代替。
+  {
+    const renderQr = (0, eval)("(function(){" + ${JSON.stringify(LARK_SRC)} + ";return renderLarkQr;})()");
+    const qp = document.createElement("div");
+    qp.innerHTML = '<div data-ch="feishu_me"><span class="im-st"><em></em></span><div id="fs-qr-body"></div></div>';
+    document.body.appendChild(qp);
+    const fetch0 = window.fetch, ask0 = window.askConfirm, toast0 = window.toast;
+    let connected = true, confirmed = false, failLogout = false, logoutCalls = 0, hint = "";
+    window.toast = () => {};
+    window.askConfirm = async (o) => { hint = o.hint + o.note; return confirmed; };
+    window.fetch = async (url) => {
+      let data;
+      if (url === "/api/feishu/lark-cli") data = { installed: true, configured: true, version: "fixture", app_id: "cli_fixture", users: connected ? "fixture-user" : "" };
+      else if (url === "/api/feishu/lark-cli/logout") { logoutCalls++; if (!failLogout) connected = false; data = failLogout ? { error: "fixture disconnect failed" } : { ok: true, logged_out: true }; }
+      else throw new Error("本人身份面板访问了意外接口");
+      return { json: async () => data };
+    };
+    try {
+      await renderQr(qp);
+      ok("飞书本人已授权时提供取消连接按钮", !!qp.querySelector("#lk-logout") && qp.querySelector(".im-st").classList.contains("ok"));
+      await qp.querySelector("#lk-logout").onclick();
+      ok("取消确认不会注销登录态", logoutCalls === 0 && connected);
+      ok("确认文案说明本机登录态、机器人和服务端授权的范围", /本机/.test(hint) && /机器人连接和应用凭证保留/.test(hint) && /服务端/.test(hint));
+      confirmed = true; failLogout = true;
+      await qp.querySelector("#lk-logout").onclick();
+      ok("断开失败保留连接状态并显示错误，可以重试", connected && !qp.querySelector("#lk-logout").disabled && qp.querySelector("#lk-msg").textContent.includes("fixture disconnect failed"));
+      failLogout = false;
+      await qp.querySelector("#lk-logout").onclick();
+      ok("注销成功后重读状态，已授权灯熄灭、按钮恢复扫码授权", !connected && !qp.querySelector("#lk-logout")
+        && qp.querySelector("#lk-login").textContent === "扫码授权" && !qp.querySelector(".im-st").classList.contains("ok"));
+    } finally { qp.remove(); window.fetch = fetch0; window.askConfirm = ask0; window.toast = toast0; }
   }
 
   // ---- 成员：绑的是他自己那套（2026-10-14「每个账户都能扫码绑定自己的助理」） ----
